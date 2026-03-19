@@ -1,0 +1,29 @@
+# Build artifacts
+/build/
+/out/
+/bin/
+/lib/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+Makefile
+
+# IDE/editor
+.vscode/
+.idea/
+*.suo
+*.user
+*.VC.db
+
+# Python extension artifacts
+*.pyd
+*.so
+__pycache__/
+
+# Local planning notes
+TODO.txt
