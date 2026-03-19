@@ -1,0 +1,154 @@
+Lindblad Quantum Toolkit
+Copyright © 2026 Sricharan Suresh (github.com/verycareful)
+
+This software is licensed under the Lindblad Software License Agreement Version 2.3.
+Free for non-commercial and academic use. Commercial use requires a separate license agreement.
+Licensing inquiries: lindblad.software@proton.me
+
+================================================================================
+THIRD-PARTY COMPONENTS
+================================================================================
+
+This software incorporates components from third-party projects under open-source
+licenses. These components are fetched at build time via CMake FetchContent and
+are not bundled in source releases. Their notices are reproduced below as required
+by their respective license terms.
+
+NOTE: The test suite (GoogleTest) and optional benchmark suite (Google Benchmark)
+are included in source releases and GitHub archives. If you clone or download this
+repository directly — rather than consuming it via CMake as a dependency — those
+components are present in your copy. Their license terms apply to your use of those
+files.
+
+--------------------------------------------------------------------------------
+Eigen 3.4.0
+Source:   https://gitlab.com/libeigen/eigen
+License:  Mozilla Public License 2.0 (MPL-2.0)
+          https://www.mozilla.org/en-US/MPL/2.0/
+
+Copyright is held by individual contributors per source file. Eigen carries no
+single master copyright notice; see the per-file headers in the Eigen source tree.
+
+Note: This project defines EIGEN_MPL2_ONLY at compile time, which restricts
+inclusion to Eigen headers licensed under MPL-2.0. Any Eigen file covered by LGPL
+is excluded at compile time and is not part of this build.
+
+--------------------------------------------------------------------------------
+NLopt 2.7.1
+Source:   https://github.com/stevengj/nlopt
+License:  GNU Lesser General Public License v2.1 or later (LGPL-2.1-or-later)
+          https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+
+NLopt combines several nonlinear optimization libraries. The compiled library is
+licensed under the conjunction of all included terms. The most restrictive terms
+are from the "luksan" subdirectory, which is LGPL-2.1-or-later. Other portions of
+NLopt are licensed under the MIT License:
+
+  Copyright (c) 2007-2011 Massachusetts Institute of Technology
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of
+  this software and associated documentation files (the "Software"), to deal in the
+  Software without restriction, including without limitation the rights to use,
+  copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+  Software, and to permit persons to whom the Software is furnished to do so,
+  subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+  FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+  COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+  AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+LGPL NOTICE: NLopt is statically linked into this software. The LGPL requires
+that you be able to replace NLopt with a modified version. Because Lindblad is
+source-available, you can recompile the software against a different NLopt build
+by substituting the nlopt FetchContent target in CMakeLists.txt. This satisfies
+the LGPL §6 relinking requirement. The NLopt source is available at the URL above.
+
+--------------------------------------------------------------------------------
+GoogleTest 1.14.0
+Source:   https://github.com/google/googletest
+License:  BSD 3-Clause License
+Used in:  Test suite only. Not linked into any production binary.
+
+Copyright 2008, Google Inc.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice,
+    this list of conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+
+  * Neither the name of Google Inc. nor the names of its contributors may be
+    used to endorse or promote products derived from this software without
+    specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------------------------------
+Google Benchmark 1.8.3
+Source:   https://github.com/google/benchmark
+License:  Apache License 2.0
+          https://www.apache.org/licenses/LICENSE-2.0
+Used in:  Optional benchmark suite only. Not linked into any production binary.
+
+Copyright 2015 Google Inc. All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at the URL above. Unless required by applicable law or agreed to in
+writing, software distributed under the License is distributed on an "AS IS"
+BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and limitations
+under the License.
+
+--------------------------------------------------------------------------------
+pybind11 2.12.0
+Source:   https://github.com/pybind/pybind11
+License:  BSD 3-Clause License
+Used in:  Optional Python bindings only (LINDBLAD_BUILD_PYTHON=ON).
+
+Copyright (c) 2016 Wenzel Jakob <wenzel.jakob@epfl.ch>, All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+  1. Redistributions of source code must retain the above copyright notice,
+     this list of conditions and the following disclaimer.
+
+  2. Redistributions in binary form must reproduce the above copyright notice,
+     this list of conditions and the following disclaimer in the documentation
+     and/or other materials provided with the distribution.
+
+  3. Neither the name of the copyright holder nor the names of its contributors
+     may be used to endorse or promote products derived from this software
+     without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+OF THE POSSIBILITY OF SUCH DAMAGE.
