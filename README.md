@@ -1,5 +1,8 @@
 # q++ (qpp)
-
+[![C++](https://img.shields.io/badge/C%2B%2B-23-00599C?style=flat-square&logo=cplusplus&logoColor=white)](https://isocpp.org/)
+[![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
 q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
 ## Release
@@ -82,12 +85,19 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DQPP_BUILD_BENCHMARKS=ON -DQPP_B
 
 ## Licensing
 
-This project is licensed under:
+This project is licensed under the Apache License 2.0.
 
-**Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)**
-
-See the full license text in `LICENSE`.
+See [LICENSE](LICENSE) for the full license text and [NOTICE](NOTICE) for attribution information.
 
 ## Status
 
 The project already includes a substantial implementation across simulation, transpilation, and algorithms. Remaining work is tracked as local planning and `TODO.txt` is intentionally ignored by git.
+
+## License
+
+Copyright © 2026 Sricharan Suresh (github.com/verycareful)
+
+This project is licensed under the **[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)**.
+You may use, modify, and distribute this software in accordance with the Apache 2.0 terms.
+
+See the [LICENSE](LICENSE) file for the full license text and [NOTICE](NOTICE) for attribution information.
