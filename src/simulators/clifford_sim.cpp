@@ -212,37 +212,131 @@ int StabilizerState::expectation_pauli(const std::string& pauli) const {
         throw std::invalid_argument("Pauli string length must match n_qubits");
     }
 
-    // Check if the Pauli operator commutes with all stabilizers
-    // and if it's in the stabilizer group
-    // Simple approach: check stabilizer phase
-    
-    // Build the Pauli as X and Z bits
+    // Build the target Pauli's X and Z bits
     std::vector<bool> px(N, false), pz(N, false);
+    bool p_phase = false;  // phase: false=+1, true=-1
     for (int i = 0; i < N; ++i) {
         char c = pauli[i];
         if (c == 'X' || c == 'x') { px[i] = true; }
-        else if (c == 'Y' || c == 'y') { px[i] = true; pz[i] = true; }
+        else if (c == 'Y' || c == 'y') {
+            px[i] = true; pz[i] = true;
+            p_phase = !p_phase;  // Y = iXZ contributes i factor -> -1 phase per Y
+        }
         else if (c == 'Z' || c == 'z') { pz[i] = true; }
-        // 'I' leaves both false
     }
 
-    // Check commutation with each stabilizer
+    // Check if P commutes with each stabilizer.
+    // A Pauli P anticommutes with stabilizer g iff their symplectic inner product is 1.
+    // symplectic(P, g) = sum_j (px_j & gz_j) XOR (pz_j & gx_j)  (mod 2)
     for (int s = N; s < 2 * N; ++s) {
         int anti = 0;
         for (int j = 0; j < N; ++j) {
-            anti += (px[j] && tableau[s][N + j]) ? 1 : 0;
-            anti += (pz[j] && tableau[s][j]) ? 1 : 0;
+            anti ^= (px[j] && tableau[s][N + j]) ? 1 : 0;
+            anti ^= (pz[j] && tableau[s][j]) ? 1 : 0;
         }
-        if (anti % 2 != 0) {
-            // Anticommutes with a stabilizer -> expectation value is 0
+        if (anti & 1) {
+            // P anticommutes with a stabilizer → ⟨P⟩ = 0
             return 0;
         }
     }
 
-    // If it commutes with all stabilizers, it's ±1
-    // Determine sign by checking if it's in the stabilizer group
-    // For simplicity, return +1 (this is a simplification)
-    return 1;
+    // P commutes with all stabilizers.
+    // Determine if P is +1 or -1 in the stabilizer group by expressing P
+    // as a product of stabilizers using Gaussian elimination (GF(2) row reduction).
+    // We work in the 2N+1 dimensional binary representation.
+    //
+    // Make a working copy of the stabilizer block (rows N..2N-1)
+    // We'll do GF(2) elimination to express [px|pz] as a linear combination of stabilizers.
+    int rows = N;
+    int cols = 2 * N;
+    std::vector<std::vector<bool>> mat(rows, std::vector<bool>(cols + 1, false));
+    std::vector<bool> mat_phase(rows, false);
+
+    for (int i = 0; i < rows; ++i) {
+        for (int j = 0; j < cols; ++j) {
+            mat[i][j] = tableau[N + i][j];
+        }
+        mat_phase[i] = tableau[N + i][2 * N];
+    }
+
+    // Target row: [px | pz], accumulated phase
+    std::vector<bool> target(cols, false);
+    bool target_phase = p_phase;
+    for (int j = 0; j < N; ++j) target[j] = px[j];
+    for (int j = 0; j < N; ++j) target[N + j] = pz[j];
+
+    // Gaussian elimination in GF(2)
+    // When we XOR row i into target, we multiply the Pauli group elements.
+    // Phase update for XORing stabilizer row into current product:
+    // Use the rowmult phase rule inline.
+    auto pauli_phase_update = [&](const std::vector<bool>& row1, bool ph1,
+                                   const std::vector<bool>& row2, bool ph2,
+                                   bool& ph_out) {
+        // Compute phase of row1 * row2 in the Pauli group
+        // Using the standard commutation formula: i^{2*sum_j f(x1,z1,x2,z2)}
+        // where f counts phase contributions from Pauli multiplications
+        int phase_count = 0;  // accumulates in units of i
+        for (int j = 0; j < N; ++j) {
+            bool x1 = row1[j], z1 = row1[N + j];
+            bool x2 = row2[j], z2 = row2[N + j];
+            // Pauli multiplication phase contributions
+            if (x1 && z1 && x2 && !z2) phase_count++;   // Y*X = iZ
+            else if (x1 && z1 && !x2 && z2) phase_count--;  // Y*Z = -iX
+            else if (x1 && !z1 && !x2 && z2) phase_count--;  // X*Z = -iY
+            else if (!x1 && z1 && x2 && !z2) phase_count++;   // Z*X = iY
+        }
+        // ph1 and ph2 are boolean: false=+1, true=-1 (-1 is phase=2 in i-units)
+        int total = (ph1 ? 2 : 0) + (ph2 ? 2 : 0) + phase_count;
+        total = ((total % 4) + 4) % 4;
+        ph_out = (total == 2);
+    };
+
+    int pivot_col = 0;
+    for (int col = 0; col < cols && pivot_col < rows; ++col) {
+        // Find pivot row
+        int pivot = -1;
+        for (int r = pivot_col; r < rows; ++r) {
+            if (mat[r][col]) { pivot = r; break; }
+        }
+        if (pivot < 0) continue;
+
+        // Swap pivot row to position pivot_col
+        std::swap(mat[pivot], mat[pivot_col]);
+        std::swap(mat_phase[pivot], mat_phase[pivot_col]);
+
+        // Eliminate other rows (and target)
+        for (int r = 0; r < rows; ++r) {
+            if (r != pivot_col && mat[r][col]) {
+                bool new_ph;
+                pauli_phase_update(mat[r], mat_phase[r], mat[pivot_col], mat_phase[pivot_col], new_ph);
+                for (int j = 0; j < cols; ++j) mat[r][j] = mat[r][j] ^ mat[pivot_col][j];
+                mat_phase[r] = new_ph;
+            }
+        }
+
+        // Eliminate from target
+        if (target[col]) {
+            bool new_ph;
+            pauli_phase_update(target, target_phase, mat[pivot_col], mat_phase[pivot_col], new_ph);
+            for (int j = 0; j < cols; ++j) target[j] = target[j] ^ mat[pivot_col][j];
+            target_phase = new_ph;
+        }
+
+        pivot_col++;
+    }
+
+    // After elimination, if target is all-zero, P is expressed as a product of stabilizers.
+    // The accumulated phase tells us the eigenvalue.
+    bool all_zero = true;
+    for (int j = 0; j < cols; ++j) if (target[j]) { all_zero = false; break; }
+
+    if (!all_zero) {
+        // P is not in the stabilizer group — should not happen if it commutes with all stabilizers
+        // for a stabilizer state. Return 0 as a safe fallback.
+        return 0;
+    }
+
+    return target_phase ? -1 : +1;
 }
 
 // =============================================================================

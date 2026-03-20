@@ -1,6 +1,15 @@
+// metrics.cpp — Quantum information metrics
+// All quantities computed with full Eigen3 eigendecomposition (no approximations).
+// - Von Neumann entropy: SelfAdjointEigenSolver on density matrix.
+// - Mixed-state fidelity: Uhlmann-Jozsa F = (Tr sqrt(sqrt(rho1)*rho2*sqrt(rho1)))^2.
+// - Concurrence: sqrt of square roots of eigenvalues of rho * rho_tilde.
+
 #include "qpp/operators.hpp"
 #include "qpp/statevector.hpp"
 #include "qpp/simulators/density_matrix_sim.hpp"
+
+#include <Eigen/Dense>
+#include <Eigen/Eigenvalues>
 
 #include <cmath>
 #include <algorithm>
@@ -11,6 +20,40 @@ namespace qpp {
 namespace QuantumInfo {
 
 // =============================================================================
+// Internal helpers: convert qpp DensityMatrix to Eigen Hermitian matrix
+// =============================================================================
+
+static Eigen::MatrixXcd to_eigen(const DensityMatrix& rho) {
+    int d = static_cast<int>(rho.dim);
+    Eigen::MatrixXcd M(d, d);
+    for (int i = 0; i < d; ++i)
+        for (int j = 0; j < d; ++j)
+            M(i, j) = std::complex<double>(rho.data[i * d + j].real,
+                                           rho.data[i * d + j].imag);
+    return M;
+}
+
+static Eigen::MatrixXcd to_eigen(const Operator& op) {
+    int d = static_cast<int>(op.dim());
+    Eigen::MatrixXcd M(d, d);
+    for (int i = 0; i < d; ++i)
+        for (int j = 0; j < d; ++j)
+            M(i, j) = std::complex<double>(op.data[i * d + j].real,
+                                           op.data[i * d + j].imag);
+    return M;
+}
+
+// Matrix square root of a positive semidefinite Hermitian matrix via eigendecomposition
+// sqrt(A) = V * diag(sqrt(eigenvalues)) * V†
+static Eigen::MatrixXcd matrix_sqrt(const Eigen::MatrixXcd& A) {
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(A);
+    const auto& vals = es.eigenvalues();
+    const auto& vecs = es.eigenvectors();
+    Eigen::VectorXd sqrt_vals = vals.array().max(0.0).sqrt();
+    return vecs * sqrt_vals.asDiagonal() * vecs.adjoint();
+}
+
+// =============================================================================
 // State fidelity: |⟨ψ1|ψ2⟩|²
 // =============================================================================
 
@@ -19,21 +62,30 @@ double state_fidelity(const Statevector& sv1, const Statevector& sv2) {
     return inner.norm_sq();
 }
 
+// Mixed-state fidelity: Uhlmann-Jozsa formula
+// F(ρ, σ) = (Tr √(√ρ σ √ρ))²
 double state_fidelity(const DensityMatrix& rho1, const DensityMatrix& rho2) {
-    // F(rho1, rho2) = [Tr(sqrt(sqrt(rho1) * rho2 * sqrt(rho1)))]^2
-    // Simplified for now: Tr(rho1 * rho2) — this is the Hilbert-Schmidt fidelity
-    if (rho1.dim != rho2.dim) {
-        throw std::invalid_argument("Dimension mismatch");
-    }
+    if (rho1.dim != rho2.dim)
+        throw std::invalid_argument("Density matrix dimension mismatch");
 
-    double result = 0.0;
-    for (size_t i = 0; i < rho1.dim; ++i) {
-        for (size_t j = 0; j < rho1.dim; ++j) {
-            Complex128 prod = rho1.data[i * rho1.dim + j] * rho2.data[j * rho2.dim + i];
-            result += prod.real;
-        }
-    }
-    return result;
+    // Special case: if rho1 is a pure state |ψ⟩⟨ψ|, fidelity = ⟨ψ|rho2|ψ⟩
+    // Check purity quickly
+    auto M1 = to_eigen(rho1);
+    auto M2 = to_eigen(rho2);
+
+    // sqrt_rho1 = sqrt(rho1)
+    Eigen::MatrixXcd sqrt_rho1 = matrix_sqrt(M1);
+
+    // inner = sqrt(rho1) * rho2 * sqrt(rho1)
+    Eigen::MatrixXcd inner_mat = sqrt_rho1 * M2 * sqrt_rho1;
+
+    // sqrt of inner_mat
+    Eigen::MatrixXcd sqrt_inner = matrix_sqrt(inner_mat);
+
+    // Fidelity = (Tr(sqrt_inner))^2
+    std::complex<double> tr = sqrt_inner.trace();
+    double f = tr.real();
+    return f * f;
 }
 
 // =============================================================================
@@ -41,16 +93,15 @@ double state_fidelity(const DensityMatrix& rho1, const DensityMatrix& rho2) {
 // =============================================================================
 
 double process_fidelity(const Operator& channel1, const Operator& channel2) {
-    // F_process = |Tr(U1† U2)|² / d²
-    auto adj1 = channel1.adjoint();
-    auto product = adj1.compose(channel2);
-    Complex128 tr = product.trace();
+    auto M1 = to_eigen(channel1);
+    auto M2 = to_eigen(channel2);
     double d = static_cast<double>(channel1.dim());
-    return tr.norm_sq() / (d * d);
+    std::complex<double> tr = (M1.adjoint() * M2).trace();
+    return (tr * std::conj(tr)).real() / (d * d);
 }
 
 // =============================================================================
-// Average gate fidelity
+// Average gate fidelity: F_avg = (d * F_proc + 1) / (d + 1)
 // =============================================================================
 
 double average_gate_fidelity(const Operator& channel, const Operator& target) {
@@ -60,29 +111,27 @@ double average_gate_fidelity(const Operator& channel, const Operator& target) {
 }
 
 // =============================================================================
-// Von Neumann entropy: -Tr(rho * log(rho))
+// Von Neumann entropy: -Tr(ρ log ρ) using full Eigen eigendecomposition
 // =============================================================================
 
 double entropy(const DensityMatrix& rho, double base) {
-    // Compute eigenvalues of rho
-    // For now, use the diagonal elements as approximation for diagonal states
-    // TODO: implement full eigendecomposition
+    auto M = to_eigen(rho);
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(M);
+    const auto& vals = es.eigenvalues();
 
-    double result = 0.0;
     double log_base = std::log(base);
-
-    for (size_t i = 0; i < rho.dim; ++i) {
-        double p = rho.data[i * rho.dim + i].real;
+    double result = 0.0;
+    for (int i = 0; i < vals.size(); ++i) {
+        double p = std::max(0.0, vals(i));
         if (p > 1e-15) {
             result -= p * std::log(p) / log_base;
         }
     }
-
     return result;
 }
 
 // =============================================================================
-// Entanglement entropy
+// Entanglement entropy: entropy of reduced density matrix
 // =============================================================================
 
 double entanglement_entropy(const Statevector& sv, const std::vector<int>& subsystem) {
@@ -91,67 +140,46 @@ double entanglement_entropy(const Statevector& sv, const std::vector<int>& subsy
 }
 
 // =============================================================================
-// Concurrence (2-qubit entanglement measure)
+// Concurrence (2-qubit) — Wootters formula
+// C(ρ) = max(0, λ1 - λ2 - λ3 - λ4)
+// where λ_i are square roots of eigenvalues of R = √ρ * ρ̃ * √ρ,
+// ρ̃ = (σ_y ⊗ σ_y) ρ* (σ_y ⊗ σ_y)
 // =============================================================================
 
 double concurrence(const DensityMatrix& rho) {
-    if (rho.n_qubits != 2) {
-        throw std::invalid_argument("Concurrence requires a 2-qubit state");
-    }
+    if (rho.n_qubits != 2)
+        throw std::invalid_argument("Concurrence requires a 2-qubit density matrix");
 
-    // C(rho) = max(0, λ1 - λ2 - λ3 - λ4)
-    // where λ_i are eigenvalues of sqrt(sqrt(rho) * rho_tilde * sqrt(rho))
-    // rho_tilde = (σ_y ⊗ σ_y) * rho* * (σ_y ⊗ σ_y)
+    auto M = to_eigen(rho);
 
-    // Simplified: for pure states, C = 2|ad - bc| where |ψ⟩ = a|00⟩ + b|01⟩ + c|10⟩ + d|11⟩
-    // For mixed states, use the full formula
+    // Build σ_y ⊗ σ_y (4x4 real-valued anti-symmetric)
+    // σ_y = [[0,-i],[i,0]] → σ_y ⊗ σ_y = [[0,0,0,-1],[0,0,1,0],[0,1,0,0],[-1,0,0,0]]
+    Eigen::MatrixXcd sysy = Eigen::MatrixXcd::Zero(4, 4);
+    sysy(0, 3) = -1.0;
+    sysy(1, 2) =  1.0;
+    sysy(2, 1) =  1.0;
+    sysy(3, 0) = -1.0;
 
-    // Build σ_y ⊗ σ_y
-    std::vector<Complex128> sigma_yy(16, Complex128(0.0, 0.0));
-    // σ_y = [[0, -i], [i, 0]]
-    // σ_y ⊗ σ_y = [[0,0,0,-1],[0,0,1,0],[0,1,0,0],[-1,0,0,0]]
-    sigma_yy[0*4+3] = Complex128(-1, 0);
-    sigma_yy[1*4+2] = Complex128(1, 0);
-    sigma_yy[2*4+1] = Complex128(1, 0);
-    sigma_yy[3*4+0] = Complex128(-1, 0);
+    // rho_tilde = sysy * conj(rho) * sysy
+    Eigen::MatrixXcd rho_tilde = sysy * M.conjugate() * sysy;
 
-    // rho_tilde = sigma_yy * conj(rho) * sigma_yy
-    std::vector<Complex128> rho_conj(16);
-    for (int i = 0; i < 16; ++i) rho_conj[i] = rho.data[i].conj();
+    // sqrt_rho
+    Eigen::MatrixXcd sqrt_rho = matrix_sqrt(M);
 
-    // temp = sigma_yy * rho_conj
-    std::vector<Complex128> temp(16, Complex128(0,0));
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            for (int k = 0; k < 4; ++k) {
-                temp[i*4+j] += sigma_yy[i*4+k] * rho_conj[k*4+j];
-            }
-        }
-    }
+    // R = sqrt_rho * rho_tilde * sqrt_rho
+    Eigen::MatrixXcd R = sqrt_rho * rho_tilde * sqrt_rho;
 
-    // rho_tilde = temp * sigma_yy
-    std::vector<Complex128> rho_tilde(16, Complex128(0,0));
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            for (int k = 0; k < 4; ++k) {
-                rho_tilde[i*4+j] += temp[i*4+k] * sigma_yy[k*4+j];
-            }
-        }
-    }
+    // Eigenvalues of R (it should be positive semi-definite)
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(R);
+    Eigen::VectorXd evals = es.eigenvalues().array().max(0.0);
 
-    // R = rho * rho_tilde
-    std::vector<Complex128> R(16, Complex128(0,0));
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            for (int k = 0; k < 4; ++k) {
-                R[i*4+j] += rho.data[i*4+k] * rho_tilde[k*4+j];
-            }
-        }
-    }
+    // Sort eigenvalues descending and take square roots
+    std::vector<double> lambdas(evals.data(), evals.data() + evals.size());
+    std::sort(lambdas.begin(), lambdas.end(), std::greater<double>());
+    for (auto& l : lambdas) l = std::sqrt(l);
 
-    // Eigenvalues of R (using trace/det for 4x4 — simplified)
-    // For now return 0 for mixed states
-    return 0.0;
+    double C = lambdas[0] - lambdas[1] - lambdas[2] - lambdas[3];
+    return std::max(0.0, C);
 }
 
 // =============================================================================
@@ -165,56 +193,47 @@ DensityMatrix partial_trace(const DensityMatrix& rho, const std::vector<int>& ke
     size_t dim_keep = 1ULL << nk;
     size_t dim_trace = 1ULL << nt;
 
-    // Determine traced-out qubits
+    // Build set of traced-out qubits
     std::vector<int> trace_qubits;
     for (int q = 0; q < nq; ++q) {
         bool keep = false;
-        for (int kq : keep_qubits) {
-            if (kq == q) { keep = true; break; }
-        }
+        for (int kq : keep_qubits) if (kq == q) { keep = true; break; }
         if (!keep) trace_qubits.push_back(q);
     }
 
     DensityMatrix result(nk);
 
+    // Map full index -> kept sub-index and traced sub-index
+    auto kept_sub = [&](size_t full) -> size_t {
+        size_t sub = 0;
+        for (int ki = 0; ki < nk; ++ki)
+            if ((full >> keep_qubits[ki]) & 1) sub |= (size_t(1) << ki);
+        return sub;
+    };
+
+    auto traced_sub = [&](size_t full) -> size_t {
+        size_t sub = 0;
+        for (int ti = 0; ti < nt; ++ti)
+            if ((full >> trace_qubits[ti]) & 1) sub |= (size_t(1) << ti);
+        return sub;
+    };
+
+    auto build_full = [&](size_t keep_idx, size_t trace_idx) -> size_t {
+        size_t full = 0;
+        for (int ki = 0; ki < nk; ++ki)
+            if ((keep_idx >> ki) & 1) full |= (size_t(1) << keep_qubits[ki]);
+        for (int ti = 0; ti < nt; ++ti)
+            if ((trace_idx >> ti) & 1) full |= (size_t(1) << trace_qubits[ti]);
+        return full;
+    };
+    (void)kept_sub; (void)traced_sub;
+
     for (size_t i = 0; i < dim_keep; ++i) {
         for (size_t j = 0; j < dim_keep; ++j) {
             Complex128 sum(0.0, 0.0);
             for (size_t t = 0; t < dim_trace; ++t) {
-                // Map (i, t) to full index for row
-                size_t full_i = 0;
-                int ki = 0, ti = 0;
-                for (int q = 0; q < nq; ++q) {
-                    bool is_keep = false;
-                    for (int kq : keep_qubits) {
-                        if (kq == q) { is_keep = true; break; }
-                    }
-                    if (is_keep) {
-                        if ((i >> ki) & 1) full_i |= (1ULL << q);
-                        ki++;
-                    } else {
-                        if ((t >> ti) & 1) full_i |= (1ULL << q);
-                        ti++;
-                    }
-                }
-
-                // Map (j, t) to full index for column
-                size_t full_j = 0;
-                ki = 0; ti = 0;
-                for (int q = 0; q < nq; ++q) {
-                    bool is_keep = false;
-                    for (int kq : keep_qubits) {
-                        if (kq == q) { is_keep = true; break; }
-                    }
-                    if (is_keep) {
-                        if ((j >> ki) & 1) full_j |= (1ULL << q);
-                        ki++;
-                    } else {
-                        if ((t >> ti) & 1) full_j |= (1ULL << q);
-                        ti++;
-                    }
-                }
-
+                size_t full_i = build_full(i, t);
+                size_t full_j = build_full(j, t);
                 sum += rho.data[full_i * rho.dim + full_j];
             }
             result(i, j) = sum;
@@ -239,12 +258,10 @@ std::vector<double> pauli_expectation_values(
 ) {
     std::vector<double> results;
     results.reserve(paulis.size());
-
     for (const auto& pauli_str : paulis) {
         SparsePauliOp op({{pauli_str, Complex128(1.0, 0.0)}});
         results.push_back(op.expectation_value(sv));
     }
-
     return results;
 }
 
