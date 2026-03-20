@@ -8,19 +8,27 @@ q++ is a high-performance C++23 quantum computing framework focused on circuit c
 
 ## Release
 
-- Current release: `v1.0.0-alpha`
+- Current release: `v1.1.0-alpha` (Major feature update: Local Simulators & Transpiler De-simplification)
 
 ## Project Scope
 
 The current codebase provides:
 
 - Circuit construction with symbolic and numeric parameters
-- Multiple simulator implementations (statevector, density matrix, Clifford, MPS)
-- Noise channels and composable noise models
-- Quantum information operators and metrics
-- Transpiler passes (layout, routing, and optimization)
+- High-performance exact and approximate simulators:
+  - **Statevector**: OpenMP-accelerated full amplitude tracking
+  - **Density Matrix**: Localized tensor gate applications with exact Kraus operator noise
+  - **Clifford**: Stabilizer tableau with exact GF(2) expectation value tracking
+  - **MPS**: Boundary contraction marginals and Eigen BDCSVD truncation
+- Noise channels and composable noise models (including generalized T1/T2 thermal relaxation)
+- Exact quantum information metrics via Eigen eigendecomposition (Uhlmann-Jozsa fidelity, Wootters concurrence, etc.)
+- Advanced Transpiler passes:
+  - ZYZ decomposition and KAK Weyl-chamber block consolidation
+  - 3-pass bidirectional SABRE layout heuristic
+  - SABRE SWAP routing with H_basic + H_extended lookahead
+  - True IBM heavy-hex topology coupling maps
 - Primitives (Estimator and Sampler)
-- Algorithms (VQE, QAOA, MA-QAOA, QPE, Grover)
+- Algorithms (VQE, QAOA, layerwise MA-QAOA, exact QPE, Grover with MCX)
 - OpenQASM parsing and export support
 - Unit tests and performance benchmarks
 - Optional Python bindings through pybind11
@@ -46,6 +54,7 @@ docs/                       Project documentation
 
 Dependencies are downloaded during configure using CMake FetchContent:
 
+- Eigen3 (v3.4.0)
 - GoogleTest
 - Google Benchmark (optional)
 - pybind11 (optional)

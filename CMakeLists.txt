@@ -70,7 +70,18 @@ set(NLOPT_GUILE OFF CACHE BOOL "" FORCE)
 set(NLOPT_SWIG OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(googletest nlopt)
+# Eigen3 — header-only, used for robust SVD and eigendecomposition
+FetchContent_Declare(
+    eigen
+    GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+    GIT_TAG        3.4.0
+    GIT_SHALLOW    TRUE
+)
+set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
+set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(googletest nlopt eigen)
 
 # Benchmark and pybind11 are optional — only fetch if requested
 option(QPP_BUILD_BENCHMARKS "Build benchmarks" ON)
@@ -131,6 +142,9 @@ target_link_libraries(qpp_core PUBLIC OpenMP::OpenMP_CXX)
 
 # Link NLopt
 target_link_libraries(qpp_core PUBLIC nlopt)
+
+# Link Eigen3 (header-only)
+target_link_libraries(qpp_core PUBLIC Eigen3::Eigen)
 
 # ==============================================================================
 # Python bindings
