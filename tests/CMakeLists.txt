@@ -9,6 +9,7 @@ set(QPP_TEST_SOURCES
     test_operators.cpp
     test_transpiler.cpp
     test_maqaoa.cpp
+    test_integration.cpp
 )
 
 # Create test executable

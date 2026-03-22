@@ -375,17 +375,58 @@ static QuantumCircuit kak_decompose(const Eigen::Matrix4cd& U4, int q0, int q1) 
 
     // Canonical coordinates from eigenvalues:
     // lambda_i = exp(i * 2 * alpha_i)
-    // alpha = [kx+ky-kz, kx-ky+kz, -kx+ky+kz, -kx-ky-kz] * 2 (Weyl coords)
+    // Following Shende 2004: extract phases, then use the known linear map
+    // to recover (kx, ky, kz) and clamp to the Weyl chamber.
     std::vector<double> phases(4);
     for (int i = 0; i < 4; ++i) {
         phases[i] = std::arg(evals(i)) / 2.0;
     }
-    std::sort(phases.begin(), phases.end(), std::greater<double>());
 
-    // Recover kx, ky, kz (up to permutation and sign)
-    double kx = ( phases[0] - phases[1] - phases[2] + phases[3]) / 4.0;
-    double ky = ( phases[0] + phases[1] - phases[2] - phases[3]) / 4.0;
-    double kz = (-phases[0] + phases[1] - phases[2] + phases[3]) / 4.0;
+    // Try all 24 permutations of phases to find the one that gives
+    // Weyl chamber coordinates satisfying pi/4 >= kx >= ky >= kz >= 0.
+    // This is the correct approach per Shende 2004 — simple descending sort
+    // does NOT guarantee the canonical Weyl chamber ordering.
+    std::sort(phases.begin(), phases.end());
+    std::vector<int> perm = {0, 1, 2, 3};
+
+    double kx = 0, ky = 0, kz = 0;
+    bool found = false;
+
+    do {
+        double p0 = phases[perm[0]], p1 = phases[perm[1]];
+        double p2 = phases[perm[2]], p3 = phases[perm[3]];
+
+        double tkx = ( p0 - p1 - p2 + p3) / 4.0;
+        double tky = ( p0 + p1 - p2 - p3) / 4.0;
+        double tkz = (-p0 + p1 - p2 + p3) / 4.0;
+
+        constexpr double pi_4 = PI / 4.0;
+        constexpr double tol = 1e-8;
+
+        // Check Weyl chamber: pi/4 >= kx >= ky >= kz >= 0
+        if (tkx >= -tol && tky >= -tol && tkz >= -tol &&
+            tkx <= pi_4 + tol &&
+            tkx >= tky - tol && tky >= tkz - tol) {
+            kx = std::max(0.0, std::min(pi_4, tkx));
+            ky = std::max(0.0, std::min(tkx, tky));
+            kz = std::max(0.0, std::min(tky, tkz));
+            found = true;
+            break;
+        }
+    } while (std::next_permutation(perm.begin(), perm.end()));
+
+    if (!found) {
+        // Fallback: use sorted phases (original approach) — may be approximate
+        std::sort(phases.begin(), phases.end(), std::greater<double>());
+        kx = ( phases[0] - phases[1] - phases[2] + phases[3]) / 4.0;
+        ky = ( phases[0] + phases[1] - phases[2] - phases[3]) / 4.0;
+        kz = (-phases[0] + phases[1] - phases[2] + phases[3]) / 4.0;
+        // Clamp to Weyl chamber
+        kx = std::abs(kx); ky = std::abs(ky); kz = std::abs(kz);
+        if (kx < ky) std::swap(kx, ky);
+        if (ky < kz) std::swap(ky, kz);
+        if (kx < ky) std::swap(kx, ky);
+    }
 
     // Determine CNOT count from canonical coordinates
     // If all zero: local gates only (0 CX)
@@ -489,7 +530,9 @@ DAGCircuit ConsolidateBlocks::run(const DAGCircuit& dag, const TranspilationCont
                 accum = gate * accum;  // gates applied in order -> rightmost first in circuit
                 consumed[j] = true;
             } else if (!involves_qa && !involves_qb) {
-                // Independence: can skip
+                // Independent gate: skip over it, outer loop handles it
+                ++j;
+                continue;
             } else {
                 break;
             }

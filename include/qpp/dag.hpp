@@ -3,6 +3,7 @@
 #include "qpp/circuit.hpp"
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace qpp {
@@ -67,8 +68,18 @@ public:
 
 private:
     int next_node_id = 0;
+
+    // O(1) lookup: node_id → index in nodes vector
+    std::unordered_map<int, size_t> node_id_to_idx;
+    // Adjacency lists for O(1) successors/predecessors
+    std::unordered_map<int, std::vector<int>> adj_out;  // node_id → successor node_ids
+    std::unordered_map<int, std::vector<int>> adj_in;   // node_id → predecessor node_ids
+
     int add_node(DAGNode node);
     void add_edge(int src, int dst, int wire, bool is_classical = false);
+
+    // Rebuild adjacency caches (used after bulk operations)
+    void rebuild_adjacency();
 };
 
 } // namespace qpp

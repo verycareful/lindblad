@@ -608,12 +608,43 @@ QuantumCircuit QuantumCircuit::inverse() const {
                 break;
             }
 
-            default:
-                // For complex gates, just negate all params as approximation
-                for (auto& param : inv_inst.params) {
-                    param = -param;
-                }
+            // U2(phi, lambda) → U2(-lambda - pi, -phi + pi)
+            case Instruction::GateType::U2: {
+                double phi = inv_inst.params[0];
+                double lam = inv_inst.params[1];
+                inv_inst.params = {-lam - PI, -phi + PI};
                 break;
+            }
+
+            // CU(theta, phi, lambda, gamma) → CU(-theta, -lambda, -phi, -gamma)
+            case Instruction::GateType::CU: {
+                double theta = inv_inst.params[0];
+                double phi   = inv_inst.params[1];
+                double lam   = inv_inst.params[2];
+                double gamma = inv_inst.params[3];
+                inv_inst.params = {-theta, -lam, -phi, -gamma};
+                break;
+            }
+
+            // ISWAP† is the conjugate-transpose (negate the i phase)
+            // iSWAP = diag(1,0,0,1) + i*offdiag → iSWAP† = diag(1,0,0,1) - i*offdiag
+            // Decompose as S†(0) S†(1) SWAP CZ which is always available
+            // For now, emit as UNITARY with the conjugate-transposed matrix
+            case Instruction::GateType::ISWAP: {
+                inv_inst.type = Instruction::GateType::UNITARY;
+                inv_inst.matrix = {
+                    Complex128(1,0), Complex128(0,0), Complex128(0,0), Complex128(0,0),
+                    Complex128(0,0), Complex128(0,0), Complex128(0,-1), Complex128(0,0),
+                    Complex128(0,0), Complex128(0,-1), Complex128(0,0), Complex128(0,0),
+                    Complex128(0,0), Complex128(0,0), Complex128(0,0), Complex128(1,0)
+                };
+                break;
+            }
+
+            default:
+                throw std::runtime_error(
+                    "inverse() not implemented for gate: " + inv_inst.gate_name()
+                );
         }
 
         result.instructions.push_back(std::move(inv_inst));

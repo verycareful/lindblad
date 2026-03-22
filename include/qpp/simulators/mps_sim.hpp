@@ -62,6 +62,11 @@ public:
     // Measurements and expectation values
     std::vector<double> probabilities_single(int qubit) const;
 
+    // Sequential measurement: sample a full bitstring respecting correlations.
+    // Measures qubit 0, conditions on outcome, propagates boundary, repeats.
+    // O(N * chi^3) per shot. Modifies internal state (projects measured qubits).
+    std::string measure_sequential(std::mt19937_64& rng);
+
     // Convert to exact statevector (expensive, for small N only)
     Statevector to_statevector() const;
 

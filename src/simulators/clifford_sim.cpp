@@ -26,10 +26,11 @@ StabilizerState::StabilizerState(int n_qubits)
 }
 
 // Row multiplication: dest = dest * src (in the Pauli group)
+// Phase rule from Aaronson-Gottesman 2004, Table 1.
+// g(x1,z1,x2,z2) returns the phase exponent contribution (in units of i)
+// for multiplying Pauli (x1,z1) by Pauli (x2,z2).
 void StabilizerState::rowmult(int dest, int src) {
     int N = n_qubits;
-    // Phase update: count how X*Z products contribute to phase
-    // Phase rule: i^{2*sum} where sum counts (x_src & z_dest XOR z_src & x_dest) etc.
     int phase_count = 0;
     for (int j = 0; j < N; ++j) {
         bool xs = tableau[src][j];
@@ -37,15 +38,22 @@ void StabilizerState::rowmult(int dest, int src) {
         bool xd = tableau[dest][j];
         bool zd = tableau[dest][N + j];
 
-        // Count the phase contribution
-        if (xs && zs) {            // Y
-            if (xd && !zd) phase_count++;     // Y*X = iZ
-            else if (!xd && zd) phase_count--; // Y*Z = -iX
-        } else if (xs && !zs) {    // X
-            if (!xd && zd) phase_count++;     // X*Z = -iY -> phase_count affects sign
-            else if (xd && zs) phase_count++;
-        } else if (!xs && zs) {    // Z
-            if (xd && !zd) phase_count--;     // Z*X = iY
+        // Aaronson-Gottesman phase contribution per qubit site:
+        // src Pauli * dest Pauli phase factor
+        if (!xs && !zs) {
+            // I * anything = 0 phase
+        } else if (xs && !zs) {
+            // X
+            if (xd && zd) phase_count++;       // X*Y = iZ
+            else if (!xd && zd) phase_count--;  // X*Z = -iY
+        } else if (!xs && zs) {
+            // Z
+            if (xd && !zd) phase_count++;       // Z*X = iY
+            else if (xd && zd) phase_count--;    // Z*Y = -iX
+        } else {
+            // Y (xs && zs)
+            if (xd && !zd) phase_count--;        // Y*X = -iZ
+            else if (!xd && zd) phase_count++;    // Y*Z = iX
         }
     }
 
@@ -406,10 +414,12 @@ CliffordSimulator::Result CliffordSimulator::run(
         }
 
         result.counts[bitstring]++;
-    }
 
-    // Store final state from last run
-    result.final_state = StabilizerState(circuit.n_qubits);
+        // Preserve final state from last shot
+        if (s == shots - 1) {
+            result.final_state = std::move(state);
+        }
+    }
 
     return result;
 }

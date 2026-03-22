@@ -54,12 +54,12 @@ public:
         uint64_t seed = 0
     );
 
-private:
     void simulate_circuit(
         Statevector& sv,
         const QuantumCircuit& circuit
     );
 
+private:
     void apply_instruction(Statevector& sv, const Instruction& inst);
 };
 
