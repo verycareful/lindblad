@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(qpp VERSION 1.0.0 LANGUAGES CXX)
+project(qpp VERSION 1.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,10 +8,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ==============================================================================
 # Compiler flags
 # ==============================================================================
+option(QPP_MARCH_NATIVE "Compile with -march=native (non-distributable, max perf)" OFF)
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     add_compile_options(
         -O3
-        -march=native
         -fopenmp
         -funroll-loops
         -ffast-math
@@ -19,6 +20,12 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
         -Wextra
         -Wpedantic
     )
+    if(QPP_MARCH_NATIVE)
+        add_compile_options(-march=native)
+    else()
+        # AVX2 + FMA baseline (Intel Haswell+ / AMD Zen2+, covers >95% of hardware since 2014)
+        add_compile_options(-march=x86-64-v3)
+    endif()
     add_link_options(-fopenmp)
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     add_compile_options(
@@ -68,7 +75,8 @@ set(NLOPT_OCTAVE OFF CACHE BOOL "" FORCE)
 set(NLOPT_MATLAB OFF CACHE BOOL "" FORCE)
 set(NLOPT_GUILE OFF CACHE BOOL "" FORCE)
 set(NLOPT_SWIG OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(NLOPT_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)  # NLopt respects NLOPT_BUILD_SHARED; kept for other deps
 
 # Eigen3 — header-only, used for robust SVD and eigendecomposition
 FetchContent_Declare(

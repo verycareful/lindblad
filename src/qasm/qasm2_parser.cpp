@@ -135,6 +135,48 @@ private:
         return std::stoi(line.substr(bracket, close - bracket));
     }
 
+    // Evaluate a single parameter token that may contain 'pi' expressions.
+    // Handles: pi, -pi, pi/N, N*pi, -N*pi, N*pi/M, -pi/N etc.
+    static double evaluate_pi_expr(const std::string& tok) {
+        if (tok == "pi") return PI;
+        if (tok == "-pi") return -PI;
+
+        auto pi_pos = tok.find("pi");
+        if (pi_pos == std::string::npos) {
+            return std::stod(tok);
+        }
+
+        // Split around "pi": prefix * pi / suffix
+        std::string pre = tok.substr(0, pi_pos);
+        std::string post = tok.substr(pi_pos + 2);
+
+        double val = PI;
+
+        // Handle prefix: "", "-", "N*", "-N*"
+        if (pre.empty()) {
+            // just pi...
+        } else if (pre == "-") {
+            val = -val;
+        } else {
+            // Strip trailing '*' if present
+            if (!pre.empty() && pre.back() == '*') pre.pop_back();
+            if (pre == "-") {
+                val = -val;
+            } else if (!pre.empty()) {
+                val *= std::stod(pre);
+            }
+        }
+
+        // Handle suffix: "", "/N"
+        if (!post.empty() && post[0] == '/') {
+            val /= std::stod(post.substr(1));
+        } else if (!post.empty() && post[0] == '*') {
+            val *= std::stod(post.substr(1));
+        }
+
+        return val;
+    }
+
     static std::vector<double> parse_params(const std::string& s) {
         std::vector<double> params;
         std::istringstream ss(s);
@@ -142,19 +184,10 @@ private:
         while (std::getline(ss, token, ',')) {
             token = trim(token);
             if (!token.empty()) {
-                // Handle pi
-                if (token == "pi") {
-                    params.push_back(PI);
-                } else if (token.find("pi") != std::string::npos) {
-                    // Simple: a*pi or pi/b
-                    // For now, just evaluate as number
-                    try {
-                        params.push_back(std::stod(token));
-                    } catch (...) {
-                        params.push_back(PI);
-                    }
-                } else {
-                    params.push_back(std::stod(token));
+                try {
+                    params.push_back(evaluate_pi_expr(token));
+                } catch (...) {
+                    params.push_back(0.0);
                 }
             }
         }

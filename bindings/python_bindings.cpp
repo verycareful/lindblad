@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/complex.h>
+#include <pybind11/numpy.h>
 
 #include "qpp/types.hpp"
 #include "qpp/statevector.hpp"
@@ -41,10 +42,19 @@ PYBIND11_MODULE(qpp_python, m) {
         .def("amplitude", &qpp::Statevector::amplitude)
         .def("probability", &qpp::Statevector::probability)
         .def("norm", &qpp::Statevector::norm)
-        .def("normalise", &qpp::Statevector::normalise)
+        .def("normalize", &qpp::Statevector::normalize)
         .def("measure_once", &qpp::Statevector::measure_once)
         .def("sample_counts", &qpp::Statevector::sample_counts)
         .def("to_string", &qpp::Statevector::to_string)
+        .def("to_numpy", [](const qpp::Statevector& sv) -> py::array_t<std::complex<double>> {
+            py::array_t<std::complex<double>> arr({static_cast<py::ssize_t>(sv.dim)});
+            auto buf = arr.mutable_unchecked<1>();
+            for (size_t i = 0; i < sv.dim; ++i) {
+                buf(i) = std::complex<double>(sv.real_parts[i], sv.imag_parts[i]);
+            }
+            return arr;
+        }, "Return amplitude array as a complex128 numpy array")
+        .def("probabilities", &qpp::Statevector::probabilities)
         .def_readonly("n_qubits", &qpp::Statevector::n_qubits)
         .def_readonly("dim", &qpp::Statevector::dim);
 
@@ -118,6 +128,7 @@ PYBIND11_MODULE(qpp_python, m) {
 
     py::class_<qpp::StatevectorSimulator::Result>(m, "StatevectorResult")
         .def_readonly("counts", &qpp::StatevectorSimulator::Result::counts)
+        .def_readonly("final_state", &qpp::StatevectorSimulator::Result::final_state)
         .def_readonly("simulation_time_seconds", &qpp::StatevectorSimulator::Result::simulation_time_seconds)
         .def_readonly("success", &qpp::StatevectorSimulator::Result::success)
         .def_readonly("error_message", &qpp::StatevectorSimulator::Result::error_message);

@@ -377,6 +377,68 @@ std::vector<double> MPSState::probabilities_single(int qubit) const {
 }
 
 // =============================================================================
+// measure_sequential — correct correlated sampling via left-to-right projection
+// For each qubit q from 0 to N-1:
+//   1. Compute P(0) and P(1) using left boundary + local tensor + right env
+//   2. Sample outcome from this conditional distribution
+//   3. Project the local tensor onto the measured outcome (collapse)
+//   4. Renormalize
+// O(N * chi^3) per shot.
+// =============================================================================
+
+std::string MPSState::measure_sequential(std::mt19937_64& rng) {
+    std::string bits(n_qubits, '0');
+
+    // Work on a copy so we can project without destroying the state
+    // for multi-shot sampling, the caller should clone before each shot
+    for (int q = 0; q < n_qubits; ++q) {
+        // Compute P(0) and P(1) for qubit q, conditioned on all previous
+        // projections (which have already modified the tensors to the left)
+        auto probs = probabilities_single(q);
+
+        double p0 = std::max(0.0, probs[0]);
+        double p1 = std::max(0.0, probs[1]);
+        double total = p0 + p1;
+        if (total < 1e-30) {
+            // Degenerate — fallback to uniform
+            p0 = p1 = 0.5;
+            total = 1.0;
+        }
+        p0 /= total;
+
+        // Sample
+        std::uniform_real_distribution<double> dist(0.0, 1.0);
+        int outcome = (dist(rng) < p0) ? 0 : 1;
+        bits[q] = outcome ? '1' : '0';
+
+        // Project: zero out the other physical index and renormalize
+        auto& T = tensors[q];
+        int other = 1 - outcome;
+        double norm_sq = 0.0;
+        for (int l = 0; l < T.bond_left; ++l) {
+            for (int r = 0; r < T.bond_right; ++r) {
+                T(l, other, r) = Complex128(0.0, 0.0);
+                auto& v = T(l, outcome, r);
+                norm_sq += v.real * v.real + v.imag * v.imag;
+            }
+        }
+        // Renormalize the kept amplitudes
+        if (norm_sq > 1e-30) {
+            double inv_norm = 1.0 / std::sqrt(norm_sq);
+            for (int l = 0; l < T.bond_left; ++l) {
+                for (int r = 0; r < T.bond_right; ++r) {
+                    auto& v = T(l, outcome, r);
+                    v.real *= inv_norm;
+                    v.imag *= inv_norm;
+                }
+            }
+        }
+    }
+
+    return bits;
+}
+
+// =============================================================================
 // to_statevector — full contraction for N <= 25 (used for small systems)
 // =============================================================================
 
@@ -555,15 +617,11 @@ static std::array<Complex128, 16> gate4x4(const Instruction& inst) {
             set(3,3,{std::cos(p[0]),std::sin(p[0])}); break;
         }
         case GT::RXX: {
-            double c=std::cos(p[0]/2), s=std::sin(p[0]/2);
-            set(0,0,{c,0}); set(0,3,{0,-s});
-            set(1,2,{0,-s}); set(2,1,{0,-s});
-            set(3,0,{0,-s}); set(3,3,{c,0});  // Hmm let me redo
             // RXX = exp(-i theta/2 X⊗X)
-            // Correct matrix:
-            for (auto& x : U) x = Complex128(0,0);
+            double c=std::cos(p[0]/2), s=std::sin(p[0]/2);
             U[0*4+0]=Complex128(c,0); U[0*4+3]=Complex128(0,-s);
-            U[1*4+2]=Complex128(0,-s); U[2*4+1]=Complex128(0,-s);
+            U[1*4+1]=Complex128(c,0); U[1*4+2]=Complex128(0,-s);
+            U[2*4+1]=Complex128(0,-s); U[2*4+2]=Complex128(c,0);
             U[3*4+0]=Complex128(0,-s); U[3*4+3]=Complex128(c,0);
             break;
         }
@@ -656,15 +714,13 @@ MPSSimulator::Result MPSSimulator::run(
         auto sv = result.final_state.to_statevector();
         result.counts = sv.sample_counts(shots, seed);
     } else if (shots > 0) {
-        // Large system: sample from single-qubit marginals (approximate, independent assumption)
+        // Sequential MPS measurement: correctly handles correlations.
+        // O(N * chi^3) per shot. Each shot works on a copy of the MPS.
         std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
         for (int s = 0; s < shots; ++s) {
-            std::string bits(circuit.n_qubits, '0');
-            for (int q = 0; q < circuit.n_qubits; ++q) {
-                auto p = result.final_state.probabilities_single(q);
-                std::bernoulli_distribution dist(p[1]);
-                bits[q] = dist(rng) ? '1' : '0';
-            }
+            // Clone the MPS for destructive sequential measurement
+            MPSState mps_copy = result.final_state;
+            std::string bits = mps_copy.measure_sequential(rng);
             result.counts[bits]++;
         }
     }

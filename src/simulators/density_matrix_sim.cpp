@@ -119,8 +119,6 @@ void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
     // We loop over bg_row (background bits of row) and bg_col,
     // then over sub-indices in the 2^k subspace.
 
-    std::vector<Complex128> new_data = data;
-
     // Apply left: rho_temp = U * rho  (acting on row index)
     // rho_temp[i, j] = sum_i' U[sub(i), sub(i')] * rho[full(bg(i), i'), j]
     // This mixes rows at fixed column.
@@ -171,7 +169,6 @@ void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
         }
         data = temp;
     }
-    (void)new_data;  // unused after restructuring
 }
 
 // =============================================================================
@@ -406,11 +403,17 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             using GT = Instruction::GateType;
             if (inst.type == GT::BARRIER) continue;
             if (inst.type == GT::RESET) {
-                // Reset qubit to |0⟩ via projective measurement then correction
-                // Average over outcomes: rho -> P0 rho P0 + P1 rho P1 (then trace renorm)
-                // Equivalent to partial trace + re-init to |0⟩ on that qubit
-                // For simplicity: apply amplitude damping with gamma=1
-                // (exact reset: project to 0 outcome with probability 1)
+                // Reset qubit to |0⟩: rho -> K0*rho*K0† + K1*rho*K1†
+                // K0 = |0><0|, K1 = |0><1| — trace-preserving (K0†K0 + K1†K1 = I)
+                std::vector<Complex128> K0 = {
+                    Complex128(1,0), Complex128(0,0),
+                    Complex128(0,0), Complex128(0,0)
+                };
+                std::vector<Complex128> K1 = {
+                    Complex128(0,0), Complex128(1,0),
+                    Complex128(0,0), Complex128(0,0)
+                };
+                dm.apply_kraus({K0, K1}, inst.qubits);
                 continue;
             }
             if (inst.type == GT::MEASURE) {

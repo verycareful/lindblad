@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <queue>
-#include <set>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -25,12 +24,35 @@ DAGCircuit::DAGCircuit(int n_qubits, int n_clbits)
 
 int DAGCircuit::add_node(DAGNode node) {
     node.node_id = next_node_id++;
+    int nid = node.node_id;
+    node_id_to_idx[nid] = nodes.size();
     nodes.push_back(std::move(node));
-    return nodes.back().node_id;
+    // Initialize empty adjacency entries
+    adj_out[nid];
+    adj_in[nid];
+    return nid;
 }
 
 void DAGCircuit::add_edge(int src, int dst, int wire, bool is_classical) {
     edges.push_back({src, dst, wire, is_classical});
+    adj_out[src].push_back(dst);
+    adj_in[dst].push_back(src);
+}
+
+void DAGCircuit::rebuild_adjacency() {
+    node_id_to_idx.clear();
+    adj_out.clear();
+    adj_in.clear();
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        int nid = nodes[i].node_id;
+        node_id_to_idx[nid] = i;
+        adj_out[nid];
+        adj_in[nid];
+    }
+    for (const auto& e : edges) {
+        adj_out[e.src_node].push_back(e.dst_node);
+        adj_in[e.dst_node].push_back(e.src_node);
+    }
 }
 
 // =============================================================================
@@ -104,7 +126,7 @@ DAGCircuit DAGCircuit::from_circuit(const QuantumCircuit& qc) {
 }
 
 // =============================================================================
-// to_circuit — extract instruction sequence via topological sort
+// to_circuit — O(N) via node_id_to_idx map
 // =============================================================================
 
 QuantumCircuit DAGCircuit::to_circuit() const {
@@ -112,11 +134,11 @@ QuantumCircuit DAGCircuit::to_circuit() const {
 
     auto sorted = topological_sort();
     for (int nid : sorted) {
-        // Find the node
-        for (const auto& node : nodes) {
-            if (node.node_id == nid && node.type == DAGNode::Type::OP) {
+        auto it = node_id_to_idx.find(nid);
+        if (it != node_id_to_idx.end()) {
+            const auto& node = nodes[it->second];
+            if (node.type == DAGNode::Type::OP) {
                 qc.instructions.push_back(node.op);
-                break;
             }
         }
     }
@@ -125,39 +147,36 @@ QuantumCircuit DAGCircuit::to_circuit() const {
 }
 
 // =============================================================================
-// Topological sort (Kahn's algorithm)
+// Topological sort (Kahn's algorithm) — uses cached adjacency lists
 // =============================================================================
 
 std::vector<int> DAGCircuit::topological_sort() const {
-    // Build adjacency list and in-degree map
-    std::unordered_map<int, std::vector<int>> adj;
     std::unordered_map<int, int> in_degree;
+    in_degree.reserve(nodes.size());
 
     for (const auto& node : nodes) {
-        if (in_degree.find(node.node_id) == in_degree.end()) {
-            in_degree[node.node_id] = 0;
-        }
+        in_degree[node.node_id] = 0;
     }
 
-    for (const auto& edge : edges) {
-        adj[edge.src_node].push_back(edge.dst_node);
-        in_degree[edge.dst_node]++;
+    for (const auto& [nid, preds] : adj_in) {
+        in_degree[nid] = static_cast<int>(preds.size());
     }
 
-    // Queue nodes with in-degree 0
     std::queue<int> q;
     for (const auto& [nid, deg] : in_degree) {
         if (deg == 0) q.push(nid);
     }
 
     std::vector<int> result;
+    result.reserve(nodes.size());
     while (!q.empty()) {
         int nid = q.front();
         q.pop();
         result.push_back(nid);
 
-        if (adj.count(nid)) {
-            for (int neighbor : adj.at(nid)) {
+        auto it = adj_out.find(nid);
+        if (it != adj_out.end()) {
+            for (int neighbor : it->second) {
                 if (--in_degree[neighbor] == 0) {
                     q.push(neighbor);
                 }
@@ -169,28 +188,25 @@ std::vector<int> DAGCircuit::topological_sort() const {
 }
 
 // =============================================================================
-// Front layer — OP nodes with no OP predecessors
+// Front layer — OP nodes with no OP predecessors (O(N) via adjacency + index)
 // =============================================================================
 
 std::vector<int> DAGCircuit::front_layer() const {
     std::vector<int> front;
 
-    // Collect OP nodes whose predecessors are all IN nodes
     for (const auto& node : nodes) {
         if (node.type != DAGNode::Type::OP) continue;
 
         auto preds = predecessors(node.node_id);
-        bool all_in = true;
+        bool all_non_op = true;
         for (int pid : preds) {
-            for (const auto& pnode : nodes) {
-                if (pnode.node_id == pid && pnode.type == DAGNode::Type::OP) {
-                    all_in = false;
-                    break;
-                }
+            auto it = node_id_to_idx.find(pid);
+            if (it != node_id_to_idx.end() && nodes[it->second].type == DAGNode::Type::OP) {
+                all_non_op = false;
+                break;
             }
-            if (!all_in) break;
         }
-        if (all_in) {
+        if (all_non_op) {
             front.push_back(node.node_id);
         }
     }
@@ -199,47 +215,33 @@ std::vector<int> DAGCircuit::front_layer() const {
 }
 
 // =============================================================================
-// Successors / Predecessors
+// Successors / Predecessors — O(1) via adjacency lists
 // =============================================================================
 
 std::vector<int> DAGCircuit::successors(int node_id) const {
-    std::set<int> succs;
-    for (const auto& edge : edges) {
-        if (edge.src_node == node_id) {
-            succs.insert(edge.dst_node);
-        }
-    }
-    return std::vector<int>(succs.begin(), succs.end());
+    auto it = adj_out.find(node_id);
+    if (it == adj_out.end()) return {};
+    // Deduplicate (multi-wire edges may create duplicates)
+    std::unordered_set<int> unique(it->second.begin(), it->second.end());
+    return std::vector<int>(unique.begin(), unique.end());
 }
 
 std::vector<int> DAGCircuit::predecessors(int node_id) const {
-    std::set<int> preds;
-    for (const auto& edge : edges) {
-        if (edge.dst_node == node_id) {
-            preds.insert(edge.src_node);
-        }
-    }
-    return std::vector<int>(preds.begin(), preds.end());
+    auto it = adj_in.find(node_id);
+    if (it == adj_in.end()) return {};
+    std::unordered_set<int> unique(it->second.begin(), it->second.end());
+    return std::vector<int>(unique.begin(), unique.end());
 }
 
 // =============================================================================
-// substitute_node — replace a node with a sub-DAG
+// substitute_node — replace a node with a sub-DAG (per-wire edge routing)
 // =============================================================================
 
 void DAGCircuit::substitute_node(int node_id, const DAGCircuit& replacement) {
-    // Find the node to replace
-    int node_idx = -1;
-    for (size_t i = 0; i < nodes.size(); ++i) {
-        if (nodes[i].node_id == node_id) {
-            node_idx = static_cast<int>(i);
-            break;
-        }
-    }
-    if (node_idx < 0) throw std::out_of_range("Node not found");
+    auto idx_it = node_id_to_idx.find(node_id);
+    if (idx_it == node_id_to_idx.end()) throw std::out_of_range("Node not found");
 
-    const DAGNode& target = nodes[node_idx];
-
-    // Get the incoming and outgoing edges
+    // Get the incoming and outgoing edges for this node
     std::vector<DAGEdge> in_edges, out_edges;
     for (const auto& e : edges) {
         if (e.dst_node == node_id) in_edges.push_back(e);
@@ -261,13 +263,14 @@ void DAGCircuit::substitute_node(int node_id, const DAGCircuit& replacement) {
     std::unordered_map<int, int> old_to_new;
 
     for (int rid : sorted) {
-        for (const auto& rnode : replacement.nodes) {
-            if (rnode.node_id == rid && rnode.type == DAGNode::Type::OP) {
+        auto rit = replacement.node_id_to_idx.find(rid);
+        if (rit != replacement.node_id_to_idx.end()) {
+            const auto& rnode = replacement.nodes[rit->second];
+            if (rnode.type == DAGNode::Type::OP) {
                 DAGNode new_node = rnode;
                 int new_id = add_node(std::move(new_node));
                 old_to_new[rid] = new_id;
                 new_op_ids.push_back(new_id);
-                break;
             }
         }
     }
@@ -280,29 +283,70 @@ void DAGCircuit::substitute_node(int node_id, const DAGCircuit& replacement) {
         }
     }
 
-    // Connect incoming edges to replacement's first nodes per wire
-    // Connect outgoing edges from replacement's last nodes per wire
+    // Per-wire routing: connect in-edges to first new node on their wire,
+    // and out-edges from last new node on their wire.
     if (!new_op_ids.empty()) {
-        // Simple approach: connect all in_edges to first new node, out_edges from last
+        // Build per-wire first/last new node maps
+        std::unordered_map<int, int> wire_first_new, wire_last_new;
+        for (int nid : new_op_ids) {
+            auto nit = node_id_to_idx.find(nid);
+            if (nit == node_id_to_idx.end()) continue;
+            const auto& n = nodes[nit->second];
+            for (int w : n.qubit_wires) {
+                if (!wire_first_new.count(w)) wire_first_new[w] = nid;
+                wire_last_new[w] = nid;
+            }
+            for (int w : n.clbit_wires) {
+                int key = w + 10000;  // offset to avoid collision with qubit wires
+                if (!wire_first_new.count(key)) wire_first_new[key] = nid;
+                wire_last_new[key] = nid;
+            }
+        }
+
         for (const auto& ie : in_edges) {
-            add_edge(ie.src_node, new_op_ids.front(), ie.wire, ie.is_classical);
+            int key = ie.is_classical ? (ie.wire + 10000) : ie.wire;
+            int target = wire_first_new.count(key) ? wire_first_new[key] : new_op_ids.front();
+            add_edge(ie.src_node, target, ie.wire, ie.is_classical);
         }
         for (const auto& oe : out_edges) {
-            add_edge(new_op_ids.back(), oe.dst_node, oe.wire, oe.is_classical);
+            int key = oe.is_classical ? (oe.wire + 10000) : oe.wire;
+            int source = wire_last_new.count(key) ? wire_last_new[key] : new_op_ids.back();
+            add_edge(source, oe.dst_node, oe.wire, oe.is_classical);
         }
     } else {
         // No replacement ops — connect in to out directly
         for (const auto& ie : in_edges) {
             for (const auto& oe : out_edges) {
-                if (ie.wire == oe.wire) {
+                if (ie.wire == oe.wire && ie.is_classical == oe.is_classical) {
                     add_edge(ie.src_node, oe.dst_node, ie.wire, ie.is_classical);
                 }
             }
         }
     }
 
-    // Remove the original node
-    nodes.erase(nodes.begin() + node_idx);
+    // Remove the original node from nodes vector and rebuild index
+    auto nit = node_id_to_idx.find(node_id);
+    if (nit != node_id_to_idx.end()) {
+        size_t idx = nit->second;
+        nodes.erase(nodes.begin() + static_cast<ptrdiff_t>(idx));
+        // Rebuild node_id_to_idx since indices shifted
+        node_id_to_idx.clear();
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            node_id_to_idx[nodes[i].node_id] = i;
+        }
+    }
+
+    // Clean adjacency for removed node
+    adj_out.erase(node_id);
+    adj_in.erase(node_id);
+    // Remove stale references (adj lists are rebuilt on next add_edge calls;
+    // for correctness, strip node_id from all adj lists)
+    for (auto& [k, v] : adj_out) {
+        v.erase(std::remove(v.begin(), v.end(), node_id), v.end());
+    }
+    for (auto& [k, v] : adj_in) {
+        v.erase(std::remove(v.begin(), v.end(), node_id), v.end());
+    }
 }
 
 // =============================================================================
@@ -335,12 +379,28 @@ void DAGCircuit::remove_node(int node_id) {
         }
     }
 
-    // Remove the node
+    // Remove the node and rebuild index/adjacency
     nodes.erase(
         std::remove_if(nodes.begin(), nodes.end(),
             [node_id](const DAGNode& n) { return n.node_id == node_id; }),
         nodes.end()
     );
+
+    // Clean adjacency
+    adj_out.erase(node_id);
+    adj_in.erase(node_id);
+    for (auto& [k, v] : adj_out) {
+        v.erase(std::remove(v.begin(), v.end(), node_id), v.end());
+    }
+    for (auto& [k, v] : adj_in) {
+        v.erase(std::remove(v.begin(), v.end(), node_id), v.end());
+    }
+
+    // Rebuild node_id_to_idx
+    node_id_to_idx.clear();
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        node_id_to_idx[nodes[i].node_id] = i;
+    }
 }
 
 // =============================================================================
@@ -369,29 +429,31 @@ int DAGCircuit::num_op_nodes() const {
     return count;
 }
 
+// depth — O(N+E) via topological sort + adjacency lists
 int DAGCircuit::depth() const {
-    // Longest path through OP nodes
     auto sorted = topological_sort();
     std::unordered_map<int, int> dist;
+    dist.reserve(nodes.size());
     for (const auto& node : nodes) {
         dist[node.node_id] = 0;
     }
 
     int max_depth = 0;
     for (int nid : sorted) {
-        bool is_op = false;
-        for (const auto& node : nodes) {
-            if (node.node_id == nid && node.type == DAGNode::Type::OP) {
-                is_op = true;
-                break;
-            }
-        }
+        // O(1) node type lookup
+        auto it = node_id_to_idx.find(nid);
+        bool is_op = (it != node_id_to_idx.end() &&
+                      nodes[it->second].type == DAGNode::Type::OP);
 
-        for (const auto& edge : edges) {
-            if (edge.src_node == nid) {
-                int new_dist = dist[nid] + (is_op ? 1 : 0);
-                dist[edge.dst_node] = std::max(dist[edge.dst_node], new_dist);
-                max_depth = std::max(max_depth, dist[edge.dst_node]);
+        // O(degree) successor traversal via adjacency list
+        auto ait = adj_out.find(nid);
+        if (ait != adj_out.end()) {
+            int new_dist = dist[nid] + (is_op ? 1 : 0);
+            for (int succ : ait->second) {
+                if (new_dist > dist[succ]) {
+                    dist[succ] = new_dist;
+                    if (new_dist > max_depth) max_depth = new_dist;
+                }
             }
         }
     }
