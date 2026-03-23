@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.5.0-alpha] - 2026-03-23
+
+### Performance
+- Two-qubit gates rewritten with cache-optimised nested lo/hi-step loop structure — sequential memory access within cache lines
+- SIMD vectorisation (`#pragma omp simd aligned`) on all two-qubit gate inner loops (controlled-matrix, controlled-phase, 4-index group gates)
+- CZ specialised as diagonal gate — avoids full controlled-matrix path, halves memory traffic
+- CRZ specialised with split tgt=0/tgt=1 diagonal loops — avoids branch-per-element
+- RZZ parity-split into 4 separate SIMD loops — eliminates per-element parity branch
+- Clifford `SDG` direct tableau rule — O(N) single pass replacing 3× `apply_s` calls
+
+### Fixed
+- **High:** MPS simulator now decomposes 3-qubit gates (CCX, CCZ, CSWAP, RCCX) into 1Q+2Q sequences instead of silently ignoring them — Grover/MCX circuits now produce correct results on MPS backend
+- **Medium:** RCCX matrix in density matrix simulator corrected to match statevector decomposition (phases were wrong on |101⟩, |110⟩, |111⟩ states)
+- Removed unused `bit_pos` variable in `apply_unitary` (-Wunused-variable)
+
 ## [1.4.0-alpha] - 2026-03-23
 
 ### Added

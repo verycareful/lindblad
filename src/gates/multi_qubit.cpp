@@ -142,7 +142,6 @@ void apply_unitary(
         // Insert zeros at all target bit positions
         size_t bg_idx = 0;
         size_t g_bits = g;
-        int bit_pos = 0;
         int target_idx = 0;
 
         for (int b = 0; b < sv.n_qubits; ++b) {

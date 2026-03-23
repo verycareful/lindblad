@@ -704,9 +704,85 @@ MPSSimulator::Result MPSSimulator::run(
         } else if (inst.qubits.size() == 2) {
             auto U = gate4x4(inst);
             result.final_state.apply_two_qubit_gate(U, inst.qubits[0], inst.qubits[1]);
+
+        } else if (inst.qubits.size() == 3) {
+            // Decompose 3-qubit gates into 1Q+2Q MPS operations
+            auto& mps = result.final_state;
+            int q0 = inst.qubits[0], q1 = inst.qubits[1], q2 = inst.qubits[2];
+
+            constexpr double s2 = 0.7071067811865475;
+            const std::array<Complex128, 4> H_g = {
+                Complex128(s2,0), Complex128(s2,0),
+                Complex128(s2,0), Complex128(-s2,0)
+            };
+            const std::array<Complex128, 4> T_g = {
+                Complex128(1,0), Complex128(0,0),
+                Complex128(0,0), Complex128(s2, s2)
+            };
+            const std::array<Complex128, 4> Tdg_g = {
+                Complex128(1,0), Complex128(0,0),
+                Complex128(0,0), Complex128(s2, -s2)
+            };
+            std::array<Complex128, 16> CX_g{};
+            CX_g[0] = CX_g[5] = CX_g[11] = CX_g[14] = Complex128(1,0);
+
+            // CCX decomposition: standard 6-CNOT Toffoli
+            auto apply_ccx = [&](int c1, int c2, int tgt) {
+                mps.apply_single_qubit_gate(H_g, tgt);
+                mps.apply_two_qubit_gate(CX_g, c2, tgt);
+                mps.apply_single_qubit_gate(Tdg_g, tgt);
+                mps.apply_two_qubit_gate(CX_g, c1, tgt);
+                mps.apply_single_qubit_gate(T_g, tgt);
+                mps.apply_two_qubit_gate(CX_g, c2, tgt);
+                mps.apply_single_qubit_gate(Tdg_g, tgt);
+                mps.apply_two_qubit_gate(CX_g, c1, tgt);
+                mps.apply_single_qubit_gate(T_g, c2);
+                mps.apply_single_qubit_gate(T_g, tgt);
+                mps.apply_single_qubit_gate(H_g, tgt);
+                mps.apply_two_qubit_gate(CX_g, c1, c2);
+                mps.apply_single_qubit_gate(T_g, c1);
+                mps.apply_single_qubit_gate(Tdg_g, c2);
+                mps.apply_two_qubit_gate(CX_g, c1, c2);
+            };
+
+            switch (inst.type) {
+                case GT::CCX:
+                    apply_ccx(q0, q1, q2);
+                    break;
+                case GT::CCZ:
+                    // CCZ = H(tgt) . CCX . H(tgt)
+                    mps.apply_single_qubit_gate(H_g, q2);
+                    apply_ccx(q0, q1, q2);
+                    mps.apply_single_qubit_gate(H_g, q2);
+                    break;
+                case GT::CSWAP:
+                    // Fredkin = CX(q2,q1) . CCX(ctrl,q1,q2) . CX(q2,q1)
+                    mps.apply_two_qubit_gate(CX_g, q2, q1);
+                    apply_ccx(q0, q1, q2);
+                    mps.apply_two_qubit_gate(CX_g, q2, q1);
+                    break;
+                case GT::RCCX:
+                    // Relative-phase Toffoli: H T CX Tdg CX T CX Tdg H
+                    mps.apply_single_qubit_gate(H_g, q2);
+                    mps.apply_single_qubit_gate(T_g, q2);
+                    mps.apply_two_qubit_gate(CX_g, q1, q2);
+                    mps.apply_single_qubit_gate(Tdg_g, q2);
+                    mps.apply_two_qubit_gate(CX_g, q0, q2);
+                    mps.apply_single_qubit_gate(T_g, q2);
+                    mps.apply_two_qubit_gate(CX_g, q1, q2);
+                    mps.apply_single_qubit_gate(Tdg_g, q2);
+                    mps.apply_single_qubit_gate(H_g, q2);
+                    break;
+                default:
+                    throw std::runtime_error(
+                        "MPS simulator: unsupported 3-qubit gate type " +
+                        std::to_string(static_cast<int>(inst.type)));
+            }
+        } else {
+            throw std::runtime_error(
+                "MPS simulator: unsupported " + std::to_string(inst.qubits.size()) +
+                "-qubit gate");
         }
-        // Three-qubit gates: decompose as 2-qubit gates (apply via statevector fallback for small N)
-        // For N<=20, conversion to statevector is acceptable for 3-qubit gates.
     }
 
     // Sample measurements

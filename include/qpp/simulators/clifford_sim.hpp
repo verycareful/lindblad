@@ -32,6 +32,7 @@ public:
     // Clifford gates
     void apply_h(int qubit);
     void apply_s(int qubit);
+    void apply_sdg(int qubit);
     void apply_cx(int control, int target);
     void apply_x(int qubit);
     void apply_y(int qubit);

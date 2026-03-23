@@ -363,14 +363,16 @@ static std::vector<Complex128> gate_matrix_for_dm(const Instruction& inst) {
             U[5*8+6] = Complex128(1.0, 0.0); U[6*8+5] = Complex128(1.0, 0.0); break;
         }
         case GT::RCCX: {
-            // Margolus / relative-phase Toffoli (NOT a unitary — relative phase version)
-            // Correct implementation: [[1,0,0,0,0,0,0,0],[0,1,...]] see IBM Qiskit definition
+            // Margolus / relative-phase Toffoli: H T CX Tdg CX T CX Tdg H
+            // Matches statevector apply_rccx decomposition exactly.
+            // |000⟩-|011⟩ identity, |100⟩→|100⟩, |101⟩→-|101⟩,
+            // |110⟩→i|111⟩, |111⟩→-i|110⟩
             for (size_t i = 0; i < 8; ++i) U[i*8+i] = Complex128(1.0, 0.0);
-            // Apply relative phases per Qiskit definition
-            U[4*8+4] = Complex128(0.0, 0.0); U[4*8+5] = Complex128(0.0, 1.0);
-            U[5*8+4] = Complex128(0.0, 1.0); U[5*8+5] = Complex128(0.0, 0.0);
-            U[6*8+6] = Complex128(0.0, 0.0); U[6*8+7] = Complex128(0.0, -1.0);
-            U[7*8+6] = Complex128(0.0, 1.0); U[7*8+7] = Complex128(0.0, 0.0);
+            U[5*8+5] = Complex128(-1.0, 0.0);   // |101⟩ → -|101⟩
+            U[6*8+6] = Complex128(0.0, 0.0);     // clear diagonal
+            U[6*8+7] = Complex128(0.0, -1.0);    // |111⟩ contributes -i to row 6
+            U[7*8+6] = Complex128(0.0, 1.0);     // |110⟩ → i|111⟩
+            U[7*8+7] = Complex128(0.0, 0.0);     // clear diagonal
             break;
         }
         case GT::UNITARY:
