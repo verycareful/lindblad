@@ -94,14 +94,6 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DQPP_BUILD_BENCHMARKS=ON -DQPP_B
 - `docs/APIOverview.md`: public API map and usage guidance
 - `docs/DevelopmentGuide.md`: coding workflow and quality checks
 
-## Licensing
-
-This project is licensed under:
-
-**Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)**
-
-See the full license text in `LICENSE`.
-
 ## Status
 
 The project already includes a substantial implementation across simulation, transpilation, and algorithms. Remaining work is tracked as local planning and `TODO.txt` is intentionally ignored by git.
