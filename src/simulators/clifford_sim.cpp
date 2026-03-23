@@ -97,6 +97,17 @@ void StabilizerState::apply_s(int qubit) {
     }
 }
 
+void StabilizerState::apply_sdg(int qubit) {
+    int N = n_qubits;
+    for (int i = 0; i < 2 * N; ++i) {
+        // SDG: X -> -Y = -iXZ, Y -> X.  Flip Z first, then phase ^= new Z.
+        if (tableau[i][qubit]) {
+            tableau[i][N + qubit] = !tableau[i][N + qubit];
+            tableau[i][2 * N] = tableau[i][2 * N] ^ tableau[i][N + qubit];
+        }
+    }
+}
+
 void StabilizerState::apply_cx(int control, int target) {
     int N = n_qubits;
     for (int i = 0; i < 2 * N; ++i) {
@@ -385,9 +396,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                 case GT::H: state.apply_h(inst.qubits[0]); break;
                 case GT::S: state.apply_s(inst.qubits[0]); break;
                 case GT::SDG:
-                    state.apply_s(inst.qubits[0]);
-                    state.apply_s(inst.qubits[0]);
-                    state.apply_s(inst.qubits[0]);
+                    state.apply_sdg(inst.qubits[0]);
                     break;
                 case GT::X: state.apply_x(inst.qubits[0]); break;
                 case GT::Y: state.apply_y(inst.qubits[0]); break;
