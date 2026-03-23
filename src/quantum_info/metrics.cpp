@@ -89,7 +89,9 @@ double state_fidelity(const DensityMatrix& rho1, const DensityMatrix& rho2) {
 }
 
 // =============================================================================
-// Process fidelity
+// Process fidelity — SQUARED Hilbert-Schmidt inner product
+// F_proc(U, V) = |Tr(U† V)|² / d²
+// This returns the squared quantity. For unsquared, take sqrt() of result.
 // =============================================================================
 
 double process_fidelity(const Operator& channel1, const Operator& channel2) {

@@ -212,6 +212,8 @@ QuantumCircuit& QuantumCircuit::u3(double theta, double phi, double lambda, int 
     QuantumCircuit& QuantumCircuit::name_func(int q1, int q2) { \
         validate_qubit(q1); \
         validate_qubit(q2); \
+        if (q1 == q2) [[unlikely]] \
+            throw std::invalid_argument(#name_func ": qubits must be distinct (got q1=q2=" + std::to_string(q1) + ")"); \
         Instruction inst; \
         inst.type = Instruction::GateType::gate_type; \
         inst.qubits = {q1, q2}; \
@@ -233,6 +235,8 @@ QPP_TWO_GATE(ecr, ECR)
     QuantumCircuit& QuantumCircuit::name_func(double param, int control, int target) { \
         validate_qubit(control); \
         validate_qubit(target); \
+        if (control == target) [[unlikely]] \
+            throw std::invalid_argument(#name_func ": control and target must be distinct (got " + std::to_string(control) + ")"); \
         Instruction inst; \
         inst.type = Instruction::GateType::gate_type; \
         inst.qubits = {control, target}; \
@@ -252,6 +256,8 @@ QuantumCircuit& QuantumCircuit::cu(double theta, double phi, double lambda, doub
                                     int control, int target) {
     validate_qubit(control);
     validate_qubit(target);
+    if (control == target) [[unlikely]]
+        throw std::invalid_argument("cu: control and target must be distinct (got " + std::to_string(control) + ")");
     Instruction inst;
     inst.type = Instruction::GateType::CU;
     inst.qubits = {control, target};
@@ -264,6 +270,8 @@ QuantumCircuit& QuantumCircuit::cu(double theta, double phi, double lambda, doub
     QuantumCircuit& QuantumCircuit::name_func(double theta, int q1, int q2) { \
         validate_qubit(q1); \
         validate_qubit(q2); \
+        if (q1 == q2) [[unlikely]] \
+            throw std::invalid_argument(#name_func ": qubits must be distinct (got q1=q2=" + std::to_string(q1) + ")"); \
         Instruction inst; \
         inst.type = Instruction::GateType::gate_type; \
         inst.qubits = {q1, q2}; \
@@ -283,8 +291,16 @@ QPP_ISING_GATE(rzz, RZZ)
 // Three-qubit gates
 // =============================================================================
 
+static void validate_distinct_3q(int a, int b, int c, const char* gate) {
+    if (a == b || a == c || b == c) [[unlikely]]
+        throw std::invalid_argument(
+            std::string(gate) + ": all three qubits must be distinct (got " +
+            std::to_string(a) + "," + std::to_string(b) + "," + std::to_string(c) + ")");
+}
+
 QuantumCircuit& QuantumCircuit::ccx(int c1, int c2, int target) {
     validate_qubit(c1); validate_qubit(c2); validate_qubit(target);
+    validate_distinct_3q(c1, c2, target, "ccx");
     Instruction inst;
     inst.type = Instruction::GateType::CCX;
     inst.qubits = {c1, c2, target};
@@ -294,6 +310,7 @@ QuantumCircuit& QuantumCircuit::ccx(int c1, int c2, int target) {
 
 QuantumCircuit& QuantumCircuit::ccz(int c1, int c2, int target) {
     validate_qubit(c1); validate_qubit(c2); validate_qubit(target);
+    validate_distinct_3q(c1, c2, target, "ccz");
     Instruction inst;
     inst.type = Instruction::GateType::CCZ;
     inst.qubits = {c1, c2, target};
@@ -303,6 +320,7 @@ QuantumCircuit& QuantumCircuit::ccz(int c1, int c2, int target) {
 
 QuantumCircuit& QuantumCircuit::cswap(int ctrl, int q1, int q2) {
     validate_qubit(ctrl); validate_qubit(q1); validate_qubit(q2);
+    validate_distinct_3q(ctrl, q1, q2, "cswap");
     Instruction inst;
     inst.type = Instruction::GateType::CSWAP;
     inst.qubits = {ctrl, q1, q2};
@@ -312,6 +330,7 @@ QuantumCircuit& QuantumCircuit::cswap(int ctrl, int q1, int q2) {
 
 QuantumCircuit& QuantumCircuit::rccx(int c1, int c2, int target) {
     validate_qubit(c1); validate_qubit(c2); validate_qubit(target);
+    validate_distinct_3q(c1, c2, target, "rccx");
     Instruction inst;
     inst.type = Instruction::GateType::RCCX;
     inst.qubits = {c1, c2, target};
@@ -826,6 +845,349 @@ QuantumCircuit QuantumCircuit::from_qasm2(const std::string& /*qasm*/) {
 
 QuantumCircuit QuantumCircuit::from_qasm3(const std::string& /*qasm*/) {
     throw std::runtime_error("QASM3 parser not yet implemented — use QASM3Parser class");
+}
+
+// =============================================================================
+// JSON serialization — zero-dependency
+// =============================================================================
+
+// Helper: escape a string for JSON output
+static std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 2);
+    out += '"';
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\t': out += "\\t";  break;
+            case '\r': out += "\\r";  break;
+            default:   out += c;      break;
+        }
+    }
+    out += '"';
+    return out;
+}
+
+// GateType enum -> string (reuse gate_name() for OP types, explicit for specials)
+static std::string gate_type_to_str(Instruction::GateType t) {
+    // Create a temp instruction to leverage gate_name()
+    Instruction tmp;
+    tmp.type = t;
+    return tmp.gate_name();
+}
+
+// String -> GateType reverse lookup
+static Instruction::GateType str_to_gate_type(const std::string& s) {
+    using GT = Instruction::GateType;
+    static const std::unordered_map<std::string, GT> map = {
+        {"h", GT::H}, {"x", GT::X}, {"y", GT::Y}, {"z", GT::Z},
+        {"s", GT::S}, {"sdg", GT::SDG}, {"t", GT::T}, {"tdg", GT::TDG},
+        {"sx", GT::SX}, {"sxdg", GT::SXDG},
+        {"rx", GT::RX}, {"ry", GT::RY}, {"rz", GT::RZ}, {"p", GT::P},
+        {"u", GT::U}, {"u1", GT::U1}, {"u2", GT::U2}, {"u3", GT::U3},
+        {"cx", GT::CX}, {"cy", GT::CY}, {"cz", GT::CZ}, {"ch", GT::CH},
+        {"swap", GT::SWAP}, {"iswap", GT::ISWAP},
+        {"crx", GT::CRX}, {"cry", GT::CRY}, {"crz", GT::CRZ}, {"cp", GT::CP},
+        {"cu", GT::CU}, {"ecr", GT::ECR}, {"rzx", GT::RZX},
+        {"rxx", GT::RXX}, {"ryy", GT::RYY}, {"rzz", GT::RZZ},
+        {"ccx", GT::CCX}, {"ccz", GT::CCZ}, {"cswap", GT::CSWAP}, {"rccx", GT::RCCX},
+        {"measure", GT::MEASURE}, {"reset", GT::RESET}, {"barrier", GT::BARRIER},
+        {"unitary", GT::UNITARY},
+        {"param_rx", GT::PARAM_RX}, {"param_ry", GT::PARAM_RY},
+        {"param_rz", GT::PARAM_RZ}, {"param_p", GT::PARAM_P}, {"param_u", GT::PARAM_U}
+    };
+    auto it = map.find(s);
+    if (it != map.end()) return it->second;
+    return GT::UNITARY;  // fallback for custom labels
+}
+
+std::string QuantumCircuit::to_json() const {
+    std::ostringstream o;
+    o << std::setprecision(17);  // full double precision
+
+    o << "{";
+    o << "\"version\":\"1.0\",";
+    o << "\"name\":" << json_escape(name) << ",";
+    o << "\"n_qubits\":" << n_qubits << ",";
+    o << "\"n_clbits\":" << n_clbits << ",";
+
+    // Parameters
+    o << "\"parameter_names\":[";
+    for (size_t i = 0; i < parameter_names.size(); ++i) {
+        if (i > 0) o << ",";
+        o << json_escape(parameter_names[i]);
+    }
+    o << "],";
+
+    // Instructions
+    o << "\"instructions\":[";
+    for (size_t i = 0; i < instructions.size(); ++i) {
+        if (i > 0) o << ",";
+        const auto& inst = instructions[i];
+        o << "{";
+        o << "\"gate\":" << json_escape(gate_type_to_str(inst.type)) << ",";
+
+        // Qubits
+        o << "\"qubits\":[";
+        for (size_t j = 0; j < inst.qubits.size(); ++j) {
+            if (j > 0) o << ",";
+            o << inst.qubits[j];
+        }
+        o << "],";
+
+        // Classical bits
+        o << "\"clbits\":[";
+        for (size_t j = 0; j < inst.clbits.size(); ++j) {
+            if (j > 0) o << ",";
+            o << inst.clbits[j];
+        }
+        o << "],";
+
+        // Params
+        o << "\"params\":[";
+        for (size_t j = 0; j < inst.params.size(); ++j) {
+            if (j > 0) o << ",";
+            o << inst.params[j];
+        }
+        o << "]";
+
+        // Param names (symbolic)
+        if (!inst.param_names.empty()) {
+            o << ",\"param_names\":[";
+            for (size_t j = 0; j < inst.param_names.size(); ++j) {
+                if (j > 0) o << ",";
+                o << json_escape(inst.param_names[j]);
+            }
+            o << "]";
+        }
+
+        // Label
+        if (!inst.label.empty()) {
+            o << ",\"label\":" << json_escape(inst.label);
+        }
+
+        // Custom unitary matrix
+        if (inst.type == Instruction::GateType::UNITARY && !inst.matrix.empty()) {
+            o << ",\"matrix\":[";
+            for (size_t j = 0; j < inst.matrix.size(); ++j) {
+                if (j > 0) o << ",";
+                o << "[" << inst.matrix[j].real << "," << inst.matrix[j].imag << "]";
+            }
+            o << "]";
+        }
+
+        // Conditioning
+        if (inst.condition_clbit >= 0) {
+            o << ",\"condition_clbit\":" << inst.condition_clbit;
+            o << ",\"condition_value\":" << inst.condition_value;
+        }
+
+        o << "}";
+    }
+    o << "]";
+
+    o << "}";
+    return o.str();
+}
+
+// =============================================================================
+// JSON deserialization — minimal hand-rolled parser
+// =============================================================================
+
+// Simple JSON token reader
+namespace {
+
+struct JsonReader {
+    const std::string& s;
+    size_t pos = 0;
+
+    void skip_ws() {
+        while (pos < s.size() && (s[pos] == ' ' || s[pos] == '\t' || s[pos] == '\n' || s[pos] == '\r'))
+            ++pos;
+    }
+
+    char peek() { skip_ws(); return (pos < s.size()) ? s[pos] : '\0'; }
+    char next() { skip_ws(); return (pos < s.size()) ? s[pos++] : '\0'; }
+
+    void expect(char c) {
+        char got = next();
+        if (got != c)
+            throw std::runtime_error(std::string("JSON parse error: expected '") + c + "', got '" + got + "'");
+    }
+
+    std::string read_string() {
+        expect('"');
+        std::string out;
+        while (pos < s.size() && s[pos] != '"') {
+            if (s[pos] == '\\' && pos + 1 < s.size()) {
+                ++pos;
+                switch (s[pos]) {
+                    case '"': out += '"'; break;
+                    case '\\': out += '\\'; break;
+                    case 'n': out += '\n'; break;
+                    case 't': out += '\t'; break;
+                    case 'r': out += '\r'; break;
+                    default: out += s[pos]; break;
+                }
+            } else {
+                out += s[pos];
+            }
+            ++pos;
+        }
+        if (pos < s.size()) ++pos;  // skip closing '"'
+        return out;
+    }
+
+    double read_number() {
+        skip_ws();
+        size_t start = pos;
+        if (pos < s.size() && s[pos] == '-') ++pos;
+        while (pos < s.size() && (std::isdigit(s[pos]) || s[pos] == '.' || s[pos] == 'e' || s[pos] == 'E' || s[pos] == '+' || s[pos] == '-')) {
+            if ((s[pos] == '+' || s[pos] == '-') && pos > start + 1 && s[pos-1] != 'e' && s[pos-1] != 'E') break;
+            ++pos;
+        }
+        return std::stod(s.substr(start, pos - start));
+    }
+
+    int read_int() { return static_cast<int>(read_number()); }
+
+    // Skip a JSON value we don't care about
+    void skip_value() {
+        skip_ws();
+        if (s[pos] == '"') { read_string(); return; }
+        if (s[pos] == '[') {
+            ++pos;
+            if (peek() != ']') {
+                skip_value();
+                while (peek() == ',') { ++pos; skip_value(); }
+            }
+            expect(']');
+            return;
+        }
+        if (s[pos] == '{') {
+            ++pos;
+            if (peek() != '}') {
+                read_string(); expect(':'); skip_value();
+                while (peek() == ',') { ++pos; read_string(); expect(':'); skip_value(); }
+            }
+            expect('}');
+            return;
+        }
+        // number / true / false / null
+        while (pos < s.size() && s[pos] != ',' && s[pos] != '}' && s[pos] != ']')
+            ++pos;
+    }
+};
+
+} // anonymous namespace
+
+QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
+    JsonReader r{json};
+    r.expect('{');
+
+    int nq = 0, nc = 0;
+    std::string circ_name;
+    std::vector<std::string> param_names_list;
+    std::vector<Instruction> insts;
+
+    while (r.peek() != '}') {
+        if (r.peek() == ',') r.next();
+        std::string key = r.read_string();
+        r.expect(':');
+
+        if (key == "n_qubits") {
+            nq = r.read_int();
+        } else if (key == "n_clbits") {
+            nc = r.read_int();
+        } else if (key == "name") {
+            circ_name = r.read_string();
+        } else if (key == "parameter_names") {
+            r.expect('[');
+            while (r.peek() != ']') {
+                if (r.peek() == ',') r.next();
+                param_names_list.push_back(r.read_string());
+            }
+            r.expect(']');
+        } else if (key == "instructions") {
+            r.expect('[');
+            while (r.peek() != ']') {
+                if (r.peek() == ',') r.next();
+                r.expect('{');
+
+                Instruction inst;
+                while (r.peek() != '}') {
+                    if (r.peek() == ',') r.next();
+                    std::string ikey = r.read_string();
+                    r.expect(':');
+
+                    if (ikey == "gate") {
+                        inst.type = str_to_gate_type(r.read_string());
+                    } else if (ikey == "qubits") {
+                        r.expect('[');
+                        while (r.peek() != ']') {
+                            if (r.peek() == ',') r.next();
+                            inst.qubits.push_back(r.read_int());
+                        }
+                        r.expect(']');
+                    } else if (ikey == "clbits") {
+                        r.expect('[');
+                        while (r.peek() != ']') {
+                            if (r.peek() == ',') r.next();
+                            inst.clbits.push_back(r.read_int());
+                        }
+                        r.expect(']');
+                    } else if (ikey == "params") {
+                        r.expect('[');
+                        while (r.peek() != ']') {
+                            if (r.peek() == ',') r.next();
+                            inst.params.push_back(r.read_number());
+                        }
+                        r.expect(']');
+                    } else if (ikey == "param_names") {
+                        r.expect('[');
+                        while (r.peek() != ']') {
+                            if (r.peek() == ',') r.next();
+                            inst.param_names.push_back(r.read_string());
+                        }
+                        r.expect(']');
+                    } else if (ikey == "label") {
+                        inst.label = r.read_string();
+                    } else if (ikey == "matrix") {
+                        r.expect('[');
+                        while (r.peek() != ']') {
+                            if (r.peek() == ',') r.next();
+                            r.expect('[');
+                            double re = r.read_number();
+                            r.expect(',');
+                            double im = r.read_number();
+                            r.expect(']');
+                            inst.matrix.push_back(Complex128(re, im));
+                        }
+                        r.expect(']');
+                    } else if (ikey == "condition_clbit") {
+                        inst.condition_clbit = r.read_int();
+                    } else if (ikey == "condition_value") {
+                        inst.condition_value = r.read_int();
+                    } else {
+                        r.skip_value();
+                    }
+                }
+                r.expect('}');
+                insts.push_back(std::move(inst));
+            }
+            r.expect(']');
+        } else {
+            r.skip_value();
+        }
+    }
+    r.expect('}');
+
+    QuantumCircuit qc(nq, nc, circ_name);
+    qc.parameter_names = std::move(param_names_list);
+    qc.instructions = std::move(insts);
+    return qc;
 }
 
 // =============================================================================

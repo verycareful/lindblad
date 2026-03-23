@@ -113,6 +113,8 @@ PYBIND11_MODULE(qpp_python, m) {
         // Export
         .def("to_qasm2", &qpp::QuantumCircuit::to_qasm2)
         .def("to_qasm3", &qpp::QuantumCircuit::to_qasm3)
+        .def("to_json", &qpp::QuantumCircuit::to_json)
+        .def_static("from_json", &qpp::QuantumCircuit::from_json)
         .def("to_ascii", &qpp::QuantumCircuit::to_ascii)
         .def_readwrite("n_qubits", &qpp::QuantumCircuit::n_qubits)
         .def_readwrite("n_clbits", &qpp::QuantumCircuit::n_clbits)
@@ -134,15 +136,33 @@ PYBIND11_MODULE(qpp_python, m) {
         .def_readonly("error_message", &qpp::StatevectorSimulator::Result::error_message);
 
     // =========================================================================
+    // PauliString
+    // =========================================================================
+    py::class_<qpp::PauliString>(m, "PauliString")
+        .def(py::init<>())
+        .def(py::init<const std::string&, qpp::Complex128>(),
+             py::arg("pauli"), py::arg("coeff") = qpp::Complex128(1.0, 0.0))
+        .def_readwrite("pauli", &qpp::PauliString::pauli)
+        .def_readwrite("coeff", &qpp::PauliString::coeff)
+        .def("n_qubits", &qpp::PauliString::n_qubits)
+        .def("__repr__", [](const qpp::PauliString& ps) {
+            return "PauliString('" + ps.pauli + "', " +
+                   std::to_string(ps.coeff.real) + "+" +
+                   std::to_string(ps.coeff.imag) + "j)";
+        });
+
+    // =========================================================================
     // SparsePauliOp
     // =========================================================================
     py::class_<qpp::SparsePauliOp>(m, "SparsePauliOp")
         .def(py::init<>())
+        .def(py::init<const std::vector<qpp::PauliString>&>(), py::arg("terms"))
         .def_static("from_list", &qpp::SparsePauliOp::from_list)
         .def("to_matrix", &qpp::SparsePauliOp::to_matrix)
         .def("expectation_value", &qpp::SparsePauliOp::expectation_value)
         .def("simplify", &qpp::SparsePauliOp::simplify)
-        .def("n_qubits", &qpp::SparsePauliOp::n_qubits);
+        .def("n_qubits", &qpp::SparsePauliOp::n_qubits)
+        .def_readwrite("terms", &qpp::SparsePauliOp::terms);
 
     // =========================================================================
     // Estimator and Sampler
