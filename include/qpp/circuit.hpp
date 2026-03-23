@@ -161,6 +161,7 @@ public:
                            const std::vector<int>& qubits = {}) const;
     QuantumCircuit inverse() const;
     QuantumCircuit repeat(int n) const;
+    QuantumCircuit control(int num_ctrl_qubits = 1) const;
 
     // =========================================================================
     // Analysis

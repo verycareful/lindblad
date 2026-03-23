@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(qpp VERSION 1.3.0 LANGUAGES CXX)
+project(qpp VERSION 1.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -130,6 +130,9 @@ add_library(qpp_core STATIC
     src/transpiler/optimisation/optimize_1q.cpp
     src/transpiler/optimisation/cx_cancellation.cpp
     src/transpiler/optimisation/consolidate_blocks.cpp
+    src/transpiler/optimisation/commutative_cancellation.cpp
+    src/transpiler/optimisation/remove_diagonal.cpp
+    src/transpiler/scheduling/scheduling.cpp
     src/primitives/estimator.cpp
     src/primitives/sampler.cpp
     src/algorithms/vqe.cpp

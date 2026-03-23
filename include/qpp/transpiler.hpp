@@ -116,6 +116,40 @@ public:
     std::string name() const override { return "ConsolidateBlocks"; }
 };
 
+// Commutative gate cancellation — merge/cancel rotation gates through commuting intermediates
+class CommutativeCancellation : public TranspilationPass {
+public:
+    DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const override;
+    std::string name() const override { return "CommutativeCancellation"; }
+};
+
+// Remove diagonal gates (RZ, P, T, S, Z, U1) whose only successor is MEASURE
+class RemoveDiagonalGatesBeforeMeasure : public TranspilationPass {
+public:
+    DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const override;
+    std::string name() const override { return "RemoveDiagonalGatesBeforeMeasure"; }
+};
+
+// Remove RESET on qubits already in |0⟩ (at circuit start or after a prior RESET)
+class RemoveResetInZeroState : public TranspilationPass {
+public:
+    DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const override;
+    std::string name() const override { return "RemoveResetInZeroState"; }
+};
+
+// Scheduling passes — assign time slots to instructions
+class ASAPSchedule : public TranspilationPass {
+public:
+    DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const override;
+    std::string name() const override { return "ASAPSchedule"; }
+};
+
+class ALAPSchedule : public TranspilationPass {
+public:
+    DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const override;
+    std::string name() const override { return "ALAPSchedule"; }
+};
+
 // =============================================================================
 // PassManager
 // =============================================================================

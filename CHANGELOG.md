@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.4.0-alpha] - 2026-03-23
+
+### Added
+- `QuantumCircuit::control(int num_ctrl_qubits)` — build controlled circuit variants (X→CX, CX→CCX, generic→UNITARY)
+- `CommutativeCancellation` transpiler pass — merge/cancel rotation gates through commuting intermediates
+- `RemoveDiagonalGatesBeforeMeasure` transpiler pass — strip Z-diagonal gates (RZ, P, T, S, Z, U1) before MEASURE
+- `RemoveResetInZeroState` transpiler pass — remove redundant RESET on qubits known to be |0⟩
+- `ASAPSchedule` / `ALAPSchedule` transpiler passes — assign time-slot annotations to instructions
+- Python binding: `QuantumCircuit.control()`
+
+### Improved
+- Preset pass manager: level 1+ includes reset/diagonal cleanup; level 2+ includes commutative cancellation
+- Transpiler pipeline now covers all 6 standard stages: unroll, layout, routing, basis translation, optimization, scheduling
+
 ## [1.3.0-alpha] - 2026-03-23
 
 ### Added
