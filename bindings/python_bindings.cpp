@@ -110,6 +110,7 @@ PYBIND11_MODULE(qpp_python, m) {
         .def("compose", &qpp::QuantumCircuit::compose)
         .def("inverse", &qpp::QuantumCircuit::inverse)
         .def("repeat", &qpp::QuantumCircuit::repeat)
+        .def("control", &qpp::QuantumCircuit::control, py::arg("num_ctrl_qubits") = 1)
         // Export
         .def("to_qasm2", &qpp::QuantumCircuit::to_qasm2)
         .def("to_qasm3", &qpp::QuantumCircuit::to_qasm3)

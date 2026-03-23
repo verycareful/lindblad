@@ -583,9 +583,11 @@ PassManager preset_pass_manager(
     }
 
     if (optimization_level >= 1) {
-        // Level 1: 1Q gate compression + CX cancellation
+        // Level 1: 1Q gate compression + CX cancellation + diagonal removal + reset cleanup
+        pm.append(std::make_unique<RemoveResetInZeroState>());
         pm.append(std::make_unique<Optimize1qGates>());
         pm.append(std::make_unique<CXCancellation>());
+        pm.append(std::make_unique<RemoveDiagonalGatesBeforeMeasure>());
     }
 
     if (optimization_level >= 2) {
@@ -594,13 +596,17 @@ PassManager preset_pass_manager(
         pm.append(std::make_unique<SabreSwap>());
         pm.append(std::make_unique<Optimize1qGates>());
         pm.append(std::make_unique<CXCancellation>());
+        pm.append(std::make_unique<CommutativeCancellation>());
+        pm.append(std::make_unique<RemoveDiagonalGatesBeforeMeasure>());
     }
 
     if (optimization_level >= 3) {
-        // Level 3: Block consolidation with KAK + repeat passes
+        // Level 3: Block consolidation with KAK + commutative + repeat passes
         pm.append(std::make_unique<ConsolidateBlocks>());
         pm.append(std::make_unique<Optimize1qGates>());
         pm.append(std::make_unique<CXCancellation>());
+        pm.append(std::make_unique<CommutativeCancellation>());
+        pm.append(std::make_unique<RemoveDiagonalGatesBeforeMeasure>());
     }
 
     return pm;
