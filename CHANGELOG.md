@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.3.0-alpha] - 2026-03-23
+
+### Added
+- JSON serialization: `QuantumCircuit::to_json()` / `from_json()` for circuit persistence and interop
+- QASM2 parser: custom `gate` definitions (`gate foo(a) p,q { ... }`) with parameter substitution and recursive inlining
+- Python bindings: `PauliString` class exposed directly; `SparsePauliOp` now accepts `vector<PauliString>` constructor
+- Python bindings: `to_json()` / `from_json()` on `QuantumCircuit`
+
+### Improved
+- Distinct-qubit validation on all 2-qubit and 3-qubit circuit construction methods (throws `invalid_argument` on `q1==q2`)
+- Documented Pauli qubit ordering convention in `operators.hpp` (MSB-first / big-endian, matching Qiskit)
+- Documented `process_fidelity` as squared Hilbert-Schmidt inner product with Nielsen 2002 reference
+
 ## [1.2.0-alpha] - 2026-03-22
 
 ### Fixed

@@ -180,6 +180,10 @@ public:
     static QuantumCircuit from_qasm2(const std::string& qasm);
     static QuantumCircuit from_qasm3(const std::string& qasm);
 
+    // JSON serialization (zero-dependency, hand-rolled)
+    std::string to_json() const;
+    static QuantumCircuit from_json(const std::string& json);
+
     // =========================================================================
     // Visualisation
     // =========================================================================

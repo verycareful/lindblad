@@ -8,8 +8,8 @@ q++ is a high-performance C++23 quantum computing framework focused on circuit c
 
 ## Release
 
-- Current release: `v1.2.0-alpha` (Audit fixes: correctness, performance, and stability improvements)
-- Previous release: `v1.1.0-alpha` (Major feature update: Local Simulators & Transpiler De-simplification)
+- Current release: `v1.3.0-alpha` (API polish, serialization, QASM2 custom gates)
+- Previous release: `v1.2.0-alpha` (Audit fixes: correctness, performance, and stability improvements)
 
 ## Project Scope
 

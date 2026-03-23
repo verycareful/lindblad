@@ -14,9 +14,18 @@ class QuantumCircuit;
 // =============================================================================
 // PauliString — tensor product of single-qubit Paulis
 // =============================================================================
+// Qubit ordering convention (matches Qiskit):
+//   pauli[0] acts on the MOST significant qubit (highest index in ket notation).
+//   pauli[N-1] acts on the LEAST significant qubit (qubit 0).
+//
+//   Example: PauliString("XIZ") on a 3-qubit system means:
+//     X on qubit 2, I on qubit 1, Z on qubit 0.
+//
+//   In ket notation |q2 q1 q0⟩, the leftmost character maps to the leftmost
+//   (highest) qubit. This is big-endian / MSB-first ordering.
 
 struct PauliString {
-    std::string pauli;    // e.g., "XYZII"
+    std::string pauli;    // e.g., "XYZII" — index 0 = most significant qubit
     Complex128 coeff;
 
     PauliString() : coeff(1.0, 0.0) {}
@@ -93,7 +102,17 @@ public:
 namespace QuantumInfo {
     double state_fidelity(const Statevector& sv1, const Statevector& sv2);
     double state_fidelity(const DensityMatrix& rho1, const DensityMatrix& rho2);
+
+    // Squared process fidelity (Hilbert-Schmidt inner product):
+    //   F_proc(U, V) = |Tr(U† V)|² / d²
+    // where d is the Hilbert space dimension.
+    // This is the SQUARED quantity. For the unsquared version, take sqrt().
+    // Related: average_gate_fidelity = (d * F_proc + 1) / (d + 1)  [Nielsen 2002]
     double process_fidelity(const Operator& channel1, const Operator& channel2);
+
+    // Average gate fidelity: F_avg = (d * F_proc + 1) / (d + 1)
+    // where F_proc is the squared process fidelity above. See: Nielsen (2002),
+    // "A simple formula for the average gate fidelity of a quantum dynamical operation".
     double average_gate_fidelity(const Operator& channel, const Operator& target);
     double entropy(const DensityMatrix& rho, double base = 2.0);
     double entanglement_entropy(const Statevector& sv, const std::vector<int>& subsystem);
