@@ -32,6 +32,7 @@ qpp_audit_verification.md
 qpp_impl_check.md
 Build Logs.txt
 edits_temp
+outputs/
 
 # Claude
 .claude/

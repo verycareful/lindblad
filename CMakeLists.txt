@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(qpp VERSION 1.5.2 LANGUAGES CXX)
+project(qpp VERSION 1.5.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
