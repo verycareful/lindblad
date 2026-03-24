@@ -8,8 +8,8 @@ q++ is a high-performance C++23 quantum computing framework focused on circuit c
 
 ## Release
 
-- Current release: `v1.5.1-alpha` (Clang build compatibility fixes for OpenMP and stdlib edge cases)
-- Previous release: `v1.5.0-alpha` (Performance-optimised 2Q gates, MPS 3Q support, simulator bug fixes)
+- Current release: `v1.5.2-alpha` (Clang 18+ build compatibility — added missing headers and fixed API access)
+- Previous release: `v1.5.1-alpha` (Clang build compatibility fixes for OpenMP and stdlib edge cases)
 
 ## Project Scope
 
@@ -87,7 +87,24 @@ Example:
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DQPP_BUILD_BENCHMARKS=ON -DQPP_BUILD_PYTHON=OFF
 ```
 
-## Documentation Index
+### Building with Clang (Recommended for Performance)
+
+For maximum performance on Linux with Clang 18+ and libomp:
+
+```bash
+cmake -S . -B build-clang -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_CXX_FLAGS="-O3 -march=native -Wno-nan-infinity-disabled" \
+  -DQPP_BUILD_PYTHON=OFF
+cmake --build build-clang -j$(nproc)
+```
+
+This builds with:
+- Clang 18.1.3+ (proven compatible)
+- libomp (LLVM OpenMP runtime)
+- `-O3 -march=native` for maximum CPU-specific optimizations
+- `-Wno-nan-infinity-disabled` to suppress NaN/infinity warnings safe under `-ffast-math`
 
 - `docs/Architecture.md`: architecture, module boundaries, and execution flow
 - `docs/BuildAndTest.md`: platform-specific build and test instructions

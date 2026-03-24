@@ -1,6 +1,8 @@
 #include "qpp/algorithms.hpp"
 #include "qpp/gates.hpp"
+#include "qpp/simulators/statevector_sim.hpp"
 
+#include <complex>
 #include <cmath>
 #include <random>
 #include <stdexcept>

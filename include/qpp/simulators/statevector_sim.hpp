@@ -59,7 +59,6 @@ public:
         const QuantumCircuit& circuit
     );
 
-private:
     void apply_instruction(Statevector& sv, const Instruction& inst);
 };
 

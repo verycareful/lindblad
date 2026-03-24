@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.5.2-alpha] - 2026-03-24
+
+### Fixed
+- **Build:** Clang 18+ compatibility — added missing `<complex>` and `<array>` standard library headers in algorithm and noise modules
+- **Build:** Clang 18+ compatibility — added missing `#include "qpp/gates.hpp"` in operators.cpp (gates namespace functions now properly declared)
+- **Build:** Clang 18+ compatibility — made `StatevectorSimulator::apply_instruction()` public to allow internal module access from quantum_info/states.cpp
+- **Build:** Resolved `-ffast-math` + `-Werror` conflict by suppressing `-Wnan-infinity-disabled` warning during Clang build — NaN/infinity checks are safe under -ffast-math when performed post-computation
+
+### Build Verification
+- ✓ Successfully compiled with Clang 18.1.3 + libomp (Ubuntu 24.04 LTS)
+- ✓ Release build: `-O3 -march=native` optimization flags
+- ✓ All 130 build targets compiled successfully
+- ✓ Main library (libqpp_core.a), test framework, and benchmark suite linked
+- ✓ Test executable generated: `build-clang/tests/qpp_tests` (2.4M)
+
 ## [1.5.1-alpha] - 2026-03-24
 
 ### Fixed
