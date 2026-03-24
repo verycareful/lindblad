@@ -3,6 +3,8 @@
 #include "qpp/types.hpp"
 
 #include <array>
+#include <random>
+#include <unordered_map>
 #include <vector>
 
 namespace qpp {
@@ -82,6 +84,14 @@ private:
         std::vector<Complex128>& Vt,
         int& new_rank
     );
+
+    // Adjacent two-qubit gate application (internal)
+    void apply_two_qubit_gate_adjacent(
+        const std::array<Complex128, 16>& U, int q1
+    );
+
+    // Adjacent SWAP gate (internal)
+    void apply_swap_adjacent(int q);
 };
 
 // =============================================================================

@@ -321,7 +321,10 @@ int StabilizerState::expectation_pauli(const std::string& pauli) const {
 
         // Swap pivot row to position pivot_col
         std::swap(mat[pivot], mat[pivot_col]);
-        std::swap(mat_phase[pivot], mat_phase[pivot_col]);
+        // Manual swap for vector<bool> elements (proxy reference doesn't work with std::swap)
+        bool temp_phase = mat_phase[pivot];
+        mat_phase[pivot] = mat_phase[pivot_col];
+        mat_phase[pivot_col] = temp_phase;
 
         // Eliminate other rows (and target)
         for (int r = 0; r < rows; ++r) {

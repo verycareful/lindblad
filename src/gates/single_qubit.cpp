@@ -21,23 +21,25 @@ static inline void apply_single_qubit_matrix(
     double dr, double di   // d = matrix[1][1]
 ) noexcept {
     const size_t step = 1ULL << qubit;
+    double* __restrict__ real_ptr = sv.real_parts;
+    double* __restrict__ imag_ptr = sv.imag_parts;
 
     #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
-        #pragma omp simd aligned(sv.real_parts, sv.imag_parts: 64)
+        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i; j < i + step; ++j) {
-            double r0 = sv.real_parts[j];
-            double i0 = sv.imag_parts[j];
-            double r1 = sv.real_parts[j + step];
-            double i1 = sv.imag_parts[j + step];
+            double r0 = real_ptr[j];
+            double i0 = imag_ptr[j];
+            double r1 = real_ptr[j + step];
+            double i1 = imag_ptr[j + step];
 
             // new_0 = a * old_0 + b * old_1
-            sv.real_parts[j]        = (ar*r0 - ai*i0) + (br*r1 - bi*i1);
-            sv.imag_parts[j]        = (ar*i0 + ai*r0) + (br*i1 + bi*r1);
+            real_ptr[j]        = (ar*r0 - ai*i0) + (br*r1 - bi*i1);
+            imag_ptr[j]        = (ar*i0 + ai*r0) + (br*i1 + bi*r1);
 
             // new_1 = c * old_0 + d * old_1
-            sv.real_parts[j + step] = (cr*r0 - ci*i0) + (dr*r1 - di*i1);
-            sv.imag_parts[j + step] = (cr*i0 + ci*r0) + (dr*i1 + di*r1);
+            real_ptr[j + step] = (cr*r0 - ci*i0) + (dr*r1 - di*i1);
+            imag_ptr[j + step] = (cr*i0 + ci*r0) + (dr*i1 + di*r1);
         }
     }
 }
@@ -49,25 +51,27 @@ static inline void apply_diagonal_phase(
     double cos1, double sin1   // cos/sin of phase1
 ) noexcept {
     const size_t step = 1ULL << qubit;
+    double* __restrict__ real_ptr = sv.real_parts;
+    double* __restrict__ imag_ptr = sv.imag_parts;
 
     #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
-        #pragma omp simd aligned(sv.real_parts, sv.imag_parts: 64)
+        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i; j < i + step; ++j) {
             // Apply phase0 to qubit=0 amplitudes
-            double r = sv.real_parts[j];
-            double im = sv.imag_parts[j];
-            sv.real_parts[j] = r * cos0 - im * sin0;
-            sv.imag_parts[j] = r * sin0 + im * cos0;
+            double r = real_ptr[j];
+            double im = imag_ptr[j];
+            real_ptr[j] = r * cos0 - im * sin0;
+            imag_ptr[j] = r * sin0 + im * cos0;
         }
 
-        #pragma omp simd aligned(sv.real_parts, sv.imag_parts: 64)
+        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i + step; j < i + 2 * step; ++j) {
             // Apply phase1 to qubit=1 amplitudes
-            double r = sv.real_parts[j];
-            double im = sv.imag_parts[j];
-            sv.real_parts[j] = r * cos1 - im * sin1;
-            sv.imag_parts[j] = r * sin1 + im * cos1;
+            double r = real_ptr[j];
+            double im = imag_ptr[j];
+            real_ptr[j] = r * cos1 - im * sin1;
+            imag_ptr[j] = r * sin1 + im * cos1;
         }
     }
 }
@@ -77,13 +81,15 @@ static inline void apply_diagonal_phase(
 // =============================================================================
 void apply_x(Statevector& sv, int q) noexcept {
     const size_t step = 1ULL << q;
+    double* __restrict__ real_ptr = sv.real_parts;
+    double* __restrict__ imag_ptr = sv.imag_parts;
 
     #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
-        #pragma omp simd aligned(sv.real_parts, sv.imag_parts: 64)
+        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i; j < i + step; ++j) {
-            std::swap(sv.real_parts[j], sv.real_parts[j + step]);
-            std::swap(sv.imag_parts[j], sv.imag_parts[j + step]);
+            std::swap(real_ptr[j], real_ptr[j + step]);
+            std::swap(imag_ptr[j], imag_ptr[j + step]);
         }
     }
 }
@@ -93,22 +99,24 @@ void apply_x(Statevector& sv, int q) noexcept {
 // =============================================================================
 void apply_y(Statevector& sv, int q) noexcept {
     const size_t step = 1ULL << q;
+    double* __restrict__ real_ptr = sv.real_parts;
+    double* __restrict__ imag_ptr = sv.imag_parts;
 
     #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
-        #pragma omp simd aligned(sv.real_parts, sv.imag_parts: 64)
+        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i; j < i + step; ++j) {
-            double r0 = sv.real_parts[j];
-            double i0 = sv.imag_parts[j];
-            double r1 = sv.real_parts[j + step];
-            double i1 = sv.imag_parts[j + step];
+            double r0 = real_ptr[j];
+            double i0 = imag_ptr[j];
+            double r1 = real_ptr[j + step];
+            double i1 = imag_ptr[j + step];
 
             // new_0 = -i * old_1 = (i1, -r1)
-            sv.real_parts[j]        = i1;
-            sv.imag_parts[j]        = -r1;
+            real_ptr[j]        = i1;
+            imag_ptr[j]        = -r1;
             // new_1 = i * old_0 = (-i0, r0)
-            sv.real_parts[j + step] = -i0;
-            sv.imag_parts[j + step] = r0;
+            real_ptr[j + step] = -i0;
+            imag_ptr[j + step] = r0;
         }
     }
 }
@@ -118,13 +126,15 @@ void apply_y(Statevector& sv, int q) noexcept {
 // =============================================================================
 void apply_z(Statevector& sv, int q) noexcept {
     const size_t step = 1ULL << q;
+    double* __restrict__ real_ptr = sv.real_parts;
+    double* __restrict__ imag_ptr = sv.imag_parts;
 
     #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
-        #pragma omp simd aligned(sv.real_parts, sv.imag_parts: 64)
+        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i + step; j < i + 2 * step; ++j) {
-            sv.real_parts[j] = -sv.real_parts[j];
-            sv.imag_parts[j] = -sv.imag_parts[j];
+            real_ptr[j] = -real_ptr[j];
+            imag_ptr[j] = -imag_ptr[j];
         }
     }
 }
@@ -134,20 +144,22 @@ void apply_z(Statevector& sv, int q) noexcept {
 // =============================================================================
 void apply_h(Statevector& sv, int q) noexcept {
     const size_t step = 1ULL << q;
+    double* __restrict__ real_ptr = sv.real_parts;
+    double* __restrict__ imag_ptr = sv.imag_parts;
 
     #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
-        #pragma omp simd aligned(sv.real_parts, sv.imag_parts: 64)
+        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i; j < i + step; ++j) {
-            double r0 = sv.real_parts[j];
-            double i0 = sv.imag_parts[j];
-            double r1 = sv.real_parts[j + step];
-            double i1 = sv.imag_parts[j + step];
+            double r0 = real_ptr[j];
+            double i0 = imag_ptr[j];
+            double r1 = real_ptr[j + step];
+            double i1 = imag_ptr[j + step];
 
-            sv.real_parts[j]        = INV_SQRT2 * (r0 + r1);
-            sv.imag_parts[j]        = INV_SQRT2 * (i0 + i1);
-            sv.real_parts[j + step] = INV_SQRT2 * (r0 - r1);
-            sv.imag_parts[j + step] = INV_SQRT2 * (i0 - i1);
+            real_ptr[j]        = INV_SQRT2 * (r0 + r1);
+            imag_ptr[j]        = INV_SQRT2 * (i0 + i1);
+            real_ptr[j + step] = INV_SQRT2 * (r0 - r1);
+            imag_ptr[j + step] = INV_SQRT2 * (i0 - i1);
         }
     }
 }
@@ -157,16 +169,18 @@ void apply_h(Statevector& sv, int q) noexcept {
 // =============================================================================
 void apply_s(Statevector& sv, int q) noexcept {
     const size_t step = 1ULL << q;
+    double* __restrict__ real_ptr = sv.real_parts;
+    double* __restrict__ imag_ptr = sv.imag_parts;
 
     #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
-        #pragma omp simd aligned(sv.real_parts, sv.imag_parts: 64)
+        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i + step; j < i + 2 * step; ++j) {
             // Multiply by i: (r + im*i) * i = -im + r*i
-            double r = sv.real_parts[j];
-            double im = sv.imag_parts[j];
-            sv.real_parts[j] = -im;
-            sv.imag_parts[j] = r;
+            double r = real_ptr[j];
+            double im = imag_ptr[j];
+            real_ptr[j] = -im;
+            imag_ptr[j] = r;
         }
     }
 }
@@ -176,16 +190,18 @@ void apply_s(Statevector& sv, int q) noexcept {
 // =============================================================================
 void apply_sdg(Statevector& sv, int q) noexcept {
     const size_t step = 1ULL << q;
+    double* __restrict__ real_ptr = sv.real_parts;
+    double* __restrict__ imag_ptr = sv.imag_parts;
 
     #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
-        #pragma omp simd aligned(sv.real_parts, sv.imag_parts: 64)
+        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i + step; j < i + 2 * step; ++j) {
             // Multiply by -i: (r + im*i) * (-i) = im - r*i
-            double r = sv.real_parts[j];
-            double im = sv.imag_parts[j];
-            sv.real_parts[j] = im;
-            sv.imag_parts[j] = -r;
+            double r = real_ptr[j];
+            double im = imag_ptr[j];
+            real_ptr[j] = im;
+            imag_ptr[j] = -r;
         }
     }
 }
