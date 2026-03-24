@@ -1,6 +1,7 @@
 #include "qpp/noise.hpp"
 
 #include <algorithm>
+#include <array>
 
 namespace qpp {
 

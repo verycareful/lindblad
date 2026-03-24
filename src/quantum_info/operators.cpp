@@ -1,6 +1,7 @@
 #include "qpp/operators.hpp"
 #include "qpp/statevector.hpp"
 #include "qpp/simulators/density_matrix_sim.hpp"
+#include "qpp/gates.hpp"
 
 #include <algorithm>
 #include <cmath>
