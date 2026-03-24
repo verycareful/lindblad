@@ -4,8 +4,10 @@
 
 #include <complex>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <stdexcept>
+#include <iostream>
 
 #include <nlopt.h>
 
@@ -28,7 +30,8 @@ static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, vo
     auto* cb = static_cast<MAQAOACallbackData*>(data);
     std::vector<double> params(x, x + n);
     auto circuit = cb->maqaoa->build_circuit(*cb->cost_hamiltonian, *cb->mixer_hamiltonian, params);
-    return cb->estimator->run_single(circuit, *cb->cost_hamiltonian);
+    const double value = cb->estimator->run_single(circuit, *cb->cost_hamiltonian);
+    return std::isfinite(value) ? value : 1e12;
 }
 
 int MAQAOA::num_parameters(const SparsePauliOp& cost_hamiltonian) const {
@@ -58,6 +61,8 @@ MAQAOA::Result MAQAOA::optimize(
     }
 
     int n_params = num_parameters(cost_hamiltonian);
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kBound = 2.0 * kPi;  // Allow [0, 2π]
 
     if (options.layerwise) {
         // Layerwise training: optimise one layer at a time.
@@ -66,6 +71,8 @@ MAQAOA::Result MAQAOA::optimize(
         int cost_terms = static_cast<int>(cost_hamiltonian.terms.size());
         int mixer_terms = nq;
         int params_per_layer = cost_terms + mixer_terms;
+
+        bool all_layers_converged = true;
 
         for (int layer = 0; layer < options.p; ++layer) {
             // Add new layer parameters (initialised near 0 to start from |+⟩ regime)
@@ -88,32 +95,66 @@ MAQAOA::Result MAQAOA::optimize(
                 const MAQAOA* maqaoa;
                 std::vector<double> frozen;
                 int p_current;
+                int nfev;
+                double best_val;
             };
 
             static auto layer_objective = [](unsigned n, const double* x,
                                               double* /*grad*/, void* raw) -> double {
                 auto* d = static_cast<LayerCBData*>(raw);
-                // Combine frozen + current free params
                 std::vector<double> all = d->frozen;
                 all.insert(all.end(), x, x + n);
                 auto circuit = d->maqaoa->build_circuit(
                     *d->cost_hamiltonian, *d->mixer_hamiltonian, all);
-                return d->estimator->run_single(circuit, *d->cost_hamiltonian);
+                const double value = d->estimator->run_single(circuit, *d->cost_hamiltonian);
+                const double v = std::isfinite(value) ? value : 1e12;
+                ++d->nfev;
+                if (v < d->best_val) d->best_val = v;
+                if (d->nfev % 50 == 0) {
+                    std::cout << "[MAQAOA] layer=" << d->p_current
+                              << " eval=" << d->nfev
+                              << " best=" << d->best_val
+                              << std::endl;
+                }
+                return v;
             };
 
+            std::cout << "[MAQAOA] layer=" << layer
+                      << " starting, free_params=" << params_per_layer
+                      << " total_layers=" << options.p
+                      << " budget=" << options.max_iterations
+                      << std::endl;
+
             LayerCBData cb{&estimator, &cost_hamiltonian, &mixer, this,
-                           frozen_prefix, layer + 1};
+                           frozen_prefix, layer + 1, 0,
+                           std::numeric_limits<double>::infinity()};
 
             nlopt_opt opt = nlopt_create(NLOPT_LN_COBYLA, params_per_layer);
             nlopt_set_min_objective(opt, layer_objective, &cb);
             nlopt_set_maxeval(opt, options.max_iterations);
             nlopt_set_xtol_rel(opt, options.convergence_threshold);
 
+            // Set bounds to prevent parameters from blowing up
+            std::vector<double> lb(params_per_layer, -kBound);
+            std::vector<double> ub(params_per_layer, kBound);
+            nlopt_set_lower_bounds(opt, lb.data());
+            nlopt_set_upper_bounds(opt, ub.data());
+
             // Initial guess: the current layer portion of all_params
             std::vector<double> x0(all_params.begin() + offset, all_params.end());
-            double min_val;
-            nlopt_optimize(opt, x0.data(), &min_val);
+            double min_val = std::numeric_limits<double>::infinity();
+            nlopt_result nlopt_res = nlopt_optimize(opt, x0.data(), &min_val);
             nlopt_destroy(opt);
+
+            std::cout << "[MAQAOA] layer=" << layer
+                      << " done, nlopt_res=" << nlopt_res
+                      << " nfev=" << cb.nfev
+                      << " best=" << cb.best_val
+                      << std::endl;
+
+            if (nlopt_res < 0 || !std::isfinite(min_val)) {
+                all_layers_converged = false;
+            }
 
             // Update the free layer portion in all_params
             for (int i = 0; i < params_per_layer; ++i) {
@@ -124,6 +165,11 @@ MAQAOA::Result MAQAOA::optimize(
         result.optimal_params = all_params;
         auto circuit = build_circuit(cost_hamiltonian, mixer, all_params);
         result.optimal_value = estimator.run_single(circuit, cost_hamiltonian);
+        result.converged = all_layers_converged && std::isfinite(result.optimal_value);
+
+        if (!std::isfinite(result.optimal_value)) {
+            result.optimal_value = 1e12;
+        }
 
     } else {
         // Standard: optimise all parameters at once
@@ -135,13 +181,19 @@ MAQAOA::Result MAQAOA::optimize(
         nlopt_set_maxeval(opt, options.max_iterations);
         nlopt_set_xtol_rel(opt, options.convergence_threshold);
 
-        double min_val;
+        // Set bounds to prevent parameters from blowing up
+        std::vector<double> lb(n_params, -kBound);
+        std::vector<double> ub(n_params, kBound);
+        nlopt_set_lower_bounds(opt, lb.data());
+        nlopt_set_upper_bounds(opt, ub.data());
+
+        double min_val = std::numeric_limits<double>::infinity();
         nlopt_result nlopt_res = nlopt_optimize(opt, params.data(), &min_val);
         nlopt_destroy(opt);
 
-        result.optimal_value = min_val;
+        result.optimal_value = std::isfinite(min_val) ? min_val : 1e12;
         result.optimal_params = params;
-        result.converged = (nlopt_res > 0);
+        result.converged = (nlopt_res > 0) && std::isfinite(min_val);
     }
 
     // Sample

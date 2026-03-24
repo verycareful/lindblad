@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.5.3-alpha] - 2026-03-24
+
+### Added
+- **MA-QAOA microgrid benchmark (5-qubit):** `tests/test_maqaoa_microgrid.cpp` — full C++ port of
+  `EnergyGridOpt_py/QAOA` pipeline with hard-coded 5-generator critical scenario (demand=10 MW, A=10).
+  Includes: QUBO builder, Ising mapper (h_i, J_ij, energy offset), brute-force exact solver (all 32
+  states), simulated annealing (T₀=100, Tf=0.01, α=0.995, 100 runs), and MA-QAOA layerwise (p=3,
+  500 evals/layer). All three methods find the exact optimal bitstring `10110` (cost=14). Comparison
+  table printed for direct benchmarking against Python reference.
+- **MA-QAOA microgrid benchmark (20-qubit):** `tests/test_maqaoa_20qubit.cpp` — C++ port of
+  `EnergyGridOpt_py/MA QAOA/EnergyGridOptimisation_20qubit`, scenario `critical_tight_A`
+  (demand=52 MW, A=20, 20 generators from `generators.csv`). Includes: exact solver enumerating all
+  2²⁰=1M states in ~22 ms (vs Python's PuLP ILP solver), simulated annealing with demand-aware warm
+  start, and MA-QAOA layerwise (p=6, 500 evals/layer, term-indexed gammas). Exact optimum: bitstring
+  `10111100100000000000`, QUBO cost=16 (generators 01,03,04,05,06,09 — exactly 52 MW, zero penalty).
+- **MA-QAOA layerwise progress logging:** `src/algorithms/maqaoa.cpp` now prints per-layer start/done
+  messages and best-value updates every 50 evaluations — essential for monitoring long 20-qubit runs.
+
+### Changed
+- `tests/CMakeLists.txt`: added `test_maqaoa_microgrid.cpp` and `test_maqaoa_20qubit.cpp` to test sources.
+
+### Notes
+- Term-indexed parameterisation (one γ per Hamiltonian term) gives 230 free params/layer for the 20-qubit
+  problem vs Python's 40 (qubit-indexed γ). More expressive; each layer is ~5 min on 20-qubit statevector.
+- SA single-run success rate on 20 qubits is problem-dependent; Python uses a 300 s time budget
+  (`shootout.budget_seconds`) across multiple restarts.
+
 ## [1.5.2-alpha] - 2026-03-24
 
 ### Fixed
