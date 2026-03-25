@@ -1017,9 +1017,11 @@ std::string QuantumCircuit::to_qasm3() const {
     return oss.str();
 }
 
-// Stubs for from_qasm — will be implemented in the QASM parser phase
-QuantumCircuit QuantumCircuit::from_qasm2(const std::string& /*qasm*/) {
-    throw std::runtime_error("QASM2 parser not yet implemented — use QASM2Parser class");
+// Forward declaration of the bridge function in qasm2_parser.cpp
+QuantumCircuit qasm2_parse_impl(const std::string& qasm);
+
+QuantumCircuit QuantumCircuit::from_qasm2(const std::string& qasm) {
+    return qasm2_parse_impl(qasm);
 }
 
 QuantumCircuit QuantumCircuit::from_qasm3(const std::string& /*qasm*/) {

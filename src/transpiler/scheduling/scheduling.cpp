@@ -8,9 +8,8 @@
 // ALAP: each gate is assigned the latest cycle it can occupy without
 //       increasing circuit depth. Reverse topological pass.
 //
-// The time slot is stored in the Instruction::condition_value field
-// (repurposed for scheduling metadata when condition_clbit == -2).
-// This avoids changing the Instruction struct.
+// The time slot is stored in Instruction::schedule_time (dedicated field).
+// condition_clbit / condition_value are left untouched for classical conditioning.
 
 #include "qpp/transpiler.hpp"
 
@@ -44,8 +43,7 @@ DAGCircuit ASAPSchedule::run(
                 wire_available[q] = max_cycle;
             }
             // Tag the instruction with its scheduled cycle
-            inst.condition_clbit = -2;  // sentinel: this is a schedule annotation
-            inst.condition_value = max_cycle;
+            inst.schedule_time = max_cycle;
             scheduled.instructions.push_back(inst);
             continue;
         }
@@ -57,8 +55,7 @@ DAGCircuit ASAPSchedule::run(
         }
 
         // Tag the instruction with its scheduled cycle
-        inst.condition_clbit = -2;
-        inst.condition_value = start_cycle;
+        inst.schedule_time = start_cycle;
 
         // Mark wires as occupied until the next cycle
         for (int q : inst.qubits) {
@@ -134,8 +131,7 @@ DAGCircuit ALAPSchedule::run(
     scheduled.name = qc.name;
     for (int i = 0; i < n; ++i) {
         Instruction inst = qc.instructions[i];
-        inst.condition_clbit = -2;
-        inst.condition_value = alap_start[i];
+        inst.schedule_time = alap_start[i];
         scheduled.instructions.push_back(std::move(inst));
     }
 

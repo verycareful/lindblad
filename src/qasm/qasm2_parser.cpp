@@ -515,4 +515,10 @@ private:
     }
 };
 
+// Bridge function so circuit.cpp can call the parser without including this
+// translation unit's internal class definition.
+QuantumCircuit qasm2_parse_impl(const std::string& qasm) {
+    return QASM2Parser::parse(qasm);
+}
+
 } // namespace qpp

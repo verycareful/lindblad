@@ -12,9 +12,11 @@
 #include <Eigen/Dense>
 #include <Eigen/Eigenvalues>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <numeric>
 #include <random>
 #include <stdexcept>
 
@@ -76,7 +78,10 @@ bool DensityMatrix::is_valid(double atol) const {
 // =============================================================================
 // apply_gate — localized tensor operation: rho -> U * rho * U†
 // Works on the 2^k subspace spanned by target qubits.
-// Complexity: O(4^N * 4^k) — same as statevector approach for density matrix.
+//
+// Background indices (those with all target bits = 0) are enumerated directly
+// via bit-insertion, eliminating the O(4^N) branch-per-element loop.
+// Each sub-block update uses an O(2^k) scratch buffer — no full-matrix copy.
 // =============================================================================
 
 void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
@@ -88,86 +93,81 @@ void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
         throw std::invalid_argument("Gate matrix size mismatch");
     }
 
-    // Build non-target mask for iteration
-    size_t non_target_mask = ~size_t(0);
-    for (int q : qubits) non_target_mask &= ~(size_t(1) << q);
-    non_target_mask &= (dim - 1);
+    // Sort target qubits and mark them for fast lookup
+    std::vector<int> sorted_tgts = qubits;
+    std::sort(sorted_tgts.begin(), sorted_tgts.end());
 
-    // Helper: extract sub-index for target qubits from a full index
-    auto extract_sub_idx = [&](size_t full_idx) -> size_t {
-        size_t sub = 0;
-        for (int qi = 0; qi < k; ++qi) {
-            if ((full_idx >> qubits[qi]) & 1) sub |= (size_t(1) << qi);
-        }
-        return sub;
-    };
+    std::vector<bool> is_tgt(n_qubits, false);
+    for (int q : qubits) is_tgt[q] = true;
 
-    // Helper: from background index + sub index → full index
-    auto build_full_idx = [&](size_t bg, size_t sub_idx) -> size_t {
-        size_t full = bg;
-        for (int qi = 0; qi < k; ++qi) {
-            if ((sub_idx >> qi) & 1) full |= (size_t(1) << qubits[qi]);
-            else                    full &= ~(size_t(1) << qubits[qi]);
-        }
-        return full;
-    };
-
-    // Iterate over all full-system indices for BOTH row and column of rho
-    // rho_new[row, col] = sum_{r', c'} U[sub(row), r'] * U†[c', sub(col)] * rho[full(r'), full(c')]
-    //                   = sum_{r', c'} U[sub(row), r'] * conj(U[c', sub(col)]) * rho[full(r'), full(c')]
-    //
-    // We loop over bg_row (background bits of row) and bg_col,
-    // then over sub-indices in the 2^k subspace.
-
-    // Apply left: rho_temp = U * rho  (acting on row index)
-    // rho_temp[i, j] = sum_i' U[sub(i), sub(i')] * rho[full(bg(i), i'), j]
-    // This mixes rows at fixed column.
-    {
-        std::vector<Complex128> temp = data;
-        // Enumerate background bits of the ROW index
-        // For each combination of bg bits and column index, transform within the 2^k sub-block
-        for (size_t col = 0; col < dim; ++col) {
-            // Iterate over background index
-            for (size_t bg = 0; bg < dim; ++bg) {
-                if (bg & ~non_target_mask) continue;  // skip if non-bg bits are set
-
-                // For this (bg, col) block, apply U to the row sub-indices
-                // temp_new[build(bg, r_out), col] = sum_r_in U[r_out, r_in] * data[build(bg, r_in), col]
-                for (size_t r_out = 0; r_out < sub_dim; ++r_out) {
-                    size_t row_out = build_full_idx(bg, r_out);
-                    Complex128 sum(0.0, 0.0);
-                    for (size_t r_in = 0; r_in < sub_dim; ++r_in) {
-                        size_t row_in = build_full_idx(bg, r_in);
-                        sum += U[r_out * sub_dim + r_in] * data[row_in * dim + col];
-                    }
-                    temp[row_out * dim + col] = sum;
-                }
-            }
-        }
-        data = temp;
+    // Precompute the column offsets that each sub-index contributes to a full index.
+    // sub_offsets[s] = sum of (1 << sorted_tgts[qi]) for each set bit qi in s.
+    std::vector<size_t> sub_offsets(sub_dim);
+    for (size_t s = 0; s < sub_dim; ++s) {
+        size_t off = 0;
+        for (int qi = 0; qi < k; ++qi)
+            if ((s >> qi) & 1) off |= (size_t(1) << sorted_tgts[qi]);
+        sub_offsets[s] = off;
     }
 
-    // Apply right (U†): rho_new = rho_temp * U†  (acting on column index)
-    // rho_new[i, j] = sum_j' rho_temp[i, build(bg(j), j')] * conj(U[sub(j), j'])
-    {
-        std::vector<Complex128> temp = data;
-        for (size_t row = 0; row < dim; ++row) {
-            for (size_t bg = 0; bg < dim; ++bg) {
-                if (bg & ~non_target_mask) continue;
-
-                for (size_t c_out = 0; c_out < sub_dim; ++c_out) {
-                    size_t col_out = build_full_idx(bg, c_out);
-                    Complex128 sum(0.0, 0.0);
-                    for (size_t c_in = 0; c_in < sub_dim; ++c_in) {
-                        size_t col_in = build_full_idx(bg, c_in);
-                        // U†[c_out, c_in] = conj(U[c_in, c_out])
-                        sum += data[row * dim + col_in] * U[c_in * sub_dim + c_out].conj();
-                    }
-                    temp[row * dim + col_out] = sum;
-                }
+    // Precompute the 2^(N-k) background indices by inserting zero bits at
+    // each target position into a compact (N-k)-bit counter.
+    size_t n_bg = dim >> k;
+    std::vector<size_t> bg_indices(n_bg);
+    for (size_t bg_idx = 0; bg_idx < n_bg; ++bg_idx) {
+        size_t bg = 0;
+        int src_bit = 0;
+        for (int b = 0; b < n_qubits; ++b) {
+            if (!is_tgt[b]) {
+                if ((bg_idx >> src_bit) & 1) bg |= (size_t(1) << b);
+                ++src_bit;
             }
         }
-        data = temp;
+        bg_indices[bg_idx] = bg;
+    }
+
+    // Scratch buffer: O(2^k) — reused across all blocks
+    std::vector<Complex128> scratch(sub_dim);
+
+    // ---- Left multiply: data = U * data  (updates row index) ----
+    // For each background row index bg, and for each column col:
+    //   Read the sub_dim-vector data[bg|sub_offsets[s], col] into scratch,
+    //   apply U in-place, write back.
+    for (size_t bi = 0; bi < n_bg; ++bi) {
+        const size_t bg = bg_indices[bi];
+        for (size_t col = 0; col < dim; ++col) {
+            // Read
+            for (size_t s = 0; s < sub_dim; ++s)
+                scratch[s] = data[(bg | sub_offsets[s]) * dim + col];
+            // Apply U and write
+            for (size_t r_out = 0; r_out < sub_dim; ++r_out) {
+                Complex128 sum(0.0, 0.0);
+                for (size_t r_in = 0; r_in < sub_dim; ++r_in)
+                    sum += U[r_out * sub_dim + r_in] * scratch[r_in];
+                data[(bg | sub_offsets[r_out]) * dim + col] = sum;
+            }
+        }
+    }
+
+    // ---- Right multiply: data = data * U†  (updates column index) ----
+    // For each row row, and for each background col index bg:
+    //   Read the sub_dim-vector data[row, bg|sub_offsets[s]] into scratch,
+    //   apply U† (= conj(U^T)) in-place, write back.
+    for (size_t row = 0; row < dim; ++row) {
+        Complex128* row_ptr = data.data() + row * dim;
+        for (size_t bi = 0; bi < n_bg; ++bi) {
+            const size_t bg = bg_indices[bi];
+            // Read
+            for (size_t s = 0; s < sub_dim; ++s)
+                scratch[s] = row_ptr[bg | sub_offsets[s]];
+            // Apply U†: new[c_out] = sum_{c_in} conj(U[c_in, c_out]) * scratch[c_in]
+            for (size_t c_out = 0; c_out < sub_dim; ++c_out) {
+                Complex128 sum(0.0, 0.0);
+                for (size_t c_in = 0; c_in < sub_dim; ++c_in)
+                    sum += scratch[c_in] * U[c_in * sub_dim + c_out].conj();
+                row_ptr[bg | sub_offsets[c_out]] = sum;
+            }
+        }
     }
 }
 
@@ -451,11 +451,20 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
         // Sample measurements from diagonal of density matrix
         if (shots > 0) {
             auto probs = dm.probabilities();
+            // Build cumulative probability array and sample via binary search —
+            // avoids the O(2^N) alias table built by std::discrete_distribution.
+            std::vector<double> cum(probs.size());
+            std::partial_sum(probs.begin(), probs.end(), cum.begin());
+
             std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
-            std::discrete_distribution<size_t> dist(probs.begin(), probs.end());
+            std::uniform_real_distribution<double> udist(0.0, 1.0);
 
             for (int s = 0; s < shots; ++s) {
-                size_t outcome = dist(rng);
+                double r = udist(rng);
+                auto it = std::lower_bound(cum.begin(), cum.end(), r);
+                size_t outcome = static_cast<size_t>(std::distance(cum.begin(), it));
+                if (outcome >= dm.dim) outcome = dm.dim - 1;
+
                 std::string bits(circuit.n_qubits, '0');
                 for (int b = circuit.n_qubits - 1; b >= 0; --b) {
                     if ((outcome >> b) & 1)
