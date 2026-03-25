@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.5.4-alpha] - 2026-03-25
+
+### Fixed
+- **MA-QAOA layerwise progress logging:** off-by-one in layer index passed to `LayerCBData` — callback
+  was reporting `layer+1` (1-indexed) while start/done messages used `layer` (0-indexed), causing
+  mismatched labels in output (e.g. `layer=0 starting` followed by `layer=1 eval=50`). Now consistently
+  0-indexed throughout.
+
+### Notes
+- Benchmark runs completed: 5-qubit microgrid (all methods, exact optimum found) and 20-qubit microgrid
+  (MA-QAOA p=6 layerwise, 1380 params). Full results to be published in a future release.
+
 ## [1.5.3-alpha] - 2026-03-24
 
 ### Added

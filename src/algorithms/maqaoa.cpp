@@ -126,7 +126,7 @@ MAQAOA::Result MAQAOA::optimize(
                       << std::endl;
 
             LayerCBData cb{&estimator, &cost_hamiltonian, &mixer, this,
-                           frozen_prefix, layer + 1, 0,
+                           frozen_prefix, layer, 0,
                            std::numeric_limits<double>::infinity()};
 
             nlopt_opt opt = nlopt_create(NLOPT_LN_COBYLA, params_per_layer);
