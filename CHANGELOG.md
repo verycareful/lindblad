@@ -4,6 +4,46 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.6.0-alpha] - 2026-03-25
+
+### Performance
+- **`SparsePauliOp::expectation_value` — eliminate statevector cloning (P0-1):** Rewrote
+  `expectation_value` to compute `⟨ψ|P|ψ⟩` directly without cloning the statevector. Uses
+  `x_mask`/`z_mask`/`y_mask` bitmasks and `__builtin_popcountll` to compute the Pauli phase
+  per basis state in a single streaming pass. For a 20-qubit, 50-term Ising Hamiltonian this
+  eliminates ~100 MB of allocation/deallocation and 50M double reads per energy evaluation.
+  Expected 5–50× speedup on the MA-QAOA/VQE inner loop.
+- **`Estimator::run_batch` — OpenMP parallelisation (P0-2):** Replaced sequential loop with
+  `#pragma omp parallel for schedule(dynamic, 1)`. Thread safety guaranteed: `run_single` uses
+  only stack-local state (`bound_circuit`, `StatevectorSimulator`, result). Delivers up to
+  N_threads× throughput on batch parameter evaluations.
+- **`DensityMatrix::apply_gate` — cache-blocked background enumeration (P0-3):** Replaced
+  O(4^N)-with-branches nested loop with direct background-index enumeration (bit-insertion,
+  no `continue` branches) and an O(2^k) scratch buffer. Eliminated the full O(4^N) density
+  matrix copy per gate application. Expected 10–100× for noisy simulation at N≥10.
+- **`DensityMatrix` sampling — replace `std::discrete_distribution` (P0-3, fix 4.3):**
+  Sampling now uses `std::partial_sum` + `std::lower_bound` on a cumulative probability array,
+  consistent with `Statevector::sample_counts`. Avoids the O(2^N) alias table construction
+  overhead of `std::discrete_distribution`.
+- **`Statevector::initialize()` — NUMA first-touch (P0-4):** Replaced `memset` with a
+  parallel `for` loop so OS page-faults are distributed across threads at allocation time.
+  Free on UMA (7900X); 2–4× bandwidth improvement on dual-socket/EPYC hardware.
+- **MPS `to_statevector()` threshold (P0-5):** Lowered the threshold for full statevector
+  contraction from N≤25 to N≤18 (with bond-dimension-aware formula `N + log2(chi) ≤ 24`).
+  Prevents potential OOM or multi-minute stalls for MPS circuits at N>18; always uses
+  sequential MPS measurement (O(shots × N × χ³)) for larger systems.
+
+### Fixed
+- **`QuantumCircuit::from_qasm2()` wired to `QASM2Parser` (P2-1):** Was throwing
+  `"QASM2 parser not yet implemented"` despite the parser being fully implemented in
+  `qasm2_parser.cpp`. Added `qasm2_parse_impl` bridge function; `from_qasm2` now delegates
+  correctly. Fixes `QASM2PiExpressionRoundTrip` integration test.
+- **`Instruction::schedule_time` dedicated field (P2-3):** Added `int schedule_time = -1`
+  to `Instruction`. `ASAPSchedule` and `ALAPSchedule` now write to `schedule_time` instead
+  of overloading `condition_value` with a `-2` sentinel in `condition_clbit`. Eliminates
+  the fragile repurposing that could cause classical conditioning checks to misread schedule
+  annotations.
+
 ## [1.5.4-alpha] - 2026-03-25
 
 ### Fixed

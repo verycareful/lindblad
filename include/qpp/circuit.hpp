@@ -46,6 +46,9 @@ struct Instruction {
     int condition_clbit = -1;     // classical conditioning (-1 = none)
     int condition_value = 0;
 
+    // Scheduling metadata (set by ASAP/ALAP passes; -1 = unscheduled)
+    int schedule_time = -1;
+
     // Utility: gate name as string
     std::string gate_name() const;
 

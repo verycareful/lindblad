@@ -3,14 +3,14 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-v1.5.4--alpha-orange?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.6.0--alpha-orange?style=flat-square)](CHANGELOG.md)
 
 q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
 ## Release
 
-- Current release: `v1.5.4-alpha` (fix: MA-QAOA layerwise logger off-by-one in layer index)
-- Previous release: `v1.5.3-alpha` (MA-QAOA microgrid benchmarks: 5-qubit and 20-qubit end-to-end tests vs Python reference; layerwise progress logging)
+- Current release: `v1.6.0-alpha` (perf: eliminate expectation_value cloning, parallel run_batch, DensityMatrix cache fix, NUMA first-touch, MPS threshold; fix: from_qasm2 wired, schedule_time field)
+- Previous release: `v1.5.4-alpha` (fix: MA-QAOA layerwise logger off-by-one in layer index)
 
 ## Project Scope
 
@@ -19,7 +19,7 @@ The current codebase provides:
 - Circuit construction with symbolic and numeric parameters
 - High-performance exact and approximate simulators:
   - **Statevector**: OpenMP-accelerated full amplitude tracking
-  - **Density Matrix**: Localized tensor gate applications with exact Kraus operator noise
+  - **Density Matrix**: Cache-blocked tensor gate applications with exact Kraus operator noise
   - **Clifford**: Stabilizer tableau with exact GF(2) expectation value tracking
   - **MPS**: Boundary contraction marginals and Eigen BDCSVD truncation
 - Noise channels and composable noise models (including generalized T1/T2 thermal relaxation)

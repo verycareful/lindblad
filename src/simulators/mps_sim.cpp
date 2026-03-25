@@ -785,8 +785,15 @@ MPSSimulator::Result MPSSimulator::run(
         }
     }
 
-    // Sample measurements
-    if (shots > 0 && circuit.n_qubits <= 25) {
+    // Sample measurements.
+    // Use full statevector contraction only for small N where it is faster than
+    // sequential MPS measurement. The crossover is around N=18–20 (sequential
+    // measurement is O(shots * N * chi^3) vs contraction at O(N * chi^2 * 2^N)).
+    const int max_bond_dim_local = result.final_state.max_bond_dim;
+    const bool use_sv = (circuit.n_qubits + static_cast<int>(
+        std::log2(static_cast<double>(max_bond_dim_local) + 1.0))) <= 24
+        && circuit.n_qubits <= 18;
+    if (shots > 0 && use_sv) {
         auto sv = result.final_state.to_statevector();
         result.counts = sv.sample_counts(shots, seed);
     } else if (shots > 0) {

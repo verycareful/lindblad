@@ -1,6 +1,10 @@
 #include "qpp/primitives.hpp"
 #include "qpp/simulators/statevector_sim.hpp"
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace qpp {
 
 // =============================================================================
@@ -12,11 +16,13 @@ std::vector<double> Estimator::run_batch(
     const SparsePauliOp& observable,
     const std::vector<std::vector<double>>& parameter_values
 ) {
-    std::vector<double> results;
-    results.reserve(parameter_values.size());
+    const size_t n = parameter_values.size();
+    std::vector<double> results(n);
 
-    for (const auto& params : parameter_values) {
-        results.push_back(run_single(circuit, observable, params));
+    // run_single is thread-safe: all state is local (bound_circuit, sim, result).
+    #pragma omp parallel for schedule(dynamic, 1)
+    for (size_t i = 0; i < n; ++i) {
+        results[i] = run_single(circuit, observable, parameter_values[i]);
     }
 
     return results;

@@ -77,8 +77,13 @@ Statevector& Statevector::operator=(Statevector&& other) noexcept {
 // =============================================================================
 
 void Statevector::initialize() {
-    std::memset(real_parts, 0, dim * sizeof(double));
-    std::memset(imag_parts, 0, dim * sizeof(double));
+    // Parallel zero-fill causes first-touch to distribute pages across NUMA
+    // nodes on multi-socket hardware; free on UMA.
+    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    for (size_t i = 0; i < dim; ++i) {
+        real_parts[i] = 0.0;
+        imag_parts[i] = 0.0;
+    }
     real_parts[0] = 1.0;  // |0...0⟩
 }
 

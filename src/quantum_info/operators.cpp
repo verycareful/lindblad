@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -179,33 +180,67 @@ std::vector<Complex128> SparsePauliOp::to_matrix() const {
 
 double SparsePauliOp::expectation_value(const Statevector& sv) const {
     // ⟨ψ|H|ψ⟩ = sum_term coeff * ⟨ψ|P|ψ⟩
-    // For each Pauli string P, ⟨ψ|P|ψ⟩ can be computed efficiently
+    //
+    // Computed without cloning the statevector. For a Pauli string
+    // P = ⊗ P_q, the matrix element ⟨k|P|j⟩ is non-zero for exactly
+    // one j per k: j = k XOR x_mask (where x_mask has bits set at X and Y
+    // positions). The phase is determined by Z and Y parities.
+    //
+    // This traverses the statevector once per term with no heap allocation.
     double result = 0.0;
+    const double* rp = sv.real_parts;
+    const double* ip = sv.imag_parts;
+    const size_t dim = sv.dim;
 
     for (const auto& term : terms) {
-        // Apply the Pauli string to |ψ⟩ and compute inner product
-        Statevector temp = sv.clone();
-
-        for (int q = 0; q < term.n_qubits(); ++q) {
+        const int n = term.n_qubits();
+        uint64_t x_mask = 0, z_mask = 0, y_mask = 0;
+        for (int q = 0; q < n; ++q) {
             char c = term.pauli[q];
-            switch (c) {
-                case 'X':
-                    gates::apply_x(temp, q);
-                    break;
-                case 'Y':
-                    gates::apply_y(temp, q);
-                    break;
-                case 'Z':
-                    gates::apply_z(temp, q);
-                    break;
-                default:
-                    break;  // 'I' — do nothing
+            if (c == 'X') {
+                x_mask |= (1ULL << q);
+            } else if (c == 'Z') {
+                z_mask |= (1ULL << q);
+            } else if (c == 'Y') {
+                x_mask |= (1ULL << q);
+                y_mask |= (1ULL << q);
+                z_mask |= (1ULL << q);
             }
         }
 
-        Complex128 inner = sv.inner_product(temp);
-        Complex128 ev = term.coeff * inner;
-        result += ev.real;
+        double re = 0.0, im = 0.0;
+
+        #pragma omp parallel for reduction(+:re,im) schedule(static) if(dim > (1<<20))
+        for (size_t k = 0; k < dim; ++k) {
+            const size_t j = k ^ x_mask;
+
+            // Phase from Z parity (Z_mask includes Y positions via Y=iXZ)
+            const int z_parity = __builtin_popcountll(k & z_mask) & 1;
+            // Additional i^y_count factor from Y = iXZ decomposition
+            const int y_count  = __builtin_popcountll(k & y_mask) & 3;
+
+            // i^y_count: 0->1+0i, 1->0+1i, 2->-1+0i, 3->0-1i
+            double phase_r = 1.0, phase_i = 0.0;
+            switch (y_count) {
+                case 1: phase_r =  0.0; phase_i =  1.0; break;
+                case 2: phase_r = -1.0; phase_i =  0.0; break;
+                case 3: phase_r =  0.0; phase_i = -1.0; break;
+                default: break;
+            }
+            if (z_parity) { phase_r = -phase_r; phase_i = -phase_i; }
+
+            // conj(ψ_k) * ψ_j = (r_k*r_j + i_k*i_j) + i*(r_k*i_j - i_k*r_j)
+            const double r_k = rp[k], i_k = ip[k];
+            const double r_j = rp[j], i_j = ip[j];
+            const double dot_r = r_k * r_j + i_k * i_j;
+            const double dot_i = r_k * i_j - i_k * r_j;
+
+            re += phase_r * dot_r - phase_i * dot_i;
+            im += phase_r * dot_i + phase_i * dot_r;
+        }
+
+        // Accumulate: Re(coeff * (re + i*im))
+        result += term.coeff.real * re - term.coeff.imag * im;
     }
 
     return result;
