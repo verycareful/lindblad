@@ -3,14 +3,14 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-v1.6.0--alpha-orange?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.7.0--alpha-orange?style=flat-square)](CHANGELOG.md)
 
 q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
 ## Release
 
-- Current release: `v1.6.0-alpha` (perf: eliminate expectation_value cloning, parallel run_batch, DensityMatrix cache fix, NUMA first-touch, MPS threshold; fix: from_qasm2 wired, schedule_time field)
-- Previous release: `v1.5.4-alpha` (fix: MA-QAOA layerwise logger off-by-one in layer index)
+- Current release: `v1.7.0-alpha` (feat: IsingHamiltonian/QUBO, SoftDispatch, Orbit-QAOA, parameter-shift gradient, transpiler cache, BasisTranslator, NoiseModel::from_t1_t2, expectation_value_batch)
+- Previous release: `v1.6.0-alpha` (perf: expectation_value clone-free, parallel run_batch, DensityMatrix cache fix, NUMA first-touch, MPS threshold; fix: from_qasm2, schedule_time)
 
 ## Project Scope
 
@@ -22,16 +22,24 @@ The current codebase provides:
   - **Density Matrix**: Cache-blocked tensor gate applications with exact Kraus operator noise
   - **Clifford**: Stabilizer tableau with exact GF(2) expectation value tracking
   - **MPS**: Boundary contraction marginals and Eigen BDCSVD truncation
-- Noise channels and composable noise models (including generalized T1/T2 thermal relaxation)
+- Noise channels and composable noise models (T1/T2 thermal relaxation, depolarizing, amplitude/phase damping)
+  - `NoiseModel::from_t1_t2()` for device-realistic per-qubit noise from T1/T2/gate-time specs
 - Exact quantum information metrics via Eigen eigendecomposition (Uhlmann-Jozsa fidelity, Wootters concurrence, etc.)
 - Advanced Transpiler passes:
   - ZYZ decomposition and KAK Weyl-chamber block consolidation
   - 3-pass bidirectional SABRE layout heuristic
   - SABRE SWAP routing with H_basic + H_extended lookahead
   - True IBM heavy-hex topology coupling maps
+  - `BasisTranslator`: full CX+U3 decomposition of all standard gates for hardware targeting
 - Primitives (Estimator and Sampler)
+  - `Estimator::gradient()` via parameter-shift rule (2P evaluations fully parallelised)
+  - Transpiler-result caching in Estimator (structure-keyed; skips SABRE/ZYZ on repeated calls)
+  - `SparsePauliOp::expectation_value_batch()` for vectorised multi-state evaluation
 - Algorithms (VQE, QAOA, layerwise MA-QAOA, exact QPE, Grover with MCX)
-- OpenQASM parsing and export support
+  - `IsingHamiltonian` with `from_qubo()` QUBO→Ising conversion and `to_sparse_pauli_op()`
+  - `SoftDispatchResult` for post-processing MA-QAOA bitstring distributions into dispatch solutions
+  - Orbit-QAOA: symmetry-reduced parameterisation via `MAQAOA::Options::orbit_assignments`
+- OpenQASM 2.0 parsing and export (fully wired)
 - Unit tests and performance benchmarks
 - Optional Python bindings through pybind11
 

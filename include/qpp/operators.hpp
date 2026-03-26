@@ -58,6 +58,14 @@ public:
 
     std::vector<Complex128> to_matrix() const;
     double expectation_value(const Statevector& sv) const;
+
+    // Compute ⟨H⟩ for a batch of statevectors simultaneously.
+    // Amortises the Pauli mask precomputation across all states.
+    // Evaluations are parallelised across states with OpenMP.
+    std::vector<double> expectation_value_batch(
+        const std::vector<const Statevector*>& states
+    ) const;
+
     int n_qubits() const;
     size_t size() const { return terms.size(); }
 

@@ -1,8 +1,10 @@
 #include "qpp/transpiler.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <queue>
 #include <limits>
+#include <unordered_set>
 
 namespace qpp {
 
@@ -272,6 +274,360 @@ CouplingMap CouplingMap::all_to_all(int n) {
         }
     }
     return cm;
+}
+
+// =============================================================================
+// BasisTranslator::run
+//
+// Decomposes all gates not in ctx.basis_gates into the target basis using a
+// fixed equivalence library. Default target: {"cx", "u3"} (IBM standard).
+//
+// Each gate is decomposed into CX + U3 or a subset thereof using standard
+// textbook / Qiskit-equivalent decompositions. Single-qubit gates are mapped
+// to U3. Two-qubit non-CX gates are decomposed into CX + U3 sequences.
+//
+// Parametrized gates (PARAM_RX etc.) are passed through if already in target
+// or decomposed using the same U3 equivalences.
+// =============================================================================
+
+namespace {
+
+using GT = Instruction::GateType;
+
+// Is this gate name already in the target basis?
+bool in_basis(const std::string& name, const std::unordered_set<std::string>& basis) {
+    return basis.empty() || basis.count(name);
+}
+
+// Build U3 instruction: U3(theta, phi, lambda) on qubit q
+static Instruction u3_inst(double theta, double phi, double lambda, int q) {
+    Instruction inst;
+    inst.type = GT::U3;
+    inst.qubits = {q};
+    inst.params = {theta, phi, lambda};
+    return inst;
+}
+
+// Build CX instruction
+static Instruction cx_inst(int ctrl, int tgt) {
+    Instruction inst;
+    inst.type = GT::CX;
+    inst.qubits = {ctrl, tgt};
+    return inst;
+}
+
+// Decompose a single gate into a sequence of instructions in {CX, U3}.
+// Returns empty vector if gate is already in basis.
+static std::vector<Instruction> decompose_to_cx_u3(
+    const Instruction& inst,
+    const std::unordered_set<std::string>& basis
+) {
+    const std::string name = inst.gate_name();
+    if (in_basis(name, basis)) return {};  // already in basis
+
+    const auto& p = inst.params;
+    const int q0 = inst.qubits.empty() ? 0 : inst.qubits[0];
+    const int q1 = inst.qubits.size() > 1 ? inst.qubits[1] : -1;
+    constexpr double pi = 3.14159265358979323846;
+    constexpr double pi2 = pi / 2.0;
+
+    std::vector<Instruction> out;
+
+    switch (inst.type) {
+        // ---- Single-qubit: direct U3 equivalents ----
+        case GT::H:   out.push_back(u3_inst(pi2, 0, pi, q0)); break;
+        case GT::X:   out.push_back(u3_inst(pi, 0, pi, q0)); break;
+        case GT::Y:   out.push_back(u3_inst(pi, pi2, pi2, q0)); break;
+        case GT::Z:   out.push_back(u3_inst(0, 0, pi, q0)); break;
+        case GT::S:   out.push_back(u3_inst(0, 0, pi2, q0)); break;
+        case GT::SDG: out.push_back(u3_inst(0, 0, -pi2, q0)); break;
+        case GT::T:   out.push_back(u3_inst(0, 0, pi / 4.0, q0)); break;
+        case GT::TDG: out.push_back(u3_inst(0, 0, -pi / 4.0, q0)); break;
+        case GT::SX:  out.push_back(u3_inst(pi2, -pi2, pi2, q0)); break;
+        case GT::SXDG:out.push_back(u3_inst(-pi2, -pi2, pi2, q0)); break;
+        case GT::RX:  out.push_back(u3_inst(p[0], -pi2, pi2, q0)); break;
+        case GT::RY:  out.push_back(u3_inst(p[0], 0, 0, q0)); break;
+        case GT::RZ:  out.push_back(u3_inst(0, 0, p[0], q0)); break;
+        case GT::P:   out.push_back(u3_inst(0, 0, p[0], q0)); break;
+        case GT::U1:  out.push_back(u3_inst(0, 0, p[0], q0)); break;
+        case GT::U2:  out.push_back(u3_inst(pi2, p[0], p[1], q0)); break;
+        case GT::U:
+        case GT::U3:
+            // Already U3 — just relabel type if U is used
+            out.push_back(u3_inst(p[0], p[1], p[2], q0)); break;
+
+        // ---- Two-qubit: CX + U3 decompositions ----
+        case GT::CY:
+            // CY = (I⊗S†) CX (I⊗S)
+            out.push_back(u3_inst(0, 0, -pi2, q1));  // S† on target
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(0, 0, pi2, q1));   // S on target
+            break;
+
+        case GT::CZ:
+            // CZ = (I⊗H) CX (I⊗H)
+            out.push_back(u3_inst(pi2, 0, pi, q1));  // H on target
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(pi2, 0, pi, q1));  // H on target
+            break;
+
+        case GT::CH:
+            // CH = (I⊗(S†·H·T)) CX (I⊗(T†·H·S))
+            out.push_back(u3_inst(0, 0, pi2, q1));          // S
+            out.push_back(u3_inst(pi2, 0, pi, q1));         // H
+            out.push_back(u3_inst(0, 0, pi / 4.0, q1));     // T
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(0, 0, -pi / 4.0, q1));   // T†
+            out.push_back(u3_inst(pi2, 0, pi, q1));         // H
+            out.push_back(u3_inst(0, 0, -pi2, q1));         // S†
+            break;
+
+        case GT::SWAP:
+            // SWAP = CX(0,1) CX(1,0) CX(0,1)
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(cx_inst(q1, q0));
+            out.push_back(cx_inst(q0, q1));
+            break;
+
+        case GT::ISWAP:
+            // iSWAP = (S⊗S) · (H⊗I) · CX(0,1) · CX(1,0) · (I⊗H)
+            out.push_back(u3_inst(0, 0, pi2, q0));   // S on q0
+            out.push_back(u3_inst(0, 0, pi2, q1));   // S on q1
+            out.push_back(u3_inst(pi2, 0, pi, q0));  // H on q0
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(cx_inst(q1, q0));
+            out.push_back(u3_inst(pi2, 0, pi, q1));  // H on q1
+            break;
+
+        case GT::CRX: {
+            double theta = p[0];
+            // CRX(θ) = (I⊗RZ(-π/2)) CX (I⊗RY(θ/2)) CX (I⊗RY(-θ/2)RZ(π/2))
+            out.push_back(u3_inst(0, 0, pi2, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(-theta / 2.0, 0, 0, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(theta / 2.0, -pi2, 0, q1));
+            break;
+        }
+
+        case GT::CRY: {
+            double theta = p[0];
+            // CRY(θ): RY(θ/2) CX RY(-θ/2) CX
+            out.push_back(u3_inst(theta / 2.0, 0, 0, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(-theta / 2.0, 0, 0, q1));
+            out.push_back(cx_inst(q0, q1));
+            break;
+        }
+
+        case GT::CRZ: {
+            double theta = p[0];
+            // CRZ(θ) = (I⊗RZ(θ/2)) CX (I⊗RZ(-θ/2)) CX
+            out.push_back(u3_inst(0, 0, theta / 2.0, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(0, 0, -theta / 2.0, q1));
+            out.push_back(cx_inst(q0, q1));
+            break;
+        }
+
+        case GT::CP: {
+            double lam = p[0];
+            // CP(λ) = (RZ(λ/2)⊗I) CX (I⊗RZ(-λ/2)) CX (I⊗RZ(λ/2))
+            out.push_back(u3_inst(0, 0, lam / 2.0, q0));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(0, 0, -lam / 2.0, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(0, 0, lam / 2.0, q1));
+            break;
+        }
+
+        case GT::RZX: {
+            double theta = p[0];
+            // RZX(θ) = (I⊗H) CX (I⊗RZ(θ)) CX (I⊗H)
+            out.push_back(u3_inst(pi2, 0, pi, q1));  // H
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(0, 0, theta, q1)); // RZ
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(pi2, 0, pi, q1));  // H
+            break;
+        }
+
+        case GT::RXX: {
+            double theta = p[0];
+            // RXX(θ) = (H⊗H) CX (I⊗RZ(θ)) CX (H⊗H)
+            out.push_back(u3_inst(pi2, 0, pi, q0));
+            out.push_back(u3_inst(pi2, 0, pi, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(0, 0, theta, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(pi2, 0, pi, q0));
+            out.push_back(u3_inst(pi2, 0, pi, q1));
+            break;
+        }
+
+        case GT::RYY: {
+            double theta = p[0];
+            // RYY(θ) = (RX(π/2)⊗RX(π/2)) CX (I⊗RZ(θ)) CX (RX(-π/2)⊗RX(-π/2))
+            out.push_back(u3_inst(pi2, -pi2, pi2, q0));  // RX(π/2)
+            out.push_back(u3_inst(pi2, -pi2, pi2, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(0, 0, theta, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(-pi2, -pi2, pi2, q0)); // RX(-π/2)
+            out.push_back(u3_inst(-pi2, -pi2, pi2, q1));
+            break;
+        }
+
+        case GT::RZZ: {
+            double theta = p[0];
+            // RZZ(θ) = CX (I⊗RZ(θ)) CX
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(0, 0, theta, q1));
+            out.push_back(cx_inst(q0, q1));
+            break;
+        }
+
+        case GT::ECR: {
+            // ECR = (1/√2)[(I⊗X) + ZX] = RZX(π/4) X⊗I RZX(-π/4)
+            double pi4 = pi / 4.0;
+            // RZX(π/4)
+            out.push_back(u3_inst(pi2, 0, pi, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(0, 0, pi4, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(pi2, 0, pi, q1));
+            // X on q0
+            out.push_back(u3_inst(pi, 0, pi, q0));
+            // RZX(-π/4)
+            out.push_back(u3_inst(pi2, 0, pi, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(0, 0, -pi4, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(pi2, 0, pi, q1));
+            break;
+        }
+
+        // ---- Three-qubit: expand via 2-qubit decompositions ----
+        case GT::CCX: {
+            // Standard Toffoli decomposition (6 CNOT, 12 single-qubit)
+            int c0 = q0, c1 = q1, t = inst.qubits[2];
+            double pi4 = pi / 4.0;
+            out.push_back(u3_inst(pi2, 0, pi, t));           // H t
+            out.push_back(cx_inst(c1, t));
+            out.push_back(u3_inst(0, 0, -pi4, t));           // T† t
+            out.push_back(cx_inst(c0, t));
+            out.push_back(u3_inst(0, 0, pi4, t));            // T t
+            out.push_back(cx_inst(c1, t));
+            out.push_back(u3_inst(0, 0, -pi4, t));           // T† t
+            out.push_back(cx_inst(c0, t));
+            out.push_back(u3_inst(0, 0, pi4, c1));           // T c1
+            out.push_back(u3_inst(0, 0, pi4, t));            // T t
+            out.push_back(u3_inst(pi2, 0, pi, t));           // H t
+            out.push_back(cx_inst(c0, c1));
+            out.push_back(u3_inst(0, 0, pi4, c0));           // T c0
+            out.push_back(u3_inst(0, 0, -pi4, c1));          // T† c1
+            out.push_back(cx_inst(c0, c1));
+            break;
+        }
+
+        case GT::CCZ: {
+            // CCZ = (I⊗I⊗H) CCX (I⊗I⊗H)
+            int c0 = q0, c1 = q1, t = inst.qubits[2];
+            // Recursively expand: just inline CCX decomp with H wrappers
+            out.push_back(u3_inst(pi2, 0, pi, t));           // H t
+            // CCX body (same as above)
+            double pi4 = pi / 4.0;
+            out.push_back(u3_inst(pi2, 0, pi, t));
+            out.push_back(cx_inst(c1, t));
+            out.push_back(u3_inst(0, 0, -pi4, t));
+            out.push_back(cx_inst(c0, t));
+            out.push_back(u3_inst(0, 0, pi4, t));
+            out.push_back(cx_inst(c1, t));
+            out.push_back(u3_inst(0, 0, -pi4, t));
+            out.push_back(cx_inst(c0, t));
+            out.push_back(u3_inst(0, 0, pi4, c1));
+            out.push_back(u3_inst(0, 0, pi4, t));
+            out.push_back(u3_inst(pi2, 0, pi, t));
+            out.push_back(cx_inst(c0, c1));
+            out.push_back(u3_inst(0, 0, pi4, c0));
+            out.push_back(u3_inst(0, 0, -pi4, c1));
+            out.push_back(cx_inst(c0, c1));
+            out.push_back(u3_inst(pi2, 0, pi, t));           // H t
+            break;
+        }
+
+        case GT::CSWAP: {
+            // Fredkin = CCX with target and ancilla swapped
+            // CSWAP(c, a, b) = CX(b,a) CCX(c,a,b) CX(b,a)
+            int c = q0, a = q1, b = inst.qubits[2];
+            double pi4 = pi / 4.0;
+            out.push_back(cx_inst(b, a));
+            out.push_back(u3_inst(pi2, 0, pi, b));
+            out.push_back(cx_inst(a, b));
+            out.push_back(u3_inst(0, 0, -pi4, b));
+            out.push_back(cx_inst(c, b));
+            out.push_back(u3_inst(0, 0, pi4, b));
+            out.push_back(cx_inst(a, b));
+            out.push_back(u3_inst(0, 0, -pi4, b));
+            out.push_back(cx_inst(c, b));
+            out.push_back(u3_inst(0, 0, pi4, a));
+            out.push_back(u3_inst(0, 0, pi4, b));
+            out.push_back(u3_inst(pi2, 0, pi, b));
+            out.push_back(cx_inst(c, a));
+            out.push_back(u3_inst(0, 0, pi4, c));
+            out.push_back(u3_inst(0, 0, -pi4, a));
+            out.push_back(cx_inst(c, a));
+            out.push_back(cx_inst(b, a));
+            break;
+        }
+
+        default:
+            // Pass through: gate is either already in basis or unknown
+            out.push_back(inst);
+            break;
+    }
+    return out;
+}
+
+} // anonymous namespace
+
+DAGCircuit BasisTranslator::run(
+    const DAGCircuit& dag,
+    const TranspilationContext& ctx
+) const {
+    QuantumCircuit qc = dag.to_circuit();
+    QuantumCircuit out(qc.n_qubits, qc.n_clbits);
+    out.name = qc.name;
+
+    // Default target basis if none specified: CX + U3
+    std::unordered_set<std::string> basis_set;
+    const auto& bg = ctx.basis_gates;
+    if (!bg.empty()) {
+        basis_set.insert(bg.begin(), bg.end());
+    } else {
+        basis_set = {"cx", "u3"};
+    }
+
+    for (const auto& inst : qc.instructions) {
+        if (inst.type == Instruction::GateType::MEASURE ||
+            inst.type == Instruction::GateType::RESET  ||
+            inst.type == Instruction::GateType::BARRIER) {
+            out.instructions.push_back(inst);
+            continue;
+        }
+
+        auto decomposed = decompose_to_cx_u3(inst, basis_set);
+        if (decomposed.empty()) {
+            // Gate already in basis
+            out.instructions.push_back(inst);
+        } else {
+            for (auto& d : decomposed) {
+                out.instructions.push_back(std::move(d));
+            }
+        }
+    }
+
+    return DAGCircuit::from_circuit(out);
 }
 
 } // namespace qpp

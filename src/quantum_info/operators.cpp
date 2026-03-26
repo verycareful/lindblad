@@ -246,6 +246,68 @@ double SparsePauliOp::expectation_value(const Statevector& sv) const {
     return result;
 }
 
+std::vector<double> SparsePauliOp::expectation_value_batch(
+    const std::vector<const Statevector*>& states
+) const {
+    const size_t M = states.size();
+    std::vector<double> results(M, 0.0);
+    if (M == 0 || terms.empty()) return results;
+
+    // Precompute masks once for all terms — shared across states.
+    struct TermMasks { uint64_t x_mask, z_mask, y_mask; Complex128 coeff; };
+    std::vector<TermMasks> masks(terms.size());
+    for (size_t t = 0; t < terms.size(); ++t) {
+        const int n = terms[t].n_qubits();
+        uint64_t xm = 0, zm = 0, ym = 0;
+        for (int q = 0; q < n; ++q) {
+            char c = terms[t].pauli[q];
+            if (c == 'X') { xm |= (1ULL << q); }
+            else if (c == 'Z') { zm |= (1ULL << q); }
+            else if (c == 'Y') { xm |= (1ULL << q); ym |= (1ULL << q); zm |= (1ULL << q); }
+        }
+        masks[t] = {xm, zm, ym, terms[t].coeff};
+    }
+
+    // Parallelise over states; each state is independent.
+    #pragma omp parallel for schedule(dynamic, 1)
+    for (size_t si = 0; si < M; ++si) {
+        const Statevector* sv = states[si];
+        const double* rp = sv->real_parts;
+        const double* ip = sv->imag_parts;
+        const size_t dim = sv->dim;
+        double state_result = 0.0;
+
+        for (const auto& m : masks) {
+            double re = 0.0, im = 0.0;
+            const uint64_t xm = m.x_mask, zm = m.z_mask, ym = m.y_mask;
+
+            #pragma omp simd reduction(+:re,im)
+            for (size_t k = 0; k < dim; ++k) {
+                const size_t j = k ^ xm;
+                const int z_parity = __builtin_popcountll(k & zm) & 1;
+                const int y_count  = __builtin_popcountll(k & ym) & 3;
+                double phase_r = 1.0, phase_i = 0.0;
+                switch (y_count) {
+                    case 1: phase_r =  0.0; phase_i =  1.0; break;
+                    case 2: phase_r = -1.0; phase_i =  0.0; break;
+                    case 3: phase_r =  0.0; phase_i = -1.0; break;
+                    default: break;
+                }
+                if (z_parity) { phase_r = -phase_r; phase_i = -phase_i; }
+                const double r_k = rp[k], i_k = ip[k];
+                const double r_j = rp[j], i_j = ip[j];
+                const double dot_r = r_k * r_j + i_k * i_j;
+                const double dot_i = r_k * i_j - i_k * r_j;
+                re += phase_r * dot_r - phase_i * dot_i;
+                im += phase_r * dot_i + phase_i * dot_r;
+            }
+            state_result += m.coeff.real * re - m.coeff.imag * im;
+        }
+        results[si] = state_result;
+    }
+    return results;
+}
+
 int SparsePauliOp::n_qubits() const {
     if (terms.empty()) return 0;
     return terms[0].n_qubits();

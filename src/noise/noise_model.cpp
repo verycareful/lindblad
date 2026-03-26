@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <stdexcept>
 
 namespace qpp {
 
@@ -70,6 +71,49 @@ std::vector<NoiseModel::GateError> NoiseModel::errors_for_gate(
 
 bool NoiseModel::is_ideal() const {
     return basis_gate_errors.empty() && readout_errors.empty();
+}
+
+NoiseModel NoiseModel::from_t1_t2(
+    const std::vector<double>& t1,
+    const std::vector<double>& t2,
+    const std::unordered_map<std::string, double>& gate_times,
+    const std::unordered_map<std::string, std::vector<int>>& gate_qubits
+) {
+    int n = static_cast<int>(t1.size());
+    if (static_cast<int>(t2.size()) != n) {
+        throw std::invalid_argument("t1 and t2 must have the same length");
+    }
+    for (int q = 0; q < n; ++q) {
+        if (t1[q] <= 0.0 || t2[q] <= 0.0) {
+            throw std::invalid_argument("T1 and T2 must be positive");
+        }
+        if (t2[q] > 2.0 * t1[q]) {
+            throw std::invalid_argument("T2 must be <= 2*T1 for qubit " + std::to_string(q));
+        }
+    }
+
+    NoiseModel model;
+
+    for (const auto& [gate_name, gate_time] : gate_times) {
+        // Determine which qubits to apply this gate's noise to
+        std::vector<int> qubits_for_gate;
+        auto it = gate_qubits.find(gate_name);
+        if (it != gate_qubits.end() && !it->second.empty()) {
+            qubits_for_gate = it->second;
+        } else {
+            // Apply to all qubits
+            qubits_for_gate.resize(n);
+            for (int q = 0; q < n; ++q) qubits_for_gate[q] = q;
+        }
+
+        for (int q : qubits_for_gate) {
+            if (q < 0 || q >= n) continue;
+            auto channel = NoiseChannels::thermal_relaxation(t1[q], t2[q], gate_time);
+            model.add_quantum_error(channel, gate_name, {q});
+        }
+    }
+
+    return model;
 }
 
 } // namespace qpp
