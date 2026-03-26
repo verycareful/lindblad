@@ -4,6 +4,53 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.7.0-alpha] - 2026-03-26
+
+### Added
+
+- **`IsingHamiltonian` with QUBO conversion (P1-1):** New `include/qpp/ising.hpp` and
+  `src/algorithms/ising.cpp`. Exposes `from_qubo(Q, penalty_A)` (QUBO matrix → Ising h/J/offset
+  via x_i = (1−s_i)/2 substitution), `to_sparse_pauli_op()`, `evaluate(bitstring)`,
+  `evaluate_spins(spins)`, and `from_hJ()`. Eliminates the Python round-trip for problem setup
+  in the MA-QAOA research workflow.
+
+- **`SoftDispatchResult` post-processing (P1-2):** New `include/qpp/dispatch.hpp` and
+  `src/algorithms/dispatch.cpp`. Extracts fractional dispatch solutions from MA-QAOA bitstring
+  distributions: `threshold_round`, `greedy_dispatch` (demand-constrained generator selection),
+  `expected_cost` (probability-weighted energy under any cost function), and `top_k`.
+
+- **Orbit-QAOA symmetry reduction (P1-3):** `MAQAOA::Options::orbit_assignments` maps each qubit
+  to an orbit index. When set, `num_parameters` and `build_circuit` use orbit-reduced counts —
+  one beta per orbit in the mixer, one gamma per orbit-equivalent cost term group. Reduces
+  optimisation dimensionality for structured QUBO problems with known symmetry.
+
+- **Parameter-shift gradient in `Estimator` (P1-4):** `Estimator::gradient(circuit, observable,
+  params)` computes `dE/dθ_i = (E(θ+π/2 eᵢ) − E(θ−π/2 eᵢ)) / 2`. All 2P shifted evaluations
+  are packed into a single `run_batch` call and computed in parallel. Enables gradient-based
+  optimisers (L-BFGS-B, Adam) as an alternative to COBYLA.
+
+- **Transpiler caching in `Estimator` (P1-5):** Structure-keyed `unordered_map` cache (mutex
+  protected) stores the transpiled-but-unbound circuit after the first evaluation. Subsequent
+  calls with different parameter values skip the SABRE layout + ZYZ/KAK passes entirely.
+  Effectively free for COBYLA/gradient loops that re-evaluate the same circuit structure
+  thousands of times.
+
+- **`BasisTranslator::run()` (P2-2):** Full implementation in `src/transpiler/basis_translator.cpp`.
+  Decomposes all standard gates to the CX+U3 target basis (or any user-specified basis in
+  `TranspilationContext::basis_gates`) using a fixed equivalence library. Covers all 1-qubit gates,
+  all 2-qubit gates (CY, CZ, CH, SWAP, iSWAP, CRX/CRY/CRZ, CP, RZX, RXX, RYY, RZZ, ECR),
+  and 3-qubit gates (CCX, CCZ, CSWAP). Required for real-hardware circuit lowering.
+
+- **`NoiseModel::from_t1_t2()` (P2-4):** Static constructor in `src/noise/noise_model.cpp`.
+  Accepts per-qubit T1/T2 arrays and a `gate_name → gate_time` map; creates `thermal_relaxation`
+  Kraus channels for every (gate, qubit) pair. Matches Qiskit's `NoiseModel.from_backend()`
+  workflow for device-realistic noise modelling.
+
+- **`SparsePauliOp::expectation_value_batch()` (P2-6):** Evaluates `⟨H⟩` for a collection of
+  statevectors simultaneously. Precomputes Pauli x/z/y masks once (amortising loop overhead),
+  then parallelises over states with `#pragma omp parallel for`. Inner loop uses `#pragma omp simd`
+  for vectorisation. Benefit grows with batch size and Hamiltonian term count.
+
 ## [1.6.0-alpha] - 2026-03-25
 
 ### Performance

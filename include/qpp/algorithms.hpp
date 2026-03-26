@@ -114,6 +114,13 @@ public:
         std::string optimizer = "COBYLA";
         bool layerwise = false;        // iteratively optimise layer by layer
         uint64_t seed = 0;
+
+        // Orbit-QAOA: qubits in the same orbit share a single mixer parameter.
+        // orbit_assignments[q] = orbit index (0-based). Empty = no symmetry reduction.
+        // Orbits reduce the mixer parameter count from n_qubits to n_distinct_orbits.
+        // Cost-term orbit sharing is automatic: terms with the same sorted tuple of
+        // qubit orbits share a single gamma parameter.
+        std::vector<int> orbit_assignments;
     };
 
     struct Result {

@@ -89,6 +89,23 @@ public:
 
     bool is_ideal() const;
 
+    // Construct a per-qubit T1/T2 thermal-relaxation noise model.
+    //
+    // t1[q]        = T1 time for qubit q (µs)
+    // t2[q]        = T2 time for qubit q (µs, must satisfy T2 ≤ 2·T1)
+    // gate_times   = map from gate name → gate duration (µs)
+    // gate_qubits  = optional: map from gate name → qubits to apply to.
+    //                If empty for a gate, applies to all qubits.
+    //
+    // For each (gate, qubit) pair the thermal_relaxation channel is added as
+    // an after-gate error, matching Qiskit's NoiseModel.from_backend() workflow.
+    static NoiseModel from_t1_t2(
+        const std::vector<double>& t1,
+        const std::vector<double>& t2,
+        const std::unordered_map<std::string, double>& gate_times,
+        const std::unordered_map<std::string, std::vector<int>>& gate_qubits = {}
+    );
+
     std::unordered_map<std::string, std::vector<GateError>> basis_gate_errors;
     std::unordered_map<int, ReadoutError> readout_errors;
     std::vector<std::string> noisy_gates;
