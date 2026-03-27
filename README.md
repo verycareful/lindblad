@@ -3,14 +3,14 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-v1.7.0--alpha-orange?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.8.0--alpha-orange?style=flat-square)](CHANGELOG.md)
 
 q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
 ## Release
 
-- Current release: `v1.7.0-alpha` (feat: IsingHamiltonian/QUBO, SoftDispatch, Orbit-QAOA, parameter-shift gradient, transpiler cache, BasisTranslator, NoiseModel::from_t1_t2, expectation_value_batch)
-- Previous release: `v1.6.0-alpha` (perf: expectation_value clone-free, parallel run_batch, DensityMatrix cache fix, NUMA first-touch, MPS threshold; fix: from_qasm2, schedule_time)
+- Current release: `v1.8.0-alpha` (perf: direct statevector evolution in MA-QAOA inner loop, frozen-vector copy eliminated, orbit-map precomputation; feat: PI-MA-QAOA initialisation, `orbits_by_power`, extended `Result` fields, `qpp::core` CMake alias)
+- Previous release: `v1.7.0-alpha` (feat: IsingHamiltonian/QUBO, SoftDispatch, Orbit-QAOA, parameter-shift gradient, transpiler cache, BasisTranslator, NoiseModel::from_t1_t2, expectation_value_batch)
 
 ## Project Scope
 
@@ -39,6 +39,10 @@ The current codebase provides:
   - `IsingHamiltonian` with `from_qubo()` QUBO→Ising conversion and `to_sparse_pauli_op()`
   - `SoftDispatchResult` for post-processing MA-QAOA bitstring distributions into dispatch solutions
   - Orbit-QAOA: symmetry-reduced parameterisation via `MAQAOA::Options::orbit_assignments`
+  - **PI-MA-QAOA initialisation**: `mixer_weights` + `beta_base` in `MAQAOA::Options` for physics-informed beta init (cheap generators → large angle, expensive → small)
+  - `orbits_by_power(powers, tolerance)` utility: assigns orbit indices by power tier for automatic Orbit-QAOA setup
+  - **Direct statevector evolution** in `MAQAOA::optimize()`: inner loop bypasses `QuantumCircuit` construction, parameter binding, transpile cache, and instruction dispatch — expected 3–5× wall-time reduction on N=20 layerwise runs
+  - Extended `MAQAOA::Result`: `initial_params`, `per_layer_costs`, `layer_nfev`, `wall_time_by_layer`, `wall_time_seconds` for research-grade convergence analysis
 - OpenQASM 2.0 parsing and export (fully wired)
 - Unit tests and performance benchmarks
 - Optional Python bindings through pybind11

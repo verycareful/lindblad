@@ -21,7 +21,7 @@ public:
         int shots = 0;          // 0 = exact (statevector)
         uint64_t seed = 0;
         NoiseModel noise_model;
-        int optimization_level = 1;
+        int optimization_level = 0;
     };
 
     Options options;

@@ -3,6 +3,7 @@
 #include "qpp/simulators/statevector_sim.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <complex>
 #include <cmath>
 #include <limits>
@@ -17,27 +18,37 @@ namespace qpp {
 namespace algorithms {
 
 // =============================================================================
-// MA-QAOA: Multi-Angle QAOA
-// Each gate in the cost/mixer layers gets its own independent angle
+// Orbit utility — orbits_by_power (Change 3)
 // =============================================================================
 
-struct MAQAOACallbackData {
-    Estimator* estimator;
-    const SparsePauliOp* cost_hamiltonian;
-    const SparsePauliOp* mixer_hamiltonian;
-    const MAQAOA* maqaoa;
-};
+std::vector<int> orbits_by_power(
+    const std::vector<double>& powers,
+    double tolerance
+) {
+    const int n = static_cast<int>(powers.size());
+    std::vector<int> result(n, -1);
+    std::vector<double> orbit_centers;
+    orbit_centers.reserve(n);
 
-static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, void* data) {
-    auto* cb = static_cast<MAQAOACallbackData*>(data);
-    std::vector<double> params(x, x + n);
-    auto circuit = cb->maqaoa->build_circuit(*cb->cost_hamiltonian, *cb->mixer_hamiltonian, params);
-    const double value = cb->estimator->run_single(circuit, *cb->cost_hamiltonian);
-    return std::isfinite(value) ? value : 1e12;
+    for (int i = 0; i < n; ++i) {
+        int assigned = -1;
+        for (int k = 0; k < static_cast<int>(orbit_centers.size()); ++k) {
+            if (std::abs(powers[i] - orbit_centers[k]) <= tolerance) {
+                assigned = k;
+                break;
+            }
+        }
+        if (assigned == -1) {
+            assigned = static_cast<int>(orbit_centers.size());
+            orbit_centers.push_back(powers[i]);
+        }
+        result[i] = assigned;
+    }
+    return result;
 }
 
 // =============================================================================
-// Orbit-QAOA helpers
+// MA-QAOA: Multi-Angle QAOA
 // =============================================================================
 
 // Returns the number of distinct cost-term orbit groups for a Hamiltonian.
@@ -84,33 +95,211 @@ static std::vector<int> cost_term_orbit_map(
     return result;
 }
 
+// =============================================================================
+// Direct statevector evolution (Change 1)
+//
+// Bypasses QuantumCircuit construction, parameter binding, transpile-cache
+// key computation, and instruction dispatch on every COBYLA evaluation.
+// sv is reset to |0...0> then |+...+>, then all p layers are applied in-place.
+//
+// Preconditions:
+//   term_orbit_map  — empty when orbit mode is off
+//   orbit_assignments — empty when orbit mode is off
+//   n_cost_params_per_layer and n_mixer_orbits precomputed at optimize() entry
+// =============================================================================
+
+static void evolve_into(
+    Statevector& sv,
+    const SparsePauliOp& cost,
+    const SparsePauliOp& mixer,
+    const std::vector<double>& params,
+    int p,
+    const std::vector<int>& term_orbit_map,
+    int n_cost_params_per_layer,
+    int n_mixer_orbits,
+    const std::vector<int>& orbit_assignments
+) {
+    const int nq          = cost.n_qubits();
+    const int cost_terms  = static_cast<int>(cost.terms.size());
+    const bool use_orbits = !orbit_assignments.empty();
+
+    sv.initialize();
+    for (int q = 0; q < nq; ++q) gates::apply_h(sv, q);
+
+    int param_idx = 0;
+
+    for (int layer = 0; layer < p; ++layer) {
+        // Cost unitary: one gamma per (orbit-)term
+        std::vector<double> layer_gammas(n_cost_params_per_layer);
+        for (int i = 0; i < n_cost_params_per_layer; ++i) {
+            layer_gammas[i] = (param_idx < static_cast<int>(params.size()))
+                              ? params[param_idx++] : 0.0;
+        }
+
+        for (int t = 0; t < cost_terms; ++t) {
+            const int gamma_idx = use_orbits ? term_orbit_map[t] : t;
+            const double gamma  = layer_gammas[gamma_idx];
+            const auto& term    = cost.terms[t];
+            const double angle  = 2.0 * gamma * term.coeff.real;
+
+            std::vector<int> aq;
+            aq.reserve(nq);
+            for (int q = 0; q < nq; ++q) {
+                if (term.pauli[q] != 'I') aq.push_back(q);
+            }
+            if (aq.empty()) continue;
+
+            if (aq.size() == 1 && term.pauli[aq[0]] == 'Z') {
+                gates::apply_rz(sv, aq[0], angle);
+            } else if (aq.size() == 2 &&
+                       term.pauli[aq[0]] == 'Z' &&
+                       term.pauli[aq[1]] == 'Z') {
+                gates::apply_cx(sv, aq[0], aq[1]);
+                gates::apply_rz(sv, aq[1], angle);
+                gates::apply_cx(sv, aq[0], aq[1]);
+            } else {
+                // General Pauli rotation: basis-change -> CNOT chain -> Rz -> uncompute
+                for (int q : aq) {
+                    if      (term.pauli[q] == 'X') gates::apply_h(sv, q);
+                    else if (term.pauli[q] == 'Y') {
+                        gates::apply_sdg(sv, q);
+                        gates::apply_h(sv, q);
+                    }
+                }
+                for (size_t i = 0; i + 1 < aq.size(); ++i)
+                    gates::apply_cx(sv, aq[i], aq[i + 1]);
+                gates::apply_rz(sv, aq.back(), angle);
+                for (int i = static_cast<int>(aq.size()) - 2; i >= 0; --i)
+                    gates::apply_cx(sv, aq[i], aq[i + 1]);
+                for (int q : aq) {
+                    if      (term.pauli[q] == 'X') gates::apply_h(sv, q);
+                    else if (term.pauli[q] == 'Y') {
+                        gates::apply_h(sv, q);
+                        gates::apply_s(sv, q);
+                    }
+                }
+            }
+        }
+
+        // Mixer unitary: one beta per orbit (or per qubit in standard mode)
+        std::vector<double> layer_betas(n_mixer_orbits);
+        for (int i = 0; i < n_mixer_orbits; ++i) {
+            layer_betas[i] = (param_idx < static_cast<int>(params.size()))
+                             ? params[param_idx++] : 0.0;
+        }
+        for (int q = 0; q < nq; ++q) {
+            const int beta_idx = use_orbits ? orbit_assignments[q] : q;
+            gates::apply_rx(sv, q, 2.0 * layer_betas[beta_idx]);
+        }
+    }
+}
+
+// =============================================================================
+// Non-layerwise callback
+// =============================================================================
+
+struct MAQAOACallbackData {
+    const SparsePauliOp* cost_hamiltonian;
+    const SparsePauliOp* mixer_hamiltonian;
+    const std::vector<int>* term_orbit_map;
+    int n_cost_params_per_layer;
+    int n_mixer_orbits;
+    const MAQAOA* maqaoa;
+    Statevector* sv;
+    int nfev;
+    double best_val;
+};
+
+static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, void* data) {
+    auto* cb = static_cast<MAQAOACallbackData*>(data);
+    std::vector<double> params(x, x + n);
+    evolve_into(*cb->sv, *cb->cost_hamiltonian, *cb->mixer_hamiltonian, params,
+                cb->maqaoa->options.p,
+                *cb->term_orbit_map, cb->n_cost_params_per_layer,
+                cb->n_mixer_orbits,
+                cb->maqaoa->options.orbit_assignments);
+    const double value = cb->cost_hamiltonian->expectation_value(*cb->sv);
+    ++cb->nfev;
+    if (value < cb->best_val) cb->best_val = value;
+    return std::isfinite(value) ? value : 1e12;
+}
+
+// =============================================================================
+// Layerwise callback (Change 7: all_params pre-allocated, free portion
+// updated in-place — no per-evaluation vector copy)
+// =============================================================================
+
+struct LayerCBData {
+    const SparsePauliOp* cost_hamiltonian;
+    const SparsePauliOp* mixer_hamiltonian;
+    std::vector<double>  all_params;         // [frozen | free] — full-run parameter vector
+    int                  free_start;         // index of first free parameter
+    int                  p_total;            // options.p — total layers in circuit
+    const std::vector<int>* term_orbit_map;
+    int                  n_cost_params_per_layer;
+    int                  n_mixer_orbits;
+    const std::vector<int>* orbit_assignments;
+    Statevector*         sv;
+    int                  p_current;
+    int                  nfev;
+    double               best_val;
+};
+
+static double layer_objective(unsigned n, const double* x, double* /*grad*/, void* raw) {
+    auto* d = static_cast<LayerCBData*>(raw);
+    // Update free portion in-place (Change 7: no allocation, no copy)
+    std::copy(x, x + n, d->all_params.begin() + d->free_start);
+    evolve_into(*d->sv, *d->cost_hamiltonian, *d->mixer_hamiltonian,
+                d->all_params, d->p_total,
+                *d->term_orbit_map, d->n_cost_params_per_layer,
+                d->n_mixer_orbits, *d->orbit_assignments);
+    const double value = d->cost_hamiltonian->expectation_value(*d->sv);
+    const double v     = std::isfinite(value) ? value : 1e12;
+    ++d->nfev;
+    if (v < d->best_val) d->best_val = v;
+    if (d->nfev % 50 == 0) {
+        std::cout << "[MAQAOA] layer=" << d->p_current
+                  << " eval=" << d->nfev
+                  << " best=" << d->best_val
+                  << std::endl;
+    }
+    return v;
+}
+
+// =============================================================================
+// num_parameters
+// =============================================================================
+
 int MAQAOA::num_parameters(const SparsePauliOp& cost_hamiltonian) const {
     int nq = cost_hamiltonian.n_qubits();
 
     int cost_params, mixer_params;
     if (!options.orbit_assignments.empty() &&
         static_cast<int>(options.orbit_assignments.size()) == nq) {
-        // Orbit-reduced counts
-        cost_params = count_cost_orbits(cost_hamiltonian, options.orbit_assignments);
-        int n_orbits = *std::max_element(options.orbit_assignments.begin(),
-                                         options.orbit_assignments.end()) + 1;
-        mixer_params = n_orbits;
+        cost_params  = count_cost_orbits(cost_hamiltonian, options.orbit_assignments);
+        mixer_params = *std::max_element(options.orbit_assignments.begin(),
+                                          options.orbit_assignments.end()) + 1;
     } else {
-        // Standard MA-QAOA: one angle per term / per qubit
-        cost_params = static_cast<int>(cost_hamiltonian.terms.size());
+        cost_params  = static_cast<int>(cost_hamiltonian.terms.size());
         mixer_params = nq;
     }
     return options.p * (cost_params + mixer_params);
 }
+
+// =============================================================================
+// optimize
+// =============================================================================
 
 MAQAOA::Result MAQAOA::optimize(
     const SparsePauliOp& cost_hamiltonian,
     const SparsePauliOp& mixer_hamiltonian_in
 ) {
     Result result;
-    result.converged = false;
+    result.converged         = false;
+    result.num_iterations    = 0;
+    result.wall_time_seconds = 0.0;
 
-    int nq = cost_hamiltonian.n_qubits();
+    const int nq = cost_hamiltonian.n_qubits();
 
     SparsePauliOp mixer = mixer_hamiltonian_in;
     if (mixer.terms.empty()) {
@@ -121,63 +310,88 @@ MAQAOA::Result MAQAOA::optimize(
         }
     }
 
-    int n_params = num_parameters(cost_hamiltonian);
-    constexpr double kPi = 3.14159265358979323846;
-    constexpr double kBound = 2.0 * kPi;  // Allow [0, 2π]
+    // Precompute orbit data once for the entire run (Change 6)
+    const bool use_orbits = (!options.orbit_assignments.empty() &&
+                             static_cast<int>(options.orbit_assignments.size()) == nq);
+    std::vector<int> term_orbit_map_cached;
+    int n_cost_params_per_layer;
+    int n_mixer_orbits;
 
+    if (use_orbits) {
+        term_orbit_map_cached   = cost_term_orbit_map(cost_hamiltonian, options.orbit_assignments);
+        n_cost_params_per_layer = count_cost_orbits(cost_hamiltonian, options.orbit_assignments);
+        n_mixer_orbits          = *std::max_element(options.orbit_assignments.begin(),
+                                                     options.orbit_assignments.end()) + 1;
+    } else {
+        n_cost_params_per_layer = static_cast<int>(cost_hamiltonian.terms.size());
+        n_mixer_orbits          = nq;
+    }
+
+    const int params_per_layer = n_cost_params_per_layer + n_mixer_orbits;
+    const int n_params         = options.p * params_per_layer;
+    constexpr double kPi       = 3.14159265358979323846;
+    constexpr double kBound    = 2.0 * kPi;
+
+    // Single statevector allocation reused across all evaluations (Change 1)
+    Statevector inner_sv(nq);
+
+    // Validate PI-MA-QAOA mixer_weights size (Change 2)
+    const bool has_mw = (!options.mixer_weights.empty() &&
+                         static_cast<int>(options.mixer_weights.size()) == n_mixer_orbits);
+
+    const auto t_global_start = std::chrono::steady_clock::now();
+
+    // -------------------------------------------------------------------------
+    // Layerwise path
+    // -------------------------------------------------------------------------
     if (options.layerwise) {
-        // Layerwise training: optimise one layer at a time.
-        // Previous layer parameters are FROZEN during optimisation of a new layer.
         std::vector<double> all_params;
-        int cost_terms = static_cast<int>(cost_hamiltonian.terms.size());
-        int mixer_terms = nq;
-        int params_per_layer = cost_terms + mixer_terms;
+        all_params.reserve(n_params);
 
         bool all_layers_converged = true;
 
         for (int layer = 0; layer < options.p; ++layer) {
-            // Add new layer parameters (initialised near 0 to start from |+⟩ regime)
-            for (int i = 0; i < params_per_layer; ++i) {
+            const auto t_layer_start = std::chrono::steady_clock::now();
+
+            // Initialise this layer's parameters (Change 2: PI-MA-QAOA beta init)
+            // Gammas: alternating ±0.1 based on their position index
+            for (int i = 0; i < n_cost_params_per_layer; ++i) {
                 all_params.push_back(0.1 * (i % 2 == 0 ? 1.0 : -1.0));
             }
-
-            // Create a p=(layer+1) MAQAOA that uses a lambda objective
-            // where only the last `params_per_layer` params are free;
-            // the rest are fixed from previous rounds.
-            int offset = layer * params_per_layer;
-            const std::vector<double> frozen_prefix(all_params.begin(),
-                                                     all_params.begin() + offset);
-
-            // Custom callback struct for this layer
-            struct LayerCBData {
-                Estimator* estimator;
-                const SparsePauliOp* cost_hamiltonian;
-                const SparsePauliOp* mixer_hamiltonian;
-                const MAQAOA* maqaoa;
-                std::vector<double> frozen;
-                int p_current;
-                int nfev;
-                double best_val;
-            };
-
-            static auto layer_objective = [](unsigned n, const double* x,
-                                              double* /*grad*/, void* raw) -> double {
-                auto* d = static_cast<LayerCBData*>(raw);
-                std::vector<double> all = d->frozen;
-                all.insert(all.end(), x, x + n);
-                auto circuit = d->maqaoa->build_circuit(
-                    *d->cost_hamiltonian, *d->mixer_hamiltonian, all);
-                const double value = d->estimator->run_single(circuit, *d->cost_hamiltonian);
-                const double v = std::isfinite(value) ? value : 1e12;
-                ++d->nfev;
-                if (v < d->best_val) d->best_val = v;
-                if (d->nfev % 50 == 0) {
-                    std::cout << "[MAQAOA] layer=" << d->p_current
-                              << " eval=" << d->nfev
-                              << " best=" << d->best_val
-                              << std::endl;
+            // Betas: PI-MA-QAOA when mixer_weights provided, else same alternating
+            // pattern continuing from where gammas left off (identical to original)
+            if (has_mw) {
+                const double w_max = *std::max_element(options.mixer_weights.begin(),
+                                                        options.mixer_weights.end());
+                for (int i = 0; i < n_mixer_orbits; ++i) {
+                    all_params.push_back(
+                        options.beta_base * (w_max / options.mixer_weights[i])
+                    );
                 }
-                return v;
+            } else {
+                for (int j = 0; j < n_mixer_orbits; ++j) {
+                    all_params.push_back(
+                        0.1 * ((n_cost_params_per_layer + j) % 2 == 0 ? 1.0 : -1.0)
+                    );
+                }
+            }
+
+            const int free_start = layer * params_per_layer;
+
+            LayerCBData cb{
+                &cost_hamiltonian,
+                &mixer,
+                all_params,       // copy: frozen prefix + this layer's init (Change 7)
+                free_start,
+                options.p,
+                &term_orbit_map_cached,
+                n_cost_params_per_layer,
+                n_mixer_orbits,
+                &options.orbit_assignments,
+                &inner_sv,
+                layer,
+                0,
+                std::numeric_limits<double>::infinity()
             };
 
             std::cout << "[MAQAOA] layer=" << layer
@@ -186,91 +400,148 @@ MAQAOA::Result MAQAOA::optimize(
                       << " budget=" << options.max_iterations
                       << std::endl;
 
-            LayerCBData cb{&estimator, &cost_hamiltonian, &mixer, this,
-                           frozen_prefix, layer, 0,
-                           std::numeric_limits<double>::infinity()};
-
             nlopt_opt opt = nlopt_create(NLOPT_LN_COBYLA, params_per_layer);
             nlopt_set_min_objective(opt, layer_objective, &cb);
             nlopt_set_maxeval(opt, options.max_iterations);
             nlopt_set_xtol_rel(opt, options.convergence_threshold);
 
-            // Set bounds to prevent parameters from blowing up
             std::vector<double> lb(params_per_layer, -kBound);
             std::vector<double> ub(params_per_layer, kBound);
             nlopt_set_lower_bounds(opt, lb.data());
             nlopt_set_upper_bounds(opt, ub.data());
 
-            // Initial guess: the current layer portion of all_params
-            std::vector<double> x0(all_params.begin() + offset, all_params.end());
-            double min_val = std::numeric_limits<double>::infinity();
-            nlopt_result nlopt_res = nlopt_optimize(opt, x0.data(), &min_val);
+            std::vector<double> x0(all_params.begin() + free_start, all_params.end());
+            // Save initial guess before COBYLA modifies x0 (Change 4)
+            result.initial_params.insert(result.initial_params.end(), x0.begin(), x0.end());
+
+            double min_val              = std::numeric_limits<double>::infinity();
+            const nlopt_result nlopt_res = nlopt_optimize(opt, x0.data(), &min_val);
             nlopt_destroy(opt);
+
+            const auto   t_layer_end  = std::chrono::steady_clock::now();
+            const double layer_wall   = std::chrono::duration<double>(
+                t_layer_end - t_layer_start).count();
 
             std::cout << "[MAQAOA] layer=" << layer
                       << " done, nlopt_res=" << nlopt_res
                       << " nfev=" << cb.nfev
                       << " best=" << cb.best_val
+                      << " wall_time=" << layer_wall << "s"
                       << std::endl;
 
             if (nlopt_res < 0 || !std::isfinite(min_val)) {
                 all_layers_converged = false;
             }
 
-            // Update the free layer portion in all_params
+            // Write optimised params back into the outer all_params
             for (int i = 0; i < params_per_layer; ++i) {
-                all_params[offset + i] = x0[i];
+                all_params[free_start + i] = x0[i];
             }
+
+            result.per_layer_costs.push_back(cb.best_val);    // Change 4
+            result.layer_nfev.push_back(cb.nfev);              // Change 4
+            result.wall_time_by_layer.push_back(layer_wall);   // Change 4
+            result.num_iterations += cb.nfev;
         }
 
         result.optimal_params = all_params;
-        auto circuit = build_circuit(cost_hamiltonian, mixer, all_params);
-        result.optimal_value = estimator.run_single(circuit, cost_hamiltonian);
-        result.converged = all_layers_converged && std::isfinite(result.optimal_value);
 
-        if (!std::isfinite(result.optimal_value)) {
-            result.optimal_value = 1e12;
+        // Final eval + sampling directly from the evolved statevector (Change 10)
+        // No circuit rebuild, no estimator overhead, no second sampler run.
+        evolve_into(inner_sv, cost_hamiltonian, mixer, all_params, options.p,
+                    term_orbit_map_cached, n_cost_params_per_layer,
+                    n_mixer_orbits, options.orbit_assignments);
+        result.optimal_value = cost_hamiltonian.expectation_value(inner_sv);
+        result.converged     = all_layers_converged && std::isfinite(result.optimal_value);
+
+        if (!std::isfinite(result.optimal_value)) result.optimal_value = 1e12;
+
+        result.counts = inner_sv.sample_counts(sampler.options.shots, sampler.options.seed);
+
+    // -------------------------------------------------------------------------
+    // Standard path: all parameters optimised at once
+    // -------------------------------------------------------------------------
+    } else {
+        std::vector<double> params;
+        params.reserve(n_params);
+
+        for (int layer = 0; layer < options.p; ++layer) {
+            for (int i = 0; i < n_cost_params_per_layer; ++i) {
+                params.push_back(0.1 * (i % 2 == 0 ? 1.0 : -1.0));
+            }
+            if (has_mw) {
+                const double w_max = *std::max_element(options.mixer_weights.begin(),
+                                                        options.mixer_weights.end());
+                for (int i = 0; i < n_mixer_orbits; ++i) {
+                    params.push_back(
+                        options.beta_base * (w_max / options.mixer_weights[i])
+                    );
+                }
+            } else {
+                for (int j = 0; j < n_mixer_orbits; ++j) {
+                    params.push_back(
+                        0.1 * ((n_cost_params_per_layer + j) % 2 == 0 ? 1.0 : -1.0)
+                    );
+                }
+            }
         }
 
-    } else {
-        // Standard: optimise all parameters at once
-        std::vector<double> params(n_params, 0.5);
+        result.initial_params = params;   // Change 4
+
+        MAQAOACallbackData cb_data{
+            &cost_hamiltonian, &mixer,
+            &term_orbit_map_cached,
+            n_cost_params_per_layer, n_mixer_orbits,
+            this, &inner_sv, 0,
+            std::numeric_limits<double>::infinity()
+        };
 
         nlopt_opt opt = nlopt_create(NLOPT_LN_COBYLA, n_params);
-        MAQAOACallbackData cb_data{&estimator, &cost_hamiltonian, &mixer, this};
         nlopt_set_min_objective(opt, maqaoa_objective, &cb_data);
         nlopt_set_maxeval(opt, options.max_iterations);
         nlopt_set_xtol_rel(opt, options.convergence_threshold);
 
-        // Set bounds to prevent parameters from blowing up
         std::vector<double> lb(n_params, -kBound);
         std::vector<double> ub(n_params, kBound);
         nlopt_set_lower_bounds(opt, lb.data());
         nlopt_set_upper_bounds(opt, ub.data());
 
-        double min_val = std::numeric_limits<double>::infinity();
-        nlopt_result nlopt_res = nlopt_optimize(opt, params.data(), &min_val);
+        double min_val               = std::numeric_limits<double>::infinity();
+        const nlopt_result nlopt_res  = nlopt_optimize(opt, params.data(), &min_val);
         nlopt_destroy(opt);
 
-        result.optimal_value = std::isfinite(min_val) ? min_val : 1e12;
+        result.optimal_value  = std::isfinite(min_val) ? min_val : 1e12;
         result.optimal_params = params;
-        result.converged = (nlopt_res > 0) && std::isfinite(min_val);
+        result.converged      = (nlopt_res > 0) && std::isfinite(min_val);
+        result.num_iterations = cb_data.nfev;
+
+        // Sampling directly from the evolved statevector (Change 10)
+        evolve_into(inner_sv, cost_hamiltonian, mixer, params, options.p,
+                    term_orbit_map_cached, n_cost_params_per_layer,
+                    n_mixer_orbits, options.orbit_assignments);
+        result.counts = inner_sv.sample_counts(sampler.options.shots, sampler.options.seed);
     }
 
-    // Sample
-    auto circuit = build_circuit(cost_hamiltonian, mixer, result.optimal_params);
-    result.counts = sampler.run_single(circuit);
+    const auto t_global_end     = std::chrono::steady_clock::now();
+    result.wall_time_seconds     = std::chrono::duration<double>(
+        t_global_end - t_global_start).count();
 
     int max_count = 0;
     for (const auto& [bits, count] : result.counts) {
         if (count > max_count) {
-            max_count = count;
+            max_count             = count;
             result.best_bitstring = bits;
         }
     }
 
     return result;
 }
+
+// =============================================================================
+// build_circuit — kept for API compatibility and offline inspection.
+// No longer called in the hot path: optimize() uses evolve_into directly.
+// Orbit maps are recomputed internally here since this path is cold.
+// =============================================================================
 
 QuantumCircuit MAQAOA::build_circuit(
     const SparsePauliOp& cost_hamiltonian,
@@ -280,7 +551,7 @@ QuantumCircuit MAQAOA::build_circuit(
     int nq = cost_hamiltonian.n_qubits();
     QuantumCircuit qc(nq);
 
-    // Initial state: |+...+⟩
+    // Initial state: |+...+>
     for (int q = 0; q < nq; ++q) {
         qc.h(q);
     }
@@ -301,13 +572,10 @@ QuantumCircuit MAQAOA::build_circuit(
 
     for (int layer = 0; layer < options.p; ++layer) {
         // Cost unitary
-        // Orbit mode: one gamma per orbit group (shared across symmetry-equivalent terms).
-        // Standard mode: one gamma per term.
         int n_cost_params = use_orbits
             ? count_cost_orbits(cost_hamiltonian, options.orbit_assignments)
             : cost_terms;
 
-        // Read this layer's cost gammas
         std::vector<double> layer_gammas(n_cost_params);
         for (int i = 0; i < n_cost_params; ++i) {
             layer_gammas[i] = (param_idx < static_cast<int>(params.size())) ?
@@ -355,8 +623,6 @@ QuantumCircuit MAQAOA::build_circuit(
         }
 
         // Mixer unitary
-        // Orbit mode: one beta per orbit, all qubits in orbit share it.
-        // Standard mode: one beta per qubit.
         std::vector<double> layer_betas(n_mixer_orbits);
         for (int i = 0; i < n_mixer_orbits; ++i) {
             layer_betas[i] = (param_idx < static_cast<int>(params.size())) ?
@@ -544,90 +810,6 @@ QuantumCircuit Grover::build_circuit(
             } else if (nq == 3) {
                 qc.ccx(0, 1, 2);
             } else {
-                // Ancilla-free multi-controlled X via recursive C^n-1X decomposition.
-                // We use the relative-phase Toffoli (RCCX) ladder approach:
-                // C^nX = RCCX(c0,c1,ancilla-free chain) ... This requires ancilla qubits.
-                // Without ancilla, use the general decomposition:
-                // C^nX = product of at most 2*(n-2) Toffoli gates using scratch qubits.
-                //
-                // For the diffusion operator, we only need an NCZ (no ancilla).
-                // Use the identity: C^nZ = H on last qubit + C^nX + H on last qubit,
-                // C^nX for n > 3 without ancilla:
-                //   = product of (CX chain using linear CCNOT telescoping)
-                // Standard n-qubit MCX without ancilla: O(n^2) CX decomposition
-                // via Gray-code based phase kickback.
-                //
-                // Here we use a simple O(n^2) approach: repeated CCX telescoping
-                // with temporary qubit state preservation.
-                //
-                // Note: This is correct but may have non-trivial depth for large n.
-                // For the Grover diffusion, correctness > depth.
-                //
-                // C^n-1 CNOT implemented via ancilla telescoping:
-                // Use qubits 0..n-2 as controls, qubit n-1 as target.
-                // Auxiliary scratch in reverse order.
-
-                // Build C^n X using the Lemma 7.2 construction (n-2 ancilla-free CCXs)
-                // Actually we do Gray-code based phase kickback which is more complex.
-                // Simplest correct no-ancilla approach for Grover's diffusion:
-                // Use the multicontrolled-Z via phase-kickback trick.
-                // C^n Z = (H on all) * C^n X * (H on all) — this is just what we're building.
-
-                // Simple but correct: use n-qubit phase oracle as multi-Toffoli chain.
-                // C^n X = CCX(0,1,n-1) when n=3; for n>3, recurse:
-                // C^n X = CCX chain telescoped through intermediate qubits
-                //
-                // We'll use the standard decomposition:
-                // For qubits [c0, c1, ..., c_{n-2}, target]:
-                // Step 1: CCX c0, c1 → scratch qubit (but we have no scratch)
-                // Alternative: use RZ-based multi-controlled approach
-                //
-                // For correctness without ancilla, use the U1-ladder formula:
-                // C^n Z = prod of doubly-controlled phases
-                // This is the Gray code diagonal:
-                // C^n Z diagonal phase = (-1) for |1...1⟩ state
-                // Implemented as: Pauli X on target, H, C^n X, H, Pauli X on target
-                //
-                // Since we need only correct MCZ for Grover, and the circuit is
-                // simulated exactly, use the following iterative approach:
-                // Use CCX chain on the controls, using the last qubit as scratch.
-                // This is NOT ancilla-free in general, but works for Grover's diffusion
-                // where target = nq-1 which is the last measurement qubit.
-
-                // Recursive MCX without ancilla (depth 2n-3):
-                // We recurse via C^(n-1) X and a single CX.
-                // Base case n=3: CCX(0,1,2).
-                // For n>3: decompose C^n-1 X using the qubit just before the target as temp.
-                // temp is NOT reused as control → no state corruption.
-
-                // Direct implementation: two-step telescoping
-                // Step 1: C^{n-1} X with controls 0..n-3 and temp target = n-2
-                // Step 2: CCX n-3, n-2, n-1
-                // Step 3: undo Step 1
-
-                // For the Grover diffusion specifically:
-                // Use the RCCX (relative-phase Toffoli) ladder:
-                // Controls: 0..n-2, Target: n-1
-                // This costs (n-2) RCCX gates + 1 CNOT, total ~4(n-2) elementary gates.
-
-                // RCCX ladder: accumulate controls into chain
-                // temp[k] = AND(c_0, ..., c_k), implemented via RCCX using chain qubit
-                // Since we don't have ancilla, use a CCX cascade into the target directly:
-
-                // Most practical correct approach: decompose into smaller gates via:
-                // Full MCX = CCX decomposition with no ancilla using CU1 phases (Selinger 2012)
-                // or: use the direct C^n-1 Z phase gadget via Gray code
-
-                // For now: implement as CCX telescoping using nq-1 as target (correct for n>3):
-                // This is (n-3) intermediate CCX gates assuming qubit n-2 is scratch.
-                // WARNING: This is only correct if qubit n-2 is NOT also a control!
-                // But in Grover's diffusion, ALL qubits 0..n-2 are controls.
-
-                // Correct ancilla-free MCX for Grover (n controls on 1 target):
-                // Use repeated CX + phase decomposition.
-                // The safe approach is to use up to n^2/2 CX gates via the formula:
-                // MCX = product of Givens rotations.
-
                 // Given simulation context (not real hardware), use UNITARY gate:
                 size_t mcu = 1ULL << nq;
                 std::vector<Complex128> mcx_mat(mcu * mcu, Complex128(0.0, 0.0));

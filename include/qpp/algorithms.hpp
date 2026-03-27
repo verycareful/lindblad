@@ -4,6 +4,7 @@
 #include "qpp/operators.hpp"
 #include "qpp/primitives.hpp"
 
+#include <cmath>
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -121,15 +122,30 @@ public:
         // Cost-term orbit sharing is automatic: terms with the same sorted tuple of
         // qubit orbits share a single gamma parameter.
         std::vector<int> orbit_assignments;
+
+        // PI-MA-QAOA: per-orbit mixer weight vector (e.g. augmented cost per MW). (Might be published as a separate algorithm in future if it performs well.)
+        // size must equal n_mixer_orbits (n_qubits in standard mode, n_orbits in
+        // orbit mode). When non-empty, beta_i = beta_base * (w_max / mixer_weights[i])
+        // so cheap generators (large w) start with a small rotation angle and expensive
+        // generators (small w) start with a large angle.
+        // Empty = standard alternating ±0.1 initialisation.
+        std::vector<double> mixer_weights;
+        double beta_base   = M_PI / 4.0;   // base angle scale for PI-MA-QAOA init
+        double lambda_co2  = 0.0;          // carbon/other weighting factor (0 = pure economic) - Can be anything but normalised to a "cost"
     };
 
     struct Result {
         double optimal_value;
         std::vector<double> optimal_params;
+        std::vector<double> initial_params;       // per-layer concatenated initial guess
         std::unordered_map<std::string, int> counts;
         std::string best_bitstring;
-        int num_iterations;
+        int num_iterations = 0;                   // total evaluations across all layers
         bool converged;
+        std::vector<double> per_layer_costs;      // best energy at end of each layer
+        std::vector<int>    layer_nfev;           // evaluations per layer
+        std::vector<double> wall_time_by_layer;   // wall seconds per layer
+        double wall_time_seconds = 0.0;           // total wall time
     };
 
     Options options;
@@ -153,6 +169,17 @@ public:
 
     int num_parameters(const SparsePauliOp& cost_hamiltonian) const;
 };
+
+// =============================================================================
+// Orbit utility — assign qubit orbit indices by power tier (Change 3)
+// Generators within `tolerance` MW of each other share an orbit.
+// Returns a vector of size n where result[i] = orbit index of generator i.
+// =============================================================================
+
+std::vector<int> orbits_by_power(
+    const std::vector<double>& powers,
+    double tolerance = 0.5
+);
 
 // =============================================================================
 // QPE — Quantum Phase Estimation
