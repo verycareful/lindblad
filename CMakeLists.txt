@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(qpp VERSION 1.7.0 LANGUAGES CXX)
+project(qpp VERSION 1.8.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -146,6 +146,8 @@ add_library(qpp_core STATIC
 target_include_directories(qpp_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+
+add_library(qpp::core ALIAS qpp_core)
 
 # Link OpenMP
 find_package(OpenMP REQUIRED)

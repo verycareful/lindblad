@@ -25,15 +25,12 @@ Makefile
 *.so
 __pycache__/
 
-# Local planning notes
+# Misc
 TODO.txt
-qpp_audit.md
-qpp_audit_verification.md
-qpp_impl_check.md
 Build Logs.txt
 edits_temp
 outputs/
-qpp_audit_and_todo.md
+Audit docs/
 
 # Claude
 .claude/

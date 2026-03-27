@@ -4,6 +4,75 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.8.0-alpha] - 2026-03-27
+
+### Performance
+
+- **MA-QAOA direct statevector evolution (P0-1):** `MAQAOA::optimize()` now uses `evolve_into()` —
+  a file-scope function that applies MAQAOA layers directly onto a pre-allocated `Statevector` via
+  `gates::apply_h/rz/cx/rx/s/sdg`. Bypasses `QuantumCircuit` construction, `assign_parameters()`,
+  `circuit_structure_key()`, transpile-cache mutex acquisition, and `StatevectorSimulator`
+  instruction dispatch on every COBYLA evaluation. Expected 3–5× wall-time reduction on N=20
+  layerwise runs (dominant cost shifts from circuit overhead to statevector math).
+
+- **Orbit-map precomputation (P0-2):** `cost_term_orbit_map()` and `count_cost_orbits()` are now
+  called **once** at `optimize()` entry and threaded through all callbacks as `const` references.
+  Previously recomputed on every `build_circuit` call (every COBYLA evaluation) via `std::map`
+  over all Hamiltonian terms.
+
+- **Frozen-vector copy eliminated in layerwise callback (P0-3):** `LayerCBData` now holds a
+  pre-allocated `all_params` vector of full run size `[frozen | free]`. The callback does
+  `std::copy(x, x + n, all_params.begin() + free_start)` in-place instead of constructing a
+  new vector from `d->frozen` and appending `x` on every evaluation. At layer 5 with N=20 this
+  removes ~575,000 allocations (500 evals × 1150 frozen doubles) across the full layerwise run.
+
+- **Statevector reused for sampling (P0-4):** The final statevector from `evolve_into()` is used
+  directly for `sample_counts()`. Eliminates a redundant `build_circuit` + `Sampler::run_single`
+  call (circuit construction + full statevector simulation) that previously ran once after
+  optimization to produce the bitstring distribution.
+
+- **`Estimator::optimization_level` defaults to 0 (P0-5):** Was 1, which ran SABRE layout +
+  ZYZ decomposition on the first circuit structure seen. For statevector simulation there are no
+  coupling constraints — SABRE produces the identity mapping at non-trivial compute cost. Default
+  is now 0 (no transpilation); set `optimization_level = 1` explicitly for hardware targeting.
+
+### Added
+
+- **PI-MA-QAOA initialisation (A1-1):** `MAQAOA::Options` gains `mixer_weights` (per-orbit weight
+  vector), `beta_base` (default `π/4`), and `lambda_co2` (carbon weighting factor). When
+  `mixer_weights` is non-empty and sized to match `n_mixer_orbits`, betas are initialised as
+  `beta_base × (w_max / w_i)` — generators with high augmented cost per MW get a small initial
+  angle, cheap generators get a large angle. Falls back to the original alternating `±0.1`
+  initialisation when `mixer_weights` is empty.
+
+- **`orbits_by_power(powers, tolerance)` (A1-2):** Free function in `qpp::algorithms`. Assigns
+  orbit indices by power tier: generators within `tolerance` MW of each other share an orbit.
+  Returns a `vector<int>` of size N suitable for direct assignment to
+  `MAQAOA::Options::orbit_assignments`. Completes the Orbit-QAOA setup path without requiring
+  manual orbit construction.
+
+- **Extended `MAQAOA::Result` (A1-3):** New fields:
+  - `initial_params` — per-layer concatenated initial guess (saved before each COBYLA call)
+  - `per_layer_costs` — best energy at end of each layer (convergence curve)
+  - `layer_nfev` — function evaluations per layer (budget attribution)
+  - `wall_time_by_layer` — wall seconds per layer (equal-time comparison)
+  - `wall_time_seconds` — total wall time (both paths)
+
+- **`qpp::core` CMake alias (A1-4):** `add_library(qpp::core ALIAS qpp_core)` added after the
+  `target_include_directories` block. External repositories using FetchContent can now use the
+  conventional namespaced form: `target_link_libraries(my_target PRIVATE qpp::core)`.
+
+### Changed
+
+- `LayerCBData` and `layer_objective` promoted from definitions inside `optimize()`'s for-loop to
+  file-scope declarations. No behaviour change; required for the pre-allocated `all_params` member
+  and to expose the callback as a plain function pointer to NLopt without a static lambda.
+- `MAQAOACallbackData` now holds `term_orbit_map`, `n_cost_params_per_layer`, `n_mixer_orbits`,
+  and a `Statevector*` instead of `Estimator*` and `const MAQAOA*`-for-build-circuit. The
+  non-layerwise objective also calls `evolve_into` directly.
+- `build_circuit` is retained unchanged for API compatibility and offline circuit inspection but
+  is no longer invoked anywhere in the `optimize()` hot path.
+
 ## [1.7.0-alpha] - 2026-03-26
 
 ### Added
