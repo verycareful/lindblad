@@ -4,6 +4,41 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.9.0-alpha] - 2026-03-28
+
+### Fixed
+
+- **MA-QAOA standard path now qubit-indexed by default (F0-1):** `num_parameters()`,
+  `optimize()`, `evolve_into()`, and `build_circuit()` all previously used term-indexed
+  gammas (one gamma per Hamiltonian term) in the non-orbit branch, giving 230 params/layer
+  at N=20 vs the Python baseline's 40. The standard path now uses N gammas per layer:
+  `gamma[i]` drives all cost terms where qubit `i` is the lowest active qubit (Z on qubit
+  `i` → `gamma[i]`; ZZ on qubits `i < j` → `gamma[i]`). This matches the Python/Qiskit
+  MA-QAOA implementation exactly and makes standard and PI-MA-QAOA runs directly comparable
+  to the Python baseline in the paper.
+
+- **`evolve_into()` and `build_circuit()` gamma dispatch restructured (F0-2):** Both
+  functions previously computed `gamma_idx` before building the active-qubit list `aq`,
+  making qubit-indexed dispatch impossible. Active qubits are now computed first, then
+  `gamma_idx` is resolved via a three-way branch: orbit-indexed → `term_orbit_map[t]`,
+  term-indexed → `t`, qubit-indexed (default) → `aq[0]`.
+
+### Added
+
+- **`MAQAOA::Options::term_indexed_gammas` flag (A0-1):** `bool term_indexed_gammas = false`.
+  When `true`, restores the previous one-gamma-per-term behaviour (230 params/layer at N=20)
+  for ablation studies. When `false` (default), uses the qubit-indexed convention (40
+  params/layer at N=20). The orbit path is unaffected by this flag.
+
+### Changed
+
+- `tests/test_maqaoa.cpp`: expected param counts updated — `CircuitBuild` (3→4) and
+  `MoreParams_MoreLayers` (10→8) reflect the qubit-indexed default. New
+  `TermIndexedGammas` test verifies the opt-in flag still produces the old counts.
+- `tests/test_maqaoa_20qubit.cpp`: `params_per_layer` now derived from
+  `maqaoa.num_parameters(ham) / P_MAX` rather than hardcoded from `ham.terms.size()`.
+  Printout updated from "term-indexed" to "qubit-indexed"; comparison table corrected.
+
 ## [1.8.0-alpha] - 2026-03-27
 
 ### Performance
