@@ -3,8 +3,8 @@
 // Mirrors EnergyGridOpt_py/MA QAOA/EnergyGridOptimisation_20qubit
 // Scenario: critical_tight_A (demand=52 MW, A=20, generators from generators.csv)
 //
-// Uses the existing MAQAOA class (term-indexed gammas — one per Hamiltonian term).
-// This is a deliberate design choice: more expressive than the Python qubit-indexed
+// Uses the existing MAQAOA class (qubit-indexed gammas — N gammas per layer,
+// matching the Python baseline). Term-indexed path available via term_indexed_gammas=true.
 // convention (one gamma per qubit).
 //
 // To save output:
@@ -284,7 +284,7 @@ TEST(MicrogridQAOA20, MAQAOA_Layerwise) {
     maqaoa.options.convergence_threshold = 1e-6;
     maqaoa.options.seed                  = SEED;
 
-    int params_per_layer = static_cast<int>(ham.terms.size()) + N;
+    int params_per_layer = maqaoa.num_parameters(ham) / P_MAX;
     int total_params     = P_MAX * params_per_layer;
 
     std::cout << "\n=== MA-QAOA Layerwise (20 qubits) ===\n";
@@ -292,8 +292,8 @@ TEST(MicrogridQAOA20, MAQAOA_Layerwise) {
     std::cout << "  p_max=" << P_MAX << ", budget/layer=" << BUDGET << ", seed=" << SEED << "\n";
     std::cout << "  Hamiltonian terms: " << ham.terms.size()
               << " (" << N << " Z + " << N*(N-1)/2 << " ZZ)\n";
-    std::cout << "  Params/layer (term-indexed): " << params_per_layer
-              << "  (Python qubit-indexed would be " << 2*N << ")\n";
+    std::cout << "  Params/layer (qubit-indexed): " << params_per_layer
+              << "  (term-indexed would be " << ham.terms.size() + N << ")\n";
     std::cout << "  Total params: " << total_params << "\n";
     std::cout << "  Exact QUBO optimum:  " << exact.best_cost
               << "  (" << exact.best_bitstring << ")\n";
@@ -377,11 +377,10 @@ TEST(MicrogridQAOA20, AllMethodsComparison) {
     std::cout << "║    Exact optimal: " << exact.best_bitstring << " ║\n";
     std::cout << "║    SA best found: " << sa.best_bitstring    << " ║\n";
     std::cout << "╠════════════════════════════════════════════════════════════════════════╣\n";
-    std::cout << "║  C++ q++ MA-QAOA: term-indexed gammas                                 ║\n";
+    std::cout << "║  C++ q++ MA-QAOA: qubit-indexed gammas (matches Python)               ║\n";
     std::snprintf(buf, sizeof(buf),
-        "║    %d terms → %d params/layer, %d total for p=6                        ║\n",
-        (int)ham.terms.size(), (int)ham.terms.size() + N,
-        ((int)ham.terms.size() + N) * 6);
+        "║    %d params/layer (2*N), %d total for p=6                             ║\n",
+        params_per_layer, total_params);
     std::cout << buf;
     std::cout << "║  Python MA-QAOA:  qubit-indexed gammas                                ║\n";
     std::snprintf(buf, sizeof(buf),

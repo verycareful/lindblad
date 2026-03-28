@@ -137,17 +137,29 @@ static void evolve_into(
         }
 
         for (int t = 0; t < cost_terms; ++t) {
-            const int gamma_idx = use_orbits ? term_orbit_map[t] : t;
-            const double gamma  = layer_gammas[gamma_idx];
-            const auto& term    = cost.terms[t];
-            const double angle  = 2.0 * gamma * term.coeff.real;
+            const auto& term = cost.terms[t];
 
+            // Build active qubits first — needed for qubit-indexed gamma dispatch
             std::vector<int> aq;
             aq.reserve(nq);
             for (int q = 0; q < nq; ++q) {
                 if (term.pauli[q] != 'I') aq.push_back(q);
             }
             if (aq.empty()) continue;
+
+            // Gamma dispatch: orbit-indexed → orbit map; term-indexed → t;
+            // qubit-indexed (default) → aq[0] (lowest active qubit)
+            int gamma_idx;
+            if (use_orbits) {
+                gamma_idx = term_orbit_map[t];
+            } else if (n_cost_params_per_layer == cost_terms) {
+                gamma_idx = t;
+            } else {
+                gamma_idx = aq[0];
+            }
+
+            const double gamma = layer_gammas[gamma_idx];
+            const double angle = 2.0 * gamma * term.coeff.real;
 
             if (aq.size() == 1 && term.pauli[aq[0]] == 'Z') {
                 gates::apply_rz(sv, aq[0], angle);
@@ -279,8 +291,11 @@ int MAQAOA::num_parameters(const SparsePauliOp& cost_hamiltonian) const {
         cost_params  = count_cost_orbits(cost_hamiltonian, options.orbit_assignments);
         mixer_params = *std::max_element(options.orbit_assignments.begin(),
                                           options.orbit_assignments.end()) + 1;
-    } else {
+    } else if (options.term_indexed_gammas) {
         cost_params  = static_cast<int>(cost_hamiltonian.terms.size());
+        mixer_params = nq;
+    } else {
+        cost_params  = nq;
         mixer_params = nq;
     }
     return options.p * (cost_params + mixer_params);
@@ -322,8 +337,11 @@ MAQAOA::Result MAQAOA::optimize(
         n_cost_params_per_layer = count_cost_orbits(cost_hamiltonian, options.orbit_assignments);
         n_mixer_orbits          = *std::max_element(options.orbit_assignments.begin(),
                                                      options.orbit_assignments.end()) + 1;
-    } else {
+    } else if (options.term_indexed_gammas) {
         n_cost_params_per_layer = static_cast<int>(cost_hamiltonian.terms.size());
+        n_mixer_orbits          = nq;
+    } else {
+        n_cost_params_per_layer = nq;
         n_mixer_orbits          = nq;
     }
 
@@ -572,9 +590,14 @@ QuantumCircuit MAQAOA::build_circuit(
 
     for (int layer = 0; layer < options.p; ++layer) {
         // Cost unitary
-        int n_cost_params = use_orbits
-            ? count_cost_orbits(cost_hamiltonian, options.orbit_assignments)
-            : cost_terms;
+        int n_cost_params;
+        if (use_orbits) {
+            n_cost_params = count_cost_orbits(cost_hamiltonian, options.orbit_assignments);
+        } else if (options.term_indexed_gammas) {
+            n_cost_params = cost_terms;
+        } else {
+            n_cost_params = nq;
+        }
 
         std::vector<double> layer_gammas(n_cost_params);
         for (int i = 0; i < n_cost_params; ++i) {
@@ -583,17 +606,25 @@ QuantumCircuit MAQAOA::build_circuit(
         }
 
         for (int t = 0; t < cost_terms; ++t) {
-            int gamma_idx = use_orbits ? term_orbit_map[t] : t;
-            double gamma = layer_gammas[gamma_idx];
-
             const auto& term = cost_hamiltonian.terms[t];
-            double angle = 2.0 * gamma * term.coeff.real;
 
             std::vector<int> active_qubits;
             for (int q = 0; q < nq; ++q) {
                 if (term.pauli[q] != 'I') active_qubits.push_back(q);
             }
             if (active_qubits.empty()) continue;
+
+            int gamma_idx;
+            if (use_orbits) {
+                gamma_idx = term_orbit_map[t];
+            } else if (n_cost_params == cost_terms) {
+                gamma_idx = t;
+            } else {
+                gamma_idx = active_qubits[0];
+            }
+
+            double gamma = layer_gammas[gamma_idx];
+            double angle = 2.0 * gamma * term.coeff.real;
 
             if (active_qubits.size() == 1 && term.pauli[active_qubits[0]] == 'Z') {
                 qc.rz(angle, active_qubits[0]);

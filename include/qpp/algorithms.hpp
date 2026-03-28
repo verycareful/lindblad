@@ -123,6 +123,14 @@ public:
         // qubit orbits share a single gamma parameter.
         std::vector<int> orbit_assignments;
 
+        // Gamma parameterisation convention.
+        // false (default): qubit-indexed — N gammas per layer, gamma[i] drives
+        //   all cost terms where qubit i is the lowest active qubit.
+        //   Matches the Python/Qiskit baseline; 2N params per layer at N=20.
+        // true: term-indexed — one gamma per Hamiltonian term per layer.
+        //   More expressive but O(N^2) params (230/layer at N=20); use for ablation.
+        bool term_indexed_gammas = false;
+
         // PI-MA-QAOA: per-orbit mixer weight vector (e.g. augmented cost per MW). (Might be published as a separate algorithm in future if it performs well.)
         // size must equal n_mixer_orbits (n_qubits in standard mode, n_orbits in
         // orbit mode). When non-empty, beta_i = beta_base * (w_max / mixer_weights[i])
