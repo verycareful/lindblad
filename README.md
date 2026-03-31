@@ -3,14 +3,14 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-v1.9.0--alpha-orange?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.9.1--alpha-orange?style=flat-square)](CHANGELOG.md)
 
 q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
 ## Release
 
-- Current release: `v1.9.0-alpha` (fix: MA-QAOA standard path switched to qubit-indexed gammas matching Python baseline; add `term_indexed_gammas` flag for ablation; fix gamma dispatch in `evolve_into` and `build_circuit`)
-- Previous release: `v1.8.0-alpha` (perf: direct statevector evolution in MA-QAOA inner loop, frozen-vector copy eliminated, orbit-map precomputation; feat: PI-MA-QAOA initialisation, `orbits_by_power`, extended `Result` fields, `qpp::core` CMake alias)
+- Current release: `v1.9.1-alpha` (fix: MSVC portability — delete non-copyable constructors on `VQE`/`QAOA`/`MAQAOA`, `M_PI` guards, `qpp::transpile()` replaces broken `preset_pass_manager` call, copy-assign `Estimator` removed from tests)
+- Previous release: `v1.9.0-alpha` (fix: MA-QAOA standard path switched to qubit-indexed gammas matching Python baseline; add `term_indexed_gammas` flag for ablation; fix gamma dispatch in `evolve_into` and `build_circuit`)
 
 ## Project Scope
 
@@ -80,9 +80,11 @@ Dependencies are downloaded during configure using CMake FetchContent:
 ### Configure and build
 
 ```powershell
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build build --config Release -j
 ```
+
+> **Note (MSVC / CMake ≥ 3.30):** Pass `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` to work around the vendored NLopt source requiring `cmake_minimum_required(VERSION 3.2)`.
 
 ### Run tests
 

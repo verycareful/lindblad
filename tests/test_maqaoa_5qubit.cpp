@@ -86,16 +86,10 @@ TEST(MAQAOA5QubitTest, OptimizationBenchmark) {
     constexpr int maxeval_per_layer = 500;
     constexpr double expected_ground_energy = -5.0;
 
-    Estimator est;
-    est.options.shots = 0; // exact statevector expectation
-
-    Sampler sam;
-    sam.options.shots = 4096;
-    sam.options.seed = 1234;
-
     MAQAOA maqaoa;
-    maqaoa.estimator = est;
-    maqaoa.sampler = sam;
+    maqaoa.estimator.options.shots = 0;  // exact statevector expectation
+    maqaoa.sampler.options.shots   = 4096;
+    maqaoa.sampler.options.seed    = 1234;
     maqaoa.options.p = p_depth;
     maqaoa.options.layerwise = true;
     maqaoa.options.max_iterations = maxeval_per_layer;

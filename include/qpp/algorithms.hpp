@@ -4,6 +4,9 @@
 #include "qpp/operators.hpp"
 #include "qpp/primitives.hpp"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #include <cmath>
 #include <functional>
 #include <string>
@@ -38,8 +41,6 @@ public:
     Estimator estimator;
 
     VQE() = default;
-    VQE(const Options& opts, const Estimator& est)
-        : options(opts), estimator(est) {}
 
     Result compute_minimum_eigenvalue(
         const SparsePauliOp& hamiltonian,
@@ -87,8 +88,6 @@ public:
     Sampler sampler;
 
     QAOA() = default;
-    QAOA(const Options& opts, const Estimator& est, const Sampler& sam)
-        : options(opts), estimator(est), sampler(sam) {}
 
     Result optimize(
         const SparsePauliOp& cost_hamiltonian,
@@ -161,8 +160,6 @@ public:
     Sampler sampler;
 
     MAQAOA() = default;
-    MAQAOA(const Options& opts, const Estimator& est, const Sampler& sam)
-        : options(opts), estimator(est), sampler(sam) {}
 
     Result optimize(
         const SparsePauliOp& cost_hamiltonian,

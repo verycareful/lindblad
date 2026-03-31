@@ -369,16 +369,10 @@ TEST(MicrogridQAOA, MAQAOA_Layerwise) {
     constexpr int    BUDGET_PER_LAYER = 200;   // matches Python LayerwiseTrainer default
     constexpr double CONV_TOL       = 1e-6;
 
-    Estimator est;
-    est.options.shots = 0;   // exact statevector expectation
-
-    Sampler sam;
-    sam.options.shots = 4096;
-    sam.options.seed  = 42;
-
     MAQAOA maqaoa;
-    maqaoa.estimator = est;
-    maqaoa.sampler   = sam;
+    maqaoa.estimator.options.shots = 0;  // exact statevector expectation
+    maqaoa.sampler.options.shots   = 4096;
+    maqaoa.sampler.options.seed    = 42;
     maqaoa.options.p                    = P_DEPTH;
     maqaoa.options.layerwise            = true;
     maqaoa.options.max_iterations       = BUDGET_PER_LAYER;
@@ -451,12 +445,10 @@ TEST(MicrogridQAOA, AllMethodsComparison) {
     auto cost_ham = build_ising_hamiltonian();
     double offset = compute_offset();
 
-    Estimator est; est.options.shots = 0;
-    Sampler   sam; sam.options.shots = 4096; sam.options.seed = 42;
-
     MAQAOA maqaoa;
-    maqaoa.estimator = est;
-    maqaoa.sampler   = sam;
+    maqaoa.estimator.options.shots = 0;
+    maqaoa.sampler.options.shots   = 4096;
+    maqaoa.sampler.options.seed    = 42;
     maqaoa.options.p                     = 3;
     maqaoa.options.layerwise             = true;
     maqaoa.options.max_iterations        = 200;

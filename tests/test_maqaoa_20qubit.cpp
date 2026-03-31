@@ -272,12 +272,10 @@ TEST(MicrogridQAOA20, MAQAOA_Layerwise) {
     auto ising  = build_ising();
     auto ham    = build_hamiltonian(ising);
 
-    Estimator est; est.options.shots = 0;
-    Sampler   sam; sam.options.shots = 8192; sam.options.seed = SEED;
-
     MAQAOA maqaoa;
-    maqaoa.estimator = est;
-    maqaoa.sampler   = sam;
+    maqaoa.estimator.options.shots = 0;
+    maqaoa.sampler.options.shots   = 8192;
+    maqaoa.sampler.options.seed    = SEED;
     maqaoa.options.p                     = P_MAX;
     maqaoa.options.layerwise             = true;
     maqaoa.options.max_iterations        = BUDGET;
@@ -380,7 +378,7 @@ TEST(MicrogridQAOA20, AllMethodsComparison) {
     std::cout << "║  C++ q++ MA-QAOA: qubit-indexed gammas (matches Python)               ║\n";
     std::snprintf(buf, sizeof(buf),
         "║    %d params/layer (2*N), %d total for p=6                             ║\n",
-        params_per_layer, total_params);
+        2 * N, 2 * N * 6);
     std::cout << buf;
     std::cout << "║  Python MA-QAOA:  qubit-indexed gammas                                ║\n";
     std::snprintf(buf, sizeof(buf),
