@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.9.2-alpha] - 2026-03-31
+
+### Build
+
+- **Wire `ising.cpp` and `dispatch.cpp` into `qpp_core` (B0-1):** Both files existed under
+  `src/algorithms/` but were absent from the `add_library(qpp_core STATIC ...)` block.
+  `IsingHamiltonian` and `SoftDispatchResult` were compiled into no translation unit, causing
+  link errors for any target that used them. Added after `src/algorithms/maqaoa.cpp`.
+
 ## [1.9.1-alpha] - 2026-03-31
 
 ### Fixed
