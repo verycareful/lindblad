@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.9.3-alpha] - 2026-03-31
+
+### Fixed
+
+- **Missing `#include <functional>` in `include/qpp/dispatch.hpp`:** `std::function` is used
+  in `SoftDispatchResult` but `<functional>` was not included. Relies on transitive inclusion
+  on GCC/Clang; fails on MSVC and libc++ in standalone builds. Added before `<string>`.
+
 ## [1.9.2-alpha] - 2026-03-31
 
 ### Build
