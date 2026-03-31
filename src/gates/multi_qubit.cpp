@@ -14,7 +14,8 @@ void apply_ccx(Statevector& sv, int c1, int c2, int tgt) noexcept {
     const size_t dim = sv.dim;
 
     #pragma omp parallel for schedule(static) if(dim > (1<<20))
-    for (size_t i = 0; i < dim; ++i) {
+    for (int ii = 0; ii < static_cast<int>(dim); ++ii) {
+        size_t i = ii;
         // Act when c1=1, c2=1, tgt=0
         if (((i >> c1) & 1) && ((i >> c2) & 1) && !((i >> tgt) & 1)) {
             size_t j = i | (1ULL << tgt);
@@ -31,7 +32,8 @@ void apply_ccz(Statevector& sv, int c1, int c2, int tgt) noexcept {
     const size_t dim = sv.dim;
 
     #pragma omp parallel for schedule(static) if(dim > (1<<20))
-    for (size_t i = 0; i < dim; ++i) {
+    for (int ii = 0; ii < static_cast<int>(dim); ++ii) {
+        size_t i = ii;
         if (((i >> c1) & 1) && ((i >> c2) & 1) && ((i >> tgt) & 1)) {
             sv.real_parts[i] = -sv.real_parts[i];
             sv.imag_parts[i] = -sv.imag_parts[i];
@@ -46,7 +48,8 @@ void apply_cswap(Statevector& sv, int ctrl, int q1, int q2) noexcept {
     const size_t dim = sv.dim;
 
     #pragma omp parallel for schedule(static) if(dim > (1<<20))
-    for (size_t i = 0; i < dim; ++i) {
+    for (int ii = 0; ii < static_cast<int>(dim); ++ii) {
+        size_t i = ii;
         // Act when ctrl=1, q1 and q2 bits differ
         if (!((i >> ctrl) & 1)) continue;
         int b1 = (i >> q1) & 1;
@@ -137,7 +140,8 @@ void apply_unitary(
     size_t n_groups = sv.dim >> k;
 
     #pragma omp parallel for schedule(static) if(n_groups > (1<<15))
-    for (size_t g = 0; g < n_groups; ++g) {
+    for (int gg = 0; gg < static_cast<int>(n_groups); ++gg) {
+        size_t g = gg;
         // Map group index g to a background index
         // Insert zeros at all target bit positions
         size_t bg_idx = 0;

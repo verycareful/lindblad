@@ -211,13 +211,14 @@ double SparsePauliOp::expectation_value(const Statevector& sv) const {
         double re = 0.0, im = 0.0;
 
         #pragma omp parallel for reduction(+:re,im) schedule(static) if(dim > (1<<20))
-        for (size_t k = 0; k < dim; ++k) {
+        for (int kk = 0; kk < static_cast<int>(dim); ++kk) {
+            size_t k = kk;
             const size_t j = k ^ x_mask;
 
             // Phase from Z parity (Z_mask includes Y positions via Y=iXZ)
-            const int z_parity = __builtin_popcountll(k & z_mask) & 1;
+            const int z_parity = QPP_POPCOUNT64(k & z_mask) & 1;
             // Additional i^y_count factor from Y = iXZ decomposition
-            const int y_count  = __builtin_popcountll(k & y_mask) & 3;
+            const int y_count  = QPP_POPCOUNT64(k & y_mask) & 3;
 
             // i^y_count: 0->1+0i, 1->0+1i, 2->-1+0i, 3->0-1i
             double phase_r = 1.0, phase_i = 0.0;
@@ -270,7 +271,8 @@ std::vector<double> SparsePauliOp::expectation_value_batch(
 
     // Parallelise over states; each state is independent.
     #pragma omp parallel for schedule(dynamic, 1)
-    for (size_t si = 0; si < M; ++si) {
+    for (int sii = 0; sii < static_cast<int>(M); ++sii) {
+        size_t si = sii;
         const Statevector* sv = states[si];
         const double* rp = sv->real_parts;
         const double* ip = sv->imag_parts;
@@ -281,11 +283,13 @@ std::vector<double> SparsePauliOp::expectation_value_batch(
             double re = 0.0, im = 0.0;
             const uint64_t xm = m.x_mask, zm = m.z_mask, ym = m.y_mask;
 
+#if !defined(_MSC_VER)
             #pragma omp simd reduction(+:re,im)
+#endif
             for (size_t k = 0; k < dim; ++k) {
                 const size_t j = k ^ xm;
-                const int z_parity = __builtin_popcountll(k & zm) & 1;
-                const int y_count  = __builtin_popcountll(k & ym) & 3;
+                const int z_parity = QPP_POPCOUNT64(k & zm) & 1;
+                const int y_count  = QPP_POPCOUNT64(k & ym) & 3;
                 double phase_r = 1.0, phase_i = 0.0;
                 switch (y_count) {
                     case 1: phase_r =  0.0; phase_i =  1.0; break;

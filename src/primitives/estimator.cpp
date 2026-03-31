@@ -25,7 +25,7 @@ std::vector<double> Estimator::run_batch(
 
     // run_single is thread-safe: all state is local (bound_circuit, sim, result).
     #pragma omp parallel for schedule(dynamic, 1)
-    for (size_t i = 0; i < n; ++i) {
+    for (int i = 0; i < static_cast<int>(n); ++i) {
         results[i] = run_single(circuit, observable, parameter_values[i]);
     }
 

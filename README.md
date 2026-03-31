@@ -3,13 +3,13 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-v1.9.3--alpha-orange?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.9.4--alpha-orange?style=flat-square)](CHANGELOG.md)
 
 q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
 ## Release
 
-- Current release: `v1.9.3-alpha` (fix: add missing `#include <functional>` to `dispatch.hpp` — `std::function` used without it)
+- Current release: `v1.9.4-alpha` (fix: MSVC compatibility — remove `__restrict__` from class members, add popcount and SIMD macros)
 - Previous release: `v1.9.2-alpha` (build: wire `ising.cpp` and `dispatch.cpp` into `qpp_core`) (fix: MSVC portability — delete non-copyable constructors on `VQE`/`QAOA`/`MAQAOA`, `M_PI` guards, `qpp::transpile()` replaces broken `preset_pass_manager` call, copy-assign `Estimator` removed from tests)
 
 ## Project Scope
