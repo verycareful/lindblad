@@ -25,8 +25,8 @@ public:
     size_t dim;           // 2^n_qubits
 
     // Two separate aligned arrays for SoA layout
-    double* __restrict__ real_parts;   // aligned to 64 bytes (AVX-512 requirement)
-    double* __restrict__ imag_parts;
+    double* real_parts;   // aligned to 64 bytes (AVX-512 requirement)
+    double* imag_parts;
 
 public:
     // Construct and initialise to |0...0⟩ state

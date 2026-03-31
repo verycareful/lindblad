@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.9.4-alpha] - 2026-03-31
+
+### Fixed
+
+- **MSVC compatibility: `__restrict__` on class members (S1):** GCC/Clang accept `__restrict__` on
+  `Statevector` members, but MSVC only allows `__restrict` (one underscore) on local pointers and function
+  parameters, not class members. Removed `__restrict__` from `real_parts` and `imag_parts` declarations
+  in `include/qpp/statevector.hpp`. The restrict aliasing information the compiler actually uses comes
+  from the local `double* __restrict__` declarations inside each gate function, which remain unchanged.
+  **Performance impact: zero** — these declarations were not providing useful information to the compiler.
+
+- **MSVC compatibility: `__builtin_popcountll` intrinsic (S3):** GCC/Clang provide `__builtin_popcountll`
+  for population count; MSVC provides `__popcnt64` from `<intrin.h>`. Added `QPP_POPCOUNT64(x)` macro
+  in `include/qpp/types.hpp` that maps to the correct intrinsic for each compiler. Applied in
+  `src/quantum_info/operators.cpp` in `SparsePauliOp::expectation_value()` and `expectation_value_batch()`.
+  **Performance impact: zero** — both compile to the same `POPCNT` hardware instruction on x86.
+
+- **MSVC compatibility: OpenMP 4.0+ pragma clauses (S2):** MSVC uses OpenMP 2.0 (legacy) and silently
+  ignores unrecognised `#pragma omp` directives, including the `aligned()` clause on `#pragma omp simd`.
+  This caused MSVC to lose SIMD vectorisation hints while GCC/Clang benefited from them. Added
+  `QPP_SIMD_LOOP` macro in `include/qpp/types.hpp` that expands to `_Pragma("omp simd aligned(...)")` on
+  GCC/Clang and is empty on MSVC. Applied in `src/gates/single_qubit.cpp` (9 instances) and
+  `src/gates/two_qubit.cpp` (16 instances). MSVC auto-vectorises these loops with `/O2 /arch:AVX2`
+  anyway, so the net effect is no performance change on MSVC and no change on GCC/Clang.
+
 ## [1.9.3-alpha] - 2026-03-31
 
 ### Fixed

@@ -7,7 +7,27 @@
 #include <stdexcept>
 #include <new>
 
+#if defined(_MSC_VER)
+#  include <intrin.h>
+#endif
+
 namespace qpp {
+
+// =============================================================================
+// Cross-platform macros for compiler intrinsics
+// =============================================================================
+
+// Population count for 64-bit integers — used in Pauli expectation values
+#if defined(_MSC_VER)
+#  define QPP_POPCOUNT64(x) static_cast<int>(__popcnt64(x))
+#else
+#  define QPP_POPCOUNT64(x) __builtin_popcountll(x)
+#endif
+
+// Note on OpenMP pragmas:
+// MSVC uses OpenMP 2.0 (legacy) and silently ignores unrecognised pragma clauses
+// like the aligned() clause on #pragma omp simd (OpenMP 4.0+).
+// We use conditional compilation to remove the pragma on MSVC; GCC/Clang use it.
 
 // =============================================================================
 // Complex128 — SIMD-friendly complex number with explicit memory layout
