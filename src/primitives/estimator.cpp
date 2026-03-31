@@ -71,9 +71,8 @@ double Estimator::run_single(
                 to_simulate = it->second;  // cached transpiled (unbound) circuit
             } else {
                 // Cache miss: transpile the unbound circuit
-                PassManager pm = preset_pass_manager(options.optimization_level,
-                                                     CouplingMap(circuit.n_qubits));
-                to_simulate = pm.run(circuit);
+                to_simulate = qpp::transpile(circuit, CouplingMap(circuit.n_qubits),
+                                             {}, options.optimization_level);
                 transpile_cache_.emplace(key, to_simulate);
             }
         }
@@ -120,7 +119,7 @@ std::vector<double> Estimator::gradient(
     const size_t P = parameters.size();
     if (P == 0) return {};
 
-    constexpr double shift = M_PI / 2.0;
+    constexpr double shift = 3.14159265358979323846 / 2.0;
 
     // Build 2P shifted parameter sets: [θ+π/2 e₀, θ-π/2 e₀, θ+π/2 e₁, ...]
     std::vector<std::vector<double>> shifted(2 * P, parameters);

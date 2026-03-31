@@ -4,6 +4,33 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.9.1-alpha] - 2026-03-31
+
+### Fixed
+
+- **Delete non-default constructors in `VQE`, `QAOA`, `MAQAOA` (I1):** `VQE(const Options&, const Estimator&)`,
+  `QAOA(const Options&, const Estimator&, const Sampler&)`, and `MAQAOA(const Options&, const Estimator&, const Sampler&)`
+  attempted to copy-construct `Estimator` which holds a `std::mutex` (non-copyable). Constructors deleted;
+  configure via member access (`algo.estimator.options.shots = 0`).
+
+- **`M_PI` portability guard in `include/qpp/algorithms.hpp` (I2):** MSVC does not define `M_PI` without
+  `_USE_MATH_DEFINES`. Added `#ifndef M_PI` / `#define M_PI 3.14159265358979323846` guard before `<cmath>`.
+
+- **`preset_pass_manager` / `pm.run()` replaced with `qpp::transpile()` in `src/primitives/estimator.cpp` (I3):**
+  The two-argument `preset_pass_manager` call was missing the required `basis_gates` argument, and `pm.run()`
+  does not accept a `QuantumCircuit` directly. Replaced with `qpp::transpile(circuit, CouplingMap(n), {}, level)`.
+
+- **`M_PI` inline literal in `src/primitives/estimator.cpp` gradient (I4):** `constexpr double shift = M_PI / 2.0`
+  fails on MSVC. Replaced with `3.14159265358979323846 / 2.0`.
+
+- **Copy-assignment of `Estimator` in test files replaced with direct member access (I5):**
+  `maqaoa.estimator = est` fails because `Estimator::operator=` is deleted (mutex member).
+  Fixed in `test_maqaoa_5qubit.cpp`, `test_maqaoa_microgrid.cpp` (×2), and `test_maqaoa_20qubit.cpp`.
+
+- **Out-of-scope `params_per_layer` / `total_params` in `AllMethodsComparison` (I6):**
+  Variables defined in `MAQAOA_Layerwise` scope were referenced in a separate test function.
+  Replaced with compile-time expressions `2 * N` (= 40) and `2 * N * 6` (= 240).
+
 ## [1.9.0-alpha] - 2026-03-28
 
 ### Fixed
