@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(qpp VERSION 1.9.1 LANGUAGES CXX)
+project(qpp VERSION 1.9.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -138,6 +138,8 @@ add_library(qpp_core STATIC
     src/algorithms/vqe.cpp
     src/algorithms/qaoa.cpp
     src/algorithms/maqaoa.cpp
+    src/algorithms/ising.cpp
+    src/algorithms/dispatch.cpp
     src/qasm/qasm2_parser.cpp
     src/qasm/qasm3_parser.cpp
     src/backends/local_backend.cpp
