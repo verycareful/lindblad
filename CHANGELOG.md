@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.9.5-alpha] - 2026-04-01
+
+### Fixed
+
+- **PI-MA-QAOA beta scaling inverted (B0-1):** `beta_base * (w_max / mixer_weights[i])` gave
+  small angles to expensive generators and large angles to cheap ones — the opposite of the
+  intended physics-informed initialisation. Corrected to `beta_base * (mixer_weights[i] / w_max)`
+  so that high-cost (expensive) generators receive a large initial beta and cheap generators
+  receive a small initial beta. Applies to both the layerwise path and the standard path in
+  `src/algorithms/maqaoa.cpp`. README description updated to match.
+
 ## [1.9.4-alpha] - 2026-03-31
 
 ### Fixed
