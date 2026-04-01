@@ -383,7 +383,7 @@ MAQAOA::Result MAQAOA::optimize(
                                                         options.mixer_weights.end());
                 for (int i = 0; i < n_mixer_orbits; ++i) {
                     all_params.push_back(
-                        options.beta_base * (w_max / options.mixer_weights[i])
+                        options.beta_base * (options.mixer_weights[i] / w_max)
                     );
                 }
             } else {
@@ -492,7 +492,7 @@ MAQAOA::Result MAQAOA::optimize(
                                                         options.mixer_weights.end());
                 for (int i = 0; i < n_mixer_orbits; ++i) {
                     params.push_back(
-                        options.beta_base * (w_max / options.mixer_weights[i])
+                        options.beta_base * (options.mixer_weights[i] / w_max)
                     );
                 }
             } else {
