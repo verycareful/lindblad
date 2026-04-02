@@ -13,7 +13,7 @@ namespace gates {
 void apply_ccx(Statevector& sv, int c1, int c2, int tgt) noexcept {
     const size_t dim = sv.dim;
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int ii = 0; ii < static_cast<int>(dim); ++ii) {
         size_t i = ii;
         // Act when c1=1, c2=1, tgt=0
@@ -31,7 +31,7 @@ void apply_ccx(Statevector& sv, int c1, int c2, int tgt) noexcept {
 void apply_ccz(Statevector& sv, int c1, int c2, int tgt) noexcept {
     const size_t dim = sv.dim;
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int ii = 0; ii < static_cast<int>(dim); ++ii) {
         size_t i = ii;
         if (((i >> c1) & 1) && ((i >> c2) & 1) && ((i >> tgt) & 1)) {
@@ -47,7 +47,7 @@ void apply_ccz(Statevector& sv, int c1, int c2, int tgt) noexcept {
 void apply_cswap(Statevector& sv, int ctrl, int q1, int q2) noexcept {
     const size_t dim = sv.dim;
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int ii = 0; ii < static_cast<int>(dim); ++ii) {
         size_t i = ii;
         // Act when ctrl=1, q1 and q2 bits differ
@@ -199,3 +199,4 @@ void apply_unitary(
 
 } // namespace gates
 } // namespace qpp
+

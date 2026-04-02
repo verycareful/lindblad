@@ -41,7 +41,7 @@ static inline void apply_controlled_matrix(
     const size_t lo_step = 1ULL << lo;
     const size_t hi_step = 1ULL << hi;
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
         size_t k = kk;
         for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
@@ -103,7 +103,7 @@ static inline void apply_controlled_phase(
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
         size_t k = kk;
         for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
@@ -141,7 +141,7 @@ void apply_cx(Statevector& sv, int ctrl, int tgt) noexcept {
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
         size_t k = kk;
         for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
@@ -197,7 +197,7 @@ void apply_cz(Statevector& sv, int ctrl, int tgt) noexcept {
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
         size_t k = kk;
         for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
@@ -240,7 +240,7 @@ void apply_swap(Statevector& sv, int q1, int q2) noexcept {
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
         size_t k = kk;
         for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
@@ -278,7 +278,7 @@ void apply_iswap(Statevector& sv, int q1, int q2) noexcept {
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
         size_t k = kk;
         for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
@@ -352,7 +352,7 @@ void apply_crz(Statevector& sv, int ctrl, int tgt, double theta) noexcept {
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
         size_t k = kk;
         for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
@@ -467,7 +467,7 @@ void apply_ecr(Statevector& sv, int q1, int q2) noexcept {
         off_11 = lo_step + hi_step;      // q1=1, q2=1
     }
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
         size_t k = kk;
         for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
@@ -527,7 +527,7 @@ void apply_rzx(Statevector& sv, int q1, int q2, double theta) noexcept {
         off_01 = hi_step; off_10 = lo_step; off_11 = lo_step + hi_step;
     }
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
         size_t k = kk;
         for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
@@ -587,7 +587,7 @@ void apply_rxx(Statevector& sv, int q1, int q2, double theta) noexcept {
         off_01 = hi_step; off_10 = lo_step; off_11 = lo_step + hi_step;
     }
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
         size_t k = kk;
         for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
@@ -642,7 +642,7 @@ void apply_ryy(Statevector& sv, int q1, int q2, double theta) noexcept {
         off_01 = hi_step; off_10 = lo_step; off_11 = lo_step + hi_step;
     }
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
         size_t k = kk;
         for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
@@ -692,7 +692,7 @@ void apply_rzz(Statevector& sv, int q1, int q2, double theta) noexcept {
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
         size_t k = kk;
         for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
@@ -743,3 +743,4 @@ void apply_rzz(Statevector& sv, int q1, int q2, double theta) noexcept {
 
 } // namespace gates
 } // namespace qpp
+

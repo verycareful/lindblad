@@ -95,6 +95,41 @@ static std::vector<int> cost_term_orbit_map(
     return result;
 }
 
+// Classical energy of a computational-basis bitstring under the diagonal
+// (I/Z-only) part of the Hamiltonian.
+static double computational_basis_cost(
+    const SparsePauliOp& cost_hamiltonian,
+    const std::string& bitstring
+) {
+    const int nq = cost_hamiltonian.n_qubits();
+    if (static_cast<int>(bitstring.size()) != nq) {
+        return std::numeric_limits<double>::infinity();
+    }
+
+    double energy = 0.0;
+    for (const auto& term : cost_hamiltonian.terms) {
+        double eigenvalue = 1.0;
+        bool diagonal = true;
+
+        for (int q = 0; q < nq; ++q) {
+            const char p = term.pauli[q];
+            if (p == 'I') continue;
+            if (p == 'Z') {
+                const char bit = bitstring[nq - 1 - q];
+                eigenvalue *= (bit == '1') ? -1.0 : 1.0;
+            } else {
+                diagonal = false;
+                break;
+            }
+        }
+
+        if (diagonal) {
+            energy += term.coeff.real * eigenvalue;
+        }
+    }
+    return energy;
+}
+
 // =============================================================================
 // Direct statevector evolution (Change 1)
 //
@@ -127,10 +162,11 @@ static void evolve_into(
     for (int q = 0; q < nq; ++q) gates::apply_h(sv, q);
 
     int param_idx = 0;
+    std::vector<double> layer_gammas(n_cost_params_per_layer);
+    std::vector<double> layer_betas(n_mixer_orbits);
 
     for (int layer = 0; layer < p; ++layer) {
         // Cost unitary: one gamma per (orbit-)term
-        std::vector<double> layer_gammas(n_cost_params_per_layer);
         for (int i = 0; i < n_cost_params_per_layer; ++i) {
             layer_gammas[i] = (param_idx < static_cast<int>(params.size()))
                               ? params[param_idx++] : 0.0;
@@ -194,7 +230,6 @@ static void evolve_into(
         }
 
         // Mixer unitary: one beta per orbit (or per qubit in standard mode)
-        std::vector<double> layer_betas(n_mixer_orbits);
         for (int i = 0; i < n_mixer_orbits; ++i) {
             layer_betas[i] = (param_idx < static_cast<int>(params.size()))
                              ? params[param_idx++] : 0.0;
@@ -218,14 +253,18 @@ struct MAQAOACallbackData {
     int n_mixer_orbits;
     const MAQAOA* maqaoa;
     Statevector* sv;
+    std::vector<double> params_buf;
     int nfev;
     double best_val;
 };
 
 static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, void* data) {
     auto* cb = static_cast<MAQAOACallbackData*>(data);
-    std::vector<double> params(x, x + n);
-    evolve_into(*cb->sv, *cb->cost_hamiltonian, *cb->mixer_hamiltonian, params,
+    if (cb->params_buf.size() != n) {
+        cb->params_buf.resize(n);
+    }
+    std::copy(x, x + n, cb->params_buf.begin());
+    evolve_into(*cb->sv, *cb->cost_hamiltonian, *cb->mixer_hamiltonian, cb->params_buf,
                 cb->maqaoa->options.p,
                 *cb->term_orbit_map, cb->n_cost_params_per_layer,
                 cb->n_mixer_orbits,
@@ -246,7 +285,7 @@ struct LayerCBData {
     const SparsePauliOp* mixer_hamiltonian;
     std::vector<double>  all_params;         // [frozen | free] — full-run parameter vector
     int                  free_start;         // index of first free parameter
-    int                  p_total;            // options.p — total layers in circuit
+    int                  p_total;            // active layers in this optimisation stage
     const std::vector<int>* term_orbit_map;
     int                  n_cost_params_per_layer;
     int                  n_mixer_orbits;
@@ -356,6 +395,9 @@ MAQAOA::Result MAQAOA::optimize(
     // Validate PI-MA-QAOA mixer_weights size (Change 2)
     const bool has_mw = (!options.mixer_weights.empty() &&
                          static_cast<int>(options.mixer_weights.size()) == n_mixer_orbits);
+    const double w_max = has_mw
+        ? *std::max_element(options.mixer_weights.begin(), options.mixer_weights.end())
+        : 0.0;
 
     const auto t_global_start = std::chrono::steady_clock::now();
 
@@ -379,8 +421,6 @@ MAQAOA::Result MAQAOA::optimize(
             // Betas: PI-MA-QAOA when mixer_weights provided, else same alternating
             // pattern continuing from where gammas left off (identical to original)
             if (has_mw) {
-                const double w_max = *std::max_element(options.mixer_weights.begin(),
-                                                        options.mixer_weights.end());
                 for (int i = 0; i < n_mixer_orbits; ++i) {
                     all_params.push_back(
                         options.beta_base * (options.mixer_weights[i] / w_max)
@@ -401,7 +441,7 @@ MAQAOA::Result MAQAOA::optimize(
                 &mixer,
                 all_params,       // copy: frozen prefix + this layer's init (Change 7)
                 free_start,
-                options.p,
+                layer + 1,
                 &term_orbit_map_cached,
                 n_cost_params_per_layer,
                 n_mixer_orbits,
@@ -414,7 +454,7 @@ MAQAOA::Result MAQAOA::optimize(
 
             std::cout << "[MAQAOA] layer=" << layer
                       << " starting, free_params=" << params_per_layer
-                      << " total_layers=" << options.p
+                      << " total_layers=" << (layer + 1)
                       << " budget=" << options.max_iterations
                       << std::endl;
 
@@ -427,6 +467,8 @@ MAQAOA::Result MAQAOA::optimize(
             std::vector<double> ub(params_per_layer, kBound);
             nlopt_set_lower_bounds(opt, lb.data());
             nlopt_set_upper_bounds(opt, ub.data());
+            std::vector<double> initial_step(params_per_layer, 0.3);
+            nlopt_set_initial_step(opt, initial_step.data());
 
             std::vector<double> x0(all_params.begin() + free_start, all_params.end());
             // Save initial guess before COBYLA modifies x0 (Change 4)
@@ -447,7 +489,7 @@ MAQAOA::Result MAQAOA::optimize(
                       << " wall_time=" << layer_wall << "s"
                       << std::endl;
 
-            if (nlopt_res < 0 || !std::isfinite(min_val)) {
+            if (nlopt_res < 0 || nlopt_res == NLOPT_MAXEVAL_REACHED || !std::isfinite(min_val)) {
                 all_layers_converged = false;
             }
 
@@ -488,8 +530,6 @@ MAQAOA::Result MAQAOA::optimize(
                 params.push_back(0.1 * (i % 2 == 0 ? 1.0 : -1.0));
             }
             if (has_mw) {
-                const double w_max = *std::max_element(options.mixer_weights.begin(),
-                                                        options.mixer_weights.end());
                 for (int i = 0; i < n_mixer_orbits; ++i) {
                     params.push_back(
                         options.beta_base * (options.mixer_weights[i] / w_max)
@@ -513,6 +553,7 @@ MAQAOA::Result MAQAOA::optimize(
             this, &inner_sv, 0,
             std::numeric_limits<double>::infinity()
         };
+        cb_data.params_buf.resize(n_params);
 
         nlopt_opt opt = nlopt_create(NLOPT_LN_COBYLA, n_params);
         nlopt_set_min_objective(opt, maqaoa_objective, &cb_data);
@@ -523,6 +564,8 @@ MAQAOA::Result MAQAOA::optimize(
         std::vector<double> ub(n_params, kBound);
         nlopt_set_lower_bounds(opt, lb.data());
         nlopt_set_upper_bounds(opt, ub.data());
+        std::vector<double> initial_step(n_params, 0.3);
+        nlopt_set_initial_step(opt, initial_step.data());
 
         double min_val               = std::numeric_limits<double>::infinity();
         const nlopt_result nlopt_res  = nlopt_optimize(opt, params.data(), &min_val);
@@ -530,7 +573,9 @@ MAQAOA::Result MAQAOA::optimize(
 
         result.optimal_value  = std::isfinite(min_val) ? min_val : 1e12;
         result.optimal_params = params;
-        result.converged      = (nlopt_res > 0) && std::isfinite(min_val);
+        result.converged      = (nlopt_res > 0) &&
+                    (nlopt_res != NLOPT_MAXEVAL_REACHED) &&
+                    std::isfinite(min_val);
         result.num_iterations = cb_data.nfev;
 
         // Sampling directly from the evolved statevector (Change 10)
@@ -544,10 +589,14 @@ MAQAOA::Result MAQAOA::optimize(
     result.wall_time_seconds     = std::chrono::duration<double>(
         t_global_end - t_global_start).count();
 
-    int max_count = 0;
+    double best_cost = std::numeric_limits<double>::infinity();
+    int best_count = -1;
     for (const auto& [bits, count] : result.counts) {
-        if (count > max_count) {
-            max_count             = count;
+        const double cost = computational_basis_cost(cost_hamiltonian, bits);
+        if ((cost < best_cost) ||
+            (cost == best_cost && count > best_count)) {
+            best_cost             = cost;
+            best_count            = count;
             result.best_bitstring = bits;
         }
     }

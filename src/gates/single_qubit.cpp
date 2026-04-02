@@ -24,7 +24,7 @@ static inline void apply_single_qubit_matrix(
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
         #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i; j < i + step; ++j) {
@@ -54,7 +54,7 @@ static inline void apply_diagonal_phase(
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
         #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i; j < i + step; ++j) {
@@ -84,7 +84,7 @@ void apply_x(Statevector& sv, int q) noexcept {
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
         #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i; j < i + step; ++j) {
@@ -102,7 +102,7 @@ void apply_y(Statevector& sv, int q) noexcept {
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
         #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i; j < i + step; ++j) {
@@ -129,7 +129,7 @@ void apply_z(Statevector& sv, int q) noexcept {
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
         #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i + step; j < i + 2 * step; ++j) {
@@ -147,7 +147,7 @@ void apply_h(Statevector& sv, int q) noexcept {
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
         #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i; j < i + step; ++j) {
@@ -172,7 +172,7 @@ void apply_s(Statevector& sv, int q) noexcept {
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
         #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i + step; j < i + 2 * step; ++j) {
@@ -193,7 +193,7 @@ void apply_sdg(Statevector& sv, int q) noexcept {
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(sv.dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
     for (size_t i = 0; i < sv.dim; i += 2 * step) {
         #pragma omp simd aligned(real_ptr, imag_ptr: 64)
         for (size_t j = i + step; j < i + 2 * step; ++j) {
@@ -350,3 +350,4 @@ void apply_u3(Statevector& sv, int q,
 
 } // namespace gates
 } // namespace qpp
+

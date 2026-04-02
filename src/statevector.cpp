@@ -79,7 +79,7 @@ Statevector& Statevector::operator=(Statevector&& other) noexcept {
 void Statevector::initialize() {
     // Parallel zero-fill causes first-touch to distribute pages across NUMA
     // nodes on multi-socket hardware; free on UMA.
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (size_t i = 0; i < dim; ++i) {
         real_parts[i] = 0.0;
         imag_parts[i] = 0.0;
@@ -148,7 +148,7 @@ double Statevector::probability(size_t index) const {
 std::vector<double> Statevector::probabilities() const {
     std::vector<double> probs(dim);
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (size_t i = 0; i < dim; ++i) {
         probs[i] = real_parts[i] * real_parts[i] +
                    imag_parts[i] * imag_parts[i];
@@ -163,7 +163,7 @@ std::vector<double> Statevector::probabilities() const {
 double Statevector::norm_sq() const {
     double sum = 0.0;
 
-    #pragma omp parallel for reduction(+:sum) schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for reduction(+:sum) schedule(static) if(dim >= (1<<20))
     for (size_t i = 0; i < dim; ++i) {
         sum += real_parts[i] * real_parts[i] +
                imag_parts[i] * imag_parts[i];
@@ -182,7 +182,7 @@ void Statevector::normalize() {
     }
     double inv_n = 1.0 / n;
 
-    #pragma omp parallel for schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (size_t i = 0; i < dim; ++i) {
         real_parts[i] *= inv_n;
         imag_parts[i] *= inv_n;
@@ -201,7 +201,7 @@ Complex128 Statevector::inner_product(const Statevector& other) const {
     double re = 0.0;
     double im = 0.0;
 
-    #pragma omp parallel for reduction(+:re,im) schedule(static) if(dim > (1<<20))
+    #pragma omp parallel for reduction(+:re,im) schedule(static) if(dim >= (1<<20))
     for (size_t i = 0; i < dim; ++i) {
         // ⟨this|other⟩ = sum_i conj(this_i) * other_i
         re += real_parts[i] * other.real_parts[i] + imag_parts[i] * other.imag_parts[i];
@@ -324,3 +324,4 @@ std::string Statevector::to_string(int precision) const {
 }
 
 } // namespace qpp
+
