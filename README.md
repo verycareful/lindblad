@@ -3,14 +3,14 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-v1.9.5--alpha-orange?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v1.9.6--alpha-orange?style=flat-square)](CHANGELOG.md)
 
 q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
 ## Release
 
-- Current release: `v1.9.5-alpha` (fix: PI-MA-QAOA beta scaling inverted — expensive generators now correctly get large initial angle)
-- Previous release: `v1.9.4-alpha` (fix: MSVC compatibility — remove `__restrict__` from class members, add popcount and SIMD macros) (build: wire `ising.cpp` and `dispatch.cpp` into `qpp_core`) (fix: MSVC portability — delete non-copyable constructors on `VQE`/`QAOA`/`MAQAOA`, `M_PI` guards, `qpp::transpile()` replaces broken `preset_pass_manager` call, copy-assign `Estimator` removed from tests)
+- Current release: `v1.9.6-alpha` (fixes: MAQAOA layerwise depth, convergence reporting, cost-based best bitstring selection; performance: OpenMP threshold at N=20, reduced COBYLA hot-path allocations)
+- Previous release: `v1.9.5-alpha` (fix: PI-MA-QAOA beta scaling inverted — expensive generators now correctly get large initial angle)
 
 ## Project Scope
 

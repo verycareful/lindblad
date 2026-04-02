@@ -210,7 +210,7 @@ double SparsePauliOp::expectation_value(const Statevector& sv) const {
 
         double re = 0.0, im = 0.0;
 
-        #pragma omp parallel for reduction(+:re,im) schedule(static) if(dim > (1<<20))
+        #pragma omp parallel for reduction(+:re,im) schedule(static) if(dim >= (1<<20))
         for (int kk = 0; kk < static_cast<int>(dim); ++kk) {
             size_t k = kk;
             const size_t j = k ^ x_mask;
@@ -336,3 +336,4 @@ SparsePauliOp SparsePauliOp::zero(int n_qubits) {
 }
 
 } // namespace qpp
+

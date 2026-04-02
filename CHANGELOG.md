@@ -4,6 +4,37 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.9.6-alpha] - 2026-04-02
+
+### Fixed
+
+- **Layerwise MA-QAOA evaluated full depth at every layer:** Layerwise COBYLA now evaluates only
+  `layer + 1` active layers during each optimisation stage instead of always evaluating `p` layers,
+  restoring parity with the intended layerwise algorithm.
+
+- **OpenMP threshold off-by-one at N=20:** Parallel kernels now activate at `dim >= (1<<20)`
+  (not only strictly above), enabling multithreaded execution for 20-qubit workloads in gate,
+  statevector, and expectation-value hot paths.
+
+- **Convergence reporting incorrectly marked maxeval as converged:**
+  `NLOPT_MAXEVAL_REACHED` is now treated as non-converged in MA-QAOA result reporting.
+
+- **`best_bitstring` selected by frequency instead of objective cost:** Sampled candidates are now
+  ranked by computational-basis cost under the cost Hamiltonian (with count as tie-breaker),
+  improving reported solution quality.
+
+### Performance
+
+- **Reduced COBYLA hot-path allocations in MA-QAOA:** Reused callback parameter buffers in the
+  standard objective path and reused per-layer gamma/beta work vectors inside `evolve_into()`.
+
+- **PI-MA-QAOA initialisation cleanup:** Precomputed `w_max` once per optimisation run rather than
+  recomputing it in each layer loop.
+
+### Changed
+
+- CMake project version bumped to `1.9.6` and user-facing release label updated to `1.9.6-alpha`.
+
 ## [1.9.5-alpha] - 2026-04-01
 
 ### Fixed

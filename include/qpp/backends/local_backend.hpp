@@ -65,7 +65,7 @@ public:
     );
 
     std::string name() const { return "qpp_local_simulator"; }
-    std::string version() const { return "0.1.0"; }
+    std::string version() const { return "1.9.6-alpha"; }
     int max_qubits() const { return 30; }
 };
 
