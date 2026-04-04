@@ -401,6 +401,11 @@ MAQAOA::Result MAQAOA::optimize(
 
     const auto t_global_start = std::chrono::steady_clock::now();
 
+    // Seeded RNG for initial-parameter perturbation
+    std::mt19937_64 rng(options.seed != 0 ? static_cast<uint64_t>(options.seed)
+                                          : static_cast<uint64_t>(std::random_device{}()));
+    std::uniform_real_distribution<double> perturb(-0.05, 0.05);
+
     // -------------------------------------------------------------------------
     // Layerwise path
     // -------------------------------------------------------------------------
@@ -414,23 +419,21 @@ MAQAOA::Result MAQAOA::optimize(
             const auto t_layer_start = std::chrono::steady_clock::now();
 
             // Initialise this layer's parameters (Change 2: PI-MA-QAOA beta init)
-            // Gammas: alternating ±0.1 based on their position index
+            // Gammas: random perturbation seeded by options.seed
             for (int i = 0; i < n_cost_params_per_layer; ++i) {
-                all_params.push_back(0.1 * (i % 2 == 0 ? 1.0 : -1.0));
+                all_params.push_back(perturb(rng));
             }
             // Betas: PI-MA-QAOA when mixer_weights provided, else same alternating
             // pattern continuing from where gammas left off (identical to original)
             if (has_mw) {
                 for (int i = 0; i < n_mixer_orbits; ++i) {
                     all_params.push_back(
-                        options.beta_base * (options.mixer_weights[i] / w_max)
+                        options.beta_base * (options.mixer_weights[i] / w_max) + perturb(rng)
                     );
                 }
             } else {
                 for (int j = 0; j < n_mixer_orbits; ++j) {
-                    all_params.push_back(
-                        0.1 * ((n_cost_params_per_layer + j) % 2 == 0 ? 1.0 : -1.0)
-                    );
+                    all_params.push_back(perturb(rng));
                 }
             }
 
@@ -527,19 +530,17 @@ MAQAOA::Result MAQAOA::optimize(
 
         for (int layer = 0; layer < options.p; ++layer) {
             for (int i = 0; i < n_cost_params_per_layer; ++i) {
-                params.push_back(0.1 * (i % 2 == 0 ? 1.0 : -1.0));
+                params.push_back(perturb(rng));
             }
             if (has_mw) {
                 for (int i = 0; i < n_mixer_orbits; ++i) {
                     params.push_back(
-                        options.beta_base * (options.mixer_weights[i] / w_max)
+                        options.beta_base * (options.mixer_weights[i] / w_max) + perturb(rng)
                     );
                 }
             } else {
                 for (int j = 0; j < n_mixer_orbits; ++j) {
-                    params.push_back(
-                        0.1 * ((n_cost_params_per_layer + j) % 2 == 0 ? 1.0 : -1.0)
-                    );
+                    params.push_back(perturb(rng));
                 }
             }
         }
@@ -550,7 +551,7 @@ MAQAOA::Result MAQAOA::optimize(
             &cost_hamiltonian, &mixer,
             &term_orbit_map_cached,
             n_cost_params_per_layer, n_mixer_orbits,
-            this, &inner_sv, 0,
+            this, &inner_sv, {}, 0,
             std::numeric_limits<double>::infinity()
         };
         cb_data.params_buf.resize(n_params);

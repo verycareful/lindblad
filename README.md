@@ -3,14 +3,14 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-v1.9.6--alpha-orange?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v2.0.0--beta-blue?style=flat-square)](CHANGELOG.md)
 
 q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
 ## Release
 
-- Current release: `v1.9.6-alpha` (fixes: MAQAOA layerwise depth, convergence reporting, cost-based best bitstring selection; performance: OpenMP threshold at N=20, reduced COBYLA hot-path allocations)
-- Previous release: `v1.9.5-alpha` (fix: PI-MA-QAOA beta scaling inverted — expensive generators now correctly get large initial angle)
+- Current release: `v2.0.0-beta` (feat: seeded random perturbation for MA-QAOA and PI-MA-QAOA initial parameters — reproducible multi-seed landscape exploration via `MAQAOA::Options::seed`)
+- Previous release: `v1.9.6-alpha` (fixes: MAQAOA layerwise depth, convergence reporting, cost-based best bitstring selection; performance: OpenMP threshold at N=20, reduced COBYLA hot-path allocations)
 
 ## Project Scope
 
@@ -39,7 +39,7 @@ The current codebase provides:
   - `IsingHamiltonian` with `from_qubo()` QUBO→Ising conversion and `to_sparse_pauli_op()`
   - `SoftDispatchResult` for post-processing MA-QAOA bitstring distributions into dispatch solutions
   - Orbit-QAOA: symmetry-reduced parameterisation via `MAQAOA::Options::orbit_assignments`
-  - **PI-MA-QAOA initialisation**: `mixer_weights` + `beta_base` in `MAQAOA::Options` for physics-informed beta init (expensive generators → large angle, cheap generators → small)
+  - **PI-MA-QAOA initialisation**: `mixer_weights` + `beta_base` in `MAQAOA::Options` for physics-informed beta init (expensive generators → large angle, cheap generators → small); all initial parameters (gammas and betas) are perturbed by a reproducible `U(-0.05, 0.05)` noise seeded by `MAQAOA::Options::seed`, enabling multi-seed landscape exploration
   - `orbits_by_power(powers, tolerance)` utility: assigns orbit indices by power tier for automatic Orbit-QAOA setup
   - **Direct statevector evolution** in `MAQAOA::optimize()`: inner loop bypasses `QuantumCircuit` construction, parameter binding, transpile cache, and instruction dispatch — expected 3–5× wall-time reduction on N=20 layerwise runs
   - **Qubit-indexed gammas by default** (N gammas per layer, matching Python baseline); `term_indexed_gammas = true` opts into the more expressive term-indexed path for ablation
