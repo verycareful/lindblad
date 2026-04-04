@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [2.0.0-beta] - 2026-04-04
+
+### Changed
+
+- **Seeded random perturbation replaces fixed alternating init in MA-QAOA and PI-MA-QAOA:** All
+  initial parameters — gammas (both paths) and betas (both paths) — are now drawn from
+  `U(-0.05, 0.05)` using an `std::mt19937_64` seeded by `MAQAOA::Options::seed`. When `seed == 0`
+  a `std::random_device` non-deterministic seed is used. This replaces the deterministic
+  `±0.1` alternating pattern that caused all runs to start from the same point regardless of seed,
+  making the seed field meaningful for reproducible multi-start landscape exploration.
+
+- **PI-MA-QAOA betas preserve physics-informed bias:** The `beta_base * (mixer_weights[i] / w_max)`
+  scaling is retained as the centre of each beta's initial value; the seed perturbation is added on
+  top rather than replacing it. This keeps expensive generators biased toward large angles while
+  still allowing each seed to explore a different neighbourhood.
+
+- CMake project version bumped to `2.0.0` and user-facing release label updated to `2.0.0-beta`.
+
 ## [1.9.6-alpha] - 2026-04-02
 
 ### Fixed
