@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [2.0.1-beta] - 2026-04-05
+
+### Added
+
+- **Progressive training mode for MA-QAOA (`MAQAOA::Options::progressive`):** When
+  `progressive = true` (requires `layerwise = true`), the layerwise schedule never freezes
+  previously trained parameters. At each layer step, `free_start` stays at `0` and
+  `n_free` grows by one layer's worth of parameters, so COBYLA optimises all parameters
+  from layer 0 through the current layer jointly. Layers already trained provide good warm-start
+  values; only the new layer's parameters are freshly initialised. When `progressive = false`
+  (default) behaviour is identical to the existing layerwise path — no change.
+
+- CMake project version bumped to `2.0.1`.
+
 ## [2.0.0-beta] - 2026-04-04
 
 ### Changed

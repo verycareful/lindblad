@@ -113,6 +113,11 @@ public:
         double convergence_threshold = 1e-6;
         std::string optimizer = "COBYLA";
         bool layerwise = false;        // iteratively optimise layer by layer
+
+        // Progressive training: layerwise schedule without parameter freezing.
+        // When true, all previously trained parameters remain free at each layer step.
+        // Ignored when layerwise=false (joint optimisation already has no freezing).
+        bool progressive = false;
         uint64_t seed = 0;
 
         // Orbit-QAOA: qubits in the same orbit share a single mixer parameter.

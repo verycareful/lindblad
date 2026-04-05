@@ -437,7 +437,9 @@ MAQAOA::Result MAQAOA::optimize(
                 }
             }
 
-            const int free_start = layer * params_per_layer;
+            const int free_start = options.progressive ? 0 : layer * params_per_layer;
+            const int n_free     = options.progressive ? (layer + 1) * params_per_layer
+                                                       : params_per_layer;
 
             LayerCBData cb{
                 &cost_hamiltonian,
@@ -456,21 +458,21 @@ MAQAOA::Result MAQAOA::optimize(
             };
 
             std::cout << "[MAQAOA] layer=" << layer
-                      << " starting, free_params=" << params_per_layer
+                      << " starting, free_params=" << n_free
                       << " total_layers=" << (layer + 1)
                       << " budget=" << options.max_iterations
                       << std::endl;
 
-            nlopt_opt opt = nlopt_create(NLOPT_LN_COBYLA, params_per_layer);
+            nlopt_opt opt = nlopt_create(NLOPT_LN_COBYLA, n_free);
             nlopt_set_min_objective(opt, layer_objective, &cb);
             nlopt_set_maxeval(opt, options.max_iterations);
             nlopt_set_xtol_rel(opt, options.convergence_threshold);
 
-            std::vector<double> lb(params_per_layer, -kBound);
-            std::vector<double> ub(params_per_layer, kBound);
+            std::vector<double> lb(n_free, -kBound);
+            std::vector<double> ub(n_free, kBound);
             nlopt_set_lower_bounds(opt, lb.data());
             nlopt_set_upper_bounds(opt, ub.data());
-            std::vector<double> initial_step(params_per_layer, 0.3);
+            std::vector<double> initial_step(n_free, 0.3);
             nlopt_set_initial_step(opt, initial_step.data());
 
             std::vector<double> x0(all_params.begin() + free_start, all_params.end());
@@ -497,7 +499,7 @@ MAQAOA::Result MAQAOA::optimize(
             }
 
             // Write optimised params back into the outer all_params
-            for (int i = 0; i < params_per_layer; ++i) {
+            for (int i = 0; i < n_free; ++i) {
                 all_params[free_start + i] = x0[i];
             }
 
