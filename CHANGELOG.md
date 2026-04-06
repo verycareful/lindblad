@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [2.0.2-beta] - 2026-04-06
+
+### Fixed (documentation only)
+
+- Corrected stale comment in `include/qpp/algorithms.hpp` `mixer_weights` block which
+  still described the pre-v1.9.5 formula (`w_max / w_i`). Comment now accurately reflects
+  the current `beta_base * w_i / w_max` implementation, where expensive generators (large
+  `w_i`) receive large initial betas and cheap generators receive small ones.
+- Documented the IPI (inverse-PI) pattern: callers who want the opposite behaviour
+  (large beta for cheap generators) can pass `ipi_weights[i] = 1.0 / pi_weights[i]` with
+  no q++ changes required.
+- CMake project version bumped to `2.0.2`.
+
 ## [2.0.1-beta] - 2026-04-05
 
 ### Added

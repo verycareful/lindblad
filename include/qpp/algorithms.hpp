@@ -137,10 +137,13 @@ public:
 
         // PI-MA-QAOA: per-orbit mixer weight vector (e.g. augmented cost per MW). (Might be published as a separate algorithm in future if it performs well.)
         // size must equal n_mixer_orbits (n_qubits in standard mode, n_orbits in
-        // orbit mode). When non-empty, beta_i = beta_base * (w_max / mixer_weights[i])
-        // so cheap generators (large w) start with a small rotation angle and expensive
-        // generators (small w) start with a large angle.
-        // Empty = standard alternating ±0.1 initialisation.
+        // orbit mode). When non-empty, beta_i = beta_base * (mixer_weights[i] / w_max)
+        // so expensive generators (large w_i) receive a large initial beta and
+        // cheap generators (small w_i) receive a small initial beta.
+        // To invert this (large beta for cheap generators), pass inverse weights:
+        //   ipi_weights[i] = 1.0 / pi_weights[i]
+        // This can be done entirely in the calling code without any q++ changes.
+        // Empty = standard random perturbation initialisation.
         std::vector<double> mixer_weights;
         double beta_base   = M_PI / 4.0;   // base angle scale for PI-MA-QAOA init
         double lambda_co2  = 0.0;          // carbon/other weighting factor (0 = pure economic) - Can be anything but normalised to a "cost"
