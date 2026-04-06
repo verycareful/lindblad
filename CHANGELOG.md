@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [2.1.0-beta] - 2026-04-06
+
+### Added
+
+- **QSP-MA-QAOA: per-qubit Ry state preparation (`MAQAOA::Options::initial_thetas`):**
+  When `initial_thetas` is non-empty and sized to `n_qubits`, replaces the standard
+  `H|0⟩` initialisation with `Ry(theta[q])|0⟩` for each qubit. This encodes a domain
+  prior `P(qubit q = 1) = sin²(theta[q]/2)` directly into the quantum initial state
+  before any QAOA layers are applied. Compute `theta[q] = 2*arcsin(sqrt(p_on[q]))` from
+  any prior probability `p_on[q] ∈ [0, 1]`. Empty vector (default) preserves existing
+  `H` initialisation exactly — no behaviour change for existing callers.
+- `evolve_into()` gains an `initial_thetas` parameter (defaulting to `{}`) used at every
+  statevector reset: layerwise callback, joint callback, and both final-eval sites.
+- `LayerCBData` and `MAQAOACallbackData` carry `initial_thetas` from
+  `options.initial_thetas` to each `evolve_into` call.
+- `experiments/common.hpp` update deferred — file is not present in the repository.
+- CMake project version bumped to `2.1.0`.
+
 ## [2.0.2-beta] - 2026-04-06
 
 ### Fixed (documentation only)

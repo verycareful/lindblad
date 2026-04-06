@@ -145,6 +145,15 @@ public:
         // This can be done entirely in the calling code without any q++ changes.
         // Empty = standard random perturbation initialisation.
         std::vector<double> mixer_weights;
+
+        // QSP-MA-QAOA: per-qubit initial state preparation angles.
+        // When non-empty, replaces the standard H|0> initialisation with Ry(theta[q])|0>
+        // for each qubit q. This encodes a prior probability P(qubit q = 1) = sin²(theta[q]/2)
+        // directly into the quantum initial state before any QAOA layers are applied.
+        // Size must equal n_qubits. Empty = standard H initialisation (default behaviour).
+        // Compute theta[q] = 2 * arcsin(sqrt(p_on[q])) from a domain prior p_on[q] ∈ [0,1].
+        std::vector<double> initial_thetas;
+
         double beta_base   = M_PI / 4.0;   // base angle scale for PI-MA-QAOA init
         double lambda_co2  = 0.0;          // carbon/other weighting factor (0 = pure economic) - Can be anything but normalised to a "cost"
     };

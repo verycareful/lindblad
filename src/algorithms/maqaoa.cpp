@@ -152,14 +152,21 @@ static void evolve_into(
     const std::vector<int>& term_orbit_map,
     int n_cost_params_per_layer,
     int n_mixer_orbits,
-    const std::vector<int>& orbit_assignments
+    const std::vector<int>& orbit_assignments,
+    const std::vector<double>& initial_thetas = {}  // QSP: empty = standard H init
 ) {
     const int nq          = cost.n_qubits();
     const int cost_terms  = static_cast<int>(cost.terms.size());
     const bool use_orbits = !orbit_assignments.empty();
 
     sv.initialize();
-    for (int q = 0; q < nq; ++q) gates::apply_h(sv, q);
+    if (!initial_thetas.empty() &&
+        static_cast<int>(initial_thetas.size()) == nq) {
+        for (int q = 0; q < nq; ++q)
+            gates::apply_ry(sv, q, initial_thetas[q]);
+    } else {
+        for (int q = 0; q < nq; ++q) gates::apply_h(sv, q);
+    }
 
     int param_idx = 0;
     std::vector<double> layer_gammas(n_cost_params_per_layer);
@@ -256,6 +263,7 @@ struct MAQAOACallbackData {
     std::vector<double> params_buf;
     int nfev;
     double best_val;
+    std::vector<double> initial_thetas;
 };
 
 static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, void* data) {
@@ -268,7 +276,8 @@ static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, vo
                 cb->maqaoa->options.p,
                 *cb->term_orbit_map, cb->n_cost_params_per_layer,
                 cb->n_mixer_orbits,
-                cb->maqaoa->options.orbit_assignments);
+                cb->maqaoa->options.orbit_assignments,
+                cb->initial_thetas);
     const double value = cb->cost_hamiltonian->expectation_value(*cb->sv);
     ++cb->nfev;
     if (value < cb->best_val) cb->best_val = value;
@@ -294,6 +303,7 @@ struct LayerCBData {
     int                  p_current;
     int                  nfev;
     double               best_val;
+    std::vector<double>  initial_thetas;
 };
 
 static double layer_objective(unsigned n, const double* x, double* /*grad*/, void* raw) {
@@ -303,7 +313,8 @@ static double layer_objective(unsigned n, const double* x, double* /*grad*/, voi
     evolve_into(*d->sv, *d->cost_hamiltonian, *d->mixer_hamiltonian,
                 d->all_params, d->p_total,
                 *d->term_orbit_map, d->n_cost_params_per_layer,
-                d->n_mixer_orbits, *d->orbit_assignments);
+                d->n_mixer_orbits, *d->orbit_assignments,
+                d->initial_thetas);
     const double value = d->cost_hamiltonian->expectation_value(*d->sv);
     const double v     = std::isfinite(value) ? value : 1e12;
     ++d->nfev;
@@ -454,7 +465,8 @@ MAQAOA::Result MAQAOA::optimize(
                 &inner_sv,
                 layer,
                 0,
-                std::numeric_limits<double>::infinity()
+                std::numeric_limits<double>::infinity(),
+                options.initial_thetas
             };
 
             std::cout << "[MAQAOA] layer=" << layer
@@ -515,7 +527,8 @@ MAQAOA::Result MAQAOA::optimize(
         // No circuit rebuild, no estimator overhead, no second sampler run.
         evolve_into(inner_sv, cost_hamiltonian, mixer, all_params, options.p,
                     term_orbit_map_cached, n_cost_params_per_layer,
-                    n_mixer_orbits, options.orbit_assignments);
+                    n_mixer_orbits, options.orbit_assignments,
+                    options.initial_thetas);
         result.optimal_value = cost_hamiltonian.expectation_value(inner_sv);
         result.converged     = all_layers_converged && std::isfinite(result.optimal_value);
 
@@ -554,7 +567,8 @@ MAQAOA::Result MAQAOA::optimize(
             &term_orbit_map_cached,
             n_cost_params_per_layer, n_mixer_orbits,
             this, &inner_sv, {}, 0,
-            std::numeric_limits<double>::infinity()
+            std::numeric_limits<double>::infinity(),
+            options.initial_thetas
         };
         cb_data.params_buf.resize(n_params);
 
@@ -584,7 +598,8 @@ MAQAOA::Result MAQAOA::optimize(
         // Sampling directly from the evolved statevector (Change 10)
         evolve_into(inner_sv, cost_hamiltonian, mixer, params, options.p,
                     term_orbit_map_cached, n_cost_params_per_layer,
-                    n_mixer_orbits, options.orbit_assignments);
+                    n_mixer_orbits, options.orbit_assignments,
+                    options.initial_thetas);
         result.counts = inner_sv.sample_counts(sampler.options.shots, sampler.options.seed);
     }
 
