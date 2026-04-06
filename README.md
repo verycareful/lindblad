@@ -3,14 +3,14 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-v2.0.1--beta-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v2.0.2--beta-blue?style=flat-square)](CHANGELOG.md)
 
 q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
 ## Release
 
-- Current release: `v2.0.1-beta` (feat: progressive training mode for MA-QAOA — layerwise schedule without parameter freezing via `MAQAOA::Options::progressive`)
-- Previous release: `v2.0.0-beta` (feat: seeded random perturbation for MA-QAOA and PI-MA-QAOA initial parameters — reproducible multi-seed landscape exploration via `MAQAOA::Options::seed`)
+- Current release: `v2.0.2-beta` (docs: corrected stale PI-MA-QAOA formula comment in algorithms.hpp; documents IPI inverse-weight pattern)
+- Previous release: `v2.0.1-beta` (feat: progressive training mode for MA-QAOA — layerwise schedule without parameter freezing via `MAQAOA::Options::progressive`)
 
 ## Project Scope
 
