@@ -72,6 +72,14 @@ public:
         double convergence_threshold = 1e-6;
         std::string optimizer = "COBYLA";
         uint64_t seed = 0;
+
+        // QSP-QAOA: per-qubit initial state preparation angles.
+        // When non-empty, replaces the standard H|0> initialisation with Ry(theta[q])|0>
+        // for each qubit q. Encodes a domain prior P(qubit q = 1) = sin²(theta[q]/2)
+        // directly into the quantum initial state before any QAOA layers are applied.
+        // Size must equal n_qubits. Empty = standard H initialisation (default behaviour).
+        // Compute theta[q] = 2 * arcsin(sqrt(p_on[q])) from a domain prior p_on[q] ∈ [0,1].
+        std::vector<double> initial_thetas;
     };
 
     struct Result {
