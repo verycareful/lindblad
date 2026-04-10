@@ -3,14 +3,14 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-v2.1.0--beta-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v2.1.2--beta-blue?style=flat-square)](CHANGELOG.md)
 
 q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
 ## Release
 
-- Current release: `v2.1.0-beta` (feat: QSP-MA-QAOA — per-qubit Ry state preparation via `MAQAOA::Options::initial_thetas`; encodes domain prior P(qubit ON) into initial quantum state)
-- Previous release: `v2.0.2-beta` (docs: corrected stale PI-MA-QAOA formula comment in algorithms.hpp; documents IPI inverse-weight pattern)
+- Current release: `v2.1.2-beta` (fix: QAOA seeded parameter init — gamma/beta drawn from U(-0.05, 0.05) via `QAOA::Options::seed`, matching MAQAOA convention; sampler seed propagated)
+- Previous release: `v2.1.1-beta` (feat: QSP-QAOA — per-qubit Ry state preparation via `QAOA::Options::initial_thetas`)
 
 ## Project Scope
 

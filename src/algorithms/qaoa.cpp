@@ -52,7 +52,14 @@ QAOA::Result QAOA::optimize(
     }
 
     int n_params = 2 * options.p;  // gamma_i, beta_i for each layer
-    std::vector<double> params(n_params, 0.5);
+
+    std::mt19937_64 rng(options.seed != 0
+        ? static_cast<uint64_t>(options.seed)
+        : static_cast<uint64_t>(std::random_device{}()));
+    std::uniform_real_distribution<double> perturb(-0.05, 0.05);
+
+    std::vector<double> params(n_params);
+    for (auto& p : params) p = perturb(rng);
 
     // NLopt
     nlopt_opt opt = nlopt_create(NLOPT_LN_COBYLA, n_params);
@@ -70,6 +77,7 @@ QAOA::Result QAOA::optimize(
     result.converged = (nlopt_res > 0);
 
     // Sample to get best bitstring
+    sampler.options.seed = options.seed;
     auto circuit = build_circuit(cost_hamiltonian, mixer, params);
     result.counts = sampler.run_single(circuit);
 
