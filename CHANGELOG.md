@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [2.1.2-beta] - 2026-04-10
+
+### Changed
+
+- **QAOA seeded parameter initialisation:** `QAOA::optimize()` now draws initial
+  gamma/beta parameters from `U(-0.05, 0.05)` seeded by `QAOA::Options::seed`,
+  matching the MAQAOA initialisation convention introduced in v2.0.0-beta.
+  Previously all parameters were hardcoded to `0.5` regardless of seed, making
+  multi-seed runs produce identical starting points. `sampler.options.seed` is
+  also propagated from `options.seed` before the final bitstring sampling call.
+- CMake project version bumped to `2.1.2`.
+
 ## [2.1.1-beta] - 2026-04-09
 
 ### Added
