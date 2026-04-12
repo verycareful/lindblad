@@ -2,6 +2,7 @@
 #include "qpp/gates.hpp"
 
 #include <cmath>
+#include <limits>
 #include <random>
 #include <stdexcept>
 
@@ -9,6 +10,41 @@
 
 namespace qpp {
 namespace algorithms {
+
+static constexpr double kBound = 2.0 * M_PI;
+
+static double computational_basis_cost(
+    const SparsePauliOp& cost_hamiltonian,
+    const std::string& bitstring
+) {
+    const int nq = cost_hamiltonian.n_qubits();
+    if (static_cast<int>(bitstring.size()) != nq) {
+        return std::numeric_limits<double>::infinity();
+    }
+
+    double energy = 0.0;
+    for (const auto& term : cost_hamiltonian.terms) {
+        double eigenvalue = 1.0;
+        bool diagonal = true;
+
+        for (int q = 0; q < nq; ++q) {
+            const char p = term.pauli[q];
+            if (p == 'I') continue;
+            if (p == 'Z') {
+                const char bit = bitstring[nq - 1 - q];
+                eigenvalue *= (bit == '1') ? -1.0 : 1.0;
+            } else {
+                diagonal = false;
+                break;
+            }
+        }
+
+        if (diagonal) {
+            energy += term.coeff.real * eigenvalue;
+        }
+    }
+    return energy;
+}
 
 // =============================================================================
 // QAOA NLopt callback
@@ -60,6 +96,7 @@ QAOA::Result QAOA::optimize(
 
     std::vector<double> params(n_params);
     for (auto& p : params) p = perturb(rng);
+    result.initial_params = params;
 
     // NLopt
     nlopt_opt opt = nlopt_create(NLOPT_LN_COBYLA, n_params);
@@ -67,6 +104,12 @@ QAOA::Result QAOA::optimize(
     nlopt_set_min_objective(opt, qaoa_objective, &cb_data);
     nlopt_set_maxeval(opt, options.max_iterations);
     nlopt_set_xtol_rel(opt, options.convergence_threshold);
+    std::vector<double> lb(n_params, -kBound);
+    std::vector<double> ub(n_params, kBound);
+    nlopt_set_lower_bounds(opt, lb.data());
+    nlopt_set_upper_bounds(opt, ub.data());
+    std::vector<double> initial_step(n_params, 0.3);
+    nlopt_set_initial_step(opt, initial_step.data());
 
     double min_val;
     nlopt_result nlopt_res = nlopt_optimize(opt, params.data(), &min_val);
@@ -74,18 +117,22 @@ QAOA::Result QAOA::optimize(
 
     result.optimal_value = min_val;
     result.optimal_params = params;
-    result.converged = (nlopt_res > 0);
+    result.converged = (nlopt_res > 0 && nlopt_res != NLOPT_MAXEVAL_REACHED);
 
     // Sample to get best bitstring
     sampler.options.seed = options.seed;
     auto circuit = build_circuit(cost_hamiltonian, mixer, params);
     result.counts = sampler.run_single(circuit);
 
-    // Find most frequent bitstring
-    int max_count = 0;
+    // Rank by computational-basis objective; break ties by sample count.
+    double best_cost = std::numeric_limits<double>::infinity();
+    int best_count = -1;
     for (const auto& [bits, count] : result.counts) {
-        if (count > max_count) {
-            max_count = count;
+        const double cost = computational_basis_cost(cost_hamiltonian, bits);
+        if ((cost < best_cost) ||
+            (cost == best_cost && count > best_count)) {
+            best_cost = cost;
+            best_count = count;
             result.best_bitstring = bits;
         }
     }

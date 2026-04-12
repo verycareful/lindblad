@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [2.2.0-beta] - 2026-04-12
+
+### Added
+
+- **QAOA optimiser bounds and step-size configuration:** `QAOA::optimize()` now enforces
+  parameter bounds `[-2π, 2π]` for gamma and beta parameters, preventing unbounded
+  growth during optimisation. Initial step size is set to 0.3 to accelerate convergence.
+  These settings improve the robustness and speed of the NLopt COBYLA optimiser.
+- **Initial parameter tracking:** `QAOA::Result` now includes `initial_params` field
+  storing the seeded initial gamma/beta parameters before optimisation, enabling analysis
+  of parameter trajectories and optimiser starting configurations.
+- **Computational-basis cost evaluation:** New `computational_basis_cost()` helper
+  function evaluates the cost Hamiltonian eigenvalue on computational basis states
+  in O(n_terms) time. Used for improved bitstring selection.
+
+### Changed
+
+- **QAOA bitstring selection strategy:** Final bitstring is now chosen by ranking sampled
+  computational-basis eigenenergies (via cost Hamiltonian), with ties broken by sample count.
+  Previously selected by sample count alone, which could favour suboptimal bitstrings
+  sampled more frequently by chance. This change aligns with VQE/QAOA best practices.
+- **Convergence criterion refinement:** `QAOA::Result::converged` now explicitly excludes
+  `NLOPT_MAXEVAL_REACHED` status, distinguishing iterations exhausted from true convergence.
+- CMake project version bumped to `2.2.0-beta`.
+
 ## [2.1.2-beta] - 2026-04-10
 
 ### Changed

@@ -84,6 +84,7 @@ public:
 
     struct Result {
         double optimal_value;
+        std::vector<double> initial_params;
         std::vector<double> optimal_params;  // [gamma_1, beta_1, ..., gamma_p, beta_p]
         std::unordered_map<std::string, int> counts;
         std::string best_bitstring;
