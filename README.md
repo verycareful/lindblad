@@ -3,14 +3,14 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-v2.1.2--beta-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v2.2.0--beta-blue?style=flat-square)](CHANGELOG.md)
 
 q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
 ## Release
 
-- Current release: `v2.1.2-beta` (fix: QAOA seeded parameter init — gamma/beta drawn from U(-0.05, 0.05) via `QAOA::Options::seed`, matching MAQAOA convention; sampler seed propagated)
-- Previous release: `v2.1.1-beta` (feat: QSP-QAOA — per-qubit Ry state preparation via `QAOA::Options::initial_thetas`)
+- Current release: `v2.2.0-beta` (feat: QAOA optimiser bounds [-2π, 2π], initial step-size 0.3, and computational-basis energy ranking for improved bitstring selection)
+- Previous release: `v2.1.2-beta` (fix: QAOA seeded parameter init — gamma/beta drawn from U(-0.05, 0.05) via `QAOA::Options::seed`, matching MAQAOA convention; sampler seed propagated)
 
 ## Project Scope
 
@@ -39,6 +39,7 @@ The current codebase provides:
   - `IsingHamiltonian` with `from_qubo()` QUBO→Ising conversion and `to_sparse_pauli_op()`
   - `SoftDispatchResult` for post-processing MA-QAOA bitstring distributions into dispatch solutions
   - Orbit-QAOA: symmetry-reduced parameterisation via `MAQAOA::Options::orbit_assignments`
+  - **QAOA optimiser enhancements** (v2.2.0): parameter bounds `[-2π, 2π]`, initial step-size 0.3, and `QAOA::Result::initial_params` for trajectory analysis. Bitstring selection ranks by computational-basis cost eigenvalue (physics-informed) rather than sample count alone. Convergence distinguishes true completion from iteration-limit exhaustion.
   - **PI-MA-QAOA initialisation**: `mixer_weights` + `beta_base` in `MAQAOA::Options` for physics-informed beta init (expensive generators → large angle, cheap generators → small); all initial parameters (gammas and betas) are perturbed by a reproducible `U(-0.05, 0.05)` noise seeded by `MAQAOA::Options::seed`, enabling multi-seed landscape exploration
   - `orbits_by_power(powers, tolerance)` utility: assigns orbit indices by power tier for automatic Orbit-QAOA setup
   - **Direct statevector evolution** in `MAQAOA::optimize()`: inner loop bypasses `QuantumCircuit` construction, parameter binding, transpile cache, and instruction dispatch — expected 3–5× wall-time reduction on N=20 layerwise runs
