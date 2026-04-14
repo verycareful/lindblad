@@ -3,12 +3,48 @@
 All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
-
 ## [2.3.0-beta] - 2026-04-14
 
 ### Added
 
-- feat: noisy MAQAOA execution path — DensityMatrixSimulator routing when estimator noise_model is non-ideal; DensityMatrix::expectation_value_sparse() for efficient diagonal Hamiltonian expectation values under mixed states.
+- **Noisy MAQAOA execution path via `DensityMatrixSimulator`:** When
+  `estimator.options.noise_model` is non-ideal, both the non-layerwise objective
+  (`maqaoa_objective`) and the layerwise objective (`layer_objective`) now route each
+  COBYLA evaluation through `build_circuit()` + `DensityMatrixSimulator::run()` instead
+  of the direct `evolve_into()` statevector fast-path. The noiseless fast-path is
+  completely unchanged; the branch is a zero-cost `is_ideal()` check on every evaluation.
+  This enables `Mode A` (noisy optimisation) in exp_p: setting
+  `maqaoa.estimator.options.noise_model` is sufficient to activate density-matrix
+  simulation for the full COBYLA loop.
+
+- **Noisy final evaluation and sampling:** After optimisation, if
+  `estimator.options.noise_model` is non-ideal the final energy evaluation also routes
+  through `DensityMatrixSimulator`. If `sampler.options.noise_model` is non-ideal, the
+  final bitstring sampling uses `DensityMatrixSimulator::run()` with the sampler's shot
+  count and seed instead of `Statevector::sample_counts()`. Both checks are independent,
+  allowing noiseless optimisation + noisy sampling (`Mode B`) or fully noisy
+  optimisation + noisy sampling (`Mode A`) without code changes in the caller.
+
+- **`DensityMatrix::expectation_value_sparse(const SparsePauliOp&)`:** Computes
+  `Tr(ρH)` for diagonal Ising Hamiltonians (Z and ZZ terms only) in O(2^N × n_terms)
+  time without materialising the full 2^N × 2^N matrix representation of H. Iterates
+  over basis states, computes the eigenvalue of each diagonal Pauli term via bit
+  extraction, weights by `ρ[b,b].real`, and sums. Skips basis states with zero
+  diagonal probability. Declared in `include/qpp/simulators/density_matrix_sim.hpp`,
+  implemented in `src/simulators/density_matrix_sim.cpp`.
+
+- **`tests/test_maqaoa_noisy.cpp`:** Integration test covering layerwise QSP-MA-QAOA
+  with depolarising noise on both estimator and sampler. Verifies run completes without
+  error, `result.best_bitstring` has the correct length, `result.optimal_value` is
+  finite, and `result.counts` is non-empty.
+
+### Changed
+
+- `MAQAOACallbackData` gains a `const MAQAOA* maqaoa` pointer (re-added after the
+  v1.8.0 refactor removed it) so `maqaoa_objective` can call `build_circuit()` on the
+  noisy path. The noiseless path continues to use `evolve_into()` via the pre-existing
+  `Statevector*` member; no hot-path performance regression.
+- CMake project version bumped to `2.3.0-beta`.
 
 ## [2.2.0-beta] - 2026-04-12
 
