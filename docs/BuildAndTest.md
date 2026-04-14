@@ -4,7 +4,7 @@
 
 q++ targets modern C++23 toolchains.
 
-- Windows: MSVC (Visual Studio 2022 recommended)
+- Windows: MSVC (Visual Studio 2022/26 recommended)
 - Linux: GCC or Clang
 - CMake: 3.20+
 

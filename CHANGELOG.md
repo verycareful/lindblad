@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [2.3.0-beta] - 2026-04-14
+
+### Added
+
+- feat: noisy MAQAOA execution path — DensityMatrixSimulator routing when estimator noise_model is non-ideal; DensityMatrix::expectation_value_sparse() for efficient diagonal Hamiltonian expectation values under mixed states.
+
 ## [2.2.0-beta] - 2026-04-12
 
 ### Added

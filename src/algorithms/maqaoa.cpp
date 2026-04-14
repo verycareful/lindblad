@@ -1,5 +1,6 @@
 #include "qpp/algorithms.hpp"
 #include "qpp/gates.hpp"
+#include "qpp/simulators/density_matrix_sim.hpp"
 #include "qpp/simulators/statevector_sim.hpp"
 
 #include <algorithm>
@@ -272,6 +273,19 @@ static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, vo
         cb->params_buf.resize(n);
     }
     std::copy(x, x + n, cb->params_buf.begin());
+    if (!cb->maqaoa->estimator.options.noise_model.is_ideal()) {
+        auto circuit = cb->maqaoa->build_circuit(
+            *cb->cost_hamiltonian, *cb->mixer_hamiltonian, cb->params_buf);
+        qpp::DensityMatrixSimulator dm_sim;
+        auto dm_result = dm_sim.run(
+            circuit, cb->maqaoa->estimator.options.noise_model, 0, 0);
+        const double value = dm_result.success
+            ? dm_result.final_state.expectation_value_sparse(*cb->cost_hamiltonian)
+            : 1e12;
+        ++cb->nfev;
+        if (value < cb->best_val) cb->best_val = value;
+        return std::isfinite(value) ? value : 1e12;
+    }
     evolve_into(*cb->sv, *cb->cost_hamiltonian, *cb->mixer_hamiltonian, cb->params_buf,
                 cb->maqaoa->options.p,
                 *cb->term_orbit_map, cb->n_cost_params_per_layer,
@@ -290,6 +304,7 @@ static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, vo
 // =============================================================================
 
 struct LayerCBData {
+    const MAQAOA*        maqaoa;
     const SparsePauliOp* cost_hamiltonian;
     const SparsePauliOp* mixer_hamiltonian;
     std::vector<double>  all_params;         // [frozen | free] — full-run parameter vector
@@ -310,6 +325,26 @@ static double layer_objective(unsigned n, const double* x, double* /*grad*/, voi
     auto* d = static_cast<LayerCBData*>(raw);
     // Update free portion in-place (Change 7: no allocation, no copy)
     std::copy(x, x + n, d->all_params.begin() + d->free_start);
+    if (!d->maqaoa->estimator.options.noise_model.is_ideal()) {
+        auto circuit = d->maqaoa->build_circuit(
+            *d->cost_hamiltonian, *d->mixer_hamiltonian, d->all_params);
+        qpp::DensityMatrixSimulator dm_sim;
+        auto dm_result = dm_sim.run(
+            circuit, d->maqaoa->estimator.options.noise_model, 0, 0);
+        const double value = dm_result.success
+            ? dm_result.final_state.expectation_value_sparse(*d->cost_hamiltonian)
+            : 1e12;
+        const double v     = std::isfinite(value) ? value : 1e12;
+        ++d->nfev;
+        if (v < d->best_val) d->best_val = v;
+        if (d->nfev % 50 == 0) {
+            std::cout << "[MAQAOA] layer=" << d->p_current
+                      << " eval=" << d->nfev
+                      << " best=" << d->best_val
+                      << std::endl;
+        }
+        return v;
+    }
     evolve_into(*d->sv, *d->cost_hamiltonian, *d->mixer_hamiltonian,
                 d->all_params, d->p_total,
                 *d->term_orbit_map, d->n_cost_params_per_layer,
@@ -453,6 +488,7 @@ MAQAOA::Result MAQAOA::optimize(
                                                        : params_per_layer;
 
             LayerCBData cb{
+                this,
                 &cost_hamiltonian,
                 &mixer,
                 all_params,       // copy: frozen prefix + this layer's init (Change 7)
@@ -525,16 +561,33 @@ MAQAOA::Result MAQAOA::optimize(
 
         // Final eval + sampling directly from the evolved statevector (Change 10)
         // No circuit rebuild, no estimator overhead, no second sampler run.
-        evolve_into(inner_sv, cost_hamiltonian, mixer, all_params, options.p,
-                    term_orbit_map_cached, n_cost_params_per_layer,
-                    n_mixer_orbits, options.orbit_assignments,
-                    options.initial_thetas);
-        result.optimal_value = cost_hamiltonian.expectation_value(inner_sv);
+        if (!estimator.options.noise_model.is_ideal()) {
+            auto circuit = build_circuit(cost_hamiltonian, mixer, all_params);
+            qpp::DensityMatrixSimulator dm_sim;
+            auto dm_result = dm_sim.run(circuit, estimator.options.noise_model, 0, 0);
+            result.optimal_value = dm_result.success
+                ? dm_result.final_state.expectation_value_sparse(cost_hamiltonian)
+                : 1e12;
+        } else {
+            evolve_into(inner_sv, cost_hamiltonian, mixer, all_params, options.p,
+                        term_orbit_map_cached, n_cost_params_per_layer,
+                        n_mixer_orbits, options.orbit_assignments,
+                        options.initial_thetas);
+            result.optimal_value = cost_hamiltonian.expectation_value(inner_sv);
+        }
         result.converged     = all_layers_converged && std::isfinite(result.optimal_value);
 
         if (!std::isfinite(result.optimal_value)) result.optimal_value = 1e12;
 
-        result.counts = inner_sv.sample_counts(sampler.options.shots, sampler.options.seed);
+        if (!sampler.options.noise_model.is_ideal()) {
+            auto circuit = build_circuit(cost_hamiltonian, mixer, all_params);
+            qpp::DensityMatrixSimulator dm_sim;
+            result.counts = dm_sim.run(
+                circuit, sampler.options.noise_model,
+                sampler.options.shots, sampler.options.seed).counts;
+        } else {
+            result.counts = inner_sv.sample_counts(sampler.options.shots, sampler.options.seed);
+        }
 
     // -------------------------------------------------------------------------
     // Standard path: all parameters optimised at once
@@ -596,11 +649,19 @@ MAQAOA::Result MAQAOA::optimize(
         result.num_iterations = cb_data.nfev;
 
         // Sampling directly from the evolved statevector (Change 10)
-        evolve_into(inner_sv, cost_hamiltonian, mixer, params, options.p,
-                    term_orbit_map_cached, n_cost_params_per_layer,
-                    n_mixer_orbits, options.orbit_assignments,
-                    options.initial_thetas);
-        result.counts = inner_sv.sample_counts(sampler.options.shots, sampler.options.seed);
+        if (!sampler.options.noise_model.is_ideal()) {
+            auto circuit = build_circuit(cost_hamiltonian, mixer, params);
+            qpp::DensityMatrixSimulator dm_sim;
+            result.counts = dm_sim.run(
+                circuit, sampler.options.noise_model,
+                sampler.options.shots, sampler.options.seed).counts;
+        } else {
+            evolve_into(inner_sv, cost_hamiltonian, mixer, params, options.p,
+                        term_orbit_map_cached, n_cost_params_per_layer,
+                        n_mixer_orbits, options.orbit_assignments,
+                        options.initial_thetas);
+            result.counts = inner_sv.sample_counts(sampler.options.shots, sampler.options.seed);
+        }
     }
 
     const auto t_global_end     = std::chrono::steady_clock::now();

@@ -7,6 +7,7 @@
 #include "qpp/simulators/density_matrix_sim.hpp"
 #include "qpp/circuit.hpp"
 #include "qpp/noise.hpp"
+#include "qpp/operators.hpp"
 #include "qpp/types.hpp"
 
 #include <Eigen/Dense>
@@ -205,6 +206,45 @@ double DensityMatrix::expectation_value(const std::vector<Complex128>& hermitian
     for (size_t i = 0; i < dim; ++i)
         for (size_t j = 0; j < dim; ++j)
             result += (hermitian_op[i * dim + j] * data[j * dim + i]).real;
+    return result;
+}
+
+double DensityMatrix::expectation_value_sparse(const SparsePauliOp& hamiltonian) const {
+    const int nq = hamiltonian.n_qubits();
+    if (nq != n_qubits) {
+        throw std::invalid_argument("Hamiltonian qubit count mismatch");
+    }
+
+    double result = 0.0;
+    for (size_t basis = 0; basis < dim; ++basis) {
+        const double rho_bb = data[basis * dim + basis].real;
+        if (rho_bb == 0.0) continue;
+
+        double energy = 0.0;
+        for (const auto& term : hamiltonian.terms) {
+            double eigenvalue = 1.0;
+            bool diagonal = true;
+
+            for (int q = 0; q < nq; ++q) {
+                const char p = term.pauli[q];
+                if (p == 'I') continue;
+                if (p == 'Z') {
+                    const bool bit_set = ((basis >> (nq - 1 - q)) & 1ULL) != 0;
+                    eigenvalue *= bit_set ? -1.0 : 1.0;
+                } else {
+                    diagonal = false;
+                    break;
+                }
+            }
+
+            if (diagonal) {
+                energy += term.coeff.real * eigenvalue;
+            }
+        }
+
+        result += energy * rho_bb;
+    }
+
     return result;
 }
 

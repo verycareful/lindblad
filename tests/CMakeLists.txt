@@ -9,6 +9,7 @@ set(QPP_TEST_SOURCES
     test_operators.cpp
     test_transpiler.cpp
     test_maqaoa.cpp
+    test_maqaoa_noisy.cpp
     test_maqaoa_5qubit.cpp
     test_maqaoa_microgrid.cpp
     test_maqaoa_20qubit.cpp
