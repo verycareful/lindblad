@@ -1,4 +1,5 @@
 #include "qpp/primitives.hpp"
+#include "qpp/simulators/density_matrix_sim.hpp"
 #include "qpp/simulators/statevector_sim.hpp"
 
 namespace qpp {
@@ -36,6 +37,15 @@ std::unordered_map<std::string, int> Sampler::run_single(
             bindings[circuit.parameter_names[i]] = parameters[i];
         }
         bound_circuit = circuit.assign_parameters(bindings);
+    }
+
+    if (!options.noise_model.is_ideal()) {
+        DensityMatrixSimulator dm_sim;
+        auto result = dm_sim.run(bound_circuit, options.noise_model,
+                                 options.shots, options.seed);
+        if (!result.success)
+            throw std::runtime_error("Noisy simulation failed: " + result.error_message);
+        return result.counts;
     }
 
     StatevectorSimulator sim;

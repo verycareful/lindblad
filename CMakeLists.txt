@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
-project(qpp VERSION 2.3.0 LANGUAGES CXX)
-set(QPP_VERSION_LABEL "2.3.0-beta")
+project(qpp VERSION 2.3.1 LANGUAGES CXX)
+set(QPP_VERSION_LABEL "2.3.1-beta")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

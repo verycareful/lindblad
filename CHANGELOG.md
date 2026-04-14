@@ -3,6 +3,21 @@
 All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
+## [2.3.1-beta] - 2026-04-14
+
+### Fixed
+
+- **`src/primitives/sampler.cpp` — `Sampler::run_single` ignores `noise_model`**: The
+  `noise_model` field in `Sampler::Options` was never wired into the execution path.
+  `run_single` hardcoded `StatevectorSimulator` unconditionally, causing noisy sampling
+  experiments to produce byte-for-byte identical results to ideal simulation regardless
+  of the noise model set. Fixed by adding an `is_ideal()` branch: when
+  `options.noise_model` is non-ideal, execution routes through `DensityMatrixSimulator::run()`
+  with the bound circuit, noise model, shots, and seed; the statevector fast-path is
+  unchanged for the ideal case. The `run()` batch method is unaffected (it delegates to
+  `run_single`). Adds `#include "qpp/simulators/density_matrix_sim.hpp"` to the
+  translation unit.
+
 ## [2.3.0-beta] - 2026-04-14
 
 ### Added
