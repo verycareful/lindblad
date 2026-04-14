@@ -50,6 +50,7 @@ public:
     // Measurement probabilities
     std::vector<double> probabilities() const;
     double expectation_value(const std::vector<Complex128>& hermitian_op) const;
+    double expectation_value_sparse(const SparsePauliOp& hamiltonian) const;
 
     // Element access
     Complex128& operator()(size_t i, size_t j) { return data[i * dim + j]; }
