@@ -29,9 +29,12 @@ __pycache__/
 # Misc
 TODO.txt
 Build Logs.txt
+changes_version.md
 edits_temp
 outputs/
 Audit docs/
+Bug Fixes.txt
 
 # Claude
 .claude/
+
