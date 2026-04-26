@@ -8,7 +8,7 @@ set(QPP_BENCH_SOURCES
 
 foreach(bench_source ${QPP_BENCH_SOURCES})
     get_filename_component(bench_name ${bench_source} NAME_WE)
-    add_executable(${bench_name} ${bench_source})
+    add_executable(${bench_name} ${bench_source} $<TARGET_OBJECTS:qpp_banner_obj>)
     target_link_libraries(${bench_name}
         PRIVATE
             qpp_core

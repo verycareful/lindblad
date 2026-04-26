@@ -697,9 +697,13 @@ QuantumCircuit MAQAOA::build_circuit(
     int nq = cost_hamiltonian.n_qubits();
     QuantumCircuit qc(nq);
 
-    // Initial state: |+...+>
-    for (int q = 0; q < nq; ++q) {
-        qc.h(q);
+    if (!options.initial_thetas.empty() &&
+        static_cast<int>(options.initial_thetas.size()) == nq) {
+        for (int q = 0; q < nq; ++q)
+            qc.ry(options.initial_thetas[q], q);
+    } else {
+        for (int q = 0; q < nq; ++q)
+            qc.h(q);
     }
 
     int param_idx = 0;

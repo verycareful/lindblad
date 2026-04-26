@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
-project(qpp VERSION 2.3.1 LANGUAGES CXX)
-set(QPP_VERSION_LABEL "2.3.1-beta")
+project(qpp VERSION 2.3.2 LANGUAGES CXX)
+set(QPP_VERSION_LABEL "2.3.2-beta")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -102,6 +102,11 @@ endif()
 if(QPP_BUILD_PYTHON)
     FetchContent_MakeAvailable(pybind11)
 endif()
+
+# Runtime CLI banner object (linked into executables explicitly)
+add_library(qpp_banner_obj OBJECT
+    src/banner.cpp
+)
 
 # ==============================================================================
 # Core library

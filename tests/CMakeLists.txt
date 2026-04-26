@@ -17,7 +17,7 @@ set(QPP_TEST_SOURCES
 )
 
 # Create test executable
-add_executable(qpp_tests ${QPP_TEST_SOURCES})
+add_executable(qpp_tests ${QPP_TEST_SOURCES} $<TARGET_OBJECTS:qpp_banner_obj>)
 
 target_link_libraries(qpp_tests
     PRIVATE

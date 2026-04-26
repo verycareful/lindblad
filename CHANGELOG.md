@@ -3,6 +3,31 @@
 All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
+
+## [2.3.2-beta] - 2026-04-26
+
+### Added
+
+- **CLI startup ASCII art banner:** A process-level banner is now printed once when
+  Q++ is run in an interactive terminal (Windows command line, PowerShell, WSL TTY).
+  The banner is emitted by the core library initialization path so CLI executables that
+  link `qpp_core` show the branding automatically.
+
+### Changed
+
+- **`src/algorithms/maqaoa.cpp` - MAQAOA initial state now supports seeded per-qubit angles:**
+  `MAQAOA::build_circuit()` now initializes qubits with `RY(options.initial_thetas[q])`
+  when `initial_thetas` is provided with length equal to the qubit count. If no valid
+  seed vector is provided, behavior is unchanged and the circuit falls back to the
+  default `|+...+>` initialization via Hadamards.
+- **Banner linkage for CLI targets:** `src/banner.cpp` is now linked via a dedicated
+  object target into command-line executables (tests and benchmarks), ensuring the
+  startup ASCII banner is emitted at runtime in interactive terminals.
+- **Banner messaging refresh:** The CLI banner now includes a welcome heading with
+  version label, top/bottom separators, and an explicit readiness line around the
+  ASCII art branding.
+- CMake project version bumped to `2.3.2-beta`.
+
 ## [2.3.1-beta] - 2026-04-14
 
 ### Fixed
