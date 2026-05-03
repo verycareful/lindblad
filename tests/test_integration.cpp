@@ -194,3 +194,57 @@ TEST(IntegrationTest, ConsolidateBlocksNoGateDuplication) {
     }
     EXPECT_EQ(h_count, 1) << "H gate on qubit 2 should appear exactly once (no duplication)";
 }
+
+// =============================================================================
+// Test 7: QASM2 non-default register names
+// =============================================================================
+
+TEST(IntegrationTest, QASM2NonDefaultRegisterNames) {
+    std::string qasm = R"(OPENQASM 2.0;
+include "qelib1.inc";
+qreg myq[2];
+creg myc[2];
+h myq[0];
+cx myq[0],myq[1];
+measure myq[0] -> myc[0];
+measure myq[1] -> myc[1];
+)";
+    QuantumCircuit qc = QuantumCircuit::from_qasm2(qasm);
+    EXPECT_EQ(qc.n_qubits, 2);
+    EXPECT_EQ(qc.n_clbits, 2);
+
+    StatevectorSimulator sim;
+    auto result = sim.run(qc, 1024, 42);
+    ASSERT_TRUE(result.success);
+    // Bell state: only 00 and 11 outcomes
+    for (const auto& [bits, count] : result.counts) {
+        EXPECT_TRUE(bits == "00" || bits == "11")
+            << "Unexpected outcome: " << bits;
+    }
+}
+
+// =============================================================================
+// Test 8: QASM2 multi-register offset correctness
+// =============================================================================
+
+TEST(IntegrationTest, QASM2MultipleQregs) {
+    std::string qasm = R"(OPENQASM 2.0;
+include "qelib1.inc";
+qreg q1[1];
+qreg q2[1];
+creg c1[1];
+creg c2[1];
+x q2[0];
+measure q1[0] -> c1[0];
+measure q2[0] -> c2[0];
+)";
+    QuantumCircuit qc = QuantumCircuit::from_qasm2(qasm);
+    EXPECT_EQ(qc.n_qubits, 2);
+
+    StatevectorSimulator sim;
+    auto result = sim.run(qc, 64, 0);
+    ASSERT_TRUE(result.success);
+    // MSB-first: bitstring[0]=qubit1=q2=1, bitstring[1]=qubit0=q1=0 → "10"
+    EXPECT_EQ(result.counts.size(), 1u);
+    EXPECT_GT(result.counts.count("10"), 0u);
+}

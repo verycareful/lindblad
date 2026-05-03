@@ -18,6 +18,8 @@ public:
         std::string line;
         int n_qubits = 0;
         int n_clbits = 0;
+        std::unordered_map<std::string, int> qreg_offsets;
+        std::unordered_map<std::string, int> creg_offsets;
 
         // Gate definition library: name -> { param_names, qubit_names, body_lines }
         std::unordered_map<std::string, GateDefinition> gate_defs;
@@ -54,13 +56,19 @@ public:
                 auto bracket_pos = line.find('[');
                 auto close_pos = line.find(']');
                 if (bracket_pos != std::string::npos && close_pos != std::string::npos) {
-                    n_qubits = std::stoi(line.substr(bracket_pos + 1, close_pos - bracket_pos - 1));
+                    std::string reg_name = trim(line.substr(5, bracket_pos - 5));
+                    int reg_size = std::stoi(line.substr(bracket_pos + 1, close_pos - bracket_pos - 1));
+                    qreg_offsets[reg_name] = n_qubits;
+                    n_qubits += reg_size;
                 }
             } else if (line.find("creg") != std::string::npos) {
                 auto bracket_pos = line.find('[');
                 auto close_pos = line.find(']');
                 if (bracket_pos != std::string::npos && close_pos != std::string::npos) {
-                    n_clbits = std::stoi(line.substr(bracket_pos + 1, close_pos - bracket_pos - 1));
+                    std::string reg_name = trim(line.substr(5, bracket_pos - 5));
+                    int reg_size = std::stoi(line.substr(bracket_pos + 1, close_pos - bracket_pos - 1));
+                    creg_offsets[reg_name] = n_clbits;
+                    n_clbits += reg_size;
                 }
             }
         }
@@ -106,16 +114,17 @@ public:
 
             // Check for measurement
             if (line.find("measure") != std::string::npos) {
-                auto q = extract_qubit(line, "q");
-                auto c = extract_qubit(line, "c");
-                if (q >= 0 && c >= 0) {
-                    qc.measure(q, c);
+                auto arrow = line.find("->");
+                if (arrow != std::string::npos) {
+                    int q = resolve_reg_index(line.substr(0, arrow), qreg_offsets);
+                    int c = resolve_reg_index(line.substr(arrow + 2), creg_offsets);
+                    if (q >= 0 && c >= 0) qc.measure(q, c);
                 }
                 continue;
             }
 
             if (line.find("reset") != std::string::npos) {
-                auto q = extract_qubit(line, "q");
+                int q = resolve_reg_index(line, qreg_offsets);
                 if (q >= 0) qc.reset(q);
                 continue;
             }
@@ -135,14 +144,14 @@ public:
                 params = parse_params(param_str);
 
                 std::string qubit_str = line.substr(paren_close + 1);
-                qubits = parse_qubits(qubit_str);
+                qubits = parse_qubits_mapped(qubit_str, qreg_offsets);
             } else {
                 // No parameters
                 auto space_pos = line.find(' ');
                 if (space_pos != std::string::npos) {
                     gate_name = line.substr(0, space_pos);
                     std::string qubit_str = line.substr(space_pos + 1);
-                    qubits = parse_qubits(qubit_str);
+                    qubits = parse_qubits_mapped(qubit_str, qreg_offsets);
                 } else {
                     continue;
                 }
@@ -392,6 +401,47 @@ private:
             if (!token.empty()) result.push_back(token);
         }
         return result;
+    }
+
+    // Find reg[idx] in `s` using the offset map; returns global qubit/clbit index.
+    static int resolve_reg_index(
+        const std::string& s,
+        const std::unordered_map<std::string, int>& offsets
+    ) {
+        for (const auto& [name, offset] : offsets) {
+            std::string pat = name + "[";
+            auto pos = s.find(pat);
+            if (pos == std::string::npos) continue;
+            auto bracket = pos + pat.size();
+            auto close = s.find(']', bracket);
+            if (close == std::string::npos) continue;
+            return offset + std::stoi(s.substr(bracket, close - bracket));
+        }
+        return -1;
+    }
+
+    // Parse "reg[i], reg[j], ..." using register offset map for global indices.
+    static std::vector<int> parse_qubits_mapped(
+        const std::string& s,
+        const std::unordered_map<std::string, int>& offsets
+    ) {
+        if (offsets.empty()) return parse_qubits(s);
+        std::vector<int> qubits;
+        std::istringstream ss(s);
+        std::string token;
+        while (std::getline(ss, token, ',')) {
+            token = trim(token);
+            auto bracket = token.find('[');
+            if (bracket == std::string::npos) continue;
+            auto close = token.find(']', bracket);
+            if (close == std::string::npos) continue;
+            std::string reg_name = trim(token.substr(0, bracket));
+            int idx = std::stoi(token.substr(bracket + 1, close - bracket - 1));
+            auto it = offsets.find(reg_name);
+            int offset = (it != offsets.end()) ? it->second : 0;
+            qubits.push_back(offset + idx);
+        }
+        return qubits;
     }
 
     static int extract_qubit(const std::string& line, const std::string& reg_name) {

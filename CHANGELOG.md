@@ -4,6 +4,60 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.0.0] - 2026-05-03
+
+### Added
+
+- **Classic algorithm suite:** Five algorithm families now fully implemented and independently tested:
+  - `DeutschJozsa` — constant/balanced oracle classification in one query (`src/algorithms/deutsch_jozsa.cpp`)
+  - `BernsteinVazirani` — hidden string recovery from `f(x)=s·x mod 2` in one query (`src/algorithms/bernstein_vazirani.cpp`)
+  - `RecursiveBernsteinVazirani` — depth-d BV solving d levels with d oracle calls vs classical d×n queries; proves BQP/BPP superpolynomial separation structure
+  - `ProbabilisticBernsteinVazirani` — multi-key probabilistic oracle (Shukla & Vedula 2023, arXiv:2301.10014); recovers any key in 1 shot with certainty, all keys in ~K·ln(K) shots
+  - `Simon` — period finding via GF(2) Gaussian elimination (`src/algorithms/simon.cpp`)
+- **QPE and Grover extracted to own files:** `src/algorithms/qpe.cpp`, `src/algorithms/grover.cpp`
+  — previously inlined in `maqaoa.cpp`; `maqaoa.cpp` now contains MAQAOA only.
+- **CLI shutdown banner:** `src/banner.cpp` — `BannerInitializer` destructor now calls
+  `print_qpp_exit_banner()` on shutdown, symmetrical with the startup banner.
+- **Comprehensive documentation suite** — full API and algorithm family pages:
+  - `docs/MasterDocumentation.md` — reusable blueprint for algorithm pages, API pages, update workflow, and context recovery
+  - Algorithm family pages: `docs/algorithms/bernstein-vazirani.md` (full BV family), `deutsch-jozsa.md`, `simon.md`, `qpe.md`, `grover.md`, `vqe.md`, `qaoa.md`, `maqaoa.md`, `ising.md`, `dispatch.md`
+  - API deep-dive pages: `docs/api/bernstein-vazirani.md`, `deutsch-jozsa.md`, `simon.md`, `qpe.md`, `grover.md`, `vqe.md`, `qaoa.md`, `maqaoa.md`, `ising.md`, `dispatch.md`, `circuit.md`, `operators.md`, `noise.md`, `estimator.md`, `sampler.md`, `gates.md`, `simulators.md`, `transpiler.md`, `backends.md`
+  - `docs/APIOverview.md` — updated with all algorithm classes (`DeutschJozsa`, `Simon`, full BV family), all deep-dive links, Backends and Gates sections
+  - `README.md` — added full documentation map with links to all algorithm and API pages
+- **`CITATION.cff`** — standard CFF software citation file with ORCID, preferred-citation block, and version metadata for academic attribution.
+
+### Changed
+
+- **License:** replaced Apache License 2.0 with the **Q++ Software License Agreement v1.0** — proprietary source-available license; free for non-commercial and academic use, commercial use requires a separate written agreement, redistribution in any form is prohibited. See `LICENSE` for full terms and `qpp.support@proton.me` for licensing inquiries.
+- **`README.md`** — prominent license notice added at top (distribution policy, GitHub fork policy, §6.3 copyright assignment notice); release line updated to lead with the BV family as the headline feature; license section updated to reference the new license and `CITATION.cff`.
+- **`NOTICE`** — updated to reflect the new license; Apache-format attribution text removed.
+
+### Fixed
+
+- **`src/simulators/density_matrix_sim.cpp` — two correctness bugs in `apply_gate`:**
+  1. Right-multiply transpose: `U†[c_in,c_out]` index was `conj(U[c_in*d+c_out])` but must be `conj(U[c_out*d+c_in])`.
+  2. Sub-index qubit convention mismatch: `sub_offsets` mapped sub-bit `qi` → `sorted_tgts[qi]` (LSB-first) but all gate matrices use MSB-first ordering; fixed to `sorted_tgts[k-1-qi]`. Fixes `RCCXStatevectorDensityMatrixConsistency`, `StatevectorMatchesDensityMatrix`, `DensityMatrixReset`, `DensityMatrixResetSuperposition`.
+- **`src/transpiler/routing/sabre_swap.cpp` — front layer never populated:**
+  `in_deg` was counting `IN→OP` edges, making all first OP nodes appear as `in_deg > 0`; the routing loop never executed and produced a 0-instruction output. Fixed to count only `OP→OP` edges.
+- **`src/transpiler/optimisation/optimize_1q.cpp` — `ConsolidateBlocks` corrupted single 2Q gates:**
+  `kak_decompose` emits only the interaction term without local unitary corrections, so a single CNOT became `RXX(π/2)`. Fixed by tracking `block_count`; KAK is only applied when `block_count ≥ 2`.
+- **`src/qasm/qasm2_parser.cpp` — register names no longer hard-coded to `q`/`c`:**
+  First pass now builds `qreg_offsets`/`creg_offsets` maps; measure, reset, and gate resolution use `resolve_reg_index` and `parse_qubits_mapped`. Multi-register QASM circuits now parse correctly.
+- **`src/simulators/mps_sim.cpp` — `GT::UNITARY` 3-qubit gates no longer throw:**
+  Added `mps_from_sv` (sequential SVD via Eigen BDCSVD); `GT::UNITARY` 3-qubit case falls back through statevector → `apply_unitary` → `mps_from_sv`.
+
+### Tests
+
+- `tests/test_classic_algorithms.cpp` — new suite: DeutschJozsa (4), BernsteinVazirani (4), Simon (3), RecursiveBernsteinVazirani (4), ProbabilisticBernsteinVazirani (6) — 21 tests total.
+- `tests/test_integration.cpp` — `QASM2NonDefaultRegisterNames`, `QASM2MultipleQregs`, `ConsolidateBlocksNoGateDuplication`.
+- `tests/test_simulators.cpp` — `RCCXStatevectorDensityMatrixConsistency`.
+- `tests/test_operators.cpp` — `PauliStringCommutation` expectation corrected.
+- `tests/test_maqaoa_microgrid.cpp` — `MAQAOA_Layerwise` fixed with `term_indexed_gammas=true`.
+
+### Chore
+
+- Version bumped to `R.1.0.0` (CMake `1.1.0.0`); switches from semver labels to A.B.C.D release scheme.
+
 ## [2.3.2-beta] - 2026-04-26
 
 ### Added

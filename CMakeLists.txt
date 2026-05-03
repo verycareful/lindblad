@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
-project(qpp VERSION 2.3.2 LANGUAGES CXX)
-set(QPP_VERSION_LABEL "2.3.2-beta")
+project(qpp VERSION 1.1.0.0 LANGUAGES CXX)
+set(QPP_VERSION_LABEL "R.1.0.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -144,6 +144,11 @@ add_library(qpp_core STATIC
     src/algorithms/vqe.cpp
     src/algorithms/qaoa.cpp
     src/algorithms/maqaoa.cpp
+    src/algorithms/qpe.cpp
+    src/algorithms/grover.cpp
+    src/algorithms/deutsch_jozsa.cpp
+    src/algorithms/bernstein_vazirani.cpp
+    src/algorithms/simon.cpp
     src/algorithms/ising.cpp
     src/algorithms/dispatch.cpp
     src/qasm/qasm2_parser.cpp

@@ -34,6 +34,8 @@ edits_temp
 outputs/
 Audit docs/
 Bug Fixes.txt
+docs/superpowers/
+.github/
 
 # Claude
 .claude/

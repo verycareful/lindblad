@@ -50,9 +50,13 @@ static SabreRoutingResult sabre_route(
         return inv;
     };
 
-    // Track predecessor count
+    // Track predecessor count — only OP→OP edges; IN→OP edges must not count
+    // or the first gate layer will never reach in_deg==0 and front stays empty.
     std::vector<int> in_deg(dag.nodes.size(), 0);
-    for (const auto& e : dag.edges) in_deg[e.dst_node]++;
+    for (const auto& e : dag.edges) {
+        if (dag.nodes[e.src_node].type == DAGNode::Type::OP)
+            in_deg[e.dst_node]++;
+    }
 
     // Initial front layer
     std::vector<int> front;

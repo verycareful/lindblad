@@ -102,12 +102,14 @@ void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
     for (int q : qubits) is_tgt[q] = true;
 
     // Precompute the column offsets that each sub-index contributes to a full index.
-    // sub_offsets[s] = sum of (1 << sorted_tgts[qi]) for each set bit qi in s.
+    // Gate matrices use MSB-first qubit order (first qubit = MSB of matrix index),
+    // so sub-index bit qi must map to sorted_tgts[k-1-qi] to maintain that convention.
+    // For k=1 this is a no-op; for k=2 it maps sub-bit 0→target, sub-bit 1→control.
     std::vector<size_t> sub_offsets(sub_dim);
     for (size_t s = 0; s < sub_dim; ++s) {
         size_t off = 0;
         for (int qi = 0; qi < k; ++qi)
-            if ((s >> qi) & 1) off |= (size_t(1) << sorted_tgts[qi]);
+            if ((s >> qi) & 1) off |= (size_t(1) << sorted_tgts[k - 1 - qi]);
         sub_offsets[s] = off;
     }
 
@@ -161,11 +163,11 @@ void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
             // Read
             for (size_t s = 0; s < sub_dim; ++s)
                 scratch[s] = row_ptr[bg | sub_offsets[s]];
-            // Apply U†: new[c_out] = sum_{c_in} conj(U[c_in, c_out]) * scratch[c_in]
+            // Apply U†: new[c_out] = sum_{c_in} conj(U[c_out, c_in]) * scratch[c_in]
             for (size_t c_out = 0; c_out < sub_dim; ++c_out) {
                 Complex128 sum(0.0, 0.0);
                 for (size_t c_in = 0; c_in < sub_dim; ++c_in)
-                    sum += scratch[c_in] * U[c_in * sub_dim + c_out].conj();
+                    sum += scratch[c_in] * U[c_out * sub_dim + c_in].conj();
                 row_ptr[bg | sub_offsets[c_out]] = sum;
             }
         }

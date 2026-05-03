@@ -15,7 +15,7 @@ TEST(OperatorsTest, PauliStringCompose) {
 TEST(OperatorsTest, PauliStringCommutation) {
     PauliString a("XY");
     PauliString b("YX");
-    EXPECT_FALSE(a.commutes_with(b));
+    EXPECT_TRUE(a.commutes_with(b));  // XY and YX: 2 anticommuting positions → even → commute
 
     PauliString c("XX");
     PauliString d("ZZ");
