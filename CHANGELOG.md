@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.0.1] - 2026-05-03
+
+### Tests
+
+- `tests/test_classic_algorithms.cpp` — 3 additional BV edge case tests:
+  - `BernsteinVazirani/RecoversSecret_1Qubit` — n=1 minimal single-qubit circuit
+  - `RecursiveBernsteinVazirani/Depth2WithShots2` — shots parameter propagates correctly through both levels
+  - `ProbabilisticBernsteinVazirani/DuplicateSecretPool` — pool with two oracles encoding the same secret collapses to exactly 1 discovered key
+
+### Results
+
+- 94 tests across 16 suites — all passed (600 ms, WSL / Clang).
+
 ## [R.1.0.0] - 2026-05-03
 
 ### Added
