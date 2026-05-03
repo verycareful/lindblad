@@ -256,5 +256,109 @@ public:
     );
 };
 
+// =============================================================================
+// Deutsch-Jozsa — determines constant vs balanced function in one query
+// =============================================================================
+
+class DeutschJozsa {
+public:
+    struct Result {
+        enum Type { CONSTANT, BALANCED } type;
+    };
+
+    // oracle: circuit on (n+1) qubits — first n are query, last is ancilla
+    static QuantumCircuit build_circuit(const QuantumCircuit& oracle, int n);
+    static Result solve(const QuantumCircuit& oracle, int n,
+                        int shots = 1, uint64_t seed = 0);
+};
+
+// =============================================================================
+// Bernstein-Vazirani — recovers hidden string s from f(x)=s·x mod 2 in one query
+// =============================================================================
+
+class BernsteinVazirani {
+public:
+    struct Result {
+        std::string secret;
+    };
+
+    static QuantumCircuit build_circuit(const QuantumCircuit& oracle, int n);
+    static Result solve(const QuantumCircuit& oracle, int n,
+                        int shots = 1, uint64_t seed = 0);
+};
+
+// =============================================================================
+// RecursiveBernsteinVazirani — depth-d BV; d oracle calls vs classical d×n queries
+//
+// Each level has its own oracle encoding an independent n-bit secret.
+// Quantum: 1 oracle call per level (single-shot BV); total = d oracle calls.
+// Classical: n deterministic queries per level; total = d×n queries.
+// The original BV paper uses a recursive oracle construction to prove a
+// superpolynomial BQP vs BPP separation: QTM O(n), PTM Ω(n^{log n}).
+// =============================================================================
+
+class RecursiveBernsteinVazirani {
+public:
+    struct Result {
+        std::vector<std::string> secrets;   // secrets[i] = secret recovered at depth i
+        int depth;
+        int total_oracle_calls;
+    };
+
+    // oracles: one per depth level, each a standard BV oracle on (n+1) qubits.
+    // seed is incremented by 1 for each level to keep runs independent.
+    static Result solve(const std::vector<QuantumCircuit>& oracles, int n,
+                        int shots = 1, uint64_t seed = 0);
+};
+
+// =============================================================================
+// ProbabilisticBernsteinVazirani — multi-key probabilistic oracle
+//   (Shukla & Vedula 2023, arXiv:2301.10014)
+//
+// The oracle probabilistically encodes one of K secret keys per invocation.
+// Quantum: recovers ANY key with certainty in 1 shot (phase kickback is exact
+//          regardless of which key the oracle selected that run).
+//          Recovers ALL K keys in ~K·ln(K) shots (coupon-collector bound).
+// Classical: cannot determine even a single bit of any key with certainty
+//            in the general case (oracle is probabilistic, no deterministic handle).
+// =============================================================================
+
+class ProbabilisticBernsteinVazirani {
+public:
+    struct Result {
+        std::vector<std::string> discovered_keys;         // unique keys found, sorted
+        std::unordered_map<std::string, int> key_counts;  // frequency per key
+        int shots_used;
+    };
+
+    // oracle_pool: K circuits, each encoding a distinct secret key (standard BV oracle).
+    // weights: sampling probability for each oracle; uniform if empty.
+    // Each shot draws one oracle at random, runs BV once, records the recovered key.
+    static Result solve(const std::vector<QuantumCircuit>& oracle_pool, int n,
+                        const std::vector<double>& weights = {},
+                        int shots = 50, uint64_t seed = 0);
+};
+
+// =============================================================================
+// Simon's Algorithm — finds period s where f(x)=f(x XOR s), O(n) queries
+// =============================================================================
+
+class Simon {
+public:
+    struct Result {
+        std::string period;
+        std::vector<std::string> equations;
+    };
+
+    // oracle: circuit on 2n qubits (n query + n output)
+    static QuantumCircuit build_circuit(const QuantumCircuit& oracle, int n);
+    static Result solve(const QuantumCircuit& oracle, int n,
+                        uint64_t seed = 0, int extra_samples = 2);
+
+private:
+    static std::string gaussian_eliminate(
+        const std::vector<std::string>& equations, int n);
+};
+
 } // namespace algorithms
 } // namespace qpp

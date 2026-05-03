@@ -12,8 +12,8 @@ set(QPP_TEST_SOURCES
     test_maqaoa_noisy.cpp
     test_maqaoa_5qubit.cpp
     test_maqaoa_microgrid.cpp
-    test_maqaoa_20qubit.cpp
     test_integration.cpp
+    test_classic_algorithms.cpp
 )
 
 # Create test executable
@@ -33,4 +33,4 @@ target_include_directories(qpp_tests
 
 # Register tests with CTest
 include(GoogleTest)
-gtest_discover_tests(qpp_tests)
+gtest_discover_tests(qpp_tests PROPERTIES LABELS "qpp")

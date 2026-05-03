@@ -477,6 +477,69 @@ Statevector MPSState::to_statevector() const {
 }
 
 // =============================================================================
+// mps_from_sv — reconstruct MPS from a statevector via sequential SVD
+// Used as a fallback when a gate cannot be applied natively in MPS form.
+// =============================================================================
+
+static MPSState mps_from_sv(const Statevector& sv, int n, int max_bond_dim, double cutoff) {
+    MPSState result(n, max_bond_dim, cutoff);
+    size_t dim = 1ULL << n;
+
+    int left_bond = 1;
+    int right_cols = (int)dim;
+    std::vector<Complex128> block(dim);
+    for (size_t i = 0; i < dim; ++i)
+        block[i] = {sv.real_parts[i], sv.imag_parts[i]};
+
+    for (int site = 0; site < n - 1; ++site) {
+        int half_cols = right_cols / 2;
+        int rows = left_bond * 2;
+
+        // Reshape: M[(alpha*2 + p), c'] = block[alpha*right_cols + p + 2*c']
+        // p = physical index of this site (qubit bit 0 of each column)
+        Eigen::MatrixXcd M(rows, half_cols);
+        for (int alpha = 0; alpha < left_bond; ++alpha)
+            for (int p = 0; p < 2; ++p)
+                for (int c2 = 0; c2 < half_cols; ++c2)
+                    M(alpha * 2 + p, c2) = std::complex<double>(
+                        block[alpha * right_cols + p + 2 * c2].real,
+                        block[alpha * right_cols + p + 2 * c2].imag);
+
+        Eigen::BDCSVD<Eigen::MatrixXcd> svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        const auto& svals = svd.singularValues();
+        int k = (int)svals.size();
+        while (k > 1 && std::abs(svals(k - 1)) < cutoff) --k;
+        k = std::min(k, max_bond_dim);
+
+        result.tensors[site] = MPSTensor(left_bond, k);
+        for (int alpha = 0; alpha < left_bond; ++alpha)
+            for (int p = 0; p < 2; ++p)
+                for (int r = 0; r < k; ++r)
+                    result.tensors[site](alpha, p, r) = {
+                        svd.matrixU()(alpha * 2 + p, r).real(),
+                        svd.matrixU()(alpha * 2 + p, r).imag()};
+
+        // New block = S * V†
+        block.resize(k * half_cols);
+        for (int r = 0; r < k; ++r)
+            for (int c2 = 0; c2 < half_cols; ++c2) {
+                auto v = svals(r) * std::conj(svd.matrixV()(c2, r));
+                block[r * half_cols + c2] = {v.real(), v.imag()};
+            }
+
+        left_bond = k;
+        right_cols = half_cols;
+    }
+
+    result.tensors[n - 1] = MPSTensor(left_bond, 1);
+    for (int alpha = 0; alpha < left_bond; ++alpha)
+        for (int p = 0; p < 2; ++p)
+            result.tensors[n - 1](alpha, p, 0) = block[alpha * 2 + p];
+
+    return result;
+}
+
+// =============================================================================
 // MPSSimulator::run — build gate matrices analytically, not via statevector
 // =============================================================================
 
@@ -773,6 +836,13 @@ MPSSimulator::Result MPSSimulator::run(
                     mps.apply_single_qubit_gate(Tdg_g, q2);
                     mps.apply_single_qubit_gate(H_g, q2);
                     break;
+                case GT::UNITARY: {
+                    // Arbitrary 3-qubit matrix: convert MPS → SV, apply, reconstruct.
+                    auto sv = mps.to_statevector();
+                    gates::apply_unitary(sv, inst.qubits, inst.matrix);
+                    mps = mps_from_sv(sv, mps.n_qubits, mps.max_bond_dim, mps.cutoff);
+                    break;
+                }
                 default:
                     throw std::runtime_error(
                         "MPS simulator: unsupported 3-qubit gate type " +

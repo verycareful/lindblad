@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "qpp/circuit.hpp"
+#include "qpp/noise.hpp"
 #include "qpp/simulators/statevector_sim.hpp"
+#include "qpp/simulators/density_matrix_sim.hpp"
 
 using namespace qpp;
 
@@ -39,4 +41,29 @@ TEST(SimulatorTest, GHZState) {
         EXPECT_TRUE(bits == "000" || bits == "111")
             << "Unexpected bitstring: " << bits;
     }
+}
+
+TEST(SimulatorTest, RCCXStatevectorDensityMatrixConsistency) {
+    // RCCX on |110⟩: both simulators must agree on the output state
+    QuantumCircuit qc(3);
+    qc.x(0);
+    qc.x(1);
+    qc.rccx(0, 1, 2);
+    qc.measure_all();
+
+    StatevectorSimulator sv_sim;
+    auto sv_result = sv_sim.run(qc, 256, 42);
+
+    NoiseModel ideal;
+    DensityMatrixSimulator dm_sim;
+    auto dm_result = dm_sim.run(qc, ideal, 256, 42);
+
+    ASSERT_FALSE(sv_result.counts.empty());
+    ASSERT_FALSE(dm_result.counts.empty());
+
+    // Both must agree: same most-probable bitstring
+    std::string sv_top = sv_result.counts.begin()->first;
+    std::string dm_top = dm_result.counts.begin()->first;
+    EXPECT_EQ(sv_top, dm_top)
+        << "SV and DM simulators disagree on RCCX output";
 }

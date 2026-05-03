@@ -25,6 +25,8 @@ Key capabilities:
 - Use symbolic parameters and later bind values with `assign_parameters`
 - Export/import QASM where implemented
 
+Deep dive: [docs/api/circuit.md](api/circuit.md)
+
 ### Minimal example
 
 ```cpp
@@ -43,11 +45,110 @@ Headers:
 - `include/qpp/simulators/clifford_sim.hpp`
 - `include/qpp/simulators/mps_sim.hpp`
 
-Statevector simulator entry point:
+Simulator classes and state representations:
 
-- `StatevectorSimulator::run(const QuantumCircuit&, int shots = 0, uint64_t seed = 0)`
+- **StatevectorSimulator**: Exact pure-state simulation, $O(2^n)$ space, optimal for 5–25 qubits
+- **DensityMatrixSimulator** + **DensityMatrix**: Mixed-state with Kraus noise, $O(4^n)$ space, noisy circuits up to ~10 qubits
+- **CliffordSimulator** + **StabilizerState**: Polynomial-time Clifford circuits via stabilizer tableau, unbounded system size
+- **MPSSimulator** + **MPSState**: Approximate large-system simulation, $O(n\chi^2)$ space, tunable bond dimension $\chi$
 
-Output includes final state and optional sampled counts.
+All simulators follow common interface: `Result run(circuit, params)`
+
+Deep dive: [docs/api/simulators.md](api/simulators.md)
+
+### Minimal examples
+
+**Exact statevector**:
+
+```cpp
+#include "qpp/simulators/statevector_sim.hpp"
+
+StatevectorSimulator sim;
+auto result = sim.run(circuit, 1024);  // 1024 shots
+```
+
+**Noisy via density matrix**:
+
+```cpp
+#include "qpp/simulators/density_matrix_sim.hpp"
+#include "qpp/noise.hpp"
+
+DensityMatrixSimulator sim;
+NoiseModel noise = NoiseModel::from_t1_t2(n_qubits, t1, t2, gate_time);
+auto result = sim.run(circuit, noise, 1024);
+```
+
+## Transpiler
+
+Headers:
+
+- `include/qpp/transpiler.hpp`
+- `include/qpp/dag.hpp`
+
+Transpiler classes and types:
+
+- **CouplingMap**: Hardware topology (linear, grid, heavy-hex, all-to-all); connectivity queries and shortest-path
+- **DAGCircuit**: Directed acyclic graph representation; dependency analysis and topological operations
+- **TranspilationPass**: Abstract pass interface; concrete implementations for layout, routing, optimization
+- **PassManager**: Orchestrate pass sequence; preset managers for optimization levels 0–3
+- **Layout passes**: TrivialLayout, SabreLayout (heuristic distance minimization)
+- **Routing passes**: SabreSwap (greedy with lookahead), StochasticSwap (multi-trial)
+- **Basis passes**: BasisTranslator (gate decomposition into hardware-native basis)
+- **Optimization passes**: Optimize1qGates (ZYZ consolidation), ConsolidateBlocks (KAK decomposition), CXCancellation, CommutativeCancellation, RemoveDiagonalGatesBeforeMeasure, RemoveResetInZeroState
+- **Scheduling passes**: ASAPSchedule, ALAPSchedule (timing assignment)
+
+High-level entry point: `transpile(circuit, coupling_map, basis_gates, optimization_level)`
+
+Deep dive: [docs/api/transpiler.md](api/transpiler.md)
+
+### Minimal example
+
+**Transpile for a linear 5-qubit hardware**:
+
+```cpp
+#include "qpp/transpiler.hpp"
+
+qpp::QuantumCircuit circuit = ...;
+qpp::CouplingMap coupling = qpp::CouplingMap::linear(5);
+qpp::QuantumCircuit optimized = qpp::transpile(circuit, coupling, {"cx", "u3", "rz"}, 2);
+```
+
+## Backends
+
+Header: `include/qpp/backends/local_backend.hpp`
+
+Backend abstraction:
+
+- **LocalBackend**: Unified simulator wrapper with AUTO selection heuristic
+- **BackendResult**: Unified result type with counts, timing, and status
+- **SimType**: Simulator selection enum (STATEVECTOR, DENSITY_MATRIX, CLIFFORD, MPS, AUTO)
+- **Config**: Configuration struct with thread/memory limits and bond dimension
+
+Key features:
+
+- AUTO heuristic selects optimal simulator based on circuit properties and noise
+- Transparent integration with noise models (switches to DENSITY_MATRIX when noise configured)
+- Thread and memory limits for resource-constrained environments
+- Batch execution with parallel circuit distribution
+- Timing and metadata tracking
+
+Deep dive: [docs/api/backends.md](api/backends.md)
+
+### Minimal example
+
+**Basic execution with AUTO selection**:
+
+```cpp
+#include "qpp/backends/local_backend.hpp"
+
+qpp::backends::LocalBackend backend;
+qpp::QuantumCircuit circuit = ...;
+
+auto result = backend.run(circuit, 1024);  // AUTO selects best simulator
+for (const auto& [bitstring, count] : result.counts) {
+    std::cout << bitstring << ": " << count << "\n";
+}
+```
 
 ## Noise
 
@@ -61,6 +162,8 @@ Core abstractions:
 
 Noise models are consumed by primitives and simulator paths that support noisy execution.
 
+Deep dive: [docs/api/noise.md](api/noise.md)
+
 ## Quantum Information
 
 Header: `include/qpp/operators.hpp`
@@ -70,6 +173,8 @@ Includes:
 - Pauli string/operator representations
 - Sparse Pauli operators used for Hamiltonians
 - Operator algebra helpers and metrics support
+
+Deep dive: [docs/api/operators.md](api/operators.md)
 
 ## Transpiler
 
@@ -83,6 +188,28 @@ Contains structures for:
 
 Use transpiler interfaces before simulation when target constraints or optimization are required.
 
+## Gates
+
+Namespace: `qpp::gates`
+
+Header: `include/qpp/gates.hpp`
+
+Gate operations on `Statevector`:
+
+- **Single-qubit gates**: Pauli (X, Y, Z), Hadamard, phase gates (S, T), sqrt-X, rotations (RX, RY, RZ, P), general unitary (U)
+- **Two-qubit gates**: Controlled gates (CX, CY, CZ, CH), swap operations (SWAP, iSWAP), controlled rotations (CRX, CRY, CRZ, CP, CU), Ising interactions (RXX, RYY, RZZ, RZX), echoed cross-resonance (ECR)
+- **Three-qubit gates**: Toffoli (CCX), CCZ, Fredkin (CSWAP), Margolus (RCCX)
+- **N-qubit unitary**: Arbitrary unitary matrices via `apply_unitary`
+
+Performance features:
+
+- SIMD vectorization with 64-byte alignment for AVX-512
+- OpenMP parallelization for dimensions ≥ 2^20
+- Cache-optimized loop structure for two-qubit gates (hi/lo step decomposition)
+- Specialized diagonal paths for phase gates (RZ, P, CZ, CP, RZZ)
+
+Deep dive: [docs/api/gates.md](api/gates.md)
+
 ## Primitives
 
 Header: `include/qpp/primitives.hpp`
@@ -93,6 +220,25 @@ Primitive APIs:
 - `Sampler`: bitstring sampling
 
 These APIs decouple algorithm logic from backend implementation details.
+
+Deep dives: [docs/api/estimator.md](api/estimator.md), [docs/api/sampler.md](api/sampler.md)
+
+## Problem Representations and Dispatch
+
+Headers:
+
+- `include/qpp/ising.hpp`
+- `include/qpp/dispatch.hpp`
+
+Main types:
+
+- `qpp::IsingHamiltonian`
+- `qpp::SoftDispatchResult`
+
+`IsingHamiltonian` is the native QUBO/Ising conversion layer used by optimization algorithms.
+`SoftDispatchResult` turns sampled bitstring counts into soft assignments and rounded dispatch outputs.
+
+Deep dives: [docs/api/ising.md](api/ising.md), [docs/api/dispatch.md](api/dispatch.md)
 
 ## Algorithms
 
@@ -105,6 +251,15 @@ Main classes:
 - `algorithms::MAQAOA`
 - `algorithms::QPE`
 - `algorithms::Grover`
+- `algorithms::DeutschJozsa`
+- `algorithms::BernsteinVazirani`
+- `algorithms::RecursiveBernsteinVazirani`
+- `algorithms::ProbabilisticBernsteinVazirani`
+- `algorithms::Simon`
+
+Detailed usage notes for these algorithms live under the family pages in [docs/algorithms/](algorithms/).
+
+Deep dives: [docs/api/vqe.md](api/vqe.md), [docs/api/qaoa.md](api/qaoa.md), [docs/api/maqaoa.md](api/maqaoa.md), [docs/api/qpe.md](api/qpe.md), [docs/api/grover.md](api/grover.md), [docs/api/deutsch-jozsa.md](api/deutsch-jozsa.md), [docs/api/bernstein-vazirani.md](api/bernstein-vazirani.md), [docs/api/simon.md](api/simon.md)
 
 Variational algorithms use `Estimator`/`Sampler` and optimizer settings in their `Options` structures.
 

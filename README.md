@@ -1,16 +1,59 @@
 # q++ (qpp)
 [![C++](https://img.shields.io/badge/C%2B%2B-23-00599C?style=flat-square&logo=cplusplus&logoColor=white)](https://isocpp.org/)
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![License: Q++ v1.0](https://img.shields.io/badge/License-Q%2B%2B%20v1.0-red.svg)](LICENSE)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-v2.3.0--beta-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-R.1.0.0-blue?style=flat-square)](CHANGELOG.md)
+
+> **License Notice:** This software is **proprietary and source-available**. Free for non-commercial and academic use only. Commercial use of any kind requires a separate written license agreement. **Redistribution in any form — including forks, copies, and derivative works — is strictly prohibited without explicit written authorization from the author**, regardless of whether the use is commercial or non-commercial. Public GitHub forks are technically permitted by GitHub's platform but are **not licensed** under this agreement for any purpose other than reviewing or submitting contributions via pull request; any other use of a fork constitutes a violation. By submitting any contribution (pull request, code snippet, bug fix, or similar) you irrevocably assign full copyright ownership of that contribution to the author — see §6.3 of [LICENSE](LICENSE). See [LICENSE](LICENSE) for full terms — `qpp.support@proton.me` for licensing inquiries.
 
 q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
+## Documentation Map
+
+The documentation is organized so new users can start broad and then drill into the exact API or algorithm they need.
+
+- [docs/MasterDocumentation.md](docs/MasterDocumentation.md) - canonical doc-writing guide and recovery plan for future sessions
+- [docs/Architecture.md](docs/Architecture.md) - subsystem layout and runtime flow
+- [docs/APIOverview.md](docs/APIOverview.md) - public header and class index
+- [docs/BuildAndTest.md](docs/BuildAndTest.md) - configure, build, and test instructions
+- [docs/DevelopmentGuide.md](docs/DevelopmentGuide.md) - contributor workflow and quality checks
+- [docs/algorithms/bernstein-vazirani.md](docs/algorithms/bernstein-vazirani.md) - Bernstein-Vazirani family, including recursive and probabilistic variants
+- [docs/algorithms/vqe.md](docs/algorithms/vqe.md) - VQE optimization workflow and ansatz helpers
+- [docs/algorithms/qaoa.md](docs/algorithms/qaoa.md) - QAOA usage, options, and circuit construction
+- [docs/algorithms/maqaoa.md](docs/algorithms/maqaoa.md) - MAQAOA usage, variants, and parameter layouts
+- [docs/algorithms/qpe.md](docs/algorithms/qpe.md) - QPE phase estimation workflow and outputs
+- [docs/algorithms/grover.md](docs/algorithms/grover.md) - Grover oracle usage and iteration control
+- [docs/algorithms/deutsch-jozsa.md](docs/algorithms/deutsch-jozsa.md) - Deutsch-Jozsa constant/balanced classification
+- [docs/algorithms/simon.md](docs/algorithms/simon.md) - Simon period finding and GF(2) elimination details
+- [docs/algorithms/ising.md](docs/algorithms/ising.md) - IsingHamiltonian and QUBO conversion
+- [docs/algorithms/dispatch.md](docs/algorithms/dispatch.md) - dispatch post-processing helpers for sampled bitstrings
+- [docs/api/vqe.md](docs/api/vqe.md) - VQE options, results, and ansatz generator deep dive
+- [docs/api/ising.md](docs/api/ising.md) - IsingHamiltonian fields, conversion, evaluation, and export
+- [docs/api/dispatch.md](docs/api/dispatch.md) - SoftDispatchResult fields, rounding, cost estimation, and top-k helpers
+- [docs/api/circuit.md](docs/api/circuit.md) - QuantumCircuit and Instruction API details
+- [docs/api/operators.md](docs/api/operators.md) - PauliString, SparsePauliOp, Operator, and QuantumInfo helpers
+- [docs/api/noise.md](docs/api/noise.md) - Noise channels, NoiseModel, and readout error handling
+- [docs/api/estimator.md](docs/api/estimator.md) - Estimator primitive options, caching, and expectation evaluation
+- [docs/api/sampler.md](docs/api/sampler.md) - Sampler primitive options and sampling behavior
+- [docs/api/gates.md](docs/api/gates.md) - Gates API covering single-qubit, two-qubit, and N-qubit operations
+- [docs/api/simulators.md](docs/api/simulators.md) - Simulators (Statevector, Density Matrix, Clifford, MPS) architecture and selection
+- [docs/api/transpiler.md](docs/api/transpiler.md) - Transpiler passes (layout, routing, optimization, basis translation, scheduling)
+- [docs/api/backends.md](docs/api/backends.md) - LocalBackend simulator wrapper and AUTO selection heuristic
+- [docs/api/qaoa.md](docs/api/qaoa.md) - QAOA options, optimizer behavior, and circuit construction
+- [docs/api/maqaoa.md](docs/api/maqaoa.md) - MAQAOA options, parameter layouts, and layerwise optimization
+- [docs/api/qpe.md](docs/api/qpe.md) - QPE circuit construction, phase extraction, and implementation notes
+- [docs/api/grover.md](docs/api/grover.md) - Grover circuit construction, iteration defaults, and search output
+- [docs/api/deutsch-jozsa.md](docs/api/deutsch-jozsa.md) - Deutsch-Jozsa circuit construction and classification logic
+- [docs/api/bernstein-vazirani.md](docs/api/bernstein-vazirani.md) - Bernstein-Vazirani family API details and result fields
+- [docs/api/simon.md](docs/api/simon.md) - Simon API details for circuit construction and period recovery
+
+Planned algorithm pages live under docs/algorithms/ and will be expanded as the public API is documented in detail.
+
 ## Release
 
-- Current release: `v2.3.0-beta` (feat: noisy MAQAOA execution path with DensityMatrixSimulator routing under non-ideal noise, plus sparse diagonal-Hamiltonian expectation evaluation for mixed states)
-- Previous release: `v2.2.0-beta` (feat: QAOA optimiser bounds [-2π, 2π], initial step-size 0.3, and computational-basis energy ranking for improved bitstring selection; this release focused on QAOA optimiser behavior, not the new noisy MAQAOA density-matrix path)
+- Current release: `R.1.0.0` — **Bernstein-Vazirani family** (standard, recursive BV, probabilistic multi-key BV); complete classic algorithm suite (DeutschJozsa, Simon, QPE, Grover); transpiler and simulator correctness fixes; comprehensive API and algorithm documentation
+- Previous release: `v2.3.2-beta` (feat: CLI startup/shutdown banners, seeded MAQAOA initialization, QASM2 multi-register parsing)
 
 ## Project Scope
 
@@ -35,7 +78,7 @@ The current codebase provides:
   - `Estimator::gradient()` via parameter-shift rule (2P evaluations fully parallelised)
   - Transpiler-result caching in Estimator (structure-keyed; skips SABRE/ZYZ on repeated calls)
   - `SparsePauliOp::expectation_value_batch()` for vectorised multi-state evaluation
-- Algorithms (VQE, QAOA, layerwise MA-QAOA, exact QPE, Grover with MCX)
+- Algorithms (VQE, QAOA, layerwise MA-QAOA, exact QPE, Grover with MCX, Bernstein-Vazirani family)
   - `IsingHamiltonian` with `from_qubo()` QUBO→Ising conversion and `to_sparse_pauli_op()`
   - `SoftDispatchResult` for post-processing MA-QAOA bitstring distributions into dispatch solutions
   - Orbit-QAOA: symmetry-reduced parameterisation via `MAQAOA::Options::orbit_assignments`
@@ -58,7 +101,11 @@ tests/                      Unit tests (GoogleTest)
 benchmarks/                 Micro and algorithm benchmarks (Google Benchmark)
 bindings/                   Optional Python extension module
 docs/                       Project documentation
+  algorithms/               One page per algorithm family
+  api/                      Optional method/class deep-dives
 ```
+
+The detailed documentation pages are intentionally close to the public headers and tests so the examples stay aligned with the implementation.
 
 ## Build Requirements
 
@@ -136,7 +183,7 @@ The project already includes a substantial implementation across simulation, tra
 
 Copyright © 2026 Sricharan Suresh (github.com/verycareful)
 
-This project is licensed under the **[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)**.
-You may use, modify, and distribute this software in accordance with Apache 2.0 terms.
+This project is licensed under the **[Q++ Software License Agreement v1.0](LICENSE)** — source-available, free for non-commercial and academic use. Commercial use requires a separate license agreement.
 
-See the [LICENSE](LICENSE) file for full text and [NOTICE](NOTICE) for attribution information.
+See the [LICENSE](LICENSE) file for full terms, [NOTICE](NOTICE) for copyright notice, and [CITATION.cff](CITATION.cff) for citation information.
+Licensing inquiries: qpp.support@proton.me

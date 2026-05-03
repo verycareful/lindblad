@@ -375,6 +375,7 @@ TEST(MicrogridQAOA, MAQAOA_Layerwise) {
     maqaoa.sampler.options.seed    = 42;
     maqaoa.options.p                    = P_DEPTH;
     maqaoa.options.layerwise            = true;
+    maqaoa.options.term_indexed_gammas  = true;   // test expects term-indexed (60 params, not 30)
     maqaoa.options.max_iterations       = BUDGET_PER_LAYER;
     maqaoa.options.convergence_threshold = CONV_TOL;
     maqaoa.options.seed                 = 42;

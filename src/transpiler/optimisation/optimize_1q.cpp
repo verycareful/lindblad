@@ -503,12 +503,12 @@ DAGCircuit ConsolidateBlocks::run(const DAGCircuit& dag, const TranspilationCont
 
         int qa = inst.qubits[0];
         int qb = inst.qubits[1];
-        bool is_2q_on_pair = true;
 
         // Collect all consecutive gates involving only {qa, qb}
         // Stop when we see a gate on qa or qb that isn't on both.
         Eigen::Matrix4cd accum = instruction_to_4x4(inst);
         consumed[i] = true;
+        int block_count = 1;
         int j = i + 1;
         while (j < n) {
             const auto& next = qc.instructions[j];
@@ -529,6 +529,7 @@ DAGCircuit ConsolidateBlocks::run(const DAGCircuit& dag, const TranspilationCont
                 Eigen::Matrix4cd gate = instruction_to_4x4(next);
                 accum = gate * accum;  // gates applied in order -> rightmost first in circuit
                 consumed[j] = true;
+                ++block_count;
             } else if (!involves_qa && !involves_qb) {
                 // Independent gate: skip over it, outer loop handles it
                 ++j;
@@ -539,10 +540,16 @@ DAGCircuit ConsolidateBlocks::run(const DAGCircuit& dag, const TranspilationCont
             ++j;
         }
 
-        // KAK-decompose the accumulated 2Q unitary
-        QuantumCircuit kak_circ = kak_decompose(accum, qa, qb);
-        for (const auto& ki : kak_circ.instructions) {
-            optimized.instructions.push_back(ki);
+        // Only KAK-decompose when 2+ gates were consolidated; a single gate
+        // passes through unchanged (kak_decompose omits local corrections and
+        // would silently corrupt any gate that isn't in the RXX/RYY/RZZ family).
+        if (block_count == 1) {
+            optimized.instructions.push_back(inst);
+        } else {
+            QuantumCircuit kak_circ = kak_decompose(accum, qa, qb);
+            for (const auto& ki : kak_circ.instructions) {
+                optimized.instructions.push_back(ki);
+            }
         }
     }
 
