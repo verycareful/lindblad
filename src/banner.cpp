@@ -27,7 +27,7 @@ void print_qpp_banner_once() {
 
         std::cout
             << "\n"
-            << "Welcome to Q++ Quantum Toolkit R.1.0.0 | CLI startup\n"
+            << "Welcome to Q++ Quantum Toolkit R.1.0.1 | CLI startup\n"
             << "_________________________________________________________________________\n\n"
             << "     .^.    (`-')                      \n"
             << "     '|` ___( OO)                      \n"

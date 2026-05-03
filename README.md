@@ -3,7 +3,7 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Q++ v1.0](https://img.shields.io/badge/License-Q%2B%2B%20v1.0-red.svg)](LICENSE)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-R.1.0.0-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-R.1.0.1-blue?style=flat-square)](CHANGELOG.md)
 
 > **License Notice:** This software is **proprietary and source-available**. Free for non-commercial and academic use only. Commercial use of any kind requires a separate written license agreement. **Redistribution in any form — including forks, copies, and derivative works — is strictly prohibited without explicit written authorization from the author**, regardless of whether the use is commercial or non-commercial. Public GitHub forks are technically permitted by GitHub's platform but are **not licensed** under this agreement for any purpose other than reviewing or submitting contributions via pull request; any other use of a fork constitutes a violation. By submitting any contribution (pull request, code snippet, bug fix, or similar) you irrevocably assign full copyright ownership of that contribution to the author — see §6.3 of [LICENSE](LICENSE). See [LICENSE](LICENSE) for full terms — `qpp.support@proton.me` for licensing inquiries.
 
@@ -52,8 +52,8 @@ Planned algorithm pages live under docs/algorithms/ and will be expanded as the 
 
 ## Release
 
-- Current release: `R.1.0.0` — **Bernstein-Vazirani family** (standard, recursive BV, probabilistic multi-key BV); complete classic algorithm suite (DeutschJozsa, Simon, QPE, Grover); transpiler and simulator correctness fixes; comprehensive API and algorithm documentation
-- Previous release: `v2.3.2-beta` (feat: CLI startup/shutdown banners, seeded MAQAOA initialization, QASM2 multi-register parsing)
+- Current release: `R.1.0.1` — test suite: 3 additional BV edge case tests; 94 tests across 16 suites, all passing
+- Previous release: `R.1.0.0` — **Bernstein-Vazirani family** (standard, recursive BV, probabilistic multi-key BV); complete classic algorithm suite (DeutschJozsa, Simon, QPE, Grover); proprietary license (Q++ SLA v1.0); transpiler and simulator correctness fixes; comprehensive API and algorithm documentation
 
 ## Project Scope
 

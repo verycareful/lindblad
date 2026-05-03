@@ -227,3 +227,38 @@ TEST(ProbabilisticBernsteinVazirani, DiscoveredKeysSorted) {
     ASSERT_EQ(result.discovered_keys.size(), 2u);
     EXPECT_LT(result.discovered_keys[0], result.discovered_keys[1]);
 }
+
+TEST(ProbabilisticBernsteinVazirani, DuplicateSecretPool) {
+    // Two oracles encoding the same secret — discovered_keys must collapse to exactly 1 entry.
+    std::string s = "101";
+    auto result = ProbabilisticBernsteinVazirani::solve(
+        {bv_oracle(s), bv_oracle(s)}, 3, {}, 30, 0);
+    ASSERT_EQ(result.discovered_keys.size(), 1u);
+    EXPECT_EQ(result.discovered_keys[0], s);
+    EXPECT_EQ(result.key_counts.at(s), 30);
+}
+
+// =============================================================================
+// BernsteinVazirani — additional edge cases
+// =============================================================================
+
+TEST(BernsteinVazirani, RecoversSecret_1Qubit) {
+    // Minimal circuit: n=1, single CNOT oracle.
+    std::string secret = "1";
+    auto result = BernsteinVazirani::solve(bv_oracle(secret), 1);
+    EXPECT_EQ(result.secret, secret);
+}
+
+// =============================================================================
+// RecursiveBernsteinVazirani — additional edge cases
+// =============================================================================
+
+TEST(RecursiveBernsteinVazirani, Depth2WithShots2) {
+    // shots=2 per level — verifies the shots parameter propagates and recovery is still correct.
+    std::string s0 = "110", s1 = "011";
+    auto result = RecursiveBernsteinVazirani::solve(
+        {bv_oracle(s0), bv_oracle(s1)}, 3, 2, 0);
+    ASSERT_EQ(result.secrets.size(), 2u);
+    EXPECT_EQ(result.secrets[0], s0);
+    EXPECT_EQ(result.secrets[1], s1);
+}
