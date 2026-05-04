@@ -1,7 +1,7 @@
-#include "qpp/operators.hpp"
-#include "qpp/statevector.hpp"
-#include "qpp/simulators/density_matrix_sim.hpp"
-#include "qpp/gates.hpp"
+#include "lindblad/operators.hpp"
+#include "lindblad/statevector.hpp"
+#include "lindblad/simulators/density_matrix_sim.hpp"
+#include "lindblad/gates.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // PauliString
@@ -216,9 +216,9 @@ double SparsePauliOp::expectation_value(const Statevector& sv) const {
             const size_t j = k ^ x_mask;
 
             // Phase from Z parity (Z_mask includes Y positions via Y=iXZ)
-            const int z_parity = QPP_POPCOUNT64(k & z_mask) & 1;
+            const int z_parity = LINDBLAD_POPCOUNT64(k & z_mask) & 1;
             // Additional i^y_count factor from Y = iXZ decomposition
-            const int y_count  = QPP_POPCOUNT64(k & y_mask) & 3;
+            const int y_count  = LINDBLAD_POPCOUNT64(k & y_mask) & 3;
 
             // i^y_count: 0->1+0i, 1->0+1i, 2->-1+0i, 3->0-1i
             double phase_r = 1.0, phase_i = 0.0;
@@ -288,8 +288,8 @@ std::vector<double> SparsePauliOp::expectation_value_batch(
 #endif
             for (size_t k = 0; k < dim; ++k) {
                 const size_t j = k ^ xm;
-                const int z_parity = QPP_POPCOUNT64(k & zm) & 1;
-                const int y_count  = QPP_POPCOUNT64(k & ym) & 3;
+                const int z_parity = LINDBLAD_POPCOUNT64(k & zm) & 1;
+                const int y_count  = LINDBLAD_POPCOUNT64(k & ym) & 3;
                 double phase_r = 1.0, phase_i = 0.0;
                 switch (y_count) {
                     case 1: phase_r =  0.0; phase_i =  1.0; break;
@@ -335,5 +335,5 @@ SparsePauliOp SparsePauliOp::zero(int n_qubits) {
     return SparsePauliOp({{std::string(n_qubits, 'I'), Complex128(0.0, 0.0)}});
 }
 
-} // namespace qpp
+} // namespace lindblad
 

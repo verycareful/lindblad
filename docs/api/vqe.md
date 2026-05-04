@@ -1,11 +1,11 @@
 # VQE API Deep Dive
 
-This page documents the public `qpp::algorithms::VQE` API in more detail.
+This page documents the public `lindblad::algorithms::VQE` API in more detail.
 
 ## Header and Namespace
 
-- Header: `include/qpp/algorithms.hpp`
-- Namespace: `qpp::algorithms`
+- Header: `include/lindblad/algorithms.hpp`
+- Namespace: `lindblad::algorithms`
 
 ## Class Overview
 
@@ -85,10 +85,10 @@ Supported entanglement modes:
 ## Example
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 int main() {
     auto ansatz = VQE::real_amplitudes(2, 1);

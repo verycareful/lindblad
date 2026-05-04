@@ -7,7 +7,7 @@
 //   pass. Takes the best (fewest SWAPs) of the three runs and returns the
 //   corresponding logical→physical mapping applied to the DAG.
 
-#include "qpp/transpiler.hpp"
+#include "lindblad/transpiler.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -16,7 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // TrivialLayout
@@ -251,4 +251,4 @@ DAGCircuit SabreLayout::run(const DAGCircuit& dag, const TranspilationContext& c
     return result;
 }
 
-} // namespace qpp
+} // namespace lindblad

@@ -11,7 +11,7 @@ Recommended workflow:
 ## Coding Conventions
 
 - Language standard: C++23
-- Keep public declarations in `include/qpp/`
+- Keep public declarations in `include/lindblad/`
 - Keep implementation in matching `src/` location
 - Favor descriptive names over abbreviations in public APIs
 - Ensure exceptions and error strings are clear at subsystem boundaries
@@ -27,7 +27,7 @@ For code in `src/gates/`, `src/statevector.cpp`, and simulator kernels:
 
 ## Test Strategy
 
-Current unit tests live in `tests/` and are built into `qpp_tests`.
+Current unit tests live in `tests/` and are built into `lindblad_tests`.
 
 When adding a new feature:
 

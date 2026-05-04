@@ -1,5 +1,5 @@
-#include "qpp/algorithms.hpp"
-#include "qpp/gates.hpp"
+#include "lindblad/algorithms.hpp"
+#include "lindblad/gates.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -9,7 +9,7 @@
 // NLopt for optimisation
 #include <nlopt.h>
 
-namespace qpp {
+namespace lindblad {
 namespace algorithms {
 
 // =============================================================================
@@ -184,4 +184,4 @@ QuantumCircuit VQE::two_local(
 }
 
 } // namespace algorithms
-} // namespace qpp
+} // namespace lindblad

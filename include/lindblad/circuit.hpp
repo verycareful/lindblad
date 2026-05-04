@@ -1,12 +1,12 @@
 #pragma once
 
-#include "qpp/types.hpp"
+#include "lindblad/types.hpp"
 
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // Gate instruction — what gets stored in the circuit
@@ -200,4 +200,4 @@ private:
     void add_param_name(const std::string& name);
 };
 
-} // namespace qpp
+} // namespace lindblad

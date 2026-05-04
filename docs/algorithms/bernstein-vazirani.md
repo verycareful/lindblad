@@ -1,12 +1,12 @@
 # Bernstein-Vazirani Family
 
-This page covers the Bernstein-Vazirani family of algorithms in q++:
+This page covers the Bernstein-Vazirani family of algorithms in lindblad:
 
 - `BernsteinVazirani`
 - `RecursiveBernsteinVazirani`
 - `ProbabilisticBernsteinVazirani`
 
-All three live in the `qpp::algorithms` namespace and are declared in [include/qpp/algorithms.hpp](../../include/qpp/algorithms.hpp).
+All three live in the `lindblad::algorithms` namespace and are declared in [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp).
 
 ## Purpose
 
@@ -58,14 +58,14 @@ For the recursive variant, each oracle encodes an independent secret. For the pr
 Include the header:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 Build the oracle so that each `cx(i, n)` toggles the ancilla when bit `i` of the secret is `1`.
 
 ```cpp
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 QuantumCircuit oracle(4); // 3 query qubits + 1 ancilla
 oracle.cx(0, 3);
@@ -94,7 +94,7 @@ auto result = ProbabilisticBernsteinVazirani::solve(pool, 3, weights, 50, 1234);
 Use:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 That header brings in the public BV family declarations and their result types.
@@ -113,7 +113,7 @@ That means:
 
 ### `BernsteinVazirani`
 
-Declared in [include/qpp/algorithms.hpp](../../include/qpp/algorithms.hpp).
+Declared in [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp).
 
 - `build_circuit(const QuantumCircuit& oracle, int n)` constructs the BV query circuit
 - `solve(const QuantumCircuit& oracle, int n, int shots = 1, uint64_t seed = 0)` executes the circuit and returns the recovered secret
@@ -138,10 +138,10 @@ The recovered secret is returned in the same bit order used by the tests and imp
 ## Example Code
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 QuantumCircuit bv_oracle(const std::string& secret) {
     QuantumCircuit qc(secret.size() + 1);
@@ -202,7 +202,7 @@ The tests cover:
 ## Related Source Files
 
 - [docs/api/bernstein-vazirani.md](../api/bernstein-vazirani.md)
-- [include/qpp/algorithms.hpp](../../include/qpp/algorithms.hpp)
+- [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp)
 - [src/algorithms/bernstein_vazirani.cpp](../../src/algorithms/bernstein_vazirani.cpp)
 - [tests/test_classic_algorithms.cpp](../../tests/test_classic_algorithms.cpp)
 - [docs/MasterDocumentation.md](../MasterDocumentation.md)

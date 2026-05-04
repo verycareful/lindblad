@@ -1,12 +1,12 @@
 # Grover
 
-This page documents `qpp::algorithms::Grover`.
+This page documents `lindblad::algorithms::Grover`.
 
 ## Purpose
 
 Grover's algorithm amplifies the probability of marked states in an unstructured search space.
 
-In q++, the Grover helper builds a circuit around a provided oracle and either uses an explicit iteration count or computes the usual near-optimal default.
+In lindblad, the Grover helper builds a circuit around a provided oracle and either uses an explicit iteration count or computes the usual near-optimal default.
 
 ## Theory Summary
 
@@ -16,7 +16,7 @@ Grover search alternates between:
 2. applying the diffusion operator
 3. repeating for a chosen number of iterations
 
-The diffusion operator in q++ is implemented with the standard Hadamard/X pattern and a multi-controlled phase flip on the all-ones state.
+The diffusion operator in lindblad is implemented with the standard Hadamard/X pattern and a multi-controlled phase flip on the all-ones state.
 
 ## Required Inputs
 
@@ -31,14 +31,14 @@ The oracle should mark the solution state by phase inversion or equivalent ampli
 Include the header:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 Construct or reuse an oracle and run Grover search:
 
 ```cpp
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 QuantumCircuit oracle(3);
 // oracle construction goes here
@@ -58,7 +58,7 @@ auto circuit = Grover::build_circuit(oracle, 2);
 Use:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 ## Simulator Dependencies
@@ -90,10 +90,10 @@ The implementation constructs the diffusion operator directly in the circuit and
 ## Example Code
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 int main() {
     QuantumCircuit oracle(2);
@@ -130,6 +130,6 @@ Grover behavior is exercised indirectly through the simulator and algorithm cove
 ## Related Source Files
 
 - [docs/api/grover.md](../api/grover.md)
-- [include/qpp/algorithms.hpp](../../include/qpp/algorithms.hpp)
+- [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp)
 - [src/algorithms/grover.cpp](../../src/algorithms/grover.cpp)
 - [tests/test_simulators.cpp](../../tests/test_simulators.cpp)

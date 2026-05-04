@@ -2,13 +2,13 @@
 
 ## Supported Toolchains
 
-q++ targets modern C++23 toolchains.
+lindblad targets modern C++23 toolchains.
 
 - Windows: MSVC (Visual Studio 2022/26 recommended)
 - Linux: GCC or Clang
 - CMake: 3.20+
 
-OpenMP support is expected and linked in `qpp_core`.
+OpenMP support is expected and linked in `lindblad_core`.
 
 ## Configure
 
@@ -20,13 +20,13 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
 Important CMake options:
 
-- `QPP_BUILD_BENCHMARKS` (default `ON`)
-- `QPP_BUILD_PYTHON` (default `OFF`)
+- `LINDBLAD_BUILD_BENCHMARKS` (default `ON`)
+- `LINDBLAD_BUILD_PYTHON` (default `OFF`)
 
 Example with options:
 
 ```powershell
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DQPP_BUILD_BENCHMARKS=ON -DQPP_BUILD_PYTHON=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLINDBLAD_BUILD_BENCHMARKS=ON -DLINDBLAD_BUILD_PYTHON=OFF
 ```
 
 ## Build
@@ -65,7 +65,7 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## Benchmark Execution
 
-If `QPP_BUILD_BENCHMARKS=ON`, benchmark executables are generated from:
+If `LINDBLAD_BUILD_BENCHMARKS=ON`, benchmark executables are generated from:
 
 - `benchmarks/bench_gates.cpp`
 - `benchmarks/bench_statevector.cpp`
@@ -84,11 +84,11 @@ Run from the build output directory, for example:
 Enable bindings:
 
 ```powershell
-cmake -S . -B build -DQPP_BUILD_PYTHON=ON
+cmake -S . -B build -DLINDBLAD_BUILD_PYTHON=ON
 cmake --build build -j
 ```
 
-This builds a `qpp` Python extension module via pybind11.
+This builds a `lindblad` Python extension module via pybind11.
 
 ## Troubleshooting
 

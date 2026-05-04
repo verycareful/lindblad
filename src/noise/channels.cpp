@@ -1,9 +1,9 @@
-#include "qpp/noise.hpp"
+#include "lindblad/noise.hpp"
 
 #include <cmath>
 #include <stdexcept>
 
-namespace qpp {
+namespace lindblad {
 namespace NoiseChannels {
 
 // =============================================================================
@@ -367,4 +367,4 @@ KrausChannel coherent_unitary(double theta, double phi, double lambda) {
 }
 
 } // namespace NoiseChannels
-} // namespace qpp
+} // namespace lindblad

@@ -1,12 +1,12 @@
 #pragma once
 
-#include "qpp/circuit.hpp"
+#include "lindblad/circuit.hpp"
 
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // Node in the circuit DAG
@@ -82,4 +82,4 @@ private:
     void rebuild_adjacency();
 };
 
-} // namespace qpp
+} // namespace lindblad

@@ -1,10 +1,10 @@
-#include "qpp/noise.hpp"
+#include "lindblad/noise.hpp"
 
 #include <algorithm>
 #include <array>
 #include <stdexcept>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // ReadoutError
@@ -116,4 +116,4 @@ NoiseModel NoiseModel::from_t1_t2(
     return model;
 }
 
-} // namespace qpp
+} // namespace lindblad

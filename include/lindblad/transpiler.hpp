@@ -1,15 +1,15 @@
 #pragma once
 
-#include "qpp/dag.hpp"
-#include "qpp/circuit.hpp"
-#include "qpp/types.hpp"
+#include "lindblad/dag.hpp"
+#include "lindblad/circuit.hpp"
+#include "lindblad/types.hpp"
 
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // Forward declaration
 struct BackendProperties;
@@ -177,4 +177,4 @@ QuantumCircuit transpile(
     int optimization_level = 1
 );
 
-} // namespace qpp
+} // namespace lindblad

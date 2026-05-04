@@ -1,12 +1,12 @@
 #pragma once
 
-#include "qpp/types.hpp"
+#include "lindblad/types.hpp"
 
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 class QuantumCircuit;
 class DensityMatrix;
@@ -69,4 +69,4 @@ public:
                uint64_t seed = 0);
 };
 
-} // namespace qpp
+} // namespace lindblad

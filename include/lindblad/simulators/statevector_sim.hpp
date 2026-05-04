@@ -1,20 +1,20 @@
 #pragma once
 
-#include "qpp/circuit.hpp"
-#include "qpp/statevector.hpp"
-#include "qpp/types.hpp"
+#include "lindblad/circuit.hpp"
+#include "lindblad/statevector.hpp"
+#include "lindblad/types.hpp"
 
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 // Forward declarations
-namespace qpp {
+namespace lindblad {
 class SparsePauliOp;
 class NoiseModel;
 }
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // StatevectorSimulator
@@ -62,4 +62,4 @@ public:
     void apply_instruction(Statevector& sv, const Instruction& inst);
 };
 
-} // namespace qpp
+} // namespace lindblad

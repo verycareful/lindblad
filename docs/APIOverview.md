@@ -1,16 +1,16 @@
 # API Overview
 
-This document summarizes the primary public interfaces declared under `include/qpp/`.
+This document summarizes the primary public interfaces declared under `include/lindblad/`.
 
 ## Namespaces and Header Conventions
 
-- Primary namespace: `qpp`
-- Algorithm namespace: `qpp::algorithms`
+- Primary namespace: `lindblad`
+- Algorithm namespace: `lindblad::algorithms`
 - Public headers are organized by subsystem and intended to be included selectively.
 
 ## Circuit Construction
 
-Header: `include/qpp/circuit.hpp`
+Header: `include/lindblad/circuit.hpp`
 
 Primary types:
 
@@ -30,9 +30,9 @@ Deep dive: [docs/api/circuit.md](api/circuit.md)
 ### Minimal example
 
 ```cpp
-#include "qpp/circuit.hpp"
+#include "lindblad/circuit.hpp"
 
-qpp::QuantumCircuit bell(2, 2, "bell");
+lindblad::QuantumCircuit bell(2, 2, "bell");
 bell.h(0).cx(0, 1).measure(0, 0).measure(1, 1);
 ```
 
@@ -40,10 +40,10 @@ bell.h(0).cx(0, 1).measure(0, 0).measure(1, 1);
 
 Headers:
 
-- `include/qpp/simulators/statevector_sim.hpp`
-- `include/qpp/simulators/density_matrix_sim.hpp`
-- `include/qpp/simulators/clifford_sim.hpp`
-- `include/qpp/simulators/mps_sim.hpp`
+- `include/lindblad/simulators/statevector_sim.hpp`
+- `include/lindblad/simulators/density_matrix_sim.hpp`
+- `include/lindblad/simulators/clifford_sim.hpp`
+- `include/lindblad/simulators/mps_sim.hpp`
 
 Simulator classes and state representations:
 
@@ -61,7 +61,7 @@ Deep dive: [docs/api/simulators.md](api/simulators.md)
 **Exact statevector**:
 
 ```cpp
-#include "qpp/simulators/statevector_sim.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
 
 StatevectorSimulator sim;
 auto result = sim.run(circuit, 1024);  // 1024 shots
@@ -70,8 +70,8 @@ auto result = sim.run(circuit, 1024);  // 1024 shots
 **Noisy via density matrix**:
 
 ```cpp
-#include "qpp/simulators/density_matrix_sim.hpp"
-#include "qpp/noise.hpp"
+#include "lindblad/simulators/density_matrix_sim.hpp"
+#include "lindblad/noise.hpp"
 
 DensityMatrixSimulator sim;
 NoiseModel noise = NoiseModel::from_t1_t2(n_qubits, t1, t2, gate_time);
@@ -82,8 +82,8 @@ auto result = sim.run(circuit, noise, 1024);
 
 Headers:
 
-- `include/qpp/transpiler.hpp`
-- `include/qpp/dag.hpp`
+- `include/lindblad/transpiler.hpp`
+- `include/lindblad/dag.hpp`
 
 Transpiler classes and types:
 
@@ -106,16 +106,16 @@ Deep dive: [docs/api/transpiler.md](api/transpiler.md)
 **Transpile for a linear 5-qubit hardware**:
 
 ```cpp
-#include "qpp/transpiler.hpp"
+#include "lindblad/transpiler.hpp"
 
-qpp::QuantumCircuit circuit = ...;
-qpp::CouplingMap coupling = qpp::CouplingMap::linear(5);
-qpp::QuantumCircuit optimized = qpp::transpile(circuit, coupling, {"cx", "u3", "rz"}, 2);
+lindblad::QuantumCircuit circuit = ...;
+lindblad::CouplingMap coupling = lindblad::CouplingMap::linear(5);
+lindblad::QuantumCircuit optimized = lindblad::transpile(circuit, coupling, {"cx", "u3", "rz"}, 2);
 ```
 
 ## Backends
 
-Header: `include/qpp/backends/local_backend.hpp`
+Header: `include/lindblad/backends/local_backend.hpp`
 
 Backend abstraction:
 
@@ -139,10 +139,10 @@ Deep dive: [docs/api/backends.md](api/backends.md)
 **Basic execution with AUTO selection**:
 
 ```cpp
-#include "qpp/backends/local_backend.hpp"
+#include "lindblad/backends/local_backend.hpp"
 
-qpp::backends::LocalBackend backend;
-qpp::QuantumCircuit circuit = ...;
+lindblad::backends::LocalBackend backend;
+lindblad::QuantumCircuit circuit = ...;
 
 auto result = backend.run(circuit, 1024);  // AUTO selects best simulator
 for (const auto& [bitstring, count] : result.counts) {
@@ -152,7 +152,7 @@ for (const auto& [bitstring, count] : result.counts) {
 
 ## Noise
 
-Header: `include/qpp/noise.hpp`
+Header: `include/lindblad/noise.hpp`
 
 Core abstractions:
 
@@ -166,7 +166,7 @@ Deep dive: [docs/api/noise.md](api/noise.md)
 
 ## Quantum Information
 
-Header: `include/qpp/operators.hpp`
+Header: `include/lindblad/operators.hpp`
 
 Includes:
 
@@ -178,7 +178,7 @@ Deep dive: [docs/api/operators.md](api/operators.md)
 
 ## Transpiler
 
-Header: `include/qpp/transpiler.hpp`
+Header: `include/lindblad/transpiler.hpp`
 
 Contains structures for:
 
@@ -190,9 +190,9 @@ Use transpiler interfaces before simulation when target constraints or optimizat
 
 ## Gates
 
-Namespace: `qpp::gates`
+Namespace: `lindblad::gates`
 
-Header: `include/qpp/gates.hpp`
+Header: `include/lindblad/gates.hpp`
 
 Gate operations on `Statevector`:
 
@@ -212,7 +212,7 @@ Deep dive: [docs/api/gates.md](api/gates.md)
 
 ## Primitives
 
-Header: `include/qpp/primitives.hpp`
+Header: `include/lindblad/primitives.hpp`
 
 Primitive APIs:
 
@@ -227,13 +227,13 @@ Deep dives: [docs/api/estimator.md](api/estimator.md), [docs/api/sampler.md](api
 
 Headers:
 
-- `include/qpp/ising.hpp`
-- `include/qpp/dispatch.hpp`
+- `include/lindblad/ising.hpp`
+- `include/lindblad/dispatch.hpp`
 
 Main types:
 
-- `qpp::IsingHamiltonian`
-- `qpp::SoftDispatchResult`
+- `lindblad::IsingHamiltonian`
+- `lindblad::SoftDispatchResult`
 
 `IsingHamiltonian` is the native QUBO/Ising conversion layer used by optimization algorithms.
 `SoftDispatchResult` turns sampled bitstring counts into soft assignments and rounded dispatch outputs.
@@ -242,7 +242,7 @@ Deep dives: [docs/api/ising.md](api/ising.md), [docs/api/dispatch.md](api/dispat
 
 ## Algorithms
 
-Header: `include/qpp/algorithms.hpp`
+Header: `include/lindblad/algorithms.hpp`
 
 Main classes:
 
@@ -265,11 +265,11 @@ Variational algorithms use `Estimator`/`Sampler` and optimizer settings in their
 
 ## Backend Integration
 
-Header: `include/qpp/backends/local_backend.hpp`
+Header: `include/lindblad/backends/local_backend.hpp`
 
 Provides local backend abstraction to execute circuits while selecting simulator strategy.
 
 ## API Stability Notes
 
-- Keep new API additions in headers under `include/qpp/` and maintain backward compatibility where possible.
+- Keep new API additions in headers under `include/lindblad/` and maintain backward compatibility where possible.
 - Prefer extending option/result structures over breaking method signatures.

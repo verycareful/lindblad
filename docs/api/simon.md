@@ -1,11 +1,11 @@
 # Simon API Deep Dive
 
-This page documents the public `qpp::algorithms::Simon` API in detail.
+This page documents the public `lindblad::algorithms::Simon` API in detail.
 
 ## Header and Namespace
 
-- Header: `include/qpp/algorithms.hpp`
-- Namespace: `qpp::algorithms`
+- Header: `include/lindblad/algorithms.hpp`
+- Namespace: `lindblad::algorithms`
 
 ## Class Overview
 
@@ -73,10 +73,10 @@ Private helper used by `solve`:
 ## Example
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 int main() {
     QuantumCircuit oracle(6); // 3 query + 3 output

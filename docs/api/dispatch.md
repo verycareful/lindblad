@@ -1,11 +1,11 @@
 # SoftDispatchResult API Deep Dive
 
-This page documents the public `qpp::SoftDispatchResult` API.
+This page documents the public `lindblad::SoftDispatchResult` API.
 
 ## Header and Namespace
 
-- Header: `include/qpp/dispatch.hpp`
-- Namespace: `qpp`
+- Header: `include/lindblad/dispatch.hpp`
+- Namespace: `lindblad`
 
 ## Type Overview
 
@@ -74,9 +74,9 @@ Behavior:
 ## Example
 
 ```cpp
-#include "qpp/dispatch.hpp"
+#include "lindblad/dispatch.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 int main() {
     std::unordered_map<std::string, int> counts = {

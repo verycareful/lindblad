@@ -1,8 +1,8 @@
-#include "qpp/gates.hpp"
+#include "lindblad/gates.hpp"
 
 #include <cmath>
 
-namespace qpp {
+namespace lindblad {
 namespace gates {
 
 // =============================================================================
@@ -349,5 +349,5 @@ void apply_u3(Statevector& sv, int q,
 }
 
 } // namespace gates
-} // namespace qpp
+} // namespace lindblad
 

@@ -1,9 +1,9 @@
-#include "qpp/noise.hpp"
+#include "lindblad/noise.hpp"
 
 #include <cmath>
 #include <numeric>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // KrausChannel validation
@@ -65,4 +65,4 @@ double KrausChannel::trace_preserving_error() const {
     return std::sqrt(error);
 }
 
-} // namespace qpp
+} // namespace lindblad

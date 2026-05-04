@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
-#include "qpp/algorithms.hpp"
-#include "qpp/circuit.hpp"
+#include "lindblad/algorithms.hpp"
+#include "lindblad/circuit.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 // =============================================================================
 // Deutsch-Jozsa

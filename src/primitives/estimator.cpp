@@ -1,6 +1,6 @@
-#include "qpp/primitives.hpp"
-#include "qpp/simulators/statevector_sim.hpp"
-#include "qpp/transpiler.hpp"
+#include "lindblad/primitives.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/transpiler.hpp"
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -9,7 +9,7 @@
 #include <cmath>
 #include <sstream>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // Estimator
@@ -71,7 +71,7 @@ double Estimator::run_single(
                 to_simulate = it->second;  // cached transpiled (unbound) circuit
             } else {
                 // Cache miss: transpile the unbound circuit
-                to_simulate = qpp::transpile(circuit, CouplingMap(circuit.n_qubits),
+                to_simulate = lindblad::transpile(circuit, CouplingMap(circuit.n_qubits),
                                              {}, options.optimization_level);
                 transpile_cache_.emplace(key, to_simulate);
             }
@@ -137,4 +137,4 @@ std::vector<double> Estimator::gradient(
     return grad;
 }
 
-} // namespace qpp
+} // namespace lindblad

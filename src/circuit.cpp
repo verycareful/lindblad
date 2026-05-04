@@ -1,4 +1,4 @@
-#include "qpp/circuit.hpp"
+#include "lindblad/circuit.hpp"
 
 #include <algorithm>
 #include <sstream>
@@ -6,7 +6,7 @@
 #include <iomanip>
 #include <set>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // Instruction utilities
@@ -123,7 +123,7 @@ void QuantumCircuit::add_param_name(const std::string& pname) {
 // Single-qubit gates
 // =============================================================================
 
-#define QPP_SINGLE_GATE(name_func, gate_type) \
+#define LINDBLAD_SINGLE_GATE(name_func, gate_type) \
     QuantumCircuit& QuantumCircuit::name_func(int qubit) { \
         validate_qubit(qubit); \
         Instruction inst; \
@@ -133,20 +133,20 @@ void QuantumCircuit::add_param_name(const std::string& pname) {
         return *this; \
     }
 
-QPP_SINGLE_GATE(h, H)
-QPP_SINGLE_GATE(x, X)
-QPP_SINGLE_GATE(y, Y)
-QPP_SINGLE_GATE(z, Z)
-QPP_SINGLE_GATE(s, S)
-QPP_SINGLE_GATE(sdg, SDG)
-QPP_SINGLE_GATE(t, T)
-QPP_SINGLE_GATE(tdg, TDG)
-QPP_SINGLE_GATE(sx, SX)
-QPP_SINGLE_GATE(sxdg, SXDG)
+LINDBLAD_SINGLE_GATE(h, H)
+LINDBLAD_SINGLE_GATE(x, X)
+LINDBLAD_SINGLE_GATE(y, Y)
+LINDBLAD_SINGLE_GATE(z, Z)
+LINDBLAD_SINGLE_GATE(s, S)
+LINDBLAD_SINGLE_GATE(sdg, SDG)
+LINDBLAD_SINGLE_GATE(t, T)
+LINDBLAD_SINGLE_GATE(tdg, TDG)
+LINDBLAD_SINGLE_GATE(sx, SX)
+LINDBLAD_SINGLE_GATE(sxdg, SXDG)
 
-#undef QPP_SINGLE_GATE
+#undef LINDBLAD_SINGLE_GATE
 
-#define QPP_PARAM1_GATE(name_func, gate_type) \
+#define LINDBLAD_PARAM1_GATE(name_func, gate_type) \
     QuantumCircuit& QuantumCircuit::name_func(double param, int qubit) { \
         validate_qubit(qubit); \
         Instruction inst; \
@@ -157,12 +157,12 @@ QPP_SINGLE_GATE(sxdg, SXDG)
         return *this; \
     }
 
-QPP_PARAM1_GATE(rx, RX)
-QPP_PARAM1_GATE(ry, RY)
-QPP_PARAM1_GATE(rz, RZ)
-QPP_PARAM1_GATE(p, P)
+LINDBLAD_PARAM1_GATE(rx, RX)
+LINDBLAD_PARAM1_GATE(ry, RY)
+LINDBLAD_PARAM1_GATE(rz, RZ)
+LINDBLAD_PARAM1_GATE(p, P)
 
-#undef QPP_PARAM1_GATE
+#undef LINDBLAD_PARAM1_GATE
 
 QuantumCircuit& QuantumCircuit::u(double theta, double phi, double lambda, int qubit) {
     validate_qubit(qubit);
@@ -208,7 +208,7 @@ QuantumCircuit& QuantumCircuit::u3(double theta, double phi, double lambda, int 
 // Two-qubit gates
 // =============================================================================
 
-#define QPP_TWO_GATE(name_func, gate_type) \
+#define LINDBLAD_TWO_GATE(name_func, gate_type) \
     QuantumCircuit& QuantumCircuit::name_func(int q1, int q2) { \
         validate_qubit(q1); \
         validate_qubit(q2); \
@@ -221,17 +221,17 @@ QuantumCircuit& QuantumCircuit::u3(double theta, double phi, double lambda, int 
         return *this; \
     }
 
-QPP_TWO_GATE(cx, CX)
-QPP_TWO_GATE(cy, CY)
-QPP_TWO_GATE(cz, CZ)
-QPP_TWO_GATE(ch, CH)
-QPP_TWO_GATE(swap, SWAP)
-QPP_TWO_GATE(iswap, ISWAP)
-QPP_TWO_GATE(ecr, ECR)
+LINDBLAD_TWO_GATE(cx, CX)
+LINDBLAD_TWO_GATE(cy, CY)
+LINDBLAD_TWO_GATE(cz, CZ)
+LINDBLAD_TWO_GATE(ch, CH)
+LINDBLAD_TWO_GATE(swap, SWAP)
+LINDBLAD_TWO_GATE(iswap, ISWAP)
+LINDBLAD_TWO_GATE(ecr, ECR)
 
-#undef QPP_TWO_GATE
+#undef LINDBLAD_TWO_GATE
 
-#define QPP_CTRL_PARAM1_GATE(name_func, gate_type) \
+#define LINDBLAD_CTRL_PARAM1_GATE(name_func, gate_type) \
     QuantumCircuit& QuantumCircuit::name_func(double param, int control, int target) { \
         validate_qubit(control); \
         validate_qubit(target); \
@@ -245,12 +245,12 @@ QPP_TWO_GATE(ecr, ECR)
         return *this; \
     }
 
-QPP_CTRL_PARAM1_GATE(crx, CRX)
-QPP_CTRL_PARAM1_GATE(cry, CRY)
-QPP_CTRL_PARAM1_GATE(crz, CRZ)
-QPP_CTRL_PARAM1_GATE(cp, CP)
+LINDBLAD_CTRL_PARAM1_GATE(crx, CRX)
+LINDBLAD_CTRL_PARAM1_GATE(cry, CRY)
+LINDBLAD_CTRL_PARAM1_GATE(crz, CRZ)
+LINDBLAD_CTRL_PARAM1_GATE(cp, CP)
 
-#undef QPP_CTRL_PARAM1_GATE
+#undef LINDBLAD_CTRL_PARAM1_GATE
 
 QuantumCircuit& QuantumCircuit::cu(double theta, double phi, double lambda, double gamma,
                                     int control, int target) {
@@ -266,7 +266,7 @@ QuantumCircuit& QuantumCircuit::cu(double theta, double phi, double lambda, doub
     return *this;
 }
 
-#define QPP_ISING_GATE(name_func, gate_type) \
+#define LINDBLAD_ISING_GATE(name_func, gate_type) \
     QuantumCircuit& QuantumCircuit::name_func(double theta, int q1, int q2) { \
         validate_qubit(q1); \
         validate_qubit(q2); \
@@ -280,12 +280,12 @@ QuantumCircuit& QuantumCircuit::cu(double theta, double phi, double lambda, doub
         return *this; \
     }
 
-QPP_ISING_GATE(rzx, RZX)
-QPP_ISING_GATE(rxx, RXX)
-QPP_ISING_GATE(ryy, RYY)
-QPP_ISING_GATE(rzz, RZZ)
+LINDBLAD_ISING_GATE(rzx, RZX)
+LINDBLAD_ISING_GATE(rxx, RXX)
+LINDBLAD_ISING_GATE(ryy, RYY)
+LINDBLAD_ISING_GATE(rzz, RZZ)
 
-#undef QPP_ISING_GATE
+#undef LINDBLAD_ISING_GATE
 
 // =============================================================================
 // Three-qubit gates
@@ -1459,4 +1459,4 @@ std::string QuantumCircuit::to_ascii() const {
     return oss.str();
 }
 
-} // namespace qpp
+} // namespace lindblad

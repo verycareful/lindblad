@@ -1,8 +1,8 @@
-#include "qpp/ising.hpp"
+#include "lindblad/ising.hpp"
 
 #include <stdexcept>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // IsingHamiltonian::to_sparse_pauli_op
@@ -154,4 +154,4 @@ IsingHamiltonian IsingHamiltonian::from_hJ(
     return ising;
 }
 
-} // namespace qpp
+} // namespace lindblad

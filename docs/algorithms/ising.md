@@ -1,6 +1,6 @@
 # Ising Hamiltonian
 
-This page documents `qpp::IsingHamiltonian`.
+This page documents `lindblad::IsingHamiltonian`.
 
 ## Purpose
 
@@ -20,7 +20,7 @@ The Ising form uses spins `s_i ∈ {-1,+1}` and the standard substitution:
 
 $$x_i = \frac{1 - s_i}{2}$$
 
-q++ stores the linear terms `h`, the quadratic couplings `J`, and a constant offset so the Hamiltonian can be converted to `SparsePauliOp` or evaluated directly.
+lindblad stores the linear terms `h`, the quadratic couplings `J`, and a constant offset so the Hamiltonian can be converted to `SparsePauliOp` or evaluated directly.
 
 ## Required Inputs
 
@@ -33,13 +33,13 @@ q++ stores the linear terms `h`, the quadratic couplings `J`, and a constant off
 Include the header:
 
 ```cpp
-#include "qpp/ising.hpp"
+#include "lindblad/ising.hpp"
 ```
 
 Create an Ising model from a QUBO matrix:
 
 ```cpp
-using namespace qpp;
+using namespace lindblad;
 
 std::vector<std::vector<double>> Q = {
     {1.0, 2.0},
@@ -66,7 +66,7 @@ SparsePauliOp op = ham.to_sparse_pauli_op();
 Use:
 
 ```cpp
-#include "qpp/ising.hpp"
+#include "lindblad/ising.hpp"
 ```
 
 ## Simulator and Primitive Dependencies
@@ -119,9 +119,9 @@ Typical consumers include:
 ## Example Code
 
 ```cpp
-#include "qpp/ising.hpp"
+#include "lindblad/ising.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 int main() {
     std::vector<std::vector<double>> Q = {
@@ -165,6 +165,6 @@ The Ising machinery is exercised indirectly through the MAQAOA and microgrid tes
 ## Related Source Files
 
 - [docs/api/ising.md](../api/ising.md)
-- [include/qpp/ising.hpp](../../include/qpp/ising.hpp)
+- [include/lindblad/ising.hpp](../../include/lindblad/ising.hpp)
 - [src/algorithms/ising.cpp](../../src/algorithms/ising.cpp)
 - [tests/test_maqaoa_microgrid.cpp](../../tests/test_maqaoa_microgrid.cpp)

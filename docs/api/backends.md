@@ -1,11 +1,11 @@
 # LocalBackend API Deep Dive
 
-This page documents the public `qpp::backends::LocalBackend` API for executing quantum circuits on local simulators.
+This page documents the public `lindblad::backends::LocalBackend` API for executing quantum circuits on local simulators.
 
 ## Header and Namespace
 
-- Header: `include/qpp/backends/local_backend.hpp`
-- Namespace: `qpp::backends`
+- Header: `include/lindblad/backends/local_backend.hpp`
+- Namespace: `lindblad::backends`
 
 ## Overview
 
@@ -21,7 +21,7 @@ Fields:
 - `simulation_time_seconds`: wall-clock execution time
 - `success`: true if execution completed without error
 - `error_message`: populated if `success == false`
-- `backend_name`: name of simulator used (`"qpp_local_simulator"`)
+- `backend_name`: name of simulator used (`"lindblad_local_simulator"`)
 - `shots`: number of samples collected
 
 ## `SimType` Enum
@@ -145,7 +145,7 @@ Behavior:
 std::string name() const;
 ```
 
-Returns: `"qpp_local_simulator"`
+Returns: `"lindblad_local_simulator"`
 
 ### `version()`
 
@@ -188,10 +188,10 @@ Mutable noise model. When non-empty (with gate/readout channels), automatically 
 ### Basic Statevector Execution
 
 ```cpp
-qpp::backends::LocalBackend backend;
-backend.config.simulator = qpp::backends::LocalBackend::SimType::STATEVECTOR;
+lindblad::backends::LocalBackend backend;
+backend.config.simulator = lindblad::backends::LocalBackend::SimType::STATEVECTOR;
 
-qpp::QuantumCircuit qc(2);
+lindblad::QuantumCircuit qc(2);
 qc.h(0).cx(0, 1);
 
 auto result = backend.run(qc, 1024);
@@ -203,13 +203,13 @@ for (const auto& [bitstring, count] : result.counts) {
 ### Noisy Simulation with Density Matrix
 
 ```cpp
-qpp::backends::LocalBackend backend;
+lindblad::backends::LocalBackend backend;
 backend.noise_model.add_gate_error(
-    qpp::NoiseChannels::amplitude_damping(0.01), 
+    lindblad::NoiseChannels::amplitude_damping(0.01), 
     {"h", "cx"}
 );
 
-qpp::QuantumCircuit qc(3);
+lindblad::QuantumCircuit qc(3);
 qc.h(0).h(1).h(2);
 qc.cx(0, 1).cx(1, 2);
 
@@ -220,13 +220,13 @@ auto result = backend.run(qc, 512);
 ### Large System with MPS
 
 ```cpp
-qpp::backends::LocalBackend::Config cfg;
-cfg.simulator = qpp::backends::LocalBackend::SimType::MPS;
+lindblad::backends::LocalBackend::Config cfg;
+cfg.simulator = lindblad::backends::LocalBackend::SimType::MPS;
 cfg.mps_bond_dim = 128;
 
-qpp::backends::LocalBackend backend(cfg);
+lindblad::backends::LocalBackend backend(cfg);
 
-qpp::QuantumCircuit qc(20);  // Large circuit
+lindblad::QuantumCircuit qc(20);  // Large circuit
 // ... build circuit ...
 
 auto result = backend.run(qc, 100);  // Fewer shots for MPS
@@ -236,11 +236,11 @@ std::cout << "Simulation time: " << result.simulation_time_seconds << "s\n";
 ### Batch Execution
 
 ```cpp
-qpp::backends::LocalBackend backend;
+lindblad::backends::LocalBackend backend;
 
-std::vector<qpp::QuantumCircuit> circuits;
+std::vector<lindblad::QuantumCircuit> circuits;
 for (int i = 0; i < 10; i++) {
-    qpp::QuantumCircuit qc(5);
+    lindblad::QuantumCircuit qc(5);
     qc.h(0).cx(0, 1).cx(1, 2);
     circuits.push_back(qc);
 }

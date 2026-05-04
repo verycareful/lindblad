@@ -1,6 +1,6 @@
 #pragma once
 
-#include "qpp/types.hpp"
+#include "lindblad/types.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // Statevector — SoA (Structure of Arrays) layout for SIMD efficiency
@@ -99,4 +99,4 @@ public:
     std::string to_string(int precision = 6) const;
 };
 
-} // namespace qpp
+} // namespace lindblad

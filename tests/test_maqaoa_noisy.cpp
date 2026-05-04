@@ -2,11 +2,11 @@
 
 #include <gtest/gtest.h>
 
-#include "qpp/algorithms.hpp"
-#include "qpp/noise.hpp"
+#include "lindblad/algorithms.hpp"
+#include "lindblad/noise.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 TEST(MAQAOANoisyTest, LayerwiseRunCompletes) {
     SparsePauliOp cost({

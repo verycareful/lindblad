@@ -1,12 +1,12 @@
-#include "qpp/operators.hpp"
-#include "qpp/statevector.hpp"
-#include "qpp/circuit.hpp"
-#include "qpp/gates.hpp"
-#include "qpp/simulators/statevector_sim.hpp"
+#include "lindblad/operators.hpp"
+#include "lindblad/statevector.hpp"
+#include "lindblad/circuit.hpp"
+#include "lindblad/gates.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
 
 #include <stdexcept>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // Operator
@@ -148,4 +148,4 @@ Complex128 Operator::trace() const {
     return tr;
 }
 
-} // namespace qpp
+} // namespace lindblad

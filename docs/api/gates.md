@@ -1,10 +1,10 @@
 # Gates API Deep Dive
 
-The Gates API provides a comprehensive suite of quantum gate operations for state manipulation in q++. All gates operate directly on `Statevector` objects via in-place modifications, leveraging SIMD vectorization and OpenMP parallelization for high performance across single, two, and multi-qubit operations.
+The Gates API provides a comprehensive suite of quantum gate operations for state manipulation in lindblad. All gates operate directly on `Statevector` objects via in-place modifications, leveraging SIMD vectorization and OpenMP parallelization for high performance across single, two, and multi-qubit operations.
 
 ## Design Philosophy
 
-Gates in q++ follow a **functional, in-place modification** paradigm:
+Gates in lindblad follow a **functional, in-place modification** paradigm:
 - Each gate is a `void` function taking a `Statevector&` reference and qubit indices
 - Modifications happen directly on the aligned `real_parts` and `imag_parts` arrays
 - Two core patterns underpin all implementations:

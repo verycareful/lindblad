@@ -1,8 +1,8 @@
 #pragma once
 
-#include "qpp/circuit.hpp"
-#include "qpp/operators.hpp"
-#include "qpp/primitives.hpp"
+#include "lindblad/circuit.hpp"
+#include "lindblad/operators.hpp"
+#include "lindblad/primitives.hpp"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -13,7 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 namespace algorithms {
 
 // =============================================================================
@@ -151,7 +151,7 @@ public:
         // cheap generators (small w_i) receive a small initial beta.
         // To invert this (large beta for cheap generators), pass inverse weights:
         //   ipi_weights[i] = 1.0 / pi_weights[i]
-        // This can be done entirely in the calling code without any q++ changes.
+        // This can be done entirely in the calling code without any lindblad changes.
         // Empty = standard random perturbation initialisation.
         std::vector<double> mixer_weights;
 
@@ -361,4 +361,4 @@ private:
 };
 
 } // namespace algorithms
-} // namespace qpp
+} // namespace lindblad

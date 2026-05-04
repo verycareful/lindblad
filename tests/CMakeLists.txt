@@ -1,7 +1,7 @@
 # Tests CMakeLists.txt
 
 # Register all test source files
-set(QPP_TEST_SOURCES
+set(LINDBLAD_TEST_SOURCES
     test_gates.cpp
     test_circuit.cpp
     test_simulators.cpp
@@ -17,20 +17,20 @@ set(QPP_TEST_SOURCES
 )
 
 # Create test executable
-add_executable(qpp_tests ${QPP_TEST_SOURCES} $<TARGET_OBJECTS:qpp_banner_obj>)
+add_executable(lindblad_tests ${LINDBLAD_TEST_SOURCES} $<TARGET_OBJECTS:lindblad_banner_obj>)
 
-target_link_libraries(qpp_tests
+target_link_libraries(lindblad_tests
     PRIVATE
-        qpp_core
+        lindblad_core
         GTest::gtest
         GTest::gtest_main
 )
 
-target_include_directories(qpp_tests
+target_include_directories(lindblad_tests
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
 )
 
 # Register tests with CTest
 include(GoogleTest)
-gtest_discover_tests(qpp_tests PROPERTIES LABELS "qpp")
+gtest_discover_tests(lindblad_tests PROPERTIES LABELS "lindblad")

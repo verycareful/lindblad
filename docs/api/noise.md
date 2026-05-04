@@ -1,11 +1,11 @@
 # Noise API Deep Dive
 
-This page documents the public noise API in `qpp/noise.hpp`.
+This page documents the public noise API in `lindblad/noise.hpp`.
 
 ## Header and Namespace
 
-- Header: `include/qpp/noise.hpp`
-- Namespace: `qpp`
+- Header: `include/lindblad/noise.hpp`
+- Namespace: `lindblad`
 
 ## `KrausChannel`
 
@@ -91,9 +91,9 @@ Attaches noise channels to gate names and qubit patterns.
 ## Example
 
 ```cpp
-#include "qpp/noise.hpp"
+#include "lindblad/noise.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 int main() {
     NoiseModel model;

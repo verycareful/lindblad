@@ -1,13 +1,13 @@
-# q++ (qpp)
+# Lindblad
 [![C++](https://img.shields.io/badge/C%2B%2B-23-00599C?style=flat-square&logo=cplusplus&logoColor=white)](https://isocpp.org/)
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
-[![License: Q++ v1.0](https://img.shields.io/badge/License-Q%2B%2B%20v1.0-red.svg)](LICENSE)
+[![License: Lindblad v1.0](https://img.shields.io/badge/License-Lindblad%20v1.0-red.svg)](LICENSE)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-R.1.0.1-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-R.1.1.0-blue?style=flat-square)](CHANGELOG.md)
 
 > **License Notice:** This software is **proprietary and source-available**. Free for non-commercial and academic use only. Commercial use of any kind requires a separate written license agreement. **Redistribution in any form — including forks, copies, and derivative works — is strictly prohibited without explicit written authorization from the author**, regardless of whether the use is commercial or non-commercial. Public GitHub forks are technically permitted by GitHub's platform but are **not licensed** under this agreement for any purpose other than reviewing or submitting contributions via pull request; any other use of a fork constitutes a violation. By submitting any contribution (pull request, code snippet, bug fix, or similar) you irrevocably assign full copyright ownership of that contribution to the author — see §6.3 of [LICENSE](LICENSE). See [LICENSE](LICENSE) for full terms — `qpp.support@proton.me` for licensing inquiries.
 
-q++ is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
+lindblad is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
 
 ## Documentation Map
 
@@ -52,8 +52,8 @@ Planned algorithm pages live under docs/algorithms/ and will be expanded as the 
 
 ## Release
 
-- Current release: `R.1.0.1` — test suite: 3 additional BV edge case tests; 94 tests across 16 suites, all passing
-- Previous release: `R.1.0.0` — **Bernstein-Vazirani family** (standard, recursive BV, probabilistic multi-key BV); complete classic algorithm suite (DeutschJozsa, Simon, QPE, Grover); proprietary license (Q++ SLA v1.0); transpiler and simulator correctness fixes; comprehensive API and algorithm documentation
+- Current release: `R.1.1.0` — **project renamed** from Q++/qpp to Lindblad; all namespaces, CMake targets, headers, docs, license, and citation updated; banner shows on exit with license notice
+- Previous release: `R.1.0.1` — test suite: 3 additional BV edge case tests; 94 tests across 16 suites, all passing
 
 ## Project Scope
 
@@ -95,7 +95,7 @@ The current codebase provides:
 ## Repository Layout
 
 ```text
-include/qpp/                Public C++ API headers
+include/lindblad/                Public C++ API headers
 src/                        Core implementations
 tests/                      Unit tests (GoogleTest)
 benchmarks/                 Micro and algorithm benchmarks (Google Benchmark)
@@ -142,13 +142,13 @@ ctest --test-dir build --output-on-failure
 
 ### Build options
 
-- `QPP_BUILD_BENCHMARKS=ON|OFF` (default: `ON`)
-- `QPP_BUILD_PYTHON=ON|OFF` (default: `OFF`)
+- `LINDBLAD_BUILD_BENCHMARKS=ON|OFF` (default: `ON`)
+- `LINDBLAD_BUILD_PYTHON=ON|OFF` (default: `OFF`)
 
 Example:
 
 ```powershell
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DQPP_BUILD_BENCHMARKS=ON -DQPP_BUILD_PYTHON=OFF
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLINDBLAD_BUILD_BENCHMARKS=ON -DLINDBLAD_BUILD_PYTHON=OFF
 ```
 
 ### Building with Clang (Recommended for Performance)
@@ -160,7 +160,7 @@ cmake -S . -B build-clang -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CXX_COMPILER=clang++ \
   -DCMAKE_CXX_FLAGS="-O3 -march=native -Wno-nan-infinity-disabled" \
-  -DQPP_BUILD_PYTHON=OFF
+  -DLINDBLAD_BUILD_PYTHON=OFF
 cmake --build build-clang -j$(nproc)
 ```
 
@@ -183,7 +183,7 @@ The project already includes a substantial implementation across simulation, tra
 
 Copyright © 2026 Sricharan Suresh (github.com/verycareful)
 
-This project is licensed under the **[Q++ Software License Agreement v1.0](LICENSE)** — source-available, free for non-commercial and academic use. Commercial use requires a separate license agreement.
+This project is licensed under the **[Lindblad Software License Agreement v1.0](LICENSE)** — source-available, free for non-commercial and academic use. Commercial use requires a separate license agreement.
 
 See the [LICENSE](LICENSE) file for full terms, [NOTICE](NOTICE) for copyright notice, and [CITATION.cff](CITATION.cff) for citation information.
 Licensing inquiries: qpp.support@proton.me

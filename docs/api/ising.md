@@ -1,11 +1,11 @@
 # IsingHamiltonian API Deep Dive
 
-This page documents the public `qpp::IsingHamiltonian` API.
+This page documents the public `lindblad::IsingHamiltonian` API.
 
 ## Header and Namespace
 
-- Header: `include/qpp/ising.hpp`
-- Namespace: `qpp`
+- Header: `include/lindblad/ising.hpp`
+- Namespace: `lindblad`
 
 ## Type Overview
 
@@ -91,9 +91,9 @@ Returns the number of qubits implied by `h.size()`.
 ## Example
 
 ```cpp
-#include "qpp/ising.hpp"
+#include "lindblad/ising.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 int main() {
     std::vector<std::vector<double>> Q = {

@@ -1,10 +1,10 @@
-#include "qpp/simulators/clifford_sim.hpp"
-#include "qpp/circuit.hpp"
+#include "lindblad/simulators/clifford_sim.hpp"
+#include "lindblad/circuit.hpp"
 
 #include <random>
 #include <stdexcept>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // StabilizerState — Gottesman-Knill tableau
@@ -436,4 +436,4 @@ CliffordSimulator::Result CliffordSimulator::run(
     return result;
 }
 
-} // namespace qpp
+} // namespace lindblad

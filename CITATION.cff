@@ -1,26 +1,26 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 type: software
-title: "Q++"
+title: "Lindblad"
 abstract: "A high-performance classical simulation framework for quantum circuits."
 authors:
   - family-names: Suresh
     given-names: Sricharan
     alias: verycareful
     orcid: https://orcid.org/0009-0004-6873-5692
-version: R.1.0.1
+version: R.1.1.0
 date-released: 2026-05-03
-license: "LicenseRef-Q++-1.0"
+license: "LicenseRef-Lindblad-1.0"
 repository-code: https://github.com/verycareful
 contact:
   - email: qpp.support@proton.me
 preferred-citation:
   type: software
-  title: "Q++: A High-Performance Classical Simulation Framework for Quantum Circuits"
+  title: "Lindblad: A High-Performance Classical Simulation Framework for Quantum Circuits"
   authors:
     - family-names: Suresh
       given-names: Sricharan
       orcid: https://orcid.org/0009-0004-6873-5692
-  version: R.1.0.1
+  version: R.1.1.0
   year: 2026
   url: https://github.com/verycareful

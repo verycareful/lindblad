@@ -1,8 +1,8 @@
-#include "qpp/backends/local_backend.hpp"
-#include "qpp/simulators/clifford_sim.hpp"
-#include "qpp/simulators/mps_sim.hpp"
+#include "lindblad/backends/local_backend.hpp"
+#include "lindblad/simulators/clifford_sim.hpp"
+#include "lindblad/simulators/mps_sim.hpp"
 
-namespace qpp {
+namespace lindblad {
 namespace backends {
 
 BackendResult LocalBackend::run(
@@ -91,4 +91,4 @@ std::vector<BackendResult> LocalBackend::run_batch(
 }
 
 } // namespace backends
-} // namespace qpp
+} // namespace lindblad

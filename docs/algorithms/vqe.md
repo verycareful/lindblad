@@ -1,12 +1,12 @@
 # VQE
 
-This page documents `qpp::algorithms::VQE`.
+This page documents `lindblad::algorithms::VQE`.
 
 ## Purpose
 
 VQE, the Variational Quantum Eigensolver, estimates the minimum eigenvalue of a Hamiltonian by optimizing a parameterized ansatz against the configured primitive stack.
 
-In q++, VQE is the most general variational solver. QAOA and MAQAOA are specialized descendants of the same optimization pattern.
+In lindblad, VQE is the most general variational solver. QAOA and MAQAOA are specialized descendants of the same optimization pattern.
 
 ## Theory Summary
 
@@ -17,11 +17,11 @@ VQE alternates between two components:
 
 The optimizer adjusts the ansatz parameters until the measured energy is minimized.
 
-The public API in q++ exposes both the optimizer entry point and a small set of ansatz generators for common use cases.
+The public API in lindblad exposes both the optimizer entry point and a small set of ansatz generators for common use cases.
 
 ## Required Inputs
 
-- A cost Hamiltonian as `qpp::SparsePauliOp`
+- A cost Hamiltonian as `lindblad::SparsePauliOp`
 - A parameterized ansatz circuit
 - Optional initial parameters
 - `VQE::Options` settings such as optimizer choice, iteration limit, and convergence threshold
@@ -31,14 +31,14 @@ The public API in q++ exposes both the optimizer entry point and a small set of 
 Include the header:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 Create an ansatz and optimize a Hamiltonian:
 
 ```cpp
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 auto ansatz = VQE::real_amplitudes(4, 2);
 
@@ -59,7 +59,7 @@ auto result = vqe.compute_minimum_eigenvalue(hamiltonian, ansatz);
 Use:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 That header provides the VQE class and the common ansatz helper methods.
@@ -102,10 +102,10 @@ The optimizer itself is driven by NLopt, while energy evaluations are handled th
 ## Example Code
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 int main() {
     auto ansatz = VQE::efficient_su2(3, 1);
@@ -151,7 +151,7 @@ There is currently no dedicated VQE-only test file in the repository. VQE behavi
 
 ## Related Source Files
 
-- [include/qpp/algorithms.hpp](../../include/qpp/algorithms.hpp)
+- [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp)
 - [src/algorithms/vqe.cpp](../../src/algorithms/vqe.cpp)
 - [docs/algorithms/qaoa.md](qaoa.md)
 - [docs/algorithms/maqaoa.md](maqaoa.md)

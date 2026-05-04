@@ -10,7 +10,7 @@
 //   Both use independent betas per qubit (N per layer).
 
 #include <gtest/gtest.h>
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -21,8 +21,8 @@
 #include <string>
 #include <vector>
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 // =============================================================================
 // Hard-coded microgrid parameters (Python MicrogridData defaults / 'critical')
@@ -139,7 +139,7 @@ double compute_offset() {
 }
 
 // Build SparsePauliOp for H_Ising = sum_i h_i Z_i + sum_{i<j} J_ij Z_i Z_j
-// q++ Pauli string convention: character at position q = Pauli for qubit q (left-to-right).
+// lindblad Pauli string convention: character at position q = Pauli for qubit q (left-to-right).
 SparsePauliOp build_ising_hamiltonian() {
     double h[N], J[N][N];
     compute_h(h);
@@ -521,7 +521,7 @@ TEST(MicrogridQAOA, AllMethodsComparison) {
     std::cout << "╠════════════════════════════════════════════════════════════════════╣\n";
     std::cout << "║  MA-QAOA parameterisation note:                                    ║\n";
     std::cout << "║    Python:  " << 2 * N << " params/layer (N gammas qubit-indexed + N betas)        ║\n";
-    std::cout << "║    C++ q++: " << (int)cost_ham.terms.size() + N
+    std::cout << "║    C++ lindblad: " << (int)cost_ham.terms.size() + N
               << " params/layer (1 gamma/term + N betas)              ║\n";
     std::cout << "║    SA success rate: " << sa_res.success_rate * 100.0 << " %                                     ║\n";
     std::cout << "╚════════════════════════════════════════════════════════════════════╝\n";

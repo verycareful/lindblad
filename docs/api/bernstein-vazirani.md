@@ -1,11 +1,11 @@
 # Bernstein-Vazirani API Deep Dive
 
-This page documents the public Bernstein-Vazirani family APIs in `qpp::algorithms`.
+This page documents the public Bernstein-Vazirani family APIs in `lindblad::algorithms`.
 
 ## Header and Namespace
 
-- Header: `include/qpp/algorithms.hpp`
-- Namespace: `qpp::algorithms`
+- Header: `include/lindblad/algorithms.hpp`
+- Namespace: `lindblad::algorithms`
 
 ## Family Overview
 
@@ -129,10 +129,10 @@ Behavior:
 ## Example
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 QuantumCircuit bv_oracle(const std::string& secret) {
     QuantumCircuit qc(secret.size() + 1);

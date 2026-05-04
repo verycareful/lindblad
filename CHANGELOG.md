@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.1.0] - 2026-05-04
+
+### Changed
+
+- **Project renamed: Q++/qpp → Lindblad** — all source files, headers, CMake targets, macros, docs, license, and citation updated project-wide. C++ namespace `qpp::` → `lindblad::`. Include path `include/qpp/` → `include/lindblad/`. CMake project name and all `QPP_` macros renamed to `LINDBLAD_`. CHANGELOG.md intentionally preserved as historical record. Contact email `qpp.support@proton.me` unchanged.
+- **LICENSE** — title and all references updated to "Lindblad Software License Agreement" and "Lindblad Quantum Computing Framework".
+- **CITATION.cff** — title updated to "Lindblad"; `LicenseRef-Q++-1.0` → `LicenseRef-Lindblad-1.0`.
+- **Banner** — shows on both startup and exit; exit banner now includes full license notice text.
+
 ## [R.1.0.1] - 2026-05-03
 
 ### Tests

@@ -1,13 +1,13 @@
 # Operators API Deep Dive
 
-This page documents the public operator APIs in `qpp/operators.hpp`, including
-`PauliString`, `SparsePauliOp`, `Operator`, and `qpp::QuantumInfo` helpers.
+This page documents the public operator APIs in `lindblad/operators.hpp`, including
+`PauliString`, `SparsePauliOp`, `Operator`, and `lindblad::QuantumInfo` helpers.
 
 ## Header and Namespace
 
-- Header: `include/qpp/operators.hpp`
-- Namespace: `qpp`
-- Quantum information helpers live under `qpp::QuantumInfo`
+- Header: `include/lindblad/operators.hpp`
+- Namespace: `lindblad`
+- Quantum information helpers live under `lindblad::QuantumInfo`
 
 ## `PauliString`
 
@@ -66,7 +66,7 @@ Key API:
 - `is_unitary(atol)` / `is_hermitian(atol)`
 - `trace()`
 
-## `qpp::QuantumInfo`
+## `lindblad::QuantumInfo`
 
 Quantum information metrics and helpers:
 
@@ -90,10 +90,10 @@ Important behaviors (from the implementation):
 ## Example
 
 ```cpp
-#include "qpp/operators.hpp"
-#include "qpp/statevector.hpp"
+#include "lindblad/operators.hpp"
+#include "lindblad/statevector.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 int main() {
     PauliString p("ZZ", Complex128(1.0, 0.0));

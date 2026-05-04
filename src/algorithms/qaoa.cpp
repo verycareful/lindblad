@@ -1,5 +1,5 @@
-#include "qpp/algorithms.hpp"
-#include "qpp/gates.hpp"
+#include "lindblad/algorithms.hpp"
+#include "lindblad/gates.hpp"
 
 #include <cmath>
 #include <limits>
@@ -8,7 +8,7 @@
 
 #include <nlopt.h>
 
-namespace qpp {
+namespace lindblad {
 namespace algorithms {
 
 static constexpr double kBound = 2.0 * M_PI;
@@ -230,4 +230,4 @@ QuantumCircuit QAOA::build_circuit(
 }
 
 } // namespace algorithms
-} // namespace qpp
+} // namespace lindblad

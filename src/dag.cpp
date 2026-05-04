@@ -1,4 +1,4 @@
-#include "qpp/dag.hpp"
+#include "lindblad/dag.hpp"
 
 #include <algorithm>
 #include <queue>
@@ -6,7 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // Constructors
@@ -461,4 +461,4 @@ int DAGCircuit::depth() const {
     return max_depth;
 }
 
-} // namespace qpp
+} // namespace lindblad

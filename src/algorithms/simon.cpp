@@ -1,11 +1,11 @@
-#include "qpp/algorithms.hpp"
-#include "qpp/simulators/statevector_sim.hpp"
+#include "lindblad/algorithms.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
 
 #include <random>
 #include <string>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 namespace algorithms {
 
 QuantumCircuit Simon::build_circuit(const QuantumCircuit& oracle, int n) {
@@ -83,4 +83,4 @@ Simon::Result Simon::solve(const QuantumCircuit& oracle, int n,
 }
 
 } // namespace algorithms
-} // namespace qpp
+} // namespace lindblad

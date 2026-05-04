@@ -1,11 +1,11 @@
-# q++ Architecture
+# lindblad Architecture
 
 ## Design Goals
 
-q++ is designed around three constraints:
+lindblad is designed around three constraints:
 
 - High computational throughput for simulation kernels
-- Clear public APIs in headers under `include/qpp/`
+- Clear public APIs in headers under `include/lindblad/`
 - Modular growth for algorithms, transpiler passes, and backends
 
 ## Layered View
@@ -26,8 +26,8 @@ Core Types and Numeric Kernels
 
 ### 1. Core Types and State Data
 
-- `include/qpp/types.hpp`
-- `include/qpp/statevector.hpp`
+- `include/lindblad/types.hpp`
+- `include/lindblad/statevector.hpp`
 - `src/statevector.cpp`
 
 Responsibilities:
@@ -38,11 +38,11 @@ Responsibilities:
 
 ### 2. Gates and Circuit Representation
 
-- `include/qpp/gates.hpp`
+- `include/lindblad/gates.hpp`
 - `src/gates/*.cpp`
-- `include/qpp/circuit.hpp`
+- `include/lindblad/circuit.hpp`
 - `src/circuit.cpp`
-- `include/qpp/dag.hpp`
+- `include/lindblad/dag.hpp`
 - `src/dag.cpp`
 
 Responsibilities:
@@ -54,7 +54,7 @@ Responsibilities:
 
 ### 3. Simulators
 
-- `include/qpp/simulators/*.hpp`
+- `include/lindblad/simulators/*.hpp`
 - `src/simulators/*.cpp`
 
 Implementations:
@@ -72,9 +72,9 @@ Responsibilities:
 
 ### 4. Noise and Quantum Information
 
-- `include/qpp/noise.hpp`
+- `include/lindblad/noise.hpp`
 - `src/noise/*.cpp`
-- `include/qpp/operators.hpp`
+- `include/lindblad/operators.hpp`
 - `src/quantum_info/*.cpp`
 
 Responsibilities:
@@ -85,7 +85,7 @@ Responsibilities:
 
 ### 5. Transpiler
 
-- `include/qpp/transpiler.hpp`
+- `include/lindblad/transpiler.hpp`
 - `src/transpiler/**/*.cpp`
 
 Responsibilities:
@@ -96,9 +96,9 @@ Responsibilities:
 
 ### 6. Primitives and Algorithms
 
-- `include/qpp/primitives.hpp`
+- `include/lindblad/primitives.hpp`
 - `src/primitives/*.cpp`
-- `include/qpp/algorithms.hpp`
+- `include/lindblad/algorithms.hpp`
 - `src/algorithms/*.cpp`
 
 Responsibilities:
@@ -110,7 +110,7 @@ Responsibilities:
 ### 7. External Interface Layers
 
 - `src/backends/local_backend.cpp`
-- `include/qpp/backends/local_backend.hpp`
+- `include/lindblad/backends/local_backend.hpp`
 - `bindings/python_bindings.cpp`
 - `src/qasm/*.cpp`
 
@@ -134,10 +134,10 @@ Typical runtime flow for an algorithm run:
 
 The top-level CMake project produces:
 
-- `qpp_core` static library (always)
-- `qpp_tests` executable (always)
+- `lindblad_core` static library (always)
+- `lindblad_tests` executable (always)
 - `bench_*` executables (when benchmarks are enabled)
-- `qpp` Python extension module (when Python bindings are enabled)
+- `lindblad` Python extension module (when Python bindings are enabled)
 
 Third-party dependencies are declared centrally in `CMakeLists.txt` and fetched at configure time.
 
@@ -148,4 +148,4 @@ Recommended extension points:
 - Add new gates in `src/gates/` and wire through circuit/simulator dispatch
 - Add transpiler passes under `src/transpiler/` and register in pass manager
 - Add algorithms under `src/algorithms/` using primitive interfaces
-- Keep public API declarations in `include/qpp/` minimal and stable
+- Keep public API declarations in `include/lindblad/` minimal and stable

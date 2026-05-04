@@ -1,11 +1,11 @@
-#include "qpp/algorithms.hpp"
-#include "qpp/simulators/statevector_sim.hpp"
+#include "lindblad/algorithms.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
 
 #include <algorithm>
 #include <random>
 #include <string>
 
-namespace qpp {
+namespace lindblad {
 namespace algorithms {
 
 // =============================================================================
@@ -96,4 +96,4 @@ ProbabilisticBernsteinVazirani::Result ProbabilisticBernsteinVazirani::solve(
 }
 
 } // namespace algorithms
-} // namespace qpp
+} // namespace lindblad

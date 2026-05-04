@@ -1,13 +1,13 @@
 #pragma once
 
-#include "qpp/types.hpp"
+#include "lindblad/types.hpp"
 
 #include <array>
 #include <random>
 #include <unordered_map>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 class Statevector;
 class QuantumCircuit;
@@ -114,4 +114,4 @@ public:
                int shots = 1024, uint64_t seed = 0);
 };
 
-} // namespace qpp
+} // namespace lindblad

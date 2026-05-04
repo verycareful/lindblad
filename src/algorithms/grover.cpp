@@ -1,10 +1,10 @@
-#include "qpp/algorithms.hpp"
-#include "qpp/simulators/statevector_sim.hpp"
+#include "lindblad/algorithms.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
 
 #include <cmath>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 namespace algorithms {
 
 QuantumCircuit Grover::build_circuit(
@@ -92,4 +92,4 @@ Grover::Result Grover::search(
 }
 
 } // namespace algorithms
-} // namespace qpp
+} // namespace lindblad

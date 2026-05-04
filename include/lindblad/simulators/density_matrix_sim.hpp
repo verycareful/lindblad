@@ -1,13 +1,13 @@
 #pragma once
 
-#include "qpp/statevector.hpp"
-#include "qpp/types.hpp"
+#include "lindblad/statevector.hpp"
+#include "lindblad/types.hpp"
 
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // Forward declarations
 class QuantumCircuit;
@@ -79,4 +79,4 @@ public:
     );
 };
 
-} // namespace qpp
+} // namespace lindblad

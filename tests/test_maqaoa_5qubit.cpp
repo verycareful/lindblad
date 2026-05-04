@@ -2,10 +2,10 @@
 #include <iostream>
 #include <chrono>
 #include <cmath>
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 TEST(MAQAOA5QubitTest, SimpleIsing5Qubit) {
     // Create a simple 5-qubit Ising problem

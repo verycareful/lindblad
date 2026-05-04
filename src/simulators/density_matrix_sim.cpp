@@ -4,11 +4,11 @@
 // analytically (same lookup as MPS/statevector) — no per-gate statevector
 // allocation. Complexity is O(4^N) for storage, O(4^N * 4^k) for k-qubit gates.
 
-#include "qpp/simulators/density_matrix_sim.hpp"
-#include "qpp/circuit.hpp"
-#include "qpp/noise.hpp"
-#include "qpp/operators.hpp"
-#include "qpp/types.hpp"
+#include "lindblad/simulators/density_matrix_sim.hpp"
+#include "lindblad/circuit.hpp"
+#include "lindblad/noise.hpp"
+#include "lindblad/operators.hpp"
+#include "lindblad/types.hpp"
 
 #include <Eigen/Dense>
 #include <Eigen/Eigenvalues>
@@ -21,7 +21,7 @@
 #include <random>
 #include <stdexcept>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // DensityMatrix
@@ -530,4 +530,4 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
     return result;
 }
 
-} // namespace qpp
+} // namespace lindblad

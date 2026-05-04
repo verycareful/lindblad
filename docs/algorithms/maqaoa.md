@@ -1,6 +1,6 @@
 # MAQAOA
 
-This page documents `qpp::algorithms::MAQAOA`.
+This page documents `lindblad::algorithms::MAQAOA`.
 
 ## Purpose
 
@@ -29,8 +29,8 @@ This makes MAQAOA more expressive, but also more expensive to tune.
 
 ## Required Inputs
 
-- A cost Hamiltonian as `qpp::SparsePauliOp`
-- Optionally, a mixer Hamiltonian as `qpp::SparsePauliOp`
+- A cost Hamiltonian as `lindblad::SparsePauliOp`
+- Optionally, a mixer Hamiltonian as `lindblad::SparsePauliOp`
 - `MAQAOA::Options` settings
 - `Estimator` and `Sampler` configuration
 
@@ -55,14 +55,14 @@ Important options include:
 Include the public header:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 Basic optimization:
 
 ```cpp
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 SparsePauliOp cost({
     PauliString("ZZ", Complex128(1.0, 0.0))
@@ -94,7 +94,7 @@ int n_params = maqaoa.num_parameters(cost);
 Use:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 ## Simulator and Primitive Dependencies
@@ -158,10 +158,10 @@ The most important fields are:
 ## Example Code
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 int main() {
     SparsePauliOp cost({
@@ -219,6 +219,6 @@ Relevant tests live in:
 ## Related Source Files
 
 - [docs/api/maqaoa.md](../api/maqaoa.md)
-- [include/qpp/algorithms.hpp](../../include/qpp/algorithms.hpp)
+- [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp)
 - [src/algorithms/maqaoa.cpp](../../src/algorithms/maqaoa.cpp)
 - [tests/test_maqaoa.cpp](../../tests/test_maqaoa.cpp)
