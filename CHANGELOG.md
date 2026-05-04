@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.1.1] - 2026-05-04
+
+### Tests
+
+- Full existing test suite run against renamed Lindblad codebase to verify no regressions from the Q++/qpp → Lindblad rename (namespace, include paths, CMake targets).
+
+### Results
+
+- 94 tests across 16 suites — all passed.
+
 ## [R.1.1.0] - 2026-05-04
 
 ### Changed
