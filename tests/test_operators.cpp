@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
-#include "qpp/operators.hpp"
-#include "qpp/statevector.hpp"
-#include "qpp/gates.hpp"
+#include "lindblad/operators.hpp"
+#include "lindblad/statevector.hpp"
+#include "lindblad/gates.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 TEST(OperatorsTest, PauliStringCompose) {
     PauliString a("XY", Complex128(1, 0));

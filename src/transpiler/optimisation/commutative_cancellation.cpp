@@ -8,12 +8,12 @@
 // Example: RZ(a) - CX(other) - RZ(-a) → the two RZ gates cancel because
 // RZ commutes through the control wire of CX (both are Z-diagonal).
 
-#include "qpp/transpiler.hpp"
+#include "lindblad/transpiler.hpp"
 
 #include <unordered_set>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // A gate is Z-diagonal if it only applies phase shifts (no amplitude mixing).
 // These commute with each other and commute through the control of CX/CZ.
@@ -155,4 +155,4 @@ DAGCircuit CommutativeCancellation::run(const DAGCircuit& dag, const Transpilati
     return DAGCircuit::from_circuit(optimized);
 }
 
-} // namespace qpp
+} // namespace lindblad

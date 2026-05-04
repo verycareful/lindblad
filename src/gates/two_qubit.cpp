@@ -1,10 +1,10 @@
-#include "qpp/gates.hpp"
+#include "lindblad/gates.hpp"
 
 #include <cmath>
 #include <algorithm>
 #include <cassert>
 
-namespace qpp {
+namespace lindblad {
 namespace gates {
 
 // =============================================================================
@@ -742,5 +742,5 @@ void apply_rzz(Statevector& sv, int q1, int q2, double theta) noexcept {
 }
 
 } // namespace gates
-} // namespace qpp
+} // namespace lindblad
 

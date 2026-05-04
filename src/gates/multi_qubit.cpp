@@ -1,10 +1,10 @@
-#include "qpp/gates.hpp"
+#include "lindblad/gates.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
-namespace qpp {
+namespace lindblad {
 namespace gates {
 
 // =============================================================================
@@ -198,5 +198,5 @@ void apply_unitary(
 }
 
 } // namespace gates
-} // namespace qpp
+} // namespace lindblad
 

@@ -1,12 +1,12 @@
 # Simon
 
-This page documents `qpp::algorithms::Simon`.
+This page documents `lindblad::algorithms::Simon`.
 
 ## Purpose
 
 Simon’s algorithm finds the hidden period `s` of a 2-to-1 function where `f(x) = f(x ⊕ s)`.
 
-In q++, the helper is built around the standard Simon oracle layout and returns both the recovered period and the sampled linear equations.
+In lindblad, the helper is built around the standard Simon oracle layout and returns both the recovered period and the sampled linear equations.
 
 ## Theory Summary
 
@@ -33,14 +33,14 @@ The oracle should encode a valid Simon promise instance.
 Include the header:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 Build the oracle and solve:
 
 ```cpp
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 QuantumCircuit oracle(6); // 3 query qubits + 3 output qubits
 // oracle construction goes here
@@ -53,7 +53,7 @@ auto result = Simon::solve(oracle, 3, 42);
 Use:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 ## Simulator Dependencies
@@ -89,10 +89,10 @@ The implementation stores the raw measured equations and then runs a GF(2) elimi
 ## Example Code
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 int main() {
     QuantumCircuit oracle(6);
@@ -133,6 +133,6 @@ Relevant tests live in:
 ## Related Source Files
 
 - [docs/api/simon.md](../api/simon.md)
-- [include/qpp/algorithms.hpp](../../include/qpp/algorithms.hpp)
+- [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp)
 - [src/algorithms/simon.cpp](../../src/algorithms/simon.cpp)
 - [tests/test_classic_algorithms.cpp](../../tests/test_classic_algorithms.cpp)

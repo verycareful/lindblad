@@ -1,4 +1,4 @@
-# q++ Implementation Walkthrough
+# lindblad Implementation Walkthrough
 
 ## Purpose
 
@@ -18,36 +18,36 @@ A typical execution path follows this sequence:
 
 ### Core representation
 
-- `include/qpp/circuit.hpp`, `src/circuit.cpp`
-- `include/qpp/dag.hpp`, `src/dag.cpp`
+- `include/lindblad/circuit.hpp`, `src/circuit.cpp`
+- `include/lindblad/dag.hpp`, `src/dag.cpp`
 
 These files define circuit instructions, fluent construction APIs, and DAG transformations used by compilation flows.
 
 ### Simulation
 
-- `include/qpp/simulators/*.hpp`
+- `include/lindblad/simulators/*.hpp`
 - `src/simulators/*.cpp`
 
 Statevector, density matrix, Clifford, and MPS simulators each provide specialized execution behavior.
 
 ### Noise and quantum information
 
-- `include/qpp/noise.hpp`, `src/noise/*.cpp`
-- `include/qpp/operators.hpp`, `src/quantum_info/*.cpp`
+- `include/lindblad/noise.hpp`, `src/noise/*.cpp`
+- `include/lindblad/operators.hpp`, `src/quantum_info/*.cpp`
 
 These modules model channels/noise and provide operator algebra and metrics used by primitives and algorithms.
 
 ### Transpiler
 
-- `include/qpp/transpiler.hpp`
+- `include/lindblad/transpiler.hpp`
 - `src/transpiler/**/*.cpp`
 
 Layout, routing, basis translation, and local optimization passes are implemented here.
 
 ### Primitives and algorithms
 
-- `include/qpp/primitives.hpp`, `src/primitives/*.cpp`
-- `include/qpp/algorithms.hpp`, `src/algorithms/*.cpp`
+- `include/lindblad/primitives.hpp`, `src/primitives/*.cpp`
+- `include/lindblad/algorithms.hpp`, `src/algorithms/*.cpp`
 
 Primitives (`Estimator`, `Sampler`) provide reusable execution interfaces. Algorithms build on primitives.
 

@@ -1,11 +1,11 @@
 # Estimator API Deep Dive
 
-This page documents the public `qpp::Estimator` primitive.
+This page documents the public `lindblad::Estimator` primitive.
 
 ## Header and Namespace
 
-- Header: `include/qpp/primitives.hpp`
-- Namespace: `qpp`
+- Header: `include/lindblad/primitives.hpp`
+- Namespace: `lindblad`
 
 ## Class Overview
 
@@ -95,9 +95,9 @@ Behavior:
 ## Example
 
 ```cpp
-#include "qpp/primitives.hpp"
+#include "lindblad/primitives.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 int main() {
     QuantumCircuit circuit(2);

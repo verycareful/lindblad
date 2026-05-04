@@ -1,4 +1,4 @@
-#include "qpp/statevector.hpp"
+#include "lindblad/statevector.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <numeric>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // Construction / Destruction
@@ -323,5 +323,5 @@ std::string Statevector::to_string(int precision) const {
     return oss.str();
 }
 
-} // namespace qpp
+} // namespace lindblad
 

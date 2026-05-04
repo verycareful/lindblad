@@ -12,7 +12,7 @@
 // StochasticSwap runs SABRE `trials` times with different random seeds for the
 // initial randomised layout perturbation and returns the best result.
 
-#include "qpp/transpiler.hpp"
+#include "lindblad/transpiler.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -21,7 +21,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // Core SABRE routing pass
@@ -278,4 +278,4 @@ DAGCircuit StochasticSwap::run(const DAGCircuit& dag, const TranspilationContext
     return best_dag;
 }
 
-} // namespace qpp
+} // namespace lindblad

@@ -1,11 +1,11 @@
 #pragma once
 
-#include "qpp/types.hpp"
+#include "lindblad/types.hpp"
 
 #include <string>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 class Statevector;
 class DensityMatrix;
@@ -134,4 +134,4 @@ namespace QuantumInfo {
     );
 }
 
-} // namespace qpp
+} // namespace lindblad

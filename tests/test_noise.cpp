@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
-#include "qpp/noise.hpp"
+#include "lindblad/noise.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 TEST(NoiseTest, DepolarizingChannelValid) {
     auto ch = NoiseChannels::depolarizing(0.1);

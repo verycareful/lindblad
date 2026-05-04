@@ -3,50 +3,50 @@
 #include <pybind11/complex.h>
 #include <pybind11/numpy.h>
 
-#include "qpp/types.hpp"
-#include "qpp/statevector.hpp"
-#include "qpp/circuit.hpp"
-#include "qpp/gates.hpp"
-#include "qpp/operators.hpp"
-#include "qpp/noise.hpp"
-#include "qpp/simulators/statevector_sim.hpp"
-#include "qpp/primitives.hpp"
-#include "qpp/algorithms.hpp"
-#include "qpp/transpiler.hpp"
-#include "qpp/backends/local_backend.hpp"
+#include "lindblad/types.hpp"
+#include "lindblad/statevector.hpp"
+#include "lindblad/circuit.hpp"
+#include "lindblad/gates.hpp"
+#include "lindblad/operators.hpp"
+#include "lindblad/noise.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/primitives.hpp"
+#include "lindblad/algorithms.hpp"
+#include "lindblad/transpiler.hpp"
+#include "lindblad/backends/local_backend.hpp"
 
 namespace py = pybind11;
 
-PYBIND11_MODULE(qpp_python, m) {
-    m.doc() = "q++ — High-performance quantum computing framework";
+PYBIND11_MODULE(lindblad_python, m) {
+    m.doc() = "lindblad — High-performance quantum computing framework";
 
     // =========================================================================
     // Complex128
     // =========================================================================
-    py::class_<qpp::Complex128>(m, "Complex128")
+    py::class_<lindblad::Complex128>(m, "Complex128")
         .def(py::init<double, double>(), py::arg("real") = 0.0, py::arg("imag") = 0.0)
-        .def_readwrite("real", &qpp::Complex128::real)
-        .def_readwrite("imag", &qpp::Complex128::imag)
-        .def("norm_sq", &qpp::Complex128::norm_sq)
-        .def("conj", &qpp::Complex128::conj)
-        .def("__repr__", [](const qpp::Complex128& c) {
+        .def_readwrite("real", &lindblad::Complex128::real)
+        .def_readwrite("imag", &lindblad::Complex128::imag)
+        .def("norm_sq", &lindblad::Complex128::norm_sq)
+        .def("conj", &lindblad::Complex128::conj)
+        .def("__repr__", [](const lindblad::Complex128& c) {
             return "(" + std::to_string(c.real) + "+" + std::to_string(c.imag) + "j)";
         });
 
     // =========================================================================
     // Statevector
     // =========================================================================
-    py::class_<qpp::Statevector>(m, "Statevector")
+    py::class_<lindblad::Statevector>(m, "Statevector")
         .def(py::init<int>())
-        .def("initialize_basis", &qpp::Statevector::initialize_basis)
-        .def("amplitude", &qpp::Statevector::amplitude)
-        .def("probability", &qpp::Statevector::probability)
-        .def("norm", &qpp::Statevector::norm)
-        .def("normalize", &qpp::Statevector::normalize)
-        .def("measure_once", &qpp::Statevector::measure_once)
-        .def("sample_counts", &qpp::Statevector::sample_counts)
-        .def("to_string", &qpp::Statevector::to_string)
-        .def("to_numpy", [](const qpp::Statevector& sv) -> py::array_t<std::complex<double>> {
+        .def("initialize_basis", &lindblad::Statevector::initialize_basis)
+        .def("amplitude", &lindblad::Statevector::amplitude)
+        .def("probability", &lindblad::Statevector::probability)
+        .def("norm", &lindblad::Statevector::norm)
+        .def("normalize", &lindblad::Statevector::normalize)
+        .def("measure_once", &lindblad::Statevector::measure_once)
+        .def("sample_counts", &lindblad::Statevector::sample_counts)
+        .def("to_string", &lindblad::Statevector::to_string)
+        .def("to_numpy", [](const lindblad::Statevector& sv) -> py::array_t<std::complex<double>> {
             py::array_t<std::complex<double>> arr({static_cast<py::ssize_t>(sv.dim)});
             auto buf = arr.mutable_unchecked<1>();
             for (size_t i = 0; i < sv.dim; ++i) {
@@ -54,99 +54,99 @@ PYBIND11_MODULE(qpp_python, m) {
             }
             return arr;
         }, "Return amplitude array as a complex128 numpy array")
-        .def("probabilities", &qpp::Statevector::probabilities)
-        .def_readonly("n_qubits", &qpp::Statevector::n_qubits)
-        .def_readonly("dim", &qpp::Statevector::dim);
+        .def("probabilities", &lindblad::Statevector::probabilities)
+        .def_readonly("n_qubits", &lindblad::Statevector::n_qubits)
+        .def_readonly("dim", &lindblad::Statevector::dim);
 
     // =========================================================================
     // QuantumCircuit
     // =========================================================================
-    py::class_<qpp::QuantumCircuit>(m, "QuantumCircuit")
+    py::class_<lindblad::QuantumCircuit>(m, "QuantumCircuit")
         .def(py::init<int, int>(), py::arg("n_qubits"), py::arg("n_clbits") = 0)
         .def(py::init<int, int, const std::string&>())
         // Single qubit gates
-        .def("h", &qpp::QuantumCircuit::h)
-        .def("x", &qpp::QuantumCircuit::x)
-        .def("y", &qpp::QuantumCircuit::y)
-        .def("z", &qpp::QuantumCircuit::z)
-        .def("s", &qpp::QuantumCircuit::s)
-        .def("sdg", &qpp::QuantumCircuit::sdg)
-        .def("t", &qpp::QuantumCircuit::t)
-        .def("tdg", &qpp::QuantumCircuit::tdg)
-        .def("sx", &qpp::QuantumCircuit::sx)
-        .def("sxdg", &qpp::QuantumCircuit::sxdg)
-        .def("rx", py::overload_cast<double, int>(&qpp::QuantumCircuit::rx))
-        .def("ry", py::overload_cast<double, int>(&qpp::QuantumCircuit::ry))
-        .def("rz", py::overload_cast<double, int>(&qpp::QuantumCircuit::rz))
-        .def("p", &qpp::QuantumCircuit::p)
-        .def("u", &qpp::QuantumCircuit::u)
+        .def("h", &lindblad::QuantumCircuit::h)
+        .def("x", &lindblad::QuantumCircuit::x)
+        .def("y", &lindblad::QuantumCircuit::y)
+        .def("z", &lindblad::QuantumCircuit::z)
+        .def("s", &lindblad::QuantumCircuit::s)
+        .def("sdg", &lindblad::QuantumCircuit::sdg)
+        .def("t", &lindblad::QuantumCircuit::t)
+        .def("tdg", &lindblad::QuantumCircuit::tdg)
+        .def("sx", &lindblad::QuantumCircuit::sx)
+        .def("sxdg", &lindblad::QuantumCircuit::sxdg)
+        .def("rx", py::overload_cast<double, int>(&lindblad::QuantumCircuit::rx))
+        .def("ry", py::overload_cast<double, int>(&lindblad::QuantumCircuit::ry))
+        .def("rz", py::overload_cast<double, int>(&lindblad::QuantumCircuit::rz))
+        .def("p", &lindblad::QuantumCircuit::p)
+        .def("u", &lindblad::QuantumCircuit::u)
         // Two qubit gates
-        .def("cx", &qpp::QuantumCircuit::cx)
-        .def("cy", &qpp::QuantumCircuit::cy)
-        .def("cz", &qpp::QuantumCircuit::cz)
-        .def("ch", &qpp::QuantumCircuit::ch)
-        .def("swap", &qpp::QuantumCircuit::swap)
-        .def("crx", &qpp::QuantumCircuit::crx)
-        .def("cry", &qpp::QuantumCircuit::cry)
-        .def("crz", &qpp::QuantumCircuit::crz)
-        .def("cp", &qpp::QuantumCircuit::cp)
-        .def("rxx", &qpp::QuantumCircuit::rxx)
-        .def("ryy", &qpp::QuantumCircuit::ryy)
-        .def("rzz", &qpp::QuantumCircuit::rzz)
+        .def("cx", &lindblad::QuantumCircuit::cx)
+        .def("cy", &lindblad::QuantumCircuit::cy)
+        .def("cz", &lindblad::QuantumCircuit::cz)
+        .def("ch", &lindblad::QuantumCircuit::ch)
+        .def("swap", &lindblad::QuantumCircuit::swap)
+        .def("crx", &lindblad::QuantumCircuit::crx)
+        .def("cry", &lindblad::QuantumCircuit::cry)
+        .def("crz", &lindblad::QuantumCircuit::crz)
+        .def("cp", &lindblad::QuantumCircuit::cp)
+        .def("rxx", &lindblad::QuantumCircuit::rxx)
+        .def("ryy", &lindblad::QuantumCircuit::ryy)
+        .def("rzz", &lindblad::QuantumCircuit::rzz)
         // Three qubit gates
-        .def("ccx", &qpp::QuantumCircuit::ccx)
-        .def("cswap", &qpp::QuantumCircuit::cswap)
+        .def("ccx", &lindblad::QuantumCircuit::ccx)
+        .def("cswap", &lindblad::QuantumCircuit::cswap)
         // Operations
-        .def("measure", &qpp::QuantumCircuit::measure)
-        .def("measure_all", &qpp::QuantumCircuit::measure_all)
-        .def("barrier", &qpp::QuantumCircuit::barrier, py::arg("qubits") = std::vector<int>{})
-        .def("reset", &qpp::QuantumCircuit::reset)
+        .def("measure", &lindblad::QuantumCircuit::measure)
+        .def("measure_all", &lindblad::QuantumCircuit::measure_all)
+        .def("barrier", &lindblad::QuantumCircuit::barrier, py::arg("qubits") = std::vector<int>{})
+        .def("reset", &lindblad::QuantumCircuit::reset)
         // Analysis
-        .def("depth", &qpp::QuantumCircuit::depth)
-        .def("size", &qpp::QuantumCircuit::size)
-        .def("count_ops", &qpp::QuantumCircuit::count_ops)
-        .def("num_parameters", &qpp::QuantumCircuit::num_parameters)
+        .def("depth", &lindblad::QuantumCircuit::depth)
+        .def("size", &lindblad::QuantumCircuit::size)
+        .def("count_ops", &lindblad::QuantumCircuit::count_ops)
+        .def("num_parameters", &lindblad::QuantumCircuit::num_parameters)
         // Composition
-        .def("compose", &qpp::QuantumCircuit::compose)
-        .def("inverse", &qpp::QuantumCircuit::inverse)
-        .def("repeat", &qpp::QuantumCircuit::repeat)
-        .def("control", &qpp::QuantumCircuit::control, py::arg("num_ctrl_qubits") = 1)
+        .def("compose", &lindblad::QuantumCircuit::compose)
+        .def("inverse", &lindblad::QuantumCircuit::inverse)
+        .def("repeat", &lindblad::QuantumCircuit::repeat)
+        .def("control", &lindblad::QuantumCircuit::control, py::arg("num_ctrl_qubits") = 1)
         // Export
-        .def("to_qasm2", &qpp::QuantumCircuit::to_qasm2)
-        .def("to_qasm3", &qpp::QuantumCircuit::to_qasm3)
-        .def("to_json", &qpp::QuantumCircuit::to_json)
-        .def_static("from_json", &qpp::QuantumCircuit::from_json)
-        .def("to_ascii", &qpp::QuantumCircuit::to_ascii)
-        .def_readwrite("n_qubits", &qpp::QuantumCircuit::n_qubits)
-        .def_readwrite("n_clbits", &qpp::QuantumCircuit::n_clbits)
-        .def_readwrite("name", &qpp::QuantumCircuit::name);
+        .def("to_qasm2", &lindblad::QuantumCircuit::to_qasm2)
+        .def("to_qasm3", &lindblad::QuantumCircuit::to_qasm3)
+        .def("to_json", &lindblad::QuantumCircuit::to_json)
+        .def_static("from_json", &lindblad::QuantumCircuit::from_json)
+        .def("to_ascii", &lindblad::QuantumCircuit::to_ascii)
+        .def_readwrite("n_qubits", &lindblad::QuantumCircuit::n_qubits)
+        .def_readwrite("n_clbits", &lindblad::QuantumCircuit::n_clbits)
+        .def_readwrite("name", &lindblad::QuantumCircuit::name);
 
     // =========================================================================
     // StatevectorSimulator
     // =========================================================================
-    py::class_<qpp::StatevectorSimulator>(m, "StatevectorSimulator")
+    py::class_<lindblad::StatevectorSimulator>(m, "StatevectorSimulator")
         .def(py::init<>())
-        .def("run", &qpp::StatevectorSimulator::run,
+        .def("run", &lindblad::StatevectorSimulator::run,
              py::arg("circuit"), py::arg("shots") = 0, py::arg("seed") = 0);
 
-    py::class_<qpp::StatevectorSimulator::Result>(m, "StatevectorResult")
-        .def_readonly("counts", &qpp::StatevectorSimulator::Result::counts)
-        .def_readonly("final_state", &qpp::StatevectorSimulator::Result::final_state)
-        .def_readonly("simulation_time_seconds", &qpp::StatevectorSimulator::Result::simulation_time_seconds)
-        .def_readonly("success", &qpp::StatevectorSimulator::Result::success)
-        .def_readonly("error_message", &qpp::StatevectorSimulator::Result::error_message);
+    py::class_<lindblad::StatevectorSimulator::Result>(m, "StatevectorResult")
+        .def_readonly("counts", &lindblad::StatevectorSimulator::Result::counts)
+        .def_readonly("final_state", &lindblad::StatevectorSimulator::Result::final_state)
+        .def_readonly("simulation_time_seconds", &lindblad::StatevectorSimulator::Result::simulation_time_seconds)
+        .def_readonly("success", &lindblad::StatevectorSimulator::Result::success)
+        .def_readonly("error_message", &lindblad::StatevectorSimulator::Result::error_message);
 
     // =========================================================================
     // PauliString
     // =========================================================================
-    py::class_<qpp::PauliString>(m, "PauliString")
+    py::class_<lindblad::PauliString>(m, "PauliString")
         .def(py::init<>())
-        .def(py::init<const std::string&, qpp::Complex128>(),
-             py::arg("pauli"), py::arg("coeff") = qpp::Complex128(1.0, 0.0))
-        .def_readwrite("pauli", &qpp::PauliString::pauli)
-        .def_readwrite("coeff", &qpp::PauliString::coeff)
-        .def("n_qubits", &qpp::PauliString::n_qubits)
-        .def("__repr__", [](const qpp::PauliString& ps) {
+        .def(py::init<const std::string&, lindblad::Complex128>(),
+             py::arg("pauli"), py::arg("coeff") = lindblad::Complex128(1.0, 0.0))
+        .def_readwrite("pauli", &lindblad::PauliString::pauli)
+        .def_readwrite("coeff", &lindblad::PauliString::coeff)
+        .def("n_qubits", &lindblad::PauliString::n_qubits)
+        .def("__repr__", [](const lindblad::PauliString& ps) {
             return "PauliString('" + ps.pauli + "', " +
                    std::to_string(ps.coeff.real) + "+" +
                    std::to_string(ps.coeff.imag) + "j)";
@@ -155,48 +155,48 @@ PYBIND11_MODULE(qpp_python, m) {
     // =========================================================================
     // SparsePauliOp
     // =========================================================================
-    py::class_<qpp::SparsePauliOp>(m, "SparsePauliOp")
+    py::class_<lindblad::SparsePauliOp>(m, "SparsePauliOp")
         .def(py::init<>())
-        .def(py::init<const std::vector<qpp::PauliString>&>(), py::arg("terms"))
-        .def_static("from_list", &qpp::SparsePauliOp::from_list)
-        .def("to_matrix", &qpp::SparsePauliOp::to_matrix)
-        .def("expectation_value", &qpp::SparsePauliOp::expectation_value)
-        .def("simplify", &qpp::SparsePauliOp::simplify)
-        .def("n_qubits", &qpp::SparsePauliOp::n_qubits)
-        .def_readwrite("terms", &qpp::SparsePauliOp::terms);
+        .def(py::init<const std::vector<lindblad::PauliString>&>(), py::arg("terms"))
+        .def_static("from_list", &lindblad::SparsePauliOp::from_list)
+        .def("to_matrix", &lindblad::SparsePauliOp::to_matrix)
+        .def("expectation_value", &lindblad::SparsePauliOp::expectation_value)
+        .def("simplify", &lindblad::SparsePauliOp::simplify)
+        .def("n_qubits", &lindblad::SparsePauliOp::n_qubits)
+        .def_readwrite("terms", &lindblad::SparsePauliOp::terms);
 
     // =========================================================================
     // Estimator and Sampler
     // =========================================================================
-    py::class_<qpp::Estimator>(m, "Estimator")
+    py::class_<lindblad::Estimator>(m, "Estimator")
         .def(py::init<>())
-        .def("run_single", &qpp::Estimator::run_single)
-        .def("run_batch", &qpp::Estimator::run_batch);
+        .def("run_single", &lindblad::Estimator::run_single)
+        .def("run_batch", &lindblad::Estimator::run_batch);
 
-    py::class_<qpp::Sampler>(m, "Sampler")
+    py::class_<lindblad::Sampler>(m, "Sampler")
         .def(py::init<>())
-        .def("run_single", &qpp::Sampler::run_single);
+        .def("run_single", &lindblad::Sampler::run_single);
 
     // =========================================================================
     // Transpile
     // =========================================================================
-    m.def("transpile", &qpp::transpile,
+    m.def("transpile", &lindblad::transpile,
           py::arg("circuit"),
-          py::arg("coupling_map") = qpp::CouplingMap(),
+          py::arg("coupling_map") = lindblad::CouplingMap(),
           py::arg("basis_gates") = std::vector<std::string>{},
           py::arg("optimization_level") = 1);
 
     // =========================================================================
     // LocalBackend
     // =========================================================================
-    py::class_<qpp::backends::LocalBackend>(m, "LocalBackend")
+    py::class_<lindblad::backends::LocalBackend>(m, "LocalBackend")
         .def(py::init<>())
-        .def("run", &qpp::backends::LocalBackend::run,
+        .def("run", &lindblad::backends::LocalBackend::run,
              py::arg("circuit"), py::arg("shots") = 1024, py::arg("seed") = 0)
-        .def("name", &qpp::backends::LocalBackend::name);
+        .def("name", &lindblad::backends::LocalBackend::name);
 
-    py::class_<qpp::backends::BackendResult>(m, "BackendResult")
-        .def_readonly("counts", &qpp::backends::BackendResult::counts)
-        .def_readonly("success", &qpp::backends::BackendResult::success)
-        .def_readonly("simulation_time_seconds", &qpp::backends::BackendResult::simulation_time_seconds);
+    py::class_<lindblad::backends::BackendResult>(m, "BackendResult")
+        .def_readonly("counts", &lindblad::backends::BackendResult::counts)
+        .def_readonly("success", &lindblad::backends::BackendResult::success)
+        .def_readonly("simulation_time_seconds", &lindblad::backends::BackendResult::simulation_time_seconds);
 }

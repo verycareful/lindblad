@@ -1,12 +1,12 @@
 # Circuit API Deep Dive
 
-This page documents the public circuit construction API in `qpp::QuantumCircuit`
-and the `qpp::Instruction` record type.
+This page documents the public circuit construction API in `lindblad::QuantumCircuit`
+and the `lindblad::Instruction` record type.
 
 ## Header and Namespace
 
-- Header: `include/qpp/circuit.hpp`
-- Namespace: `qpp`
+- Header: `include/lindblad/circuit.hpp`
+- Namespace: `lindblad`
 
 ## `Instruction`
 
@@ -136,9 +136,9 @@ Behavior:
 ## Example
 
 ```cpp
-#include "qpp/circuit.hpp"
+#include "lindblad/circuit.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 int main() {
     QuantumCircuit qc(2, 2, "bell");

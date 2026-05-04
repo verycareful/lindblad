@@ -4,9 +4,9 @@
 // - Mixed-state fidelity: Uhlmann-Jozsa F = (Tr sqrt(sqrt(rho1)*rho2*sqrt(rho1)))^2.
 // - Concurrence: sqrt of square roots of eigenvalues of rho * rho_tilde.
 
-#include "qpp/operators.hpp"
-#include "qpp/statevector.hpp"
-#include "qpp/simulators/density_matrix_sim.hpp"
+#include "lindblad/operators.hpp"
+#include "lindblad/statevector.hpp"
+#include "lindblad/simulators/density_matrix_sim.hpp"
 
 #include <Eigen/Dense>
 #include <Eigen/Eigenvalues>
@@ -16,11 +16,11 @@
 #include <numeric>
 #include <stdexcept>
 
-namespace qpp {
+namespace lindblad {
 namespace QuantumInfo {
 
 // =============================================================================
-// Internal helpers: convert qpp DensityMatrix to Eigen Hermitian matrix
+// Internal helpers: convert lindblad DensityMatrix to Eigen Hermitian matrix
 // =============================================================================
 
 static Eigen::MatrixXcd to_eigen(const DensityMatrix& rho) {
@@ -268,4 +268,4 @@ std::vector<double> pauli_expectation_values(
 }
 
 } // namespace QuantumInfo
-} // namespace qpp
+} // namespace lindblad

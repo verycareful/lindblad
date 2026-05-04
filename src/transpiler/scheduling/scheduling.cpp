@@ -11,12 +11,12 @@
 // The time slot is stored in Instruction::schedule_time (dedicated field).
 // condition_clbit / condition_value are left untouched for classical conditioning.
 
-#include "qpp/transpiler.hpp"
+#include "lindblad/transpiler.hpp"
 
 #include <algorithm>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // ASAPSchedule — As Soon As Possible
@@ -138,4 +138,4 @@ DAGCircuit ALAPSchedule::run(
     return DAGCircuit::from_circuit(scheduled);
 }
 
-} // namespace qpp
+} // namespace lindblad

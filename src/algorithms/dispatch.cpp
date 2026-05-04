@@ -1,11 +1,11 @@
-#include "qpp/dispatch.hpp"
+#include "lindblad/dispatch.hpp"
 
 #include <algorithm>
 #include <functional>
 #include <numeric>
 #include <stdexcept>
 
-namespace qpp {
+namespace lindblad {
 
 SoftDispatchResult::SoftDispatchResult(
     const std::unordered_map<std::string, int>& counts_in
@@ -100,4 +100,4 @@ std::vector<std::pair<std::string, double>> SoftDispatchResult::top_k(int k) con
     return items;
 }
 
-} // namespace qpp
+} // namespace lindblad

@@ -1,15 +1,15 @@
 #pragma once
 
-#include "qpp/circuit.hpp"
-#include "qpp/operators.hpp"
-#include "qpp/noise.hpp"
+#include "lindblad/circuit.hpp"
+#include "lindblad/operators.hpp"
+#include "lindblad/noise.hpp"
 
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // Estimator primitive — computes expectation values
@@ -96,4 +96,4 @@ public:
     );
 };
 
-} // namespace qpp
+} // namespace lindblad

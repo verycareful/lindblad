@@ -10,8 +10,8 @@
 // ConsolidateBlocks: Identify maximal 2Q gate blocks (on the same pair of qubits),
 //   compose their 4x4 unitaries, then KAK-decompose to ≤3 CNOTs + 1Q corrections.
 
-#include "qpp/transpiler.hpp"
-#include "qpp/gates.hpp"
+#include "lindblad/transpiler.hpp"
+#include "lindblad/gates.hpp"
 
 #include <Eigen/Dense>
 
@@ -21,7 +21,7 @@
 #include <optional>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // ZYZ single-qubit decomposition
@@ -640,4 +640,4 @@ QuantumCircuit transpile(
     return result_dag.to_circuit();
 }
 
-} // namespace qpp
+} // namespace lindblad

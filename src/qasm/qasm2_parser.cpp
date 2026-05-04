@@ -1,11 +1,11 @@
-#include "qpp/circuit.hpp"
+#include "lindblad/circuit.hpp"
 
 #include <sstream>
 #include <stdexcept>
 #include <regex>
 #include <unordered_map>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // QASM 2.0 Parser — supports standard gates + custom gate definitions
@@ -571,4 +571,4 @@ QuantumCircuit qasm2_parse_impl(const std::string& qasm) {
     return QASM2Parser::parse(qasm);
 }
 
-} // namespace qpp
+} // namespace lindblad

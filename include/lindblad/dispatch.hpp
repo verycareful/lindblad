@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // SoftDispatchResult — extract fractional and integer dispatch schedules from
@@ -62,4 +62,4 @@ struct SoftDispatchResult {
     std::vector<std::pair<std::string, double>> top_k(int k) const;
 };
 
-} // namespace qpp
+} // namespace lindblad

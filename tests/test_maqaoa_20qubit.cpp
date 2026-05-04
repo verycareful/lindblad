@@ -8,10 +8,10 @@
 // convention (one gamma per qubit).
 //
 // To save output:
-//   ./tests/qpp_tests --gtest_filter=MicrogridQAOA20.* 2>&1 | tee /mnt/c/Sricharan/Projects/Github/q++_cp/outputs/maqaoa_20q_results.txt
+//   ./tests/lindblad_tests --gtest_filter=MicrogridQAOA20.* 2>&1 | tee /mnt/c/Sricharan/Projects/Github/lindblad_cp/outputs/maqaoa_20q_results.txt
 
 #include <gtest/gtest.h>
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -23,8 +23,8 @@
 #include <string>
 #include <vector>
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 // =============================================================================
 // Hard-coded microgrid data — generators.csv + critical_tight_A scenario
@@ -92,7 +92,7 @@ Ising build_ising() {
     return g;
 }
 
-// Build SparsePauliOp — q++ convention: string position q = qubit q
+// Build SparsePauliOp — lindblad convention: string position q = qubit q
 SparsePauliOp build_hamiltonian(const Ising& g) {
     std::vector<PauliString> terms;
     for (int i = 0; i < N; ++i) {
@@ -375,7 +375,7 @@ TEST(MicrogridQAOA20, AllMethodsComparison) {
     std::cout << "║    Exact optimal: " << exact.best_bitstring << " ║\n";
     std::cout << "║    SA best found: " << sa.best_bitstring    << " ║\n";
     std::cout << "╠════════════════════════════════════════════════════════════════════════╣\n";
-    std::cout << "║  C++ q++ MA-QAOA: qubit-indexed gammas (matches Python)               ║\n";
+    std::cout << "║  C++ lindblad MA-QAOA: qubit-indexed gammas (matches Python)               ║\n";
     std::snprintf(buf, sizeof(buf),
         "║    %d params/layer (2*N), %d total for p=6                             ║\n",
         2 * N, 2 * N * 6);

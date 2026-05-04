@@ -1,6 +1,6 @@
-# q++ Documentation Master Guide
+# lindblad Documentation Master Guide
 
-This file is the working blueprint for documenting q++ in a way that is readable for new contributors and reusable across sessions.
+This file is the working blueprint for documenting lindblad in a way that is readable for new contributors and reusable across sessions.
 
 ## Purpose
 
@@ -123,7 +123,7 @@ The recommended recovery order is:
 1. Read this file
 2. Read `README.md`
 3. Read `docs/APIOverview.md`
-4. Read the relevant public header in `include/qpp/`
+4. Read the relevant public header in `include/lindblad/`
 5. Read the corresponding tests in `tests/`
 6. Write or update the matching doc page
 

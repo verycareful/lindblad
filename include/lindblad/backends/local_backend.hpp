@@ -1,15 +1,15 @@
 #pragma once
 
-#include "qpp/circuit.hpp"
-#include "qpp/noise.hpp"
-#include "qpp/simulators/statevector_sim.hpp"
-#include "qpp/simulators/density_matrix_sim.hpp"
+#include "lindblad/circuit.hpp"
+#include "lindblad/noise.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/simulators/density_matrix_sim.hpp"
 
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 namespace backends {
 
 // =============================================================================
@@ -64,10 +64,10 @@ public:
         uint64_t seed = 0
     );
 
-    std::string name() const { return "qpp_local_simulator"; }
+    std::string name() const { return "lindblad_local_simulator"; }
     std::string version() const { return "1.9.6-alpha"; }
     int max_qubits() const { return 30; }
 };
 
 } // namespace backends
-} // namespace qpp
+} // namespace lindblad

@@ -1,11 +1,11 @@
 #include <gtest/gtest.h>
-#include "qpp/statevector.hpp"
-#include "qpp/gates.hpp"
-#include "qpp/types.hpp"
+#include "lindblad/statevector.hpp"
+#include "lindblad/gates.hpp"
+#include "lindblad/types.hpp"
 
 #include <cmath>
 
-using namespace qpp;
+using namespace lindblad;
 
 class GateTest : public ::testing::Test {
 protected:

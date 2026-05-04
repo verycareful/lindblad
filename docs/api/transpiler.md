@@ -4,9 +4,9 @@ The Transpiler provides circuit optimization, layout assignment, and routing pas
 
 ## Overview and Architecture
 
-**Header**: `include/qpp/transpiler.hpp`
+**Header**: `include/lindblad/transpiler.hpp`
 
-**Namespace**: `qpp`
+**Namespace**: `lindblad`
 
 The transpiler pipeline follows a modular pass architecture:
 
@@ -27,7 +27,7 @@ virtual std::string name() const;
 
 ## DAGCircuit: Graph Representation
 
-**Header**: `include/qpp/dag.hpp`
+**Header**: `include/lindblad/dag.hpp`
 
 A DAG (Directed Acyclic Graph) represents circuit dependencies explicitly, enabling efficient gate reordering and analysis.
 
@@ -462,15 +462,15 @@ QuantumCircuit transpile(
 ### Example: Transpile for IBM Heavy-Hex
 
 ```cpp
-#include "qpp/transpiler.hpp"
+#include "lindblad/transpiler.hpp"
 
-qpp::QuantumCircuit circuit = ...;  // Your circuit
+lindblad::QuantumCircuit circuit = ...;  // Your circuit
 
 // Target: IBM 27-qubit heavy-hex
-qpp::CouplingMap coupling = qpp::CouplingMap::heavy_hex(27);
+lindblad::CouplingMap coupling = lindblad::CouplingMap::heavy_hex(27);
 std::vector<std::string> basis = {"cx", "u3", "rz"};
 
-qpp::QuantumCircuit optimized = qpp::transpile(
+lindblad::QuantumCircuit optimized = lindblad::transpile(
     circuit,
     coupling,
     basis,

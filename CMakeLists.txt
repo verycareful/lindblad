@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
-project(qpp VERSION 1.1.0.1 LANGUAGES CXX)
-set(QPP_VERSION_LABEL "R.1.0.1")
+project(lindblad VERSION 1.1.1.0 LANGUAGES CXX)
+set(LINDBLAD_VERSION_LABEL "R.1.1.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,7 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ==============================================================================
 # Compiler flags
 # ==============================================================================
-option(QPP_MARCH_NATIVE "Compile with -march=native (non-distributable, max perf)" OFF)
+option(LINDBLAD_MARCH_NATIVE "Compile with -march=native (non-distributable, max perf)" OFF)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     add_compile_options(
@@ -21,7 +21,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
         -Wextra
         -Wpedantic
     )
-    if(QPP_MARCH_NATIVE)
+    if(LINDBLAD_MARCH_NATIVE)
         add_compile_options(-march=native)
     else()
         # AVX2 + FMA baseline (Intel Haswell+ / AMD Zen2+, covers >95% of hardware since 2014)
@@ -93,25 +93,25 @@ set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest nlopt eigen)
 
 # Benchmark and pybind11 are optional — only fetch if requested
-option(QPP_BUILD_BENCHMARKS "Build benchmarks" ON)
-option(QPP_BUILD_PYTHON "Build Python bindings" OFF)
+option(LINDBLAD_BUILD_BENCHMARKS "Build benchmarks" ON)
+option(LINDBLAD_BUILD_PYTHON "Build Python bindings" OFF)
 
-if(QPP_BUILD_BENCHMARKS)
+if(LINDBLAD_BUILD_BENCHMARKS)
     FetchContent_MakeAvailable(benchmark)
 endif()
-if(QPP_BUILD_PYTHON)
+if(LINDBLAD_BUILD_PYTHON)
     FetchContent_MakeAvailable(pybind11)
 endif()
 
 # Runtime CLI banner object (linked into executables explicitly)
-add_library(qpp_banner_obj OBJECT
+add_library(lindblad_banner_obj OBJECT
     src/banner.cpp
 )
 
 # ==============================================================================
 # Core library
 # ==============================================================================
-add_library(qpp_core STATIC
+add_library(lindblad_core STATIC
     src/statevector.cpp
     src/gates/single_qubit.cpp
     src/gates/two_qubit.cpp
@@ -156,29 +156,29 @@ add_library(qpp_core STATIC
     src/backends/local_backend.cpp
 )
 
-target_include_directories(qpp_core PUBLIC
+target_include_directories(lindblad_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-add_library(qpp::core ALIAS qpp_core)
+add_library(lindblad::core ALIAS lindblad_core)
 
 # Link OpenMP
 find_package(OpenMP REQUIRED)
-target_link_libraries(qpp_core PUBLIC OpenMP::OpenMP_CXX)
+target_link_libraries(lindblad_core PUBLIC OpenMP::OpenMP_CXX)
 
 # Link NLopt
-target_link_libraries(qpp_core PUBLIC nlopt)
+target_link_libraries(lindblad_core PUBLIC nlopt)
 
 # Link Eigen3 (header-only)
-target_link_libraries(qpp_core PUBLIC Eigen3::Eigen)
+target_link_libraries(lindblad_core PUBLIC Eigen3::Eigen)
 
 # ==============================================================================
 # Python bindings
 # ==============================================================================
-if(QPP_BUILD_PYTHON)
-    pybind11_add_module(qpp_python bindings/python_bindings.cpp)
-    target_link_libraries(qpp_python PRIVATE qpp_core)
-    set_target_properties(qpp_python PROPERTIES OUTPUT_NAME "qpp")
+if(LINDBLAD_BUILD_PYTHON)
+    pybind11_add_module(lindblad_python bindings/python_bindings.cpp)
+    target_link_libraries(lindblad_python PRIVATE lindblad_core)
+    set_target_properties(lindblad_python PROPERTIES OUTPUT_NAME "lindblad")
 endif()
 
 # ==============================================================================
@@ -190,6 +190,6 @@ add_subdirectory(tests)
 # ==============================================================================
 # Benchmarks
 # ==============================================================================
-if(QPP_BUILD_BENCHMARKS)
+if(LINDBLAD_BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)
 endif()

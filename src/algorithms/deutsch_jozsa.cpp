@@ -1,9 +1,9 @@
-#include "qpp/algorithms.hpp"
-#include "qpp/simulators/statevector_sim.hpp"
+#include "lindblad/algorithms.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
 
 #include <string>
 
-namespace qpp {
+namespace lindblad {
 namespace algorithms {
 
 QuantumCircuit DeutschJozsa::build_circuit(const QuantumCircuit& oracle, int n) {
@@ -33,4 +33,4 @@ DeutschJozsa::Result DeutschJozsa::solve(const QuantumCircuit& oracle, int n,
 }
 
 } // namespace algorithms
-} // namespace qpp
+} // namespace lindblad

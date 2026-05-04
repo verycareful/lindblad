@@ -1,12 +1,12 @@
 # QAOA
 
-This page documents `qpp::algorithms::QAOA`.
+This page documents `lindblad::algorithms::QAOA`.
 
 ## Purpose
 
 QAOA (Quantum Approximate Optimization Algorithm) solves discrete optimization problems by alternating between a cost Hamiltonian and a mixer Hamiltonian.
 
-In q++, QAOA is the lighter-weight variational solver compared with MAQAOA. It is the right choice when you want a compact parameterization with one gamma and one beta per layer.
+In lindblad, QAOA is the lighter-weight variational solver compared with MAQAOA. It is the right choice when you want a compact parameterization with one gamma and one beta per layer.
 
 ## Theory Summary
 
@@ -21,8 +21,8 @@ The default implementation follows the familiar alternating-operator pattern and
 
 ## Required Inputs
 
-- A cost Hamiltonian as `qpp::SparsePauliOp`
-- Optionally, a mixer Hamiltonian as `qpp::SparsePauliOp`
+- A cost Hamiltonian as `lindblad::SparsePauliOp`
+- Optionally, a mixer Hamiltonian as `lindblad::SparsePauliOp`
 - `QAOA::Options` settings:
   - `p`: number of layers
   - `max_iterations`
@@ -36,14 +36,14 @@ The default implementation follows the familiar alternating-operator pattern and
 Include the public header:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 Construct the Hamiltonian and configure the solver:
 
 ```cpp
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 QAOA qaoa;
 qaoa.options.p = 2;
@@ -70,7 +70,7 @@ auto circuit = qaoa.build_circuit(cost, {}, result.optimal_params);
 Use:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 ## Simulator and Primitive Dependencies
@@ -118,10 +118,10 @@ QAOA uses both `Estimator` and `Sampler`.
 ## Example Code
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 int main() {
     SparsePauliOp cost({
@@ -172,6 +172,6 @@ There is currently no standalone QAOA test file. The closest coverage lives in t
 ## Related Source Files
 
 - [docs/api/qaoa.md](../api/qaoa.md)
-- [include/qpp/algorithms.hpp](../../include/qpp/algorithms.hpp)
+- [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp)
 - [src/algorithms/qaoa.cpp](../../src/algorithms/qaoa.cpp)
 - [tests/test_maqaoa.cpp](../../tests/test_maqaoa.cpp)

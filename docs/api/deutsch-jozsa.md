@@ -1,11 +1,11 @@
 # Deutsch-Jozsa API Deep Dive
 
-This page documents the public `qpp::algorithms::DeutschJozsa` API in detail.
+This page documents the public `lindblad::algorithms::DeutschJozsa` API in detail.
 
 ## Header and Namespace
 
-- Header: `include/qpp/algorithms.hpp`
-- Namespace: `qpp::algorithms`
+- Header: `include/lindblad/algorithms.hpp`
+- Namespace: `lindblad::algorithms`
 
 ## Class Overview
 
@@ -62,10 +62,10 @@ Bitstring handling detail:
 ## Example
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 int main() {
     QuantumCircuit oracle(3); // 2 query + 1 ancilla

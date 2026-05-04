@@ -9,14 +9,14 @@
 
 #include <gtest/gtest.h>
 
-#include "qpp/circuit.hpp"
-#include "qpp/simulators/statevector_sim.hpp"
-#include "qpp/simulators/density_matrix_sim.hpp"
-#include "qpp/simulators/clifford_sim.hpp"
-#include "qpp/noise.hpp"
-#include "qpp/transpiler.hpp"
+#include "lindblad/circuit.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/simulators/density_matrix_sim.hpp"
+#include "lindblad/simulators/clifford_sim.hpp"
+#include "lindblad/noise.hpp"
+#include "lindblad/transpiler.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 // =============================================================================
 // Test 1: Statevector matches density matrix diagonal

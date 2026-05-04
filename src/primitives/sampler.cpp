@@ -1,8 +1,8 @@
-#include "qpp/primitives.hpp"
-#include "qpp/simulators/density_matrix_sim.hpp"
-#include "qpp/simulators/statevector_sim.hpp"
+#include "lindblad/primitives.hpp"
+#include "lindblad/simulators/density_matrix_sim.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // Sampler
@@ -58,4 +58,4 @@ std::unordered_map<std::string, int> Sampler::run_single(
     return result.counts;
 }
 
-} // namespace qpp
+} // namespace lindblad

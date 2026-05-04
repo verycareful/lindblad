@@ -3,10 +3,10 @@
 // Non-adjacent two-qubit gates are handled via SWAP chains (correct MPS-native approach).
 // Single-qubit marginals use efficient left/right boundary contraction — O(N chi^3).
 
-#include "qpp/simulators/mps_sim.hpp"
-#include "qpp/statevector.hpp"
-#include "qpp/circuit.hpp"
-#include "qpp/gates.hpp"
+#include "lindblad/simulators/mps_sim.hpp"
+#include "lindblad/statevector.hpp"
+#include "lindblad/circuit.hpp"
+#include "lindblad/gates.hpp"
 
 #include <Eigen/Dense>
 #include <Eigen/SVD>
@@ -19,7 +19,7 @@
 #include <random>
 #include <stdexcept>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // MPSState implementation
@@ -885,4 +885,4 @@ MPSSimulator::Result MPSSimulator::run(
     return result;
 }
 
-} // namespace qpp
+} // namespace lindblad

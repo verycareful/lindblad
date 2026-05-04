@@ -1,11 +1,11 @@
 #pragma once
 
-#include "qpp/operators.hpp"
+#include "lindblad/operators.hpp"
 
 #include <string>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // IsingHamiltonian — H = sum_i h_i Z_i + sum_{i<j} J_{ij} Z_i Z_j + offset
@@ -51,4 +51,4 @@ struct IsingHamiltonian {
     );
 };
 
-} // namespace qpp
+} // namespace lindblad

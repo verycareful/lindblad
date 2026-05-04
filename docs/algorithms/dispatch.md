@@ -1,6 +1,6 @@
 # Dispatch Helpers
 
-This page documents `qpp::SoftDispatchResult` and the dispatch-oriented helpers used with QAOA and MAQAOA outputs.
+This page documents `lindblad::SoftDispatchResult` and the dispatch-oriented helpers used with QAOA and MAQAOA outputs.
 
 ## Purpose
 
@@ -31,13 +31,13 @@ This makes it easier to move from quantum samples to a practical dispatch schedu
 Include the header:
 
 ```cpp
-#include "qpp/dispatch.hpp"
+#include "lindblad/dispatch.hpp"
 ```
 
 Construct the helper from raw counts:
 
 ```cpp
-using namespace qpp;
+using namespace lindblad;
 
 std::unordered_map<std::string, int> counts = {
     {"101", 40},
@@ -64,7 +64,7 @@ auto selected = result.greedy_dispatch(capacities, demand);
 Use:
 
 ```cpp
-#include "qpp/dispatch.hpp"
+#include "lindblad/dispatch.hpp"
 ```
 
 ## Simulator and Primitive Dependencies
@@ -100,9 +100,9 @@ Methods:
 ## Example Code
 
 ```cpp
-#include "qpp/dispatch.hpp"
+#include "lindblad/dispatch.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 int main() {
     std::unordered_map<std::string, int> counts = {
@@ -148,6 +148,6 @@ Dispatch-related behavior is exercised indirectly through the microgrid and MAQA
 ## Related Source Files
 
 - [docs/api/dispatch.md](../api/dispatch.md)
-- [include/qpp/dispatch.hpp](../../include/qpp/dispatch.hpp)
+- [include/lindblad/dispatch.hpp](../../include/lindblad/dispatch.hpp)
 - [tests/test_maqaoa_microgrid.cpp](../../tests/test_maqaoa_microgrid.cpp)
 - [tests/test_maqaoa_20qubit.cpp](../../tests/test_maqaoa_20qubit.cpp)

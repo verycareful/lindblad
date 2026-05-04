@@ -1,8 +1,8 @@
 #include <benchmark/benchmark.h>
-#include "qpp/statevector.hpp"
-#include "qpp/gates.hpp"
+#include "lindblad/statevector.hpp"
+#include "lindblad/gates.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 static void BM_H_Gate(benchmark::State& state) {
     int n = state.range(0);

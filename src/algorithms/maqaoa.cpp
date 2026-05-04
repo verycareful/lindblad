@@ -1,7 +1,7 @@
-#include "qpp/algorithms.hpp"
-#include "qpp/gates.hpp"
-#include "qpp/simulators/density_matrix_sim.hpp"
-#include "qpp/simulators/statevector_sim.hpp"
+#include "lindblad/algorithms.hpp"
+#include "lindblad/gates.hpp"
+#include "lindblad/simulators/density_matrix_sim.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -15,7 +15,7 @@
 
 #include <nlopt.h>
 
-namespace qpp {
+namespace lindblad {
 namespace algorithms {
 
 // =============================================================================
@@ -276,7 +276,7 @@ static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, vo
     if (!cb->maqaoa->estimator.options.noise_model.is_ideal()) {
         auto circuit = cb->maqaoa->build_circuit(
             *cb->cost_hamiltonian, *cb->mixer_hamiltonian, cb->params_buf);
-        qpp::DensityMatrixSimulator dm_sim;
+        lindblad::DensityMatrixSimulator dm_sim;
         auto dm_result = dm_sim.run(
             circuit, cb->maqaoa->estimator.options.noise_model, 0, 0);
         const double value = dm_result.success
@@ -328,7 +328,7 @@ static double layer_objective(unsigned n, const double* x, double* /*grad*/, voi
     if (!d->maqaoa->estimator.options.noise_model.is_ideal()) {
         auto circuit = d->maqaoa->build_circuit(
             *d->cost_hamiltonian, *d->mixer_hamiltonian, d->all_params);
-        qpp::DensityMatrixSimulator dm_sim;
+        lindblad::DensityMatrixSimulator dm_sim;
         auto dm_result = dm_sim.run(
             circuit, d->maqaoa->estimator.options.noise_model, 0, 0);
         const double value = dm_result.success
@@ -563,7 +563,7 @@ MAQAOA::Result MAQAOA::optimize(
         // No circuit rebuild, no estimator overhead, no second sampler run.
         if (!estimator.options.noise_model.is_ideal()) {
             auto circuit = build_circuit(cost_hamiltonian, mixer, all_params);
-            qpp::DensityMatrixSimulator dm_sim;
+            lindblad::DensityMatrixSimulator dm_sim;
             auto dm_result = dm_sim.run(circuit, estimator.options.noise_model, 0, 0);
             result.optimal_value = dm_result.success
                 ? dm_result.final_state.expectation_value_sparse(cost_hamiltonian)
@@ -581,7 +581,7 @@ MAQAOA::Result MAQAOA::optimize(
 
         if (!sampler.options.noise_model.is_ideal()) {
             auto circuit = build_circuit(cost_hamiltonian, mixer, all_params);
-            qpp::DensityMatrixSimulator dm_sim;
+            lindblad::DensityMatrixSimulator dm_sim;
             result.counts = dm_sim.run(
                 circuit, sampler.options.noise_model,
                 sampler.options.shots, sampler.options.seed).counts;
@@ -651,7 +651,7 @@ MAQAOA::Result MAQAOA::optimize(
         // Sampling directly from the evolved statevector (Change 10)
         if (!sampler.options.noise_model.is_ideal()) {
             auto circuit = build_circuit(cost_hamiltonian, mixer, params);
-            qpp::DensityMatrixSimulator dm_sim;
+            lindblad::DensityMatrixSimulator dm_sim;
             result.counts = dm_sim.run(
                 circuit, sampler.options.noise_model,
                 sampler.options.shots, sampler.options.seed).counts;
@@ -802,4 +802,4 @@ QuantumCircuit MAQAOA::build_circuit(
 }
 
 } // namespace algorithms
-} // namespace qpp
+} // namespace lindblad

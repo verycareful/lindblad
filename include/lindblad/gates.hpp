@@ -1,11 +1,11 @@
 #pragma once
 
-#include "qpp/statevector.hpp"
-#include "qpp/types.hpp"
+#include "lindblad/statevector.hpp"
+#include "lindblad/types.hpp"
 
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 namespace gates {
 
 // =============================================================================
@@ -116,4 +116,4 @@ void apply_unitary(
 );
 
 } // namespace gates
-} // namespace qpp
+} // namespace lindblad

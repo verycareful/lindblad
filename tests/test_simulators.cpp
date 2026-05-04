@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
-#include "qpp/circuit.hpp"
-#include "qpp/noise.hpp"
-#include "qpp/simulators/statevector_sim.hpp"
-#include "qpp/simulators/density_matrix_sim.hpp"
+#include "lindblad/circuit.hpp"
+#include "lindblad/noise.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/simulators/density_matrix_sim.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 TEST(SimulatorTest, BasicSimulation) {
     QuantumCircuit qc(2);

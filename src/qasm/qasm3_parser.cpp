@@ -2,9 +2,9 @@
 // Full QASM 3.0 parsing requires a more complex grammar
 // with classical control flow, timing, etc.
 
-#include "qpp/circuit.hpp"
+#include "lindblad/circuit.hpp"
 
-namespace qpp {
+namespace lindblad {
 
 class QASM3Parser {
 public:
@@ -16,4 +16,4 @@ public:
     }
 };
 
-} // namespace qpp
+} // namespace lindblad

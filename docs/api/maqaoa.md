@@ -1,11 +1,11 @@
 # MAQAOA API Deep Dive
 
-This page documents the public `qpp::algorithms::MAQAOA` API in detail.
+This page documents the public `lindblad::algorithms::MAQAOA` API in detail.
 
 ## Header and Namespace
 
-- Header: `include/qpp/algorithms.hpp`
-- Namespace: `qpp::algorithms`
+- Header: `include/lindblad/algorithms.hpp`
+- Namespace: `lindblad::algorithms`
 
 ## Class Overview
 
@@ -146,10 +146,10 @@ Behavior:
 ## Example
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 int main() {
     SparsePauliOp cost({

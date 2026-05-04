@@ -1,10 +1,10 @@
-#include "qpp/simulators/statevector_sim.hpp"
-#include "qpp/gates.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/gates.hpp"
 
 #include <chrono>
 #include <stdexcept>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // apply_instruction — dispatch to the appropriate gate function
@@ -133,4 +133,4 @@ StatevectorSimulator::Result StatevectorSimulator::run(
     return result;
 }
 
-} // namespace qpp
+} // namespace lindblad

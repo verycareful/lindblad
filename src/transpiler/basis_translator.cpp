@@ -1,4 +1,4 @@
-#include "qpp/transpiler.hpp"
+#include "lindblad/transpiler.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -6,7 +6,7 @@
 #include <limits>
 #include <unordered_set>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // CouplingMap
@@ -630,4 +630,4 @@ DAGCircuit BasisTranslator::run(
     return DAGCircuit::from_circuit(out);
 }
 
-} // namespace qpp
+} // namespace lindblad

@@ -1,12 +1,12 @@
 # Deutsch-Jozsa
 
-This page documents `qpp::algorithms::DeutschJozsa`.
+This page documents `lindblad::algorithms::DeutschJozsa`.
 
 ## Purpose
 
 Deutsch-Jozsa determines whether a Boolean oracle is constant or balanced using a single quantum query.
 
-In q++, the helper is designed for the standard textbook oracle layout:
+In lindblad, the helper is designed for the standard textbook oracle layout:
 
 - the first `n` qubits form the query register
 - the final qubit is the ancilla
@@ -35,14 +35,14 @@ The oracle should follow the standard Deutsch-Jozsa form and act on the ancilla 
 Include the header:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 Build the oracle and run the solver:
 
 ```cpp
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 QuantumCircuit oracle(4); // 3 query qubits + 1 ancilla
 // constant oracle: leave it empty
@@ -63,7 +63,7 @@ auto result = DeutschJozsa::solve(balanced, 3);
 Use:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 ## Simulator Dependencies
@@ -93,10 +93,10 @@ The implementation measures the query register after the oracle and the second H
 ## Example Code
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 int main() {
     QuantumCircuit oracle(2);
@@ -136,6 +136,6 @@ Relevant tests live in:
 ## Related Source Files
 
 - [docs/api/deutsch-jozsa.md](../api/deutsch-jozsa.md)
-- [include/qpp/algorithms.hpp](../../include/qpp/algorithms.hpp)
+- [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp)
 - [src/algorithms/deutsch_jozsa.cpp](../../src/algorithms/deutsch_jozsa.cpp)
 - [tests/test_classic_algorithms.cpp](../../tests/test_classic_algorithms.cpp)

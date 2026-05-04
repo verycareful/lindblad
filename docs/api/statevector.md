@@ -1,11 +1,11 @@
 # Statevector API Deep Dive
 
-This page documents the public `qpp::Statevector` class.
+This page documents the public `lindblad::Statevector` class.
 
 ## Header and Namespace
 
-- Header: `include/qpp/statevector.hpp`
-- Namespace: `qpp`
+- Header: `include/lindblad/statevector.hpp`
+- Namespace: `lindblad`
 
 ## Class Overview
 
@@ -78,10 +78,10 @@ Behavior:
 ## Example
 
 ```cpp
-#include "qpp/statevector.hpp"
-#include "qpp/gates.hpp"
+#include "lindblad/statevector.hpp"
+#include "lindblad/gates.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 int main() {
     Statevector sv(2);

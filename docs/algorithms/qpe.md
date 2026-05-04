@@ -1,12 +1,12 @@
 # QPE
 
-This page documents `qpp::algorithms::QPE`.
+This page documents `lindblad::algorithms::QPE`.
 
 ## Purpose
 
 QPE (Quantum Phase Estimation) estimates the phase of a unitary by applying controlled powers of that unitary to an evaluation register and then using the inverse QFT to decode the phase.
 
-In q++, QPE is useful when you already have a unitary circuit and want a direct phase estimate from a measured output circuit.
+In lindblad, QPE is useful when you already have a unitary circuit and want a direct phase estimate from a measured output circuit.
 
 ## Theory Summary
 
@@ -37,14 +37,14 @@ The target circuit must represent a unitary operation on `unitary.n_qubits` qubi
 Include the header:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 Build a unitary circuit and estimate its phase:
 
 ```cpp
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 QuantumCircuit unitary(1);
 unitary.rz(0.25 * M_PI, 0);
@@ -58,14 +58,14 @@ auto phase = QPE::estimate_phase(unitary, 3, 1024, 42);
 Use:
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 ```
 
 ## Simulator Dependencies
 
 QPE uses `StatevectorSimulator` internally to evaluate the controlled-unitary circuit and sample measurement counts.
 
-The implementation in q++ builds the controlled powers of the unitary explicitly and then measures the evaluation register.
+The implementation in lindblad builds the controlled powers of the unitary explicitly and then measures the evaluation register.
 
 ## Public API Details
 
@@ -84,10 +84,10 @@ The implementation in q++ builds the controlled powers of the unitary explicitly
 ## Example Code
 
 ```cpp
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 int main() {
     QuantumCircuit unitary(1);
@@ -124,6 +124,6 @@ At the moment the primary validation is implementation-level coverage through th
 ## Related Source Files
 
 - [docs/api/qpe.md](../api/qpe.md)
-- [include/qpp/algorithms.hpp](../../include/qpp/algorithms.hpp)
+- [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp)
 - [src/algorithms/qpe.cpp](../../src/algorithms/qpe.cpp)
 - [tests/test_simulators.cpp](../../tests/test_simulators.cpp)

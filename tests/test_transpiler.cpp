@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
-#include "qpp/circuit.hpp"
-#include "qpp/transpiler.hpp"
+#include "lindblad/circuit.hpp"
+#include "lindblad/transpiler.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 TEST(TranspilerTest, CouplingMapLinear) {
     auto cm = CouplingMap::linear(5);

@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
-#include "qpp/circuit.hpp"
+#include "lindblad/circuit.hpp"
 
-using namespace qpp;
+using namespace lindblad;
 
 TEST(CircuitTest, BasicConstruction) {
     QuantumCircuit qc(3, 3);

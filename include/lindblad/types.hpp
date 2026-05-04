@@ -11,7 +11,7 @@
 #  include <intrin.h>
 #endif
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // Cross-platform macros for compiler intrinsics
@@ -19,9 +19,9 @@ namespace qpp {
 
 // Population count for 64-bit integers — used in Pauli expectation values
 #if defined(_MSC_VER)
-#  define QPP_POPCOUNT64(x) static_cast<int>(__popcnt64(x))
+#  define LINDBLAD_POPCOUNT64(x) static_cast<int>(__popcnt64(x))
 #else
-#  define QPP_POPCOUNT64(x) __builtin_popcountll(x)
+#  define LINDBLAD_POPCOUNT64(x) __builtin_popcountll(x)
 #endif
 
 // Note on OpenMP pragmas:
@@ -181,4 +181,4 @@ constexpr double PI = 3.14159265358979323846;
 constexpr double PI_2 = PI / 2.0;
 constexpr double PI_4 = PI / 4.0;
 
-} // namespace qpp
+} // namespace lindblad

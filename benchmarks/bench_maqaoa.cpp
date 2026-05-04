@@ -1,8 +1,8 @@
 #include <benchmark/benchmark.h>
-#include "qpp/algorithms.hpp"
+#include "lindblad/algorithms.hpp"
 
-using namespace qpp;
-using namespace qpp::algorithms;
+using namespace lindblad;
+using namespace lindblad::algorithms;
 
 static void BM_MAQAOA_CircuitBuild(benchmark::State& state) {
     int n = state.range(0);

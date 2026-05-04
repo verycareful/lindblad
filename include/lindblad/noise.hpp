@@ -1,12 +1,12 @@
 #pragma once
 
-#include "qpp/types.hpp"
+#include "lindblad/types.hpp"
 
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // Forward declarations
 class BackendProperties;
@@ -111,4 +111,4 @@ public:
     std::vector<std::string> noisy_gates;
 };
 
-} // namespace qpp
+} // namespace lindblad

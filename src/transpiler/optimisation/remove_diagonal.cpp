@@ -10,12 +10,12 @@
 //   Track which qubits are known to be in |0⟩ (at circuit start, or after
 //   a RESET). Remove RESET instructions on qubits already in |0⟩.
 
-#include "qpp/transpiler.hpp"
+#include "lindblad/transpiler.hpp"
 
 #include <unordered_set>
 #include <vector>
 
-namespace qpp {
+namespace lindblad {
 
 // =============================================================================
 // RemoveDiagonalGatesBeforeMeasure
@@ -137,4 +137,4 @@ DAGCircuit RemoveResetInZeroState::run(
     return DAGCircuit::from_circuit(optimized);
 }
 
-} // namespace qpp
+} // namespace lindblad
