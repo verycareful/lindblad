@@ -60,7 +60,6 @@ VQE::Result VQE::compute_minimum_eigenvalue(
     else if (options.optimizer == "POWELL") algo = NLOPT_LN_BOBYQA;
 
     nlopt_opt opt = nlopt_create(algo, n_params);
-    nlopt_set_min_objective(opt, vqe_objective, nullptr);
     nlopt_set_maxeval(opt, options.max_iterations);
     nlopt_set_xtol_rel(opt, options.convergence_threshold);
 

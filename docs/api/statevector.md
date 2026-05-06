@@ -23,7 +23,7 @@ explicit Statevector(int n_qubits);
 
 Behavior:
 
-- Accepts `n_qubits` in [0, 30]
+- Accepts `n_qubits` in **[1, 30]**
 - Throws `std::invalid_argument` outside that range
 - Allocates aligned buffers and initializes to |0...0>
 

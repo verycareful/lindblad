@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
-project(lindblad VERSION 1.1.1.1 LANGUAGES CXX)
-set(LINDBLAD_VERSION_LABEL "R.1.1.1")
+project(lindblad VERSION 1.1.2.0 LANGUAGES CXX)
+set(LINDBLAD_VERSION_LABEL "R.1.2.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -161,6 +161,9 @@ target_include_directories(lindblad_core PUBLIC
 )
 
 add_library(lindblad::core ALIAS lindblad_core)
+
+# Expose version label as a compile definition so version() never drifts from CMakeLists.txt
+target_compile_definitions(lindblad_core PUBLIC LINDBLAD_VERSION_LABEL="${LINDBLAD_VERSION_LABEL}")
 
 # Link OpenMP
 find_package(OpenMP REQUIRED)

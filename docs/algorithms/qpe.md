@@ -74,6 +74,8 @@ The implementation in lindblad builds the controlled powers of the unitary expli
 - Takes the target unitary and the number of evaluation qubits
 - Returns a `QuantumCircuit` containing the controlled-unitary ladder and inverse QFT
 - The resulting circuit includes the evaluation register plus the original target register
+- Each CU instruction uses the **LSB convention**: the control qubit occupies `targets[0]`
+  and maps to bit 0 of the subspace index; even indices apply identity, odd apply $U^{2^k}$
 
 ### `QPE::estimate_phase`
 

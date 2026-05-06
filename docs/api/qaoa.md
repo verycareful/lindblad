@@ -18,13 +18,9 @@ Fields and defaults (from the header):
 - `p = 1`: number of QAOA layers
 - `max_iterations = 100`: optimizer budget
 - `convergence_threshold = 1e-6`: relative tolerance
-- `optimizer = "COBYLA"`: intended NLopt backend selector
+- `optimizer = "COBYLA"`: NLopt backend selector — supported values: `"COBYLA"`, `"NELDER_MEAD"`, `"POWELL"`
 - `seed = 0`: RNG seed for parameter initialization
 - `initial_thetas`: optional per-qubit `Ry(theta)` initialization (empty uses H)
-
-Important implementation detail:
-
-- The current implementation always constructs a COBYLA optimizer and ignores `options.optimizer`.
 
 ## `Result`
 
@@ -54,7 +50,7 @@ Behavior (verified against `src/algorithms/qaoa.cpp`):
 - If `mixer_hamiltonian` is empty, constructs a default mixer $\sum_i X_i$
 - Parameter count is `2 * p`
 - Initializes parameters in `[-0.05, 0.05]` with RNG seeded by `options.seed`
-- Uses COBYLA with bounds `[-2*pi, 2*pi]` and initial step size `0.3`
+- Uses the optimizer specified by `options.optimizer` (default COBYLA); bounds `[-2*pi, 2*pi]`, initial step size `0.3`
 - Evaluates the objective with `Estimator::run_single`
 - Samples the final circuit with `Sampler::run_single`
 - Chooses `best_bitstring` by minimum computational-basis cost (tie-break by count)

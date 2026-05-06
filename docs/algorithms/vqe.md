@@ -68,7 +68,7 @@ That header provides the VQE class and the common ansatz helper methods.
 
 VQE uses `Estimator` internally to evaluate the ansatz energy against the target Hamiltonian.
 
-The optimizer itself is driven by NLopt, while energy evaluations are handled through the estimator path configured on the VQE instance.
+The optimizer is driven by NLopt. The `options.optimizer` field selects the algorithm: `"COBYLA"` (default), `"NELDER_MEAD"`, or `"POWELL"`. Energy evaluations go through the estimator attached to the `VQE` instance.
 
 ## Public API Details
 
@@ -76,7 +76,7 @@ The optimizer itself is driven by NLopt, while energy evaluations are handled th
 
 - `max_iterations` limits the NLopt budget
 - `convergence_threshold` sets the relative tolerance
-- `optimizer` selects the local optimizer backend
+- `optimizer` selects the NLopt algorithm: `"COBYLA"` (default), `"NELDER_MEAD"`, `"POWELL"`
 - `seed` is available for reproducible workflows that use seeded components
 
 ### `VQE::Result`

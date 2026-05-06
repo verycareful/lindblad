@@ -251,12 +251,12 @@ CouplingMap CouplingMap::heavy_hex(int n_qubits) {
         }
     }
 
-    // Deduplicate and copy to cm
-    std::vector<std::pair<int,int>> seen;
+    // Deduplicate and copy to cm — O(1) lookup via hash set
+    std::unordered_set<uint64_t> seen;
     for (const auto& [a, b] : edge_list) {
-        auto key = std::make_pair(std::min(a,b), std::max(a,b));
-        if (std::find(seen.begin(), seen.end(), key) == seen.end()) {
-            seen.push_back(key);
+        uint64_t key = (static_cast<uint64_t>(std::min(a,b)) << 32) |
+                        static_cast<uint64_t>(std::max(a,b));
+        if (seen.insert(key).second) {
             cm.edges.push_back({a, b});
             cm.edges.push_back({b, a});
         }

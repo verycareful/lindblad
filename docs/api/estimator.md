@@ -60,7 +60,8 @@ double run_single(
 Behavior (verified against the implementation):
 
 - When `options.optimization_level > 0`, transpiles the unbound circuit and
-  caches the result using a structure key (gate types and qubit indices only)
+  caches the result using a structure key (gate types, qubit indices, and `n_clbits`)
+- Transpilation runs outside the cache mutex (double-checked locking); insertion is guarded
 - On cache hit, reuses the cached unbound circuit
 - Binds parameters by name using the transpiled circuit parameter names when
   available, otherwise the original circuit parameter names

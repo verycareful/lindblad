@@ -40,7 +40,7 @@ std::vector<double> Estimator::run_batch(
 
 static std::string circuit_structure_key(const QuantumCircuit& qc) {
     std::ostringstream oss;
-    oss << qc.n_qubits << ':';
+    oss << qc.n_qubits << ':' << qc.n_clbits << ':';
     for (const auto& inst : qc.instructions) {
         oss << static_cast<int>(inst.type) << '(';
         for (int q : inst.qubits) oss << q << ',';
@@ -64,18 +64,28 @@ double Estimator::run_single(
     if (options.optimization_level > 0) {
         std::string key = circuit_structure_key(circuit);
 
+        // First check under lock (fast path for cache hit).
         {
             std::lock_guard<std::mutex> lk(cache_mutex_);
             auto it = transpile_cache_.find(key);
             if (it != transpile_cache_.end()) {
-                to_simulate = it->second;  // cached transpiled (unbound) circuit
-            } else {
-                // Cache miss: transpile the unbound circuit
-                to_simulate = lindblad::transpile(circuit, CouplingMap(circuit.n_qubits),
-                                             {}, options.optimization_level);
-                transpile_cache_.emplace(key, to_simulate);
+                to_simulate = it->second;
+                goto cache_done;
             }
         }
+
+        // Cache miss: transpile outside the lock so threads don't serialize.
+        {
+            QuantumCircuit transpiled = lindblad::transpile(circuit, CouplingMap(circuit.n_qubits),
+                                                            {}, options.optimization_level);
+            std::lock_guard<std::mutex> lk(cache_mutex_);
+            // Another thread may have inserted while we compiled; use try_emplace
+            // so the first writer wins and we always use the cached value.
+            auto [it, inserted] = transpile_cache_.try_emplace(key, std::move(transpiled));
+            to_simulate = it->second;
+        }
+
+        cache_done:;
     }
 
     // Bind parameters to the (possibly transpiled) circuit
@@ -90,7 +100,9 @@ double Estimator::run_single(
         to_simulate = to_simulate.assign_parameters(bindings);
     }
 
-    // Simulate
+    // Simulate — Estimator uses exact statevector simulation; options.shots
+    // has no effect here (the expectation value is computed analytically from
+    // the final state, not by sampling).
     StatevectorSimulator sim;
     auto result = sim.run(to_simulate);
 

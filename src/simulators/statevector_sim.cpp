@@ -2,6 +2,7 @@
 #include "lindblad/gates.hpp"
 
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 
 namespace lindblad {
@@ -109,20 +110,34 @@ StatevectorSimulator::Result StatevectorSimulator::run(
     Result result;
 
     try {
+        if (circuit.n_qubits < 1) {
+            throw std::invalid_argument("Circuit must have at least 1 qubit");
+        }
+
         auto t_start = std::chrono::high_resolution_clock::now();
 
-        Statevector sv(circuit.n_qubits);
-        simulate_circuit(sv, circuit);
+        // Reuse a thread-local working buffer to avoid repeated aligned alloc/free
+        // on variational hot paths (VQE, QAOA) that call run() thousands of times.
+        thread_local std::unique_ptr<Statevector> sv_work;
+        if (!sv_work || sv_work->n_qubits != circuit.n_qubits) {
+            sv_work = std::make_unique<Statevector>(circuit.n_qubits);
+        } else {
+            sv_work->initialize();
+        }
+        simulate_circuit(*sv_work, circuit);
 
         if (shots > 0) {
-            result.counts = sv.sample_counts(shots, seed);
+            result.counts = sv_work->sample_counts(shots, seed);
         }
 
         auto t_end = std::chrono::high_resolution_clock::now();
         result.simulation_time_seconds =
             std::chrono::duration<double>(t_end - t_start).count();
 
-        result.final_state = std::move(sv);
+        // Copy simulated state to result (callers own result.final_state;
+        // sv_work stays in the cache for the next call).
+        result.final_state = Statevector(circuit.n_qubits);
+        result.final_state.set_amplitudes(sv_work->real_parts, sv_work->imag_parts, sv_work->dim);
         result.success = true;
 
     } catch (const std::exception& e) {

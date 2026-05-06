@@ -131,47 +131,42 @@ std::vector<Complex128> SparsePauliOp::to_matrix() const {
     size_t dim = 1ULL << nq;
     std::vector<Complex128> matrix(dim * dim, Complex128(0.0, 0.0));
 
+    // For each Pauli term P, P|j⟩ = phase(j) * |j XOR x_mask⟩.
+    // This fills one non-zero entry per column in O(2^n) per term,
+    // vs O(n * 4^n) for the tensor-product construction.
     for (const auto& term : terms) {
-        // Build the matrix for this Pauli string
-        // Start with a 1x1 identity and tensor product from right to left
-        std::vector<Complex128> pauli_mat = {Complex128(1.0, 0.0)};
-        int current_dim = 1;
-
-        for (int q = nq - 1; q >= 0; --q) {
-            std::vector<Complex128> single(4);
+        const int n = term.n_qubits();
+        uint64_t x_mask = 0, z_mask = 0, y_mask = 0;
+        for (int q = 0; q < n; ++q) {
             char c = term.pauli[q];
-            if (c == 'I') {
-                single = {Complex128(1,0), Complex128(0,0), Complex128(0,0), Complex128(1,0)};
-            } else if (c == 'X') {
-                single = {Complex128(0,0), Complex128(1,0), Complex128(1,0), Complex128(0,0)};
-            } else if (c == 'Y') {
-                single = {Complex128(0,0), Complex128(0,-1), Complex128(0,1), Complex128(0,0)};
-            } else if (c == 'Z') {
-                single = {Complex128(1,0), Complex128(0,0), Complex128(0,0), Complex128(-1,0)};
+            if (c == 'X') { x_mask |= (1ULL << q); }
+            else if (c == 'Z') { z_mask |= (1ULL << q); }
+            else if (c == 'Y') {
+                x_mask |= (1ULL << q);
+                y_mask |= (1ULL << q);
+                z_mask |= (1ULL << q);
             }
-
-            // Tensor product: pauli_mat ⊗ single
-            int new_dim = current_dim * 2;
-            std::vector<Complex128> new_mat(new_dim * new_dim, Complex128(0.0, 0.0));
-
-            for (int i = 0; i < current_dim; ++i) {
-                for (int j = 0; j < current_dim; ++j) {
-                    for (int si = 0; si < 2; ++si) {
-                        for (int sj = 0; sj < 2; ++sj) {
-                            new_mat[(i*2+si) * new_dim + (j*2+sj)] =
-                                pauli_mat[i * current_dim + j] * single[si * 2 + sj];
-                        }
-                    }
-                }
-            }
-
-            pauli_mat = new_mat;
-            current_dim = new_dim;
         }
 
-        // Accumulate with coefficient
-        for (size_t i = 0; i < dim * dim; ++i) {
-            matrix[i] += pauli_mat[i] * term.coeff;
+        for (size_t j = 0; j < dim; ++j) {
+            const size_t row = j ^ x_mask;
+            const int z_parity = LINDBLAD_POPCOUNT64(j & z_mask) & 1;
+            const int y_count  = LINDBLAD_POPCOUNT64(j & y_mask) & 3;
+
+            double phase_r = 1.0, phase_i = 0.0;
+            switch (y_count) {
+                case 1: phase_r =  0.0; phase_i =  1.0; break;
+                case 2: phase_r = -1.0; phase_i =  0.0; break;
+                case 3: phase_r =  0.0; phase_i = -1.0; break;
+                default: break;
+            }
+            if (z_parity) { phase_r = -phase_r; phase_i = -phase_i; }
+
+            Complex128 entry(
+                phase_r * term.coeff.real - phase_i * term.coeff.imag,
+                phase_r * term.coeff.imag + phase_i * term.coeff.real
+            );
+            matrix[row * dim + j] += entry;
         }
     }
 

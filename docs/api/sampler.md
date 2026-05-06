@@ -34,7 +34,7 @@ std::vector<std::unordered_map<std::string, int>> run(
 
 Behavior:
 
-- Evaluates each circuit with `run_single`
+- Evaluates each circuit with `run_single` using seed `options.seed + i` for circuit `i`
 - If `parameter_values` has fewer entries than `circuits`, missing entries are
   treated as empty parameter lists
 - Returns one counts map per circuit

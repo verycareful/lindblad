@@ -26,10 +26,13 @@ struct IsingHamiltonian {
     int n_qubits() const { return static_cast<int>(h.size()); }
 
     // Convert to SparsePauliOp for use with Estimator / VQE / QAOA.
-    // Pauli string convention: index 0 = most significant qubit (Qiskit ordering).
+    // Bit ordering: bitstring[0] = qubit n-1 (MSB), bitstring[n-1] = qubit 0 (LSB).
+    // Qubit i maps to Pauli string position n-1-i (Qiskit/MSB-first convention).
     SparsePauliOp to_sparse_pauli_op() const;
 
     // Evaluate energy for a given bitstring (x ∈ {0,1}^n, MSB first).
+    // Bit ordering: bitstring[0] = qubit n-1 (MSB), bitstring[n-1] = qubit 0 (LSB).
+    // h[i] and J[i][j] correspond to qubit index i (= bitstring position n-1-i).
     double evaluate(const std::string& bitstring) const;
 
     // Evaluate energy for a given spin assignment (s ∈ {-1,+1}^n).

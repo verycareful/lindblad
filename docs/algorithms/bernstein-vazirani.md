@@ -119,7 +119,7 @@ Declared in [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.
 - `solve(const QuantumCircuit& oracle, int n, int shots = 1, uint64_t seed = 0)` executes the circuit and returns the recovered secret
 - `Result::secret` stores the recovered bitstring
 
-The recovered secret is returned in the same bit order used by the tests and implementation: the measured bitstring is converted back into index order before returning.
+The most frequent bitstring is selected via `std::max_element` with a count comparator. The raw MSB-first measurement result is then reversed so that `secret[i] == '1'` means bit `i` of the hidden string is set (index order).
 
 ### `RecursiveBernsteinVazirani`
 

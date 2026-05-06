@@ -89,11 +89,13 @@ Behavior:
 
 - `compose(other, qubits = {})` appends `other` to the circuit
   - If `qubits` is empty, `n_qubits` and `n_clbits` grow to fit `other`
-  - If `qubits` is provided, it must match `other.n_qubits` exactly; the indices
-    are remapped and appended without additional validation
+  - If `qubits` is provided, it must match `other.n_qubits` exactly; `n_clbits`
+    grows to fit `other.n_clbits` before instructions are appended
 - `inverse()` reverses instruction order and applies gate-specific inverses
   - Skips `MEASURE`, `RESET`, and `BARRIER` (barriers are preserved)
-  - Throws for gate types without an inverse implementation
+  - `UNITARY` gates are inverted as conjugate-transpose
+  - `PARAM_*` symbolic gates are skipped (not invertible until parameters are bound)
+  - Throws for any other gate type without an inverse implementation
 - `repeat(n)` repeats the instruction list `n` times
 - `control(num_ctrl_qubits)` prepends control qubits and builds a controlled
   circuit
@@ -114,6 +116,8 @@ Behavior:
 - `to_qasm2()` and `to_qasm3()` emit OpenQASM strings
   - Parameters are emitted only when `inst.params` is populated
   - Param gates should be bound before export to avoid missing parameters
+  - `UNITARY` and `PARAM_*` gates have no QASM 2.0 representation; they are
+    emitted as `// gate '...' omitted` comments so the output remains valid QASM
 - `from_qasm2()` uses the internal QASM2 parser
 - `from_qasm3()` throws (parser not yet implemented)
 

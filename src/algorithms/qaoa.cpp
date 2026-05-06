@@ -98,8 +98,11 @@ QAOA::Result QAOA::optimize(
     for (auto& p : params) p = perturb(rng);
     result.initial_params = params;
 
-    // NLopt
-    nlopt_opt opt = nlopt_create(NLOPT_LN_COBYLA, n_params);
+    // NLopt — optimizer selected by options.optimizer
+    nlopt_algorithm algo = NLOPT_LN_COBYLA;
+    if (options.optimizer == "NELDER_MEAD") algo = NLOPT_LN_NELDERMEAD;
+    else if (options.optimizer == "POWELL")  algo = NLOPT_LN_BOBYQA;
+    nlopt_opt opt = nlopt_create(algo, n_params);
     QAOACallbackData cb_data{&estimator, &cost_hamiltonian, &mixer, this};
     nlopt_set_min_objective(opt, qaoa_objective, &cb_data);
     nlopt_set_maxeval(opt, options.max_iterations);

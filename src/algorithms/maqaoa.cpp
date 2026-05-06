@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <numeric>
 #include <complex>
 #include <cmath>
 #include <limits>
@@ -31,19 +32,28 @@ std::vector<int> orbits_by_power(
     std::vector<double> orbit_centers;
     orbit_centers.reserve(n);
 
-    for (int i = 0; i < n; ++i) {
+    // Sort by value so that elements within tolerance are always adjacent.
+    // This prevents insertion-order artifacts where two values within tolerance
+    // are assigned different orbits because a third (out-of-range) value snuck
+    // between their two appearances.
+    std::vector<int> order(n);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(),
+        [&](int a, int b){ return powers[a] < powers[b]; });
+
+    for (int idx : order) {
         int assigned = -1;
         for (int k = 0; k < static_cast<int>(orbit_centers.size()); ++k) {
-            if (std::abs(powers[i] - orbit_centers[k]) <= tolerance) {
+            if (std::abs(powers[idx] - orbit_centers[k]) <= tolerance) {
                 assigned = k;
                 break;
             }
         }
         if (assigned == -1) {
             assigned = static_cast<int>(orbit_centers.size());
-            orbit_centers.push_back(powers[i]);
+            orbit_centers.push_back(powers[idx]);
         }
-        result[i] = assigned;
+        result[idx] = assigned;
     }
     return result;
 }

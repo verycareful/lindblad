@@ -34,9 +34,10 @@ int DAGCircuit::add_node(DAGNode node) {
 }
 
 void DAGCircuit::add_edge(int src, int dst, int wire, bool is_classical) {
-    edges.push_back({src, dst, wire, is_classical});
-    adj_out[src].push_back(dst);
-    adj_in[dst].push_back(src);
+    DAGEdge e{src, dst, wire, is_classical};
+    edges.push_back(e);
+    adj_out[src].push_back(e);
+    adj_in[dst].push_back(e);
 }
 
 void DAGCircuit::rebuild_adjacency() {
@@ -50,8 +51,8 @@ void DAGCircuit::rebuild_adjacency() {
         adj_in[nid];
     }
     for (const auto& e : edges) {
-        adj_out[e.src_node].push_back(e.dst_node);
-        adj_in[e.dst_node].push_back(e.src_node);
+        adj_out[e.src_node].push_back(e);
+        adj_in[e.dst_node].push_back(e);
     }
 }
 
@@ -176,9 +177,9 @@ std::vector<int> DAGCircuit::topological_sort() const {
 
         auto it = adj_out.find(nid);
         if (it != adj_out.end()) {
-            for (int neighbor : it->second) {
-                if (--in_degree[neighbor] == 0) {
-                    q.push(neighbor);
+            for (const auto& e : it->second) {
+                if (--in_degree[e.dst_node] == 0) {
+                    q.push(e.dst_node);
                 }
             }
         }
@@ -221,15 +222,17 @@ std::vector<int> DAGCircuit::front_layer() const {
 std::vector<int> DAGCircuit::successors(int node_id) const {
     auto it = adj_out.find(node_id);
     if (it == adj_out.end()) return {};
-    // Deduplicate (multi-wire edges may create duplicates)
-    std::unordered_set<int> unique(it->second.begin(), it->second.end());
+    // Deduplicate: multi-wire gates create one edge per wire to the same successor
+    std::unordered_set<int> unique;
+    for (const auto& e : it->second) unique.insert(e.dst_node);
     return std::vector<int>(unique.begin(), unique.end());
 }
 
 std::vector<int> DAGCircuit::predecessors(int node_id) const {
     auto it = adj_in.find(node_id);
     if (it == adj_in.end()) return {};
-    std::unordered_set<int> unique(it->second.begin(), it->second.end());
+    std::unordered_set<int> unique;
+    for (const auto& e : it->second) unique.insert(e.src_node);
     return std::vector<int>(unique.begin(), unique.end());
 }
 
@@ -241,14 +244,11 @@ void DAGCircuit::substitute_node(int node_id, const DAGCircuit& replacement) {
     auto idx_it = node_id_to_idx.find(node_id);
     if (idx_it == node_id_to_idx.end()) throw std::out_of_range("Node not found");
 
-    // Get the incoming and outgoing edges for this node
-    std::vector<DAGEdge> in_edges, out_edges;
-    for (const auto& e : edges) {
-        if (e.dst_node == node_id) in_edges.push_back(e);
-        if (e.src_node == node_id) out_edges.push_back(e);
-    }
+    // O(degree): read incident edges directly from adj maps
+    std::vector<DAGEdge> in_edges  = adj_in.count(node_id)  ? adj_in.at(node_id)  : std::vector<DAGEdge>{};
+    std::vector<DAGEdge> out_edges = adj_out.count(node_id) ? adj_out.at(node_id) : std::vector<DAGEdge>{};
 
-    // Remove old edges
+    // Remove old edges from flat list (kept for external callers such as sabre_swap)
     edges.erase(
         std::remove_if(edges.begin(), edges.end(),
             [node_id](const DAGEdge& e) {
@@ -336,17 +336,19 @@ void DAGCircuit::substitute_node(int node_id, const DAGCircuit& replacement) {
         }
     }
 
-    // Clean adjacency for removed node
+    // O(degree): remove node_id references only from the adj lists of its neighbours
+    for (const auto& e : in_edges) {
+        auto& v = adj_out[e.src_node];
+        v.erase(std::remove_if(v.begin(), v.end(),
+            [node_id](const DAGEdge& de){ return de.dst_node == node_id; }), v.end());
+    }
+    for (const auto& e : out_edges) {
+        auto& v = adj_in[e.dst_node];
+        v.erase(std::remove_if(v.begin(), v.end(),
+            [node_id](const DAGEdge& de){ return de.src_node == node_id; }), v.end());
+    }
     adj_out.erase(node_id);
     adj_in.erase(node_id);
-    // Remove stale references (adj lists are rebuilt on next add_edge calls;
-    // for correctness, strip node_id from all adj lists)
-    for (auto& [k, v] : adj_out) {
-        v.erase(std::remove(v.begin(), v.end(), node_id), v.end());
-    }
-    for (auto& [k, v] : adj_in) {
-        v.erase(std::remove(v.begin(), v.end(), node_id), v.end());
-    }
 }
 
 // =============================================================================
@@ -354,14 +356,11 @@ void DAGCircuit::substitute_node(int node_id, const DAGCircuit& replacement) {
 // =============================================================================
 
 void DAGCircuit::remove_node(int node_id) {
-    // Connect predecessors directly to successors
-    std::vector<DAGEdge> in_edges, out_edges;
-    for (const auto& e : edges) {
-        if (e.dst_node == node_id) in_edges.push_back(e);
-        if (e.src_node == node_id) out_edges.push_back(e);
-    }
+    // O(degree): read incident edges directly from adj maps
+    std::vector<DAGEdge> in_edges  = adj_in.count(node_id)  ? adj_in.at(node_id)  : std::vector<DAGEdge>{};
+    std::vector<DAGEdge> out_edges = adj_out.count(node_id) ? adj_out.at(node_id) : std::vector<DAGEdge>{};
 
-    // Remove all edges involving this node
+    // Remove all edges involving this node from flat list
     edges.erase(
         std::remove_if(edges.begin(), edges.end(),
             [node_id](const DAGEdge& e) {
@@ -379,22 +378,26 @@ void DAGCircuit::remove_node(int node_id) {
         }
     }
 
-    // Remove the node and rebuild index/adjacency
+    // Remove the node and rebuild index
     nodes.erase(
         std::remove_if(nodes.begin(), nodes.end(),
             [node_id](const DAGNode& n) { return n.node_id == node_id; }),
         nodes.end()
     );
 
-    // Clean adjacency
+    // O(degree): remove node_id references only from the adj lists of its neighbours
+    for (const auto& e : in_edges) {
+        auto& v = adj_out[e.src_node];
+        v.erase(std::remove_if(v.begin(), v.end(),
+            [node_id](const DAGEdge& de){ return de.dst_node == node_id; }), v.end());
+    }
+    for (const auto& e : out_edges) {
+        auto& v = adj_in[e.dst_node];
+        v.erase(std::remove_if(v.begin(), v.end(),
+            [node_id](const DAGEdge& de){ return de.src_node == node_id; }), v.end());
+    }
     adj_out.erase(node_id);
     adj_in.erase(node_id);
-    for (auto& [k, v] : adj_out) {
-        v.erase(std::remove(v.begin(), v.end(), node_id), v.end());
-    }
-    for (auto& [k, v] : adj_in) {
-        v.erase(std::remove(v.begin(), v.end(), node_id), v.end());
-    }
 
     // Rebuild node_id_to_idx
     node_id_to_idx.clear();
@@ -449,7 +452,8 @@ int DAGCircuit::depth() const {
         auto ait = adj_out.find(nid);
         if (ait != adj_out.end()) {
             int new_dist = dist[nid] + (is_op ? 1 : 0);
-            for (int succ : ait->second) {
+            for (const auto& e : ait->second) {
+                int succ = e.dst_node;
                 if (new_dist > dist[succ]) {
                     dist[succ] = new_dist;
                     if (new_dist > max_depth) max_depth = new_dist;

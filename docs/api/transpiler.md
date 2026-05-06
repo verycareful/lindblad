@@ -39,7 +39,8 @@ struct DAGNode {
     Type type;           // IN = input boundary, OUT = output boundary, OP = operation
     Instruction op;      // Gate instruction (only for OP nodes)
     int node_id;
-    std::vector<int> qubit_wires;    // Logical qubit indices this node touches
+    std::vector<int> qubit_wires;    // Qubit indices this node touches.
+                                     // Logical before layout; physical after SabreLayout/TrivialLayout.
     std::vector<int> clbit_wires;    // Classical bit indices
 };
 
@@ -70,13 +71,15 @@ static DAGCircuit DAGCircuit::from_circuit(const QuantumCircuit& qc);
 QuantumCircuit DAGCircuit::to_circuit() const;
 ```
 
-**Dependency queries** ($O(E)$ per call, where $E$ = number of edges):
+**Dependency queries**:
 ```cpp
-std::vector<int> topological_sort() const;        // Execution order
-std::vector<int> front_layer() const;             // Gates with no predecessors
-std::vector<int> successors(int node_id) const;   // Immediate dependents
-std::vector<int> predecessors(int node_id) const; // Immediate dependencies
+std::vector<int> topological_sort() const;        // Execution order — O(N+E)
+std::vector<int> front_layer() const;             // Gates with no predecessors — O(N+E)
+std::vector<int> successors(int node_id) const;   // Immediate dependents — O(degree)
+std::vector<int> predecessors(int node_id) const; // Immediate dependencies — O(degree)
 ```
+
+`adj_out` and `adj_in` store `vector<DAGEdge>` keyed by node ID, giving O(degree) access for `successors`, `predecessors`, `substitute_node`, and `remove_node`. The flat `edges` vector is still present for passes that iterate all edges.
 
 **Analysis**:
 ```cpp
@@ -196,14 +199,18 @@ class TrivialLayout : public TranspilationPass { ... };
 class SabreLayout : public TranspilationPass { ... };
 ```
 
-**Behavior**: Heuristic layout assignment via distance minimization.
+**Behavior**: Heuristic layout assignment via the SABRE forward-backward-forward pass sequence (Li et al. 2019, arXiv:1809.02573).
 
-Algorithm (high-level):
-1. Score each possible layout by total distance of all 2Q gates
-2. Perform randomized perturbations and local search to refine
-3. Return best layout found
+Algorithm:
+1. Start with trivial (identity) layout
+2. **Forward pass**: run SABRE routing, record the final logical→physical mapping and SWAP count
+3. **Backward pass**: seed from the forward final mapping; run SABRE routing again; update best if fewer SWAPs
+4. **Second forward pass**: seed from best result so far; run SABRE routing a final time
+5. Apply the winning layout by rebuilding the DAG — qubit indices in every instruction are remapped to physical indices and the DAG is reconstructed from scratch so that all edge `wire` fields and adjacency metadata remain consistent
 
-**Complexity**: $O(n^2 \cdot m)$ where $n$ = qubits, $m$ = iterations (typical $m \approx 100$)
+**Output DAG invariant**: `dag.n_qubits == coupling_map.n_physical_qubits` after this pass. All qubit indices are physical. `SabreSwap` must use an identity `initial_layout` on the output (or read it from `ctx.initial_layout`, which should be identity at this stage).
+
+**Complexity**: $O(3 \cdot G \cdot E)$ where $G$ = gate count, $E$ = coupling edges; dominated by three SABRE passes
 
 **Use**: When layout quality significantly impacts routing cost; recommended for dense circuits.
 
@@ -330,7 +337,7 @@ After:   U3(phi, theta, lam) on q0       [1 gate]
 
 ### CommutativeCancellation
 
-**Behavior**: Identify commuting 1Q gates separated by other commuting gates, merge them, and cancel if they form inverse pairs.
+**Behavior**: Identify commuting rotation gates separated by commuting gates, merge same-type rotations, and cancel inverse pairs. Runs in a **fixed-point loop**: after each full forward pass, if any cancellation or merge occurred the pass repeats until no further changes are found. This ensures cancellations exposed by earlier merges are not missed.
 
 **Example**:
 ```
@@ -339,7 +346,12 @@ If RX commutes with both H gates:
   → H - RX - H  can reorder to  H - H - RX  →  RX
 ```
 
-**Complexity**: $O(n^2)$ in worst case (pairwise commutation checks)
+**Commutation rules recognized**:
+- Z-diagonal gates (RZ, P, T, S, Z, U1, SDG, TDG) commute with each other
+- Z-diagonal gates commute through the control wire of CX, CZ, CP, CRZ
+- CX commutes with CX on the same qubit pair
+
+**Complexity**: $O(n^2)$ per fixed-point iteration; typically converges in 2–3 passes
 
 ### RemoveDiagonalGatesBeforeMeasure
 
@@ -518,6 +530,8 @@ Reordering can increase optimization time without benefit (e.g., routing after o
 1. **Wrong basis gates**: If `basis_gates` doesn't include CX, routing may fail. Always include all hardware-native gates.
 
 2. **Disconnected layout**: If `initial_layout` violates coupling map (e.g., maps adjacent logical qubits to non-adjacent physical qubits), routing cannot fix it; use SabreLayout or TrivialLayout instead.
+
+3. **Mutating DAG nodes directly after layout**: Do not remap `DAGNode::qubit_wires` or `Instruction::qubits` in-place on a DAG. `DAGEdge::wire` fields store qubit indices independently; partial mutation leaves the DAG in an inconsistent state. Always rebuild via `dag.to_circuit()` → remap instructions → `DAGCircuit::from_circuit()`.
 
 3. **Over-optimization**: Level 3 can be slower than execution; use only for pre-computed circuits, not for repeated transpilation in tight loops.
 

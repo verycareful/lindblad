@@ -68,6 +68,19 @@ Grover::Result Grover::search(
     int shots,
     uint64_t seed
 ) {
+    // Resolve auto-iteration count before calling build_circuit so that
+    // result.num_iterations reflects what the circuit was actually built with.
+    // Note: the default formula assumes a single marked item. For k solutions
+    // the optimal count is round(π/4 · √(2^n / k)); pass num_iterations
+    // explicitly when k > 1.
+    int nq = oracle.n_qubits;
+    if (num_iterations < 0) {
+        num_iterations = static_cast<int>(
+            std::round(PI / 4.0 * std::sqrt(static_cast<double>(1 << nq)))
+        );
+        if (num_iterations < 1) num_iterations = 1;
+    }
+
     auto circuit = build_circuit(oracle, num_iterations);
     circuit.measure_all();
 
@@ -83,10 +96,7 @@ Grover::Result Grover::search(
         }
     }
     result.probability = static_cast<double>(max_count) / shots;
-
-    result.num_iterations = (num_iterations < 0)
-        ? static_cast<int>(std::round(PI / 4.0 * std::sqrt(static_cast<double>(1 << oracle.n_qubits))))
-        : num_iterations;
+    result.num_iterations = num_iterations;
 
     return result;
 }

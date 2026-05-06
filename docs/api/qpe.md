@@ -33,7 +33,10 @@ Implementation details:
 
 - The unitary matrix is built by simulating `unitary` on each basis vector
 - $U^{2^k}$ is formed by repeated matrix multiplication
-- Controlled unitary is embedded into a `UNITARY` instruction on control + target
+- Controlled unitary is embedded into a `UNITARY` instruction on `{k} ∪ target_qubits`
+- The CU matrix uses the **LSB convention**: `targets[0]` (= control qubit `k`)
+  maps to bit 0 of the subspace index. Even indices have ctrl=0 (identity block);
+  odd indices have ctrl=1 (U^power block)
 
 ## `estimate_phase`
 

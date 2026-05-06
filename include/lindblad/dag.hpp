@@ -71,9 +71,9 @@ private:
 
     // O(1) lookup: node_id → index in nodes vector
     std::unordered_map<int, size_t> node_id_to_idx;
-    // Adjacency lists for O(1) successors/predecessors
-    std::unordered_map<int, std::vector<int>> adj_out;  // node_id → successor node_ids
-    std::unordered_map<int, std::vector<int>> adj_in;   // node_id → predecessor node_ids
+    // Adjacency lists — store full DAGEdge for O(degree) incident-edge lookup
+    std::unordered_map<int, std::vector<DAGEdge>> adj_out;  // node_id → outgoing edges
+    std::unordered_map<int, std::vector<DAGEdge>> adj_in;   // node_id → incoming edges
 
     int add_node(DAGNode node);
     void add_edge(int src, int dst, int wire, bool is_classical = false);

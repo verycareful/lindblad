@@ -115,13 +115,13 @@ The most important fields are:
 - `p`: number of layers
 - `layerwise`: enable layer-by-layer optimization
 - `progressive`: keep earlier parameters free during layerwise refinement
-- `orbit_assignments`: symmetry-reduction map for orbit-based parameter sharing; `orbits_by_power` can generate these indices from power tiers
+- `orbit_assignments`: symmetry-reduction map for orbit-based parameter sharing; `orbits_by_power` generates these by sorting values then grouping within a tolerance — sort-first prevents insertion-order artifacts where near-equal values land in different orbits
 - `term_indexed_gammas`: choose between qubit-indexed and term-indexed gamma layout
 - `mixer_weights`: physics-informed mixer scaling
 - `initial_thetas`: per-qubit initial state preparation angles
 - `beta_base`: baseline beta scale for PI-MA-QAOA
 - `lambda_co2`: scalar objective weighting term
-- `optimizer` is currently not wired; the implementation always uses COBYLA
+- `optimizer` is currently not wired in MAQAOA; the implementation always uses COBYLA via NLopt
 
 ### `MAQAOA::Result`
 
