@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.2.1] - 2026-05-06
+
+### Tests
+
+- Full test suite run against R.1.2.0 codebase. Identified 33 regressions across `SimulatorTest`, `IntegrationTest`, `DeutschJozsa`, `BernsteinVazirani`, `SimonsAlgorithm`, `RecursiveBernsteinVazirani`, and `ProbabilisticBernsteinVazirani` suites.
+- Root causes traced to three audit fixes: fix 7.1 (`Statevector` lower-bound tightening broke `StatevectorSimulator::Result()` default constructor — sentinel `Statevector(0)` outside the try-catch); fix 1.5 (`DeutschJozsa` bitstring length mismatch n+1 vs n); fix 1.6 (`BernsteinVazirani` ancilla not stripped before secret extraction).
+- Patches tracked in R.1.2.2.
+
+### Results
+
+- 61/94 tests passed. 33 failed — all regressions from R.1.2.0 (601 ms, WSL / Clang).
+
 ## [R.1.2.0] - 2026-05-05
 
 ### Fixed
