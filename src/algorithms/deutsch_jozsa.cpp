@@ -24,7 +24,7 @@ DeutschJozsa::Result DeutschJozsa::solve(const QuantumCircuit& oracle, int n,
     std::string query_zero(n, '0');
     bool constant = false;
     for (const auto& [bits, cnt] : res.counts) {
-        if (bits == query_zero) {
+        if (bits.size() > static_cast<size_t>(n) && bits.substr(1) == query_zero) {
             constant = true;
             break;
         }

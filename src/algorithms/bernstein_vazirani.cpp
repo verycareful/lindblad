@@ -29,7 +29,9 @@ BernsteinVazirani::Result BernsteinVazirani::solve(const QuantumCircuit& oracle,
     auto res = sim.run(qc, shots, seed);
     auto best = std::max_element(res.counts.begin(), res.counts.end(),
         [](const auto& a, const auto& b){ return a.second < b.second; });
-    std::string secret = best->first;
+    // best->first is MSB-first with length n+1 (ancilla at position 0).
+    // Strip the ancilla before reversing into index order.
+    std::string secret = best->first.substr(1);
     std::reverse(secret.begin(), secret.end());   // MSB-first → index order
     return { secret };
 }

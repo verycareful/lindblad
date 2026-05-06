@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.2.2] - 2026-05-06
+
+### Fixed
+
+- **R1** `StatevectorSimulator::Result` default constructor — sentinel changed from `Statevector(0)` to `Statevector(1)`; fix 7.1 (R.1.2.0) tightened the valid range to [1, 30], making the old sentinel illegal and crashing all 33 tests before any test body executed
+- **R2** `DeutschJozsa::solve` — restored `bits.substr(1) == query_zero` check; fix 1.5 (R.1.2.0) incorrectly replaced it with `bits == query_zero`, but `sample_counts` returns `n+1`-length bitstrings (ancilla at MSB position 0) and `query_zero` has length `n`, so they can never be equal — all DJ calls returned BALANCED
+- **R3** `BernsteinVazirani::solve` — ancilla bit stripped before reversing (`best->first.substr(1)` before `std::reverse`); fix 1.6 (R.1.2.0) added `max_element` correctly but omitted the `substr(1)` strip, causing an off-by-one extra bit in every recovered secret
+
+### Documentation
+
+- `docs/api/bernstein-vazirani.md` — `solve` behavior: corrected to `max_element` picks most-frequent bitstring; `substr(1)` ancilla strip before reversal documented explicitly
+- `docs/algorithms/bernstein-vazirani.md` — ancilla at MSB position 0 of `n+1` bitstring; `substr(1)` extracts the `n`-bit query register before reversal
+- `docs/algorithms/deutsch-jozsa.md` — `solve` compares `bits.substr(1)` (query register only) against `std::string(n, '0')`; ancilla at position 0 explained
+- `docs/api/backends.md` — version example updated to `R.1.2.2`
+
+### Results
+
+- 94/94 tests passed (WSL / Clang).
+
 ## [R.1.2.1] - 2026-05-06
 
 ### Tests
