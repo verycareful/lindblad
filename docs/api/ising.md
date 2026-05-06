@@ -74,7 +74,8 @@ Returns the number of qubits implied by `h.size()`.
 
 ### `evaluate(const std::string& bitstring)`
 
-- `bitstring` must be length `n`, MSB-first
+- `bitstring` must be length `n`, **MSB-first**: `bitstring[0]` is the most
+  significant bit (qubit `n-1`), so qubit `i` is read from `bitstring[n-1-i]`
 - Uses the spin mapping $s_i = 1 - 2 x_i$ where $x_i \in \{0,1\}$
 
 ### `evaluate_spins(const std::vector<int>& spins)`

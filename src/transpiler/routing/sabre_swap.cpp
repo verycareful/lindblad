@@ -18,6 +18,7 @@
 #include <limits>
 #include <numeric>
 #include <random>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -50,19 +51,35 @@ static SabreRoutingResult sabre_route(
         return inv;
     };
 
-    // Track predecessor count — only OP→OP edges; IN→OP edges must not count
-    // or the first gate layer will never reach in_deg==0 and front stays empty.
-    std::vector<int> in_deg(dag.nodes.size(), 0);
+    // Build ID→index map: node IDs can diverge from vector positions after
+    // prior passes that call remove_node/substitute_node on the DAG.
+    const int num_nodes = static_cast<int>(dag.nodes.size());
+    std::unordered_map<int, int> id_to_idx;
+    int max_id = 0;
+    for (int i = 0; i < num_nodes; ++i) {
+        int nid = dag.nodes[i].node_id;
+        id_to_idx[nid] = i;
+        if (nid > max_id) max_id = nid;
+    }
+    const int id_range = max_id + 1;
+
+    // Build adjacency list for O(1) successor lookup (O(N+E) total vs O(N*E)).
+    // Vectors sized by id_range so node IDs are valid indices regardless of deletions.
+    std::vector<std::vector<int>> adj_out(id_range);
+    std::vector<int> in_deg(id_range, 0);
     for (const auto& e : dag.edges) {
-        if (dag.nodes[e.src_node].type == DAGNode::Type::OP)
+        if (dag.nodes[id_to_idx.at(e.src_node)].type == DAGNode::Type::OP) {
+            adj_out[e.src_node].push_back(e.dst_node);
             in_deg[e.dst_node]++;
+        }
     }
 
-    // Initial front layer
+    // Initial front layer — iterate by position, look up in_deg by node ID.
     std::vector<int> front;
-    for (size_t i = 0; i < dag.nodes.size(); ++i) {
-        if (dag.nodes[i].type == DAGNode::Type::OP && in_deg[i] == 0)
-            front.push_back(static_cast<int>(i));
+    for (int i = 0; i < num_nodes; ++i) {
+        int nid = dag.nodes[i].node_id;
+        if (dag.nodes[i].type == DAGNode::Type::OP && in_deg[nid] == 0)
+            front.push_back(nid);
     }
 
     // Build output DAG
@@ -71,7 +88,7 @@ static SabreRoutingResult sabre_route(
     // (We track the routing in the layout and insert SWAP nodes)
     // For a clean approach: accumulate output instructions then rebuild
     std::vector<Instruction> out_instructions;
-    std::vector<bool> done(dag.nodes.size(), false);
+    std::vector<bool> done(id_range, false);
     int swap_count = 0;
 
     // Decay parameters (per-qubit, penalise re-using same qubits for SWAPs)
@@ -82,7 +99,7 @@ static SabreRoutingResult sabre_route(
         // Executable gates
         std::vector<int> executable, blocked;
         for (int nid : front) {
-            const auto& node = dag.nodes[nid];
+            const auto& node = dag.nodes[id_to_idx.at(nid)];
             if (node.qubit_wires.size() < 2) {
                 executable.push_back(nid);
             } else {
@@ -100,25 +117,23 @@ static SabreRoutingResult sabre_route(
 
         for (int nid : executable) {
             // Emit the gate with current physical qubit mapping
-            Instruction inst = dag.nodes[nid].op;
+            const auto& enode = dag.nodes[id_to_idx.at(nid)];
+            Instruction inst = enode.op;
             for (size_t qi = 0; qi < inst.qubits.size(); ++qi) {
-                inst.qubits[qi] = layout[dag.nodes[nid].qubit_wires[qi]];
+                inst.qubits[qi] = layout[enode.qubit_wires[qi]];
             }
             out_instructions.push_back(inst);
             done[nid] = true;
 
             // Reduce decay for used qubits
-            for (int lq : dag.nodes[nid].qubit_wires) decay[lq] = 1.0;
+            for (int lq : enode.qubit_wires) decay[lq] = 1.0;
 
-            // Advance successors
-            for (const auto& e : dag.edges) {
-                if (e.src_node == nid) {
-                    in_deg[e.dst_node]--;
-                    if (in_deg[e.dst_node] == 0 &&
-                        dag.nodes[e.dst_node].type == DAGNode::Type::OP &&
-                        !done[e.dst_node]) {
-                        front.push_back(e.dst_node);
-                    }
+            // Advance successors using adjacency list — O(degree) not O(E)
+            for (int succ : adj_out[nid]) {
+                if (--in_deg[succ] == 0 &&
+                    dag.nodes[id_to_idx.at(succ)].type == DAGNode::Type::OP &&
+                    !done[succ]) {
+                    front.push_back(succ);
                 }
             }
         }
@@ -130,7 +145,7 @@ static SabreRoutingResult sabre_route(
 
         // Increase decay for qubits involved in blocked gates
         for (int nid : blocked) {
-            for (int lq : dag.nodes[nid].qubit_wires) {
+            for (int lq : dag.nodes[id_to_idx.at(nid)].qubit_wires) {
                 decay[lq] = std::min(decay[lq] + DECAY_FACTOR, 1.0 + DECAY_FACTOR * 10);
             }
         }
@@ -138,7 +153,7 @@ static SabreRoutingResult sabre_route(
         // Collect candidate SWAPs from edges adjacent to blocked logical qubits
         std::vector<std::pair<int,int>> candidates;
         for (int nid : blocked) {
-            for (int lq : dag.nodes[nid].qubit_wires) {
+            for (int lq : dag.nodes[id_to_idx.at(nid)].qubit_wires) {
                 int pq = layout[lq];
                 auto inv = build_inv();
                 for (const auto& [pa, pb] : coupling_map.edges) {
@@ -157,10 +172,9 @@ static SabreRoutingResult sabre_route(
         // Build extended (lookahead) layer: successors of blocked nodes
         std::unordered_set<int> extended_set;
         for (int nid : blocked) {
-            for (const auto& e : dag.edges) {
-                if (e.src_node == nid && dag.nodes[e.dst_node].qubit_wires.size() >= 2) {
-                    extended_set.insert(e.dst_node);
-                }
+            for (int succ : adj_out[nid]) {
+                if (dag.nodes[id_to_idx.at(succ)].qubit_wires.size() >= 2)
+                    extended_set.insert(succ);
             }
         }
         std::vector<int> extended(extended_set.begin(), extended_set.end());
@@ -177,7 +191,7 @@ static SabreRoutingResult sabre_route(
             // H_basic: sum distances in blocked front layer
             double h_basic = 0.0;
             for (int nid : blocked) {
-                const auto& wires = dag.nodes[nid].qubit_wires;
+                const auto& wires = dag.nodes[id_to_idx.at(nid)].qubit_wires;
                 int pa = tentative[wires[0]], pb = tentative[wires[1]];
                 h_basic += static_cast<double>(dist[pa][pb]);
             }
@@ -185,7 +199,7 @@ static SabreRoutingResult sabre_route(
             // H_extended: lookahead into next layer
             double h_ext = 0.0;
             for (int nid : extended) {
-                const auto& wires = dag.nodes[nid].qubit_wires;
+                const auto& wires = dag.nodes[id_to_idx.at(nid)].qubit_wires;
                 if (wires.size() >= 2) {
                     int pa = tentative[wires[0]], pb = tentative[wires[1]];
                     h_ext += static_cast<double>(dist[pa][pb]);

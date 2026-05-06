@@ -516,6 +516,9 @@ QuantumCircuit QuantumCircuit::compose(const QuantumCircuit& other,
         if (static_cast<int>(qubits.size()) != other.n_qubits) {
             throw std::invalid_argument("Qubit mapping size mismatch");
         }
+        if (other.n_clbits > result.n_clbits) {
+            result.n_clbits = other.n_clbits;
+        }
         for (auto inst : other.instructions) {
             for (auto& q : inst.qubits) {
                 q = qubits[q];
@@ -660,6 +663,27 @@ QuantumCircuit QuantumCircuit::inverse() const {
                 break;
             }
 
+            case Instruction::GateType::UNITARY: {
+                size_t dim = static_cast<size_t>(
+                    std::round(std::sqrt(static_cast<double>(inv_inst.matrix.size()))));
+                std::vector<Complex128> conj_t(dim * dim);
+                for (size_t r = 0; r < dim; ++r)
+                    for (size_t c = 0; c < dim; ++c)
+                        conj_t[r * dim + c] = Complex128(
+                             inv_inst.matrix[c * dim + r].real,
+                            -inv_inst.matrix[c * dim + r].imag);
+                inv_inst.matrix = std::move(conj_t);
+                break;
+            }
+
+            // Symbolic gates cannot be inverted without resolving parameters; skip.
+            case Instruction::GateType::PARAM_RX:
+            case Instruction::GateType::PARAM_RY:
+            case Instruction::GateType::PARAM_RZ:
+            case Instruction::GateType::PARAM_P:
+            case Instruction::GateType::PARAM_U:
+                continue;
+
             default:
                 throw std::runtime_error(
                     "inverse() not implemented for gate: " + inv_inst.gate_name()
@@ -718,144 +742,100 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
             continue;
         }
 
-        if (num_ctrl_qubits == 1) {
-            int ctrl = 0;  // the added control qubit
-            // Map single-qubit gates → controlled variants
-            if (inst.qubits.size() == 1) {
-                int tgt = shifted_qubits[0];
-                Instruction ci;
-                ci.qubits = {ctrl, tgt};
-                ci.params = inst.params;
-                switch (inst.type) {
-                    case GT::X:   ci.type = GT::CX; break;
-                    case GT::Y:   ci.type = GT::CY; break;
-                    case GT::Z:   ci.type = GT::CZ; break;
-                    case GT::H:   ci.type = GT::CH; break;
-                    case GT::RX:  ci.type = GT::CRX; break;
-                    case GT::RY:  ci.type = GT::CRY; break;
-                    case GT::RZ:  ci.type = GT::CRZ; break;
-                    case GT::P: case GT::U1:
-                        ci.type = GT::CP; break;
-                    case GT::S: {
-                        ci.type = GT::CP;
-                        ci.params = {PI_2};
-                        break;
-                    }
-                    case GT::SDG: {
-                        ci.type = GT::CP;
-                        ci.params = {-PI_2};
-                        break;
-                    }
-                    case GT::T: {
-                        ci.type = GT::CP;
-                        ci.params = {PI_4};
-                        break;
-                    }
-                    case GT::TDG: {
-                        ci.type = GT::CP;
-                        ci.params = {-PI_4};
-                        break;
-                    }
-                    case GT::U: case GT::U3: {
-                        ci.type = GT::CU;
-                        ci.params = {inst.params[0], inst.params[1], inst.params[2], 0.0};
-                        break;
-                    }
-                    default: {
-                        // Generic: build controlled unitary from 2x2 matrix
-                        // For now, fall through to generic UNITARY approach
-                        goto generic_control;
-                    }
-                }
-                result.instructions.push_back(std::move(ci));
-                continue;
-            }
-
-            // Map two-qubit gates → three-qubit controlled versions
-            if (inst.qubits.size() == 2) {
-                int q0 = shifted_qubits[0], q1 = shifted_qubits[1];
-                switch (inst.type) {
-                    case GT::CX: {
-                        // CCX (Toffoli)
-                        Instruction ci;
-                        ci.type = GT::CCX;
-                        ci.qubits = {ctrl, q0, q1};
-                        result.instructions.push_back(std::move(ci));
-                        continue;
-                    }
-                    case GT::SWAP: {
-                        // CSWAP (Fredkin)
-                        Instruction ci;
-                        ci.type = GT::CSWAP;
-                        ci.qubits = {ctrl, q0, q1};
-                        result.instructions.push_back(std::move(ci));
-                        continue;
-                    }
-                    default:
-                        goto generic_control;
-                }
-            }
-        }
-
-        generic_control: {
-            // Generic controlled gate: build the block-diagonal controlled unitary
-            // [[I, 0], [0, U]] where U is the gate's unitary, controlled on ALL
-            // ctrl qubits being |1⟩.
-            //
-            // For multi-control: decompose as a cascade of Toffoli + controlled-U.
-            // For simplicity, emit the gate conditioned on ctrl qubit 0 first,
-            // then use MCX (multi-controlled X) ancilla techniques.
-            //
-            // Practical approach: for num_ctrl > 1, use Toffoli cascade to compute
-            // AND of controls into an ancilla, then single-controlled-U, then uncompute.
-            // But since we don't have ancilla management, we use the V-chain approach
-            // which doesn't need ancilla for up to 3 controls.
-            //
-            // For now: emit as UNITARY with the full controlled matrix.
-
+        // Generic controlled gate: block-diagonal [[I,0],[0,U]] for all ctrl=|1⟩.
+        // Declared as a lambda to replace the former goto-based flow.
+        auto emit_generic_ctrl = [&]() {
             int gate_qubits = static_cast<int>(inst.qubits.size());
             int total_gate_qubits = gate_qubits + num_ctrl_qubits;
             size_t gate_dim = 1ULL << gate_qubits;
             size_t total_dim = 1ULL << total_gate_qubits;
 
-            // Build the gate's unitary matrix
             std::vector<Complex128> gate_matrix;
             if (inst.type == GT::UNITARY && !inst.matrix.empty()) {
                 gate_matrix = inst.matrix;
             } else {
-                // Simulate to extract the unitary
                 gate_matrix.resize(gate_dim * gate_dim, Complex128(0, 0));
-                // Identity fallback for unknown gates
-                for (size_t i = 0; i < gate_dim; ++i) {
+                for (size_t i = 0; i < gate_dim; ++i)
                     gate_matrix[i * gate_dim + i] = Complex128(1, 0);
-                }
             }
 
-            // Build controlled matrix: identity everywhere except the
-            // bottom-right block (all controls = 1) which gets the gate matrix
             std::vector<Complex128> ctrl_matrix(total_dim * total_dim, Complex128(0, 0));
-            size_t ctrl_subspace = total_dim - gate_dim;  // offset where all ctrls = 1
-
-            // Fill identity for all rows except the controlled subspace
-            for (size_t i = 0; i < ctrl_subspace; ++i) {
+            size_t ctrl_subspace = total_dim - gate_dim;
+            for (size_t i = 0; i < ctrl_subspace; ++i)
                 ctrl_matrix[i * total_dim + i] = Complex128(1, 0);
-            }
-            // Fill gate matrix in the controlled subspace
-            for (size_t r = 0; r < gate_dim; ++r) {
-                for (size_t c = 0; c < gate_dim; ++c) {
-                    ctrl_matrix[(ctrl_subspace + r) * total_dim + (ctrl_subspace + c)] = gate_matrix[r * gate_dim + c];
-                }
-            }
+            for (size_t r = 0; r < gate_dim; ++r)
+                for (size_t c = 0; c < gate_dim; ++c)
+                    ctrl_matrix[(ctrl_subspace + r) * total_dim + (ctrl_subspace + c)] =
+                        gate_matrix[r * gate_dim + c];
 
             Instruction ci;
             ci.type = GT::UNITARY;
             ci.matrix = std::move(ctrl_matrix);
-            // Qubits: all control qubits + shifted target qubits
             for (int k = 0; k < num_ctrl_qubits; ++k) ci.qubits.push_back(k);
             for (int q : shifted_qubits) ci.qubits.push_back(q);
             ci.label = "c_" + inst.gate_name();
             result.instructions.push_back(std::move(ci));
+        };
+
+        if (num_ctrl_qubits == 1) {
+            int ctrl = 0;
+            if (inst.qubits.size() == 1) {
+                int tgt = shifted_qubits[0];
+                Instruction ci;
+                ci.qubits = {ctrl, tgt};
+                ci.params = inst.params;
+                bool handled = true;
+                switch (inst.type) {
+                    case GT::X:   ci.type = GT::CX;  break;
+                    case GT::Y:   ci.type = GT::CY;  break;
+                    case GT::Z:   ci.type = GT::CZ;  break;
+                    case GT::H:   ci.type = GT::CH;  break;
+                    case GT::RX:  ci.type = GT::CRX; break;
+                    case GT::RY:  ci.type = GT::CRY; break;
+                    case GT::RZ:  ci.type = GT::CRZ; break;
+                    case GT::P: case GT::U1:
+                        ci.type = GT::CP; break;
+                    case GT::S:   ci.type = GT::CP; ci.params = {PI_2};  break;
+                    case GT::SDG: ci.type = GT::CP; ci.params = {-PI_2}; break;
+                    case GT::T:   ci.type = GT::CP; ci.params = {PI_4};  break;
+                    case GT::TDG: ci.type = GT::CP; ci.params = {-PI_4}; break;
+                    case GT::U: case GT::U3:
+                        ci.type = GT::CU;
+                        ci.params = {inst.params[0], inst.params[1], inst.params[2], 0.0};
+                        break;
+                    default:
+                        handled = false; break;
+                }
+                if (handled) {
+                    result.instructions.push_back(std::move(ci));
+                } else {
+                    emit_generic_ctrl();
+                }
+                continue;
+            }
+
+            if (inst.qubits.size() == 2) {
+                int q0 = shifted_qubits[0], q1 = shifted_qubits[1];
+                switch (inst.type) {
+                    case GT::CX: {
+                        Instruction ci; ci.type = GT::CCX; ci.qubits = {ctrl, q0, q1};
+                        result.instructions.push_back(std::move(ci));
+                        continue;
+                    }
+                    case GT::SWAP: {
+                        Instruction ci; ci.type = GT::CSWAP; ci.qubits = {ctrl, q0, q1};
+                        result.instructions.push_back(std::move(ci));
+                        continue;
+                    }
+                    default:
+                        emit_generic_ctrl();
+                        continue;
+                }
+            }
         }
+
+        // num_ctrl_qubits > 1, or size >= 3 with num_ctrl == 1
+        emit_generic_ctrl();
     }
 
     return result;
@@ -944,6 +924,23 @@ std::string QuantumCircuit::to_qasm2() const {
 
         if (inst.type == Instruction::GateType::RESET) {
             oss << "reset q[" << inst.qubits[0] << "];\n";
+            continue;
+        }
+
+        // UNITARY and symbolic PARAM_* gates have no QASM 2.0 representation;
+        // emit as a comment so the output remains valid QASM.
+        if (inst.type == Instruction::GateType::UNITARY ||
+            inst.type == Instruction::GateType::PARAM_RX ||
+            inst.type == Instruction::GateType::PARAM_RY ||
+            inst.type == Instruction::GateType::PARAM_RZ ||
+            inst.type == Instruction::GateType::PARAM_P  ||
+            inst.type == Instruction::GateType::PARAM_U) {
+            oss << "// gate '" << gname << "' on";
+            for (size_t i = 0; i < inst.qubits.size(); ++i) {
+                if (i > 0) oss << ",";
+                oss << " q[" << inst.qubits[i] << "]";
+            }
+            oss << " omitted (not representable in QASM 2.0)\n";
             continue;
         }
 

@@ -88,7 +88,8 @@ The implementation measures the query register after the oracle and the second H
 
 - Runs the Deutsch-Jozsa circuit
 - Returns the classification result
-- Uses the measured query register to decide the answer
+- Compares the measurement against `std::string(n, '0')` — a zero string of
+  exactly `n` bits (the query register width), not the full bitstring
 
 ## Example Code
 

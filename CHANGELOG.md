@@ -4,6 +4,63 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.2.0] - 2026-05-05
+
+### Fixed
+
+- **1.1** `SabreLayout::run` — replaced in-place DAG node mutation with `to_circuit → remap → from_circuit` rebuild; avoids stale wire metadata in adjacency lists
+- **1.2** `VQE` — removed dead `nlopt_set_min_objective(nullptr)` call that preceded the correct call with `cb_data`
+- **1.3** `StabilizerState::measure` deterministic branch — replaced bare XOR accumulation with `rowmult()` for correct Pauli phase tracking
+- **1.4** `QuantumCircuit::control` — replaced `goto generic_control` (UB over variable initialisations) with `emit_generic_ctrl` lambda
+- **1.5** `DeutschJozsa::solve` — fixed off-by-one bitstring check (`bits.substr(1) == query_zero` → `bits == query_zero`)
+- **1.6** `BernsteinVazirani::solve` — replaced `counts.begin()` (arbitrary unordered_map entry) with `max_element` by count
+- **2.2** `orbits_by_power` (MAQAOA) — sort generators by power before orbit assignment; added `#include <numeric>` for `iota`
+- **2.4** `MPSState::measure_sequential` — renormalise by `probs[outcome]` from boundary contraction, not local Frobenius norm (invalid for non-canonical MPS)
+- **2.5** `SabreSwap` — build local `id_to_idx` map; resize `adj_out`/`in_deg`/`done` by `id_range` not `num_nodes`; all `dag.nodes[nid]` accesses now use correct index regardless of node ID sparsity after deletions
+- **2.6** `QPE::build_circuit` — fixed `CU_matrix` convention: control qubit is LSB (interleaved even=ctrl-0 / odd=ctrl-1 rows) to match `apply_unitary`'s targets[0]=LSB contract
+- **3.1** `QuantumCircuit::compose` (mapped branch) — expand `result.n_clbits` to accommodate `other.n_clbits` before copying instructions
+- **3.2** `QuantumCircuit::inverse` — `UNITARY` gates now emit conjugate-transpose; `PARAM_*` symbolic gates skipped (not thrown)
+- **3.3** `Sampler::run` batch — each circuit now receives a distinct seed (`base + i`) instead of sharing the same seed
+- **3.4** `Estimator` cache key — `circuit_structure_key` now includes `n_clbits` to avoid cross-circuit cache collisions
+- **4.1** `SparsePauliOp::to_matrix` — rewritten from O(n·4^n) tensor-product loop to O(2^n) per term using XOR-mask phase computation
+- **4.3** `Operator::power` — binary exponentiation O(log n) replaces naive O(n) repeated multiplication; added `n < 0` guard
+- **4.4** `SabreSwap` inner loop — adjacency list replaces O(E) edge scan for successor lookup
+- **4.5** `CouplingMap::heavy_hex` dedup — `unordered_set<uint64_t>` hash lookup replaces O(n) `std::find`
+- **4.8** `DAGCircuit::substitute_node` / `remove_node` — `adj_out`/`adj_in` changed from `vector<int>` to `vector<DAGEdge>`; edge collection and neighbour cleanup now O(degree) not O(E)
+- **5.1** `Estimator::run_single` — double-checked locking: transpilation now executes outside the mutex; only cache insertion/lookup is locked
+- **6.1** `QAOA::Options::optimizer` — optimizer selection now honours the `optimizer` field (COBYLA / NELDER_MEAD / POWELL)
+- **6.2** `Estimator::Options::shots` — documented that `shots` has no effect; Estimator always uses exact statevector evaluation
+- **6.3** `LocalBackend::version()` — updated from stale `"1.9.6-alpha"` to current version string
+- **6.4** `Grover::build_circuit` — added doc comment noting the default iteration formula assumes a single marked item
+- **6.5** `IsingHamiltonian` — explicit qubit↔bitstring-position mapping documented on `to_sparse_pauli_op` and `evaluate`
+- **7.1** `Statevector` constructor — lower bound changed from 0 to 1; valid range is now [1, 30]
+- **7.3** `MPSSimulator` — replaced magic numbers 18 and 25 with named constants `MPS_SV_CROSSOVER` and `MPS_SV_MAX_QUBITS`
+- **7.4** `NoiseModel` — documented that `before_gate` noise is unimplemented in `DensityMatrixSimulator`
+- **7.5** `CommutativeCancellation` — added fixed-point outer loop; pass now repeats until no changes
+- **7.6** `QuantumCircuit::to_qasm2` — `UNITARY` and `PARAM_*` gates emitted as comments instead of invalid gate names
+- **7.7** `Grover::search` — `num_iterations` resolved once before `build_circuit` to guarantee consistency in result
+
+### Changed
+
+- **5.2** `StabilizerState::measure` — signature changed from `uint64_t seed` to `std::mt19937_64& rng`; eliminates per-measurement RNG construction; `CliffordSimulator::run` passes its top-level `rng` by reference
+
+### Documentation
+
+- `docs/api/transpiler.md` — CommutativeCancellation: fixed-point loop and commutation rules documented; dependency query complexity updated for `adj_out`/`adj_in` (`DAGEdge`) adjacency
+- `docs/api/backends.md` — `version()` now documented as returning the `LINDBLAD_VERSION_LABEL` CMake macro; cannot drift from project version
+- `docs/api/grover.md` — `search()` resolves `num_iterations` before `build_circuit`; default formula annotated as single-marked-item only
+- `docs/api/qpe.md` — CU matrix LSB convention documented (even rows = ctrl-0 identity, odd rows = ctrl-1 U^k)
+- `docs/api/operators.md` — `to_matrix()` documented as O(2^n) per term via Pauli XOR-mask action
+- `docs/api/noise.md` — `before_gate` application documented as unimplemented in `DensityMatrixSimulator`
+- `docs/api/ising.md` — `evaluate()` MSB-first indexing (`bitstring[n-1-i]` = qubit `i`) documented explicitly
+- `docs/api/statevector.md` — valid `n_qubits` range corrected from [0, 30] to [1, 30]
+- `docs/algorithms/grover.md` — same corrections as `docs/api/grover.md`
+- `docs/algorithms/deutsch-jozsa.md` — `solve()` compares against `std::string(n, '0')` (query register width only)
+- `docs/algorithms/bernstein-vazirani.md` — `max_element` comparator and MSB→index reversal documented
+- `docs/algorithms/maqaoa.md` — `orbits_by_power` sort-first grouping behaviour documented
+- `docs/algorithms/qpe.md` — CU matrix LSB convention documented (same as `docs/api/qpe.md`)
+- `docs/algorithms/vqe.md` — `optimizer` field documented as wired: COBYLA / NELDER_MEAD / POWELL
+
 ## [R.1.1.1] - 2026-05-04
 
 ### Tests

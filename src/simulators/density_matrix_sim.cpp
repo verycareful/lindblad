@@ -129,8 +129,9 @@ void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
         bg_indices[bg_idx] = bg;
     }
 
-    // Scratch buffer: O(2^k) — reused across all blocks
-    std::vector<Complex128> scratch(sub_dim);
+    // Scratch buffer: O(2^k) — thread-local to avoid repeated allocation
+    thread_local std::vector<Complex128> scratch;
+    if (scratch.size() < sub_dim) scratch.resize(sub_dim);
 
     // ---- Left multiply: data = U * data  (updates row index) ----
     // For each background row index bg, and for each column col:

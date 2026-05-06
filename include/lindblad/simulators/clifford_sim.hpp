@@ -2,6 +2,7 @@
 
 #include "lindblad/types.hpp"
 
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -38,8 +39,9 @@ public:
     void apply_y(int qubit);
     void apply_z(int qubit);
 
-    // Measurement — returns 0 or 1
-    int measure(int qubit, bool random = true, uint64_t seed = 0);
+    // Measurement — returns 0 or 1.
+    // rng is only consumed when the outcome is random (stabilizer has X-support on qubit).
+    int measure(int qubit, bool random, std::mt19937_64& rng);
 
     // Expectation of Pauli string (+1, -1, or 0)
     int expectation_pauli(const std::string& pauli) const;

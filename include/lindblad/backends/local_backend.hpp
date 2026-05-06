@@ -65,7 +65,7 @@ public:
     );
 
     std::string name() const { return "lindblad_local_simulator"; }
-    std::string version() const { return "1.9.6-alpha"; }
+    std::string version() const { return LINDBLAD_VERSION_LABEL; }
     int max_qubits() const { return 30; }
 };
 

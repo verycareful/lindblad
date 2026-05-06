@@ -26,7 +26,8 @@ static QuantumCircuit build_circuit(
 
 Behavior (verified against `src/algorithms/grover.cpp`):
 
-- `num_iterations < 0` uses `round(pi/4 * sqrt(2^n))` with a minimum of 1
+- `num_iterations < 0` uses `round(π/4 · √(2^n))` with a minimum of 1; this
+  formula assumes **one marked item**
 - Starts with Hadamards on all qubits
 - Each iteration:
     - appends the oracle instructions
@@ -58,11 +59,15 @@ static Result search(
 
 Behavior:
 
-- Builds the circuit and measures all qubits
-- Runs `StatevectorSimulator::run`
+- Resolves `num_iterations` (if negative) **before** calling `build_circuit`, so
+  `result.num_iterations` is always consistent with the circuit that was executed
+- Builds the circuit, applies `measure_all`, and runs `StatevectorSimulator::run`
 - Chooses the bitstring with the highest count
 - Computes `probability` as `max_count / shots`
-- If `num_iterations < 0`, recomputes the default iteration count for the result
+
+**Note**: The default iteration formula `round(π/4 · √(2^n))` assumes **one marked item**.
+For $k > 1$ solutions pass `num_iterations` explicitly:
+$\lceil \frac{\pi}{4} \sqrt{\frac{2^n}{k}} \rceil$
 
 ## Example
 

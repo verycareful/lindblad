@@ -21,9 +21,9 @@ Statevector::Statevector(int n_qubits)
     , real_parts(nullptr)
     , imag_parts(nullptr)
 {
-    if (n_qubits < 0 || n_qubits > 30) {
+    if (n_qubits < 1 || n_qubits > 30) {
         throw std::invalid_argument(
-            "Statevector: n_qubits must be in [0, 30], got " + std::to_string(n_qubits)
+            "Statevector: n_qubits must be in [1, 30], got " + std::to_string(n_qubits)
         );
     }
 

@@ -411,27 +411,24 @@ std::string MPSState::measure_sequential(std::mt19937_64& rng) {
         int outcome = (dist(rng) < p0) ? 0 : 1;
         bits[q] = outcome ? '1' : '0';
 
-        // Project: zero out the other physical index and renormalize
+        // Project: zero out the other physical index
         auto& T = tensors[q];
         int other = 1 - outcome;
-        double norm_sq = 0.0;
-        for (int l = 0; l < T.bond_left; ++l) {
-            for (int r = 0; r < T.bond_right; ++r) {
+        for (int l = 0; l < T.bond_left; ++l)
+            for (int r = 0; r < T.bond_right; ++r)
                 T(l, other, r) = Complex128(0.0, 0.0);
-                auto& v = T(l, outcome, r);
-                norm_sq += v.real * v.real + v.imag * v.imag;
-            }
-        }
-        // Renormalize the kept amplitudes
-        if (norm_sq > 1e-30) {
-            double inv_norm = 1.0 / std::sqrt(norm_sq);
-            for (int l = 0; l < T.bond_left; ++l) {
+        // Renormalize by the correct conditional probability (computed above via
+        // boundary contraction). The local Frobenius norm differs from probs[outcome]
+        // for non-canonical MPS, causing accumulated error in subsequent measurements.
+        double prob_outcome = (outcome == 0) ? probs[0] : probs[1];
+        if (prob_outcome > 1e-30) {
+            double inv_norm = 1.0 / std::sqrt(prob_outcome);
+            for (int l = 0; l < T.bond_left; ++l)
                 for (int r = 0; r < T.bond_right; ++r) {
                     auto& v = T(l, outcome, r);
                     v.real *= inv_norm;
                     v.imag *= inv_norm;
                 }
-            }
         }
     }
 
@@ -442,8 +439,17 @@ std::string MPSState::measure_sequential(std::mt19937_64& rng) {
 // to_statevector — full contraction for N <= 25 (used for small systems)
 // =============================================================================
 
+// Hard memory limit: 2^25 complex doubles ≈ 512 MB. Distinct from the
+// performance crossover (MPS_SV_CROSSOVER) used in MPSSimulator::run.
+static constexpr int MPS_SV_MAX_QUBITS = 25;
+
+// Performance crossover: for N <= this value sequential MPS sampling
+// (O(shots * N * chi^3)) is slower than full statevector sampling
+// (O(N * chi^2 * 2^N)). Empirically ~18–20 for typical bond dimensions.
+static constexpr int MPS_SV_CROSSOVER = 18;
+
 Statevector MPSState::to_statevector() const {
-    if (n_qubits > 25) {
+    if (n_qubits > MPS_SV_MAX_QUBITS) {
         throw std::runtime_error("Too many qubits for full statevector conversion");
     }
 
@@ -855,14 +861,10 @@ MPSSimulator::Result MPSSimulator::run(
         }
     }
 
-    // Sample measurements.
-    // Use full statevector contraction only for small N where it is faster than
-    // sequential MPS measurement. The crossover is around N=18–20 (sequential
-    // measurement is O(shots * N * chi^3) vs contraction at O(N * chi^2 * 2^N)).
-    const int max_bond_dim_local = result.final_state.max_bond_dim;
-    const bool use_sv = (circuit.n_qubits + static_cast<int>(
-        std::log2(static_cast<double>(max_bond_dim_local) + 1.0))) <= 24
-        && circuit.n_qubits <= 18;
+    // Use full statevector contraction for small N (MPS_SV_CROSSOVER) where it
+    // outperforms sequential MPS sampling. MPS_SV_MAX_QUBITS is the hard memory
+    // limit for to_statevector() and is intentionally larger than the crossover.
+    const bool use_sv = circuit.n_qubits <= MPS_SV_CROSSOVER;
     if (shots > 0 && use_sv) {
         auto sv = result.final_state.to_statevector();
         result.counts = sv.sample_counts(shots, seed);

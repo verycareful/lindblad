@@ -67,7 +67,8 @@ Attaches noise channels to gate names and qubit patterns.
 - `add_quantum_error(error, gate_name, qubits)`
   - Adds a `GateError` for the gate name
   - `qubits` empty means all-qubit application
-  - The stored `GateError.after_gate` is always true
+  - `GateError.after_gate` is always set to `true`; before-gate error
+    application is not yet implemented in `DensityMatrixSimulator`
 - `add_all_qubit_quantum_error(error, gate_name)` is a convenience wrapper
 - `errors_for_gate(gate_name, qubits)`
   - Returns errors with empty `qubits` or an exact qubit list match

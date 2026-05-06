@@ -89,62 +89,60 @@ DAGCircuit CommutativeCancellation::run(const DAGCircuit& dag, const Transpilati
     int n = static_cast<int>(insts.size());
     std::vector<bool> removed(n, false);
 
-    // For each instruction, look ahead for a matching cancellation partner
-    // through commuting intermediate gates.
-    for (int i = 0; i < n; ++i) {
-        if (removed[i]) continue;
-        const auto& inst_i = insts[i];
+    // Fixed-point: repeat until a full pass makes no changes.
+    // A single forward pass misses cancellations exposed by earlier merges.
+    bool changed = true;
+    while (changed) {
+        changed = false;
 
-        if (!is_cancellable_rotation(inst_i) && !is_z_diagonal(inst_i)) continue;
+        for (int i = 0; i < n; ++i) {
+            if (removed[i]) continue;
+            const auto& inst_i = insts[i];
 
-        int wire = inst_i.qubits[0];
+            if (!is_cancellable_rotation(inst_i) && !is_z_diagonal(inst_i)) continue;
 
-        // Scan forward looking for a partner
-        for (int j = i + 1; j < n; ++j) {
-            if (removed[j]) continue;
-            const auto& inst_j = insts[j];
+            int wire = inst_i.qubits[0];
 
-            // Does inst_j touch our wire?
-            bool touches_wire = false;
-            for (int q : inst_j.qubits) {
-                if (q == wire) { touches_wire = true; break; }
-            }
+            for (int j = i + 1; j < n; ++j) {
+                if (removed[j]) continue;
+                const auto& inst_j = insts[j];
 
-            if (!touches_wire) continue;  // skip, doesn't affect our wire
+                bool touches_wire = false;
+                for (int q : inst_j.qubits) {
+                    if (q == wire) { touches_wire = true; break; }
+                }
 
-            // Check if it's the cancellation partner
-            if (rotations_cancel(inst_i, inst_j)) {
-                removed[i] = true;
-                removed[j] = true;
-                break;
-            }
+                if (!touches_wire) continue;
 
-            // Check if same-type rotation → merge angles
-            if (rotations_merge(inst_i, inst_j)) {
-                double merged = inst_i.params[0] + inst_j.params[0];
-                // Normalize: if result is ~0, remove both
-                if (std::abs(merged) < 1e-10) {
+                if (rotations_cancel(inst_i, inst_j)) {
                     removed[i] = true;
                     removed[j] = true;
-                } else {
-                    // Replace i with merged, remove j
-                    insts[i].params[0] = merged;
-                    removed[j] = true;
+                    changed = true;
+                    break;
                 }
+
+                if (rotations_merge(inst_i, inst_j)) {
+                    double merged = inst_i.params[0] + inst_j.params[0];
+                    if (std::abs(merged) < 1e-10) {
+                        removed[i] = true;
+                        removed[j] = true;
+                    } else {
+                        insts[i].params[0] = merged;
+                        removed[j] = true;
+                    }
+                    changed = true;
+                    break;
+                }
+
+                if (commutes_on_wire(inst_i, inst_j, wire)) {
+                    continue;
+                }
+
                 break;
             }
-
-            // Check if we can commute through inst_j
-            if (commutes_on_wire(inst_i, inst_j, wire)) {
-                continue;  // keep looking past this gate
-            }
-
-            // Can't commute through — stop looking
-            break;
         }
     }
 
-    // Build output
     QuantumCircuit optimized(qc.n_qubits, qc.n_clbits);
     for (int i = 0; i < n; ++i) {
         if (!removed[i]) {

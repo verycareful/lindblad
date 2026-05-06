@@ -98,17 +98,20 @@ Operator Operator::adjoint() const {
 }
 
 Operator Operator::power(int n) const {
-    if (n == 0) {
-        size_t d = dim();
-        std::vector<Complex128> id(d * d, Complex128(0.0, 0.0));
-        for (size_t i = 0; i < d; ++i) id[i * d + i] = Complex128(1.0, 0.0);
-        return Operator(id, n_qubits);
-    }
-    if (n == 1) return *this;
+    if (n < 0) throw std::invalid_argument("Operator::power requires n >= 0");
 
-    Operator result = *this;
-    for (int i = 1; i < n; ++i) {
-        result = result.compose(*this);
+    size_t d = dim();
+    std::vector<Complex128> id(d * d, Complex128(0.0, 0.0));
+    for (size_t i = 0; i < d; ++i) id[i * d + i] = Complex128(1.0, 0.0);
+    if (n == 0) return Operator(id, n_qubits);
+
+    // Binary exponentiation: O(log n) multiplications instead of O(n).
+    Operator result(id, n_qubits);
+    Operator base = *this;
+    while (n > 0) {
+        if (n & 1) result = result.compose(base);
+        base = base.compose(base);
+        n >>= 1;
     }
     return result;
 }

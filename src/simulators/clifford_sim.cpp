@@ -157,7 +157,7 @@ void StabilizerState::apply_z(int qubit) {
     }
 }
 
-int StabilizerState::measure(int qubit, bool random, uint64_t seed) {
+int StabilizerState::measure(int qubit, bool random, std::mt19937_64& rng) {
     int N = n_qubits;
 
     // Check if the outcome is deterministic or random
@@ -191,7 +191,6 @@ int StabilizerState::measure(int qubit, bool random, uint64_t seed) {
         // Random outcome
         int result;
         if (random) {
-            std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
             std::uniform_int_distribution<int> dist(0, 1);
             result = dist(rng);
         } else {
@@ -206,22 +205,24 @@ int StabilizerState::measure(int qubit, bool random, uint64_t seed) {
         // The measurement outcome is determined by the phase of the stabilizer
         // that anticommutes with Z on this qubit
         
-        // Create a scratch row
-        std::vector<bool> scratch(2 * N + 1, false);
-        scratch[N + qubit] = true;  // Z on this qubit
+        // Scratch row index: use a temporary row appended past 2N
+        // We borrow row 0 (destabilizer 0) after saving and restoring it.
+        // Instead, add a scratch row at index 2*N in a temporary tableau copy.
+        // Simpler: use the scratch_row technique — append a row to the tableau,
+        // do rowmult calls on it, read the phase, then drop it.
+        tableau.push_back(std::vector<bool>(2 * N + 1, false));
+        int scratch_idx = static_cast<int>(tableau.size()) - 1;
+        tableau[scratch_idx][N + qubit] = true;  // Z on this qubit
 
-        // Find destabilizers with X bit set on this qubit
-        // and multiply them into the scratch row
         for (int i = 0; i < N; ++i) {
             if (tableau[i][qubit]) {
-                // Multiply stabilizer i+N into scratch
-                for (int j = 0; j < 2 * N + 1; ++j) {
-                    scratch[j] = scratch[j] ^ tableau[i + N][j];
-                }
+                rowmult(scratch_idx, i + N);
             }
         }
 
-        return scratch[2 * N] ? 1 : 0;
+        int outcome = tableau[scratch_idx][2 * N] ? 1 : 0;
+        tableau.pop_back();
+        return outcome;
     }
 }
 
@@ -416,7 +417,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                     state.apply_cx(inst.qubits[0], inst.qubits[1]);
                     break;
                 case GT::MEASURE: {
-                    int outcome = state.measure(inst.qubits[0], true, rng());
+                    int outcome = state.measure(inst.qubits[0], true, rng);
                     bitstring[inst.qubits[0]] = outcome ? '1' : '0';
                     break;
                 }

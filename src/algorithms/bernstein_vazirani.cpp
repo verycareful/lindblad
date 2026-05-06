@@ -27,8 +27,9 @@ BernsteinVazirani::Result BernsteinVazirani::solve(const QuantumCircuit& oracle,
     auto qc = build_circuit(oracle, n);
     StatevectorSimulator sim;
     auto res = sim.run(qc, shots, seed);
-    std::string bits = res.counts.begin()->first;
-    std::string secret = bits.substr(1);          // drop ancilla at pos 0
+    auto best = std::max_element(res.counts.begin(), res.counts.end(),
+        [](const auto& a, const auto& b){ return a.second < b.second; });
+    std::string secret = best->first;
     std::reverse(secret.begin(), secret.end());   // MSB-first → index order
     return { secret };
 }

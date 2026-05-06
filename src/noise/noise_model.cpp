@@ -29,6 +29,8 @@ void NoiseModel::add_quantum_error(
     GateError ge;
     ge.channel = error;
     ge.qubits = qubits;
+    // before_gate application is not yet implemented in DensityMatrixSimulator;
+    // all errors are applied after the gate.
     ge.after_gate = true;
     basis_gate_errors[gate_name].push_back(ge);
 

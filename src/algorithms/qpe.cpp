@@ -53,13 +53,17 @@ QuantumCircuit QPE::build_circuit(
             for (size_t c = 0; c < ud; ++c)
                 Upow_flat[r * ud + c] = Complex128(Up[r][c].real(), Up[r][c].imag());
 
+        // apply_unitary maps targets[0] (= ctrl qubit k) to bit 0 (LSB) of the
+        // subspace index.  Even subspace indices have ctrl=0; odd have ctrl=1.
         size_t full_dim = 1ULL << (1 + nu);
         std::vector<Complex128> CU_matrix(full_dim * full_dim, Complex128(0.0, 0.0));
+        // ctrl=0 block: even rows/cols (bit 0 = 0) → identity
         for (size_t t = 0; t < ud; ++t)
-            CU_matrix[t * full_dim + t] = Complex128(1.0, 0.0);
+            CU_matrix[(2 * t) * full_dim + (2 * t)] = Complex128(1.0, 0.0);
+        // ctrl=1 block: odd rows/cols (bit 0 = 1) → U^power
         for (size_t r = 0; r < ud; ++r)
             for (size_t c = 0; c < ud; ++c)
-                CU_matrix[(ud + r) * full_dim + (ud + c)] = Upow_flat[r * ud + c];
+                CU_matrix[(2 * r + 1) * full_dim + (2 * c + 1)] = Upow_flat[r * ud + c];
 
         Instruction ctrl_u;
         ctrl_u.type = Instruction::GateType::UNITARY;

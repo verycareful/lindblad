@@ -6,6 +6,10 @@
 //   Runs a SABRE-Swap forward pass, then backward pass, then another forward
 //   pass. Takes the best (fewest SWAPs) of the three runs and returns the
 //   corresponding logical→physical mapping applied to the DAG.
+//
+//   Output DAG invariant: n_qubits == coupling_map.n_physical_qubits.
+//   All qubit indices in instructions and edges refer to physical qubits.
+//   SabreSwap must use an identity initial_layout on this output.
 
 #include "lindblad/transpiler.hpp"
 
@@ -228,27 +232,20 @@ DAGCircuit SabreLayout::run(const DAGCircuit& dag, const TranspilationContext& c
         best_layout = result_final.final_layout;
     }
 
-    // Apply the best initial layout to the DAG
-    // Remap qubit indices in all OP nodes
-    DAGCircuit result = dag;
-    // Build inverse layout: physical → logical (which logical is at physical p)
-    std::vector<int> inv_layout(ctx.coupling_map.n_physical_qubits, -1);
-    for (int l = 0; l < N; ++l) inv_layout[best_layout[l]] = l;
-
-    // We apply the layout permutation to the circuit's qubit indices
-    // so that logical qubit l now operates on physical qubit best_layout[l]
-    // The SabreSwap pass will then insert SWAPs for non-adjacent gates.
-    for (auto& node : result.nodes) {
-        if (node.type != DAGNode::Type::OP) continue;
-        for (auto& q : node.qubit_wires) {
-            q = best_layout[q];
-        }
-        for (auto& q : node.op.qubits) {
+    // Apply the best initial layout by rebuilding the DAG from a remapped circuit.
+    // Mutating node.qubit_wires/op.qubits in place would leave DAGEdge::wire fields
+    // referencing stale logical indices, corrupting substitute_node, remove_node,
+    // and wire-based successor matching in the subsequent SabreSwap routing pass.
+    // n_qubits is expanded to n_physical_qubits so from_circuit correctly sizes
+    // the IN-node array and last_qubit_node lookup for physical qubit indices.
+    QuantumCircuit mapped_qc = dag.to_circuit();
+    mapped_qc.n_qubits = ctx.coupling_map.n_physical_qubits;
+    for (auto& inst : mapped_qc.instructions) {
+        for (auto& q : inst.qubits) {
             q = best_layout[q];
         }
     }
-
-    return result;
+    return DAGCircuit::from_circuit(mapped_qc);
 }
 
 } // namespace lindblad

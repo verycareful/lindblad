@@ -72,7 +72,8 @@ The implementation constructs the diffusion operator directly in the circuit and
 ### `Grover::build_circuit`
 
 - Takes the oracle circuit and an optional iteration count
-- If the iteration count is negative, the implementation uses the usual `pi/4 * sqrt(N)` style estimate
+- If the iteration count is negative, uses `round(π/4 · √(2^n))` with a minimum
+  of 1; this formula assumes **one marked item**
 - Returns a `QuantumCircuit` containing the full Grover iterate sequence
 
 ### `Grover::Result`
@@ -83,8 +84,9 @@ The implementation constructs the diffusion operator directly in the circuit and
 
 ### `Grover::search`
 
-- Builds the Grover circuit
-- Measures all qubits
+- Resolves `num_iterations` before calling `build_circuit` so that
+  `result.num_iterations` always matches the circuit that was run
+- Builds the Grover circuit, applies `measure_all`, and runs statevector simulation
 - Returns the most likely observed solution and its empirical probability
 
 ## Example Code

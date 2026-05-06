@@ -446,6 +446,17 @@ class MPSState {
 
 **Complexity**: $O(n \cdot \chi^3)$ per shot (not $O(2^n)$ like statevector)
 
+### Statevector Crossover
+
+`MPSSimulator::run` uses two named thresholds:
+
+- `MPS_SV_CROSSOVER = 18`: circuits with `n_qubits ≤ 18` sample via full statevector conversion (faster)
+- `MPS_SV_MAX_QUBITS = 25`: `to_statevector()` throws for `n_qubits > 25` (memory guard, ~512 MB at that size)
+
+### Measurement Normalization
+
+After `measure_sequential` projects a qubit, the remaining MPS tensors are renormalized by dividing by `sqrt(prob)` where `prob` is the boundary-contraction probability of the observed outcome — **not** the local Frobenius norm (which differs for non-canonical MPS and would not give correct conditional probabilities).
+
 ### Conversion to Exact Statevector
 
 For small systems, convert back to statevector via boundary contraction:
@@ -454,6 +465,7 @@ For small systems, convert back to statevector via boundary contraction:
 Statevector MPSState::to_statevector() const {
     // Contract all tensors: M_0 @ M_1 @ ... @ M_{n-1}
     // O(n * chi^3) time, O(2^n) space
+    // Throws if n_qubits > MPS_SV_MAX_QUBITS (25)
 }
 ```
 

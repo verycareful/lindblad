@@ -15,13 +15,18 @@ std::vector<std::unordered_map<std::string, int>> Sampler::run(
     std::vector<std::unordered_map<std::string, int>> results;
     results.reserve(circuits.size());
 
+    const uint64_t base_seed = options.seed;
     for (size_t i = 0; i < circuits.size(); ++i) {
         std::vector<double> params;
         if (i < parameter_values.size()) {
             params = parameter_values[i];
         }
+        // Give each circuit a distinct seed so batch results are independent.
+        // seed==0 means "random"; preserve that by not offsetting.
+        if (base_seed != 0) options.seed = base_seed + static_cast<uint64_t>(i);
         results.push_back(run_single(circuits[i], params));
     }
+    options.seed = base_seed;
 
     return results;
 }
