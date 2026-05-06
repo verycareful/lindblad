@@ -38,7 +38,7 @@ public:
         bool success = true;
         std::string error_message;
 
-        Result() : final_state(0) {}
+        Result() : final_state(1) {}
         Result(Result&&) = default;
         Result& operator=(Result&&) = default;
     };
