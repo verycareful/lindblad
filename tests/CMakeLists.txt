@@ -14,6 +14,12 @@ set(LINDBLAD_TEST_SOURCES
     test_maqaoa_microgrid.cpp
     test_integration.cpp
     test_classic_algorithms.cpp
+    # R.1.3.1 test suite
+    test_simulators_r130.cpp
+    test_mps_sim.cpp
+    test_gates_extended.cpp
+    test_operators_qi.cpp
+    test_ising.cpp
 )
 
 # Create test executable
