@@ -82,6 +82,12 @@ QuantumCircuit QPE::build_circuit(
         qc.h(i);
     }
 
+    // IQFT outputs the phase in bit-reversed qubit order; reverse it so
+    // qubit 0 holds the MSB and estimate_phase decodes correctly.
+    for (int i = 0; i < num_eval_qubits / 2; ++i) {
+        qc.swap(i, num_eval_qubits - 1 - i);
+    }
+
     return qc;
 }
 

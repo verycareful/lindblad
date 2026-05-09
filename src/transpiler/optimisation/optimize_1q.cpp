@@ -336,8 +336,47 @@ static Eigen::Matrix4cd instruction_to_4x4(const Instruction& inst) {
     return U;
 }
 
+// Tensor-product split: W (4x4) = W1 ⊗ W0  (W1 = qubit-1/MSB, W0 = qubit-0/LSB)
+// W is promised to be a tensor product (up to numerical error).
+static void tensor_factor(const Eigen::Matrix4cd& W,
+                           Eigen::Matrix2cd& W0, Eigen::Matrix2cd& W1) {
+    double norms[4] = {
+        W.block<2,2>(0,0).norm(), W.block<2,2>(0,2).norm(),
+        W.block<2,2>(2,0).norm(), W.block<2,2>(2,2).norm()
+    };
+    int best = (int)(std::max_element(norms, norms + 4) - norms);
+    int ri = (best >= 2) ? 2 : 0, ci = (best % 2) ? 2 : 0;
+
+    Eigen::JacobiSVD<Eigen::Matrix2cd> svd0(W.block<2,2>(ri, ci),
+                                             Eigen::ComputeFullU | Eigen::ComputeFullV);
+    W0 = svd0.matrixU() * svd0.matrixV().adjoint();
+
+    Eigen::Matrix2cd W0inv = W0.adjoint();
+    for (int i = 0; i < 2; ++i)
+        for (int j = 0; j < 2; ++j)
+            W1(i, j) = (W0inv * W.block<2,2>(2 * i, 2 * j)).trace() / 2.0;
+
+    Eigen::JacobiSVD<Eigen::Matrix2cd> svd1(W1, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    W1 = svd1.matrixU() * svd1.matrixV().adjoint();
+}
+
+// Emit a single-qubit U3 gate, or nothing if the matrix is identity.
+static void emit_1q(QuantumCircuit& circ, const Eigen::Matrix2cd& U2, int q) {
+    if (is_identity_2x2(U2, 1e-10)) return;
+    auto [phi, theta, lam, gphase] = zyz_decompose(U2);
+    (void)gphase;
+    constexpr double atol = 1e-10;
+    if (std::abs(theta) < atol && std::abs(phi) < atol && std::abs(lam) < atol) return;
+    Instruction u3;
+    u3.type = Instruction::GateType::U;
+    u3.qubits = {q};
+    u3.params = {theta, phi, lam};
+    circ.instructions.push_back(u3);
+}
+
 // KAK decomposition. Decomposes U4 into local gates + exp(i*H_interaction).
-// Returns the optimal gate sequence as a QuantumCircuit on qubits [0,1].
+// U = (V1⊗V0) · exp(i*(kx·XX + ky·YY + kz·ZZ)) · (W1⊗W0)
+// Returns the full gate sequence as a QuantumCircuit on qubits [0,1].
 static QuantumCircuit kak_decompose(const Eigen::Matrix4cd& U4, int q0, int q1) {
     // Magic basis transform: M = 1/sqrt(2) * [[1,0,0,i],[0,i,1,0],[0,i,-1,0],[1,0,0,-i]]
     // In magic basis: U_M = M† U M — this separates local from entangling parts.
@@ -434,39 +473,62 @@ static QuantumCircuit kak_decompose(const Eigen::Matrix4cd& U4, int q0, int q1) 
     // If two non-zero: 2 CX
     // Otherwise: 3 CX
 
-    // For the output circuit, build the gate sequence.
-    // This is a simplified (but correct) KAK that applies the interaction
-    // as RZZ + RYY + RXX gate sequences.
+    // ---- Extract local correction gates via Takagi factorization ----
+    // S = Ud^T Ud = L_M^T A_d^2 L_M  (L_M complex-orthogonal in magic basis)
+    // Takagi vectors: u_j = exp(-i*arg(v_j^T v_j)/2) * v_j  where v_j = Q[:,j].
+    // These satisfy u_j^T u_k = delta_jk for distinct eigenvalues of S.
+
+    Eigen::Matrix4cd Q = schur.matrixU();
+
+    Eigen::Matrix4cd L_M;
+    for (int j = 0; j < 4; ++j) {
+        Eigen::Vector4cd v = Q.col(j);
+        std::complex<double> vTv(0.0, 0.0);
+        for (int i = 0; i < 4; ++i) vTv += v(i) * v(i);
+        double ph = (std::abs(vTv) > 1e-12) ? -std::arg(vTv) / 2.0 : 0.0;
+        L_M.col(j) = std::exp(std::complex<double>(0.0, ph)) * v;
+    }
+
+    // A_d diagonal from Schur eigenvalue phases
+    Eigen::Vector4cd ad_diag, ad_inv_diag;
+    for (int j = 0; j < 4; ++j) {
+        ad_diag(j)     = std::exp(std::complex<double>(0.0,  phases[j]));
+        ad_inv_diag(j) = std::exp(std::complex<double>(0.0, -phases[j]));
+    }
+
+    // K_M = Ud · L_M^T · A_d^{-1}
+    Eigen::Matrix4cd K_M = Ud * L_M.transpose() * ad_inv_diag.asDiagonal();
+
+    // Convert to physical basis
+    Eigen::Matrix4cd W_phys = M * L_M * M.adjoint();  // W1 ⊗ W0 (pre-rotation)
+    Eigen::Matrix4cd V_phys = M * K_M * M.adjoint();  // V1 ⊗ V0 (post-rotation)
+
+    Eigen::Matrix2cd W0, W1, V0, V1;
+    tensor_factor(W_phys, W0, W1);
+    tensor_factor(V_phys, V0, V1);
+
+    // Build result circuit: (W1⊗W0) → interaction → (V1⊗V0)
     QuantumCircuit result(2);
-
     constexpr double atol = 1e-10;
-    bool has_kx = std::abs(kx) > atol;
-    bool has_ky = std::abs(ky) > atol;
-    bool has_kz = std::abs(kz) > atol;
 
-    // Interaction: exp(i*(kx*XX + ky*YY + kz*ZZ))
-    // Decompose as product of exp(i*kz*ZZ) * exp(i*ky*YY) * exp(i*kx*XX)
-    // Using: exp(i*k*XX) = CX · exp(i*k*IZ) · CX
-    // This converts to CNOT-diagonal-CNOT sequences.
+    emit_1q(result, W0, 0);
+    emit_1q(result, W1, 1);
 
-    if (has_kz) {
-        // exp(i*kz*ZZ) = RZZ(2*kz)
+    if (std::abs(kz) > atol) {
         Instruction rzz;
         rzz.type = Instruction::GateType::RZZ;
         rzz.qubits = {0, 1};
         rzz.params = {2.0 * kz};
         result.instructions.push_back(rzz);
     }
-    if (has_ky) {
-        // exp(i*ky*YY) = RYY(2*ky)
+    if (std::abs(ky) > atol) {
         Instruction ryy;
         ryy.type = Instruction::GateType::RYY;
         ryy.qubits = {0, 1};
         ryy.params = {2.0 * ky};
         result.instructions.push_back(ryy);
     }
-    if (has_kx) {
-        // exp(i*kx*XX) = RXX(2*kx)
+    if (std::abs(kx) > atol) {
         Instruction rxx;
         rxx.type = Instruction::GateType::RXX;
         rxx.qubits = {0, 1};
@@ -474,10 +536,12 @@ static QuantumCircuit kak_decompose(const Eigen::Matrix4cd& U4, int q0, int q1) 
         result.instructions.push_back(rxx);
     }
 
+    emit_1q(result, V0, 0);
+    emit_1q(result, V1, 1);
+
     // Remap qubits from [0,1] to actual [q0,q1]
-    for (auto& i : result.instructions) {
-        for (auto& q : i.qubits) q = (q == 0) ? q0 : q1;
-    }
+    for (auto& inst : result.instructions)
+        for (auto& q : inst.qubits) q = (q == 0) ? q0 : q1;
 
     return result;
 }

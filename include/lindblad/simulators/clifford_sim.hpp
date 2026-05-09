@@ -2,6 +2,7 @@
 
 #include "lindblad/types.hpp"
 
+#include <cstdint>
 #include <random>
 #include <string>
 #include <unordered_map>
@@ -15,19 +16,19 @@ class DensityMatrix;
 // =============================================================================
 // StabilizerState — Tableau representation for Clifford circuits
 // =============================================================================
+//
+// Aaronson-Gottesman (2004) tableau with word-packed row storage.
+// Rows 0..N-1: destabilizers; rows N..2N-1: stabilizers.
+// Columns 0..N-1: X part; columns N..2N-1: Z part.
+// Phase bit stored separately per row in ph[] (0=+1, 1=-1).
+//
+// Each row's X/Z bits are packed into ceil(2N/64) uint64_t words.
+// rowmult XOR uses word-level operations: ~64× faster than vector<bool> at N>100.
 
 class StabilizerState {
 public:
     int n_qubits;
-    // Tableau: 2N rows × (2N+1) columns binary matrix
-    // Rows 0..N-1: destabilizers
-    // Rows N..2N-1: stabilizers
-    // Columns 0..N-1: X part
-    // Columns N..2N-1: Z part
-    // Column 2N: phase bit (0 = +1, 1 = -1)
-    std::vector<std::vector<bool>> tableau;
 
-public:
     explicit StabilizerState(int n_qubits);
 
     // Clifford gates
@@ -47,6 +48,20 @@ public:
     int expectation_pauli(const std::string& pauli) const;
 
 private:
+    int              wpr;      // words per row: ceil(2*n_qubits / 64)
+    int              num_rows; // normally 2*n_qubits; +1 during scratch measurement
+    std::vector<uint64_t> tab; // flat row-major X/Z bits; row i at [i*wpr, (i+1)*wpr)
+    std::vector<uint8_t>  ph;  // phase bit per row (0=+1, 1=-1)
+
+    bool get_xz(int row, int col) const;
+    void set_xz(int row, int col, bool v);
+    void flip_xz(int row, int col);
+    void xor_row(int dest, int src);  // word-level XOR of X/Z bits
+    void copy_row(int dest, int src);
+    void zero_row(int row);
+    void push_scratch();
+    void pop_scratch();
+
     void rowmult(int dest, int src);
 };
 

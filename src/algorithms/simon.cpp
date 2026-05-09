@@ -69,8 +69,8 @@ Simon::Result Simon::solve(const QuantumCircuit& oracle, int n,
          attempt < n * 4 && (int)equations.size() < n - 1 + extra_samples;
          ++attempt) {
         auto res = sim.run(qc, 1, rng());
-        std::string raw = res.counts.begin()->first; // 2n chars, MSB-first
-        std::string y = raw.substr(n);               // query register, still MSB-first
+        std::string raw = res.counts.begin()->first; // n chars, MSB-first (only query qubits 0..n-1 measured)
+        std::string y = raw;                          // already the query register
         std::reverse(y.begin(), y.end());            // y[j] = qubit j
         if (y == std::string(n, '0')) continue;
         bool dup = false;

@@ -94,22 +94,18 @@ void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
         throw std::invalid_argument("Gate matrix size mismatch");
     }
 
-    // Sort target qubits and mark them for fast lookup
-    std::vector<int> sorted_tgts = qubits;
-    std::sort(sorted_tgts.begin(), sorted_tgts.end());
-
+    // Mark target qubits for background-index enumeration.
     std::vector<bool> is_tgt(n_qubits, false);
     for (int q : qubits) is_tgt[q] = true;
 
-    // Precompute the column offsets that each sub-index contributes to a full index.
-    // Gate matrices use MSB-first qubit order (first qubit = MSB of matrix index),
-    // so sub-index bit qi must map to sorted_tgts[k-1-qi] to maintain that convention.
-    // For k=1 this is a no-op; for k=2 it maps sub-bit 0→target, sub-bit 1→control.
+    // Map sub-index → physical address using the ORIGINAL qubit order.
+    // Gate matrices are MSB-first: qubits[0] is the MSB of the matrix index.
+    // Sub-index bit qi (LSB=0) therefore maps to physical qubit qubits[k-1-qi].
     std::vector<size_t> sub_offsets(sub_dim);
     for (size_t s = 0; s < sub_dim; ++s) {
         size_t off = 0;
         for (int qi = 0; qi < k; ++qi)
-            if ((s >> qi) & 1) off |= (size_t(1) << sorted_tgts[k - 1 - qi]);
+            if ((s >> qi) & 1) off |= (size_t(1) << qubits[k - 1 - qi]);
         sub_offsets[s] = off;
     }
 
@@ -183,14 +179,15 @@ void DensityMatrix::apply_kraus(
     const std::vector<std::vector<Complex128>>& kraus_ops,
     const std::vector<int>& qubits
 ) {
+    // Save the original rho once so we can restore it before each K application
+    // without re-allocating a new DensityMatrix per Kraus operator.
+    const auto original = data;
     std::vector<Complex128> result_data(dim * dim, Complex128(0.0, 0.0));
 
     for (const auto& K : kraus_ops) {
-        DensityMatrix temp = *this;
-        temp.apply_gate(K, qubits);
-        for (size_t i = 0; i < dim * dim; ++i) {
-            result_data[i] += temp.data[i];
-        }
+        data = original;        // restore rho (overwrites existing allocation)
+        apply_gate(K, qubits);  // rho -> K * rho * K†  in-place
+        for (size_t i = 0; i < dim * dim; ++i) result_data[i] += data[i];
     }
 
     data = std::move(result_data);
@@ -218,34 +215,50 @@ double DensityMatrix::expectation_value_sparse(const SparsePauliOp& hamiltonian)
         throw std::invalid_argument("Hamiltonian qubit count mismatch");
     }
 
+    // Tr(ρH) = Σ_terms coeff · Tr(ρ · P_term)
+    // For each Pauli string, P[col, row] ≠ 0 only when col = row ⊕ flip_mask,
+    // where flip_mask covers X and Y qubit positions.
+    // phase(row) = Π_{Z qubits} (-1)^{bit} · Π_{Y qubits} i·(-1)^{bit}
     double result = 0.0;
-    for (size_t basis = 0; basis < dim; ++basis) {
-        const double rho_bb = data[basis * dim + basis].real;
-        if (rho_bb == 0.0) continue;
-
-        double energy = 0.0;
-        for (const auto& term : hamiltonian.terms) {
-            double eigenvalue = 1.0;
-            bool diagonal = true;
-
-            for (int q = 0; q < nq; ++q) {
-                const char p = term.pauli[q];
-                if (p == 'I') continue;
-                if (p == 'Z') {
-                    const bool bit_set = ((basis >> (nq - 1 - q)) & 1ULL) != 0;
-                    eigenvalue *= bit_set ? -1.0 : 1.0;
-                } else {
-                    diagonal = false;
-                    break;
-                }
-            }
-
-            if (diagonal) {
-                energy += term.coeff.real * eigenvalue;
+    for (const auto& term : hamiltonian.terms) {
+        // pauli[q] acts on qubit (nq-1-q) = bit position (nq-1-q) in basis index.
+        size_t flip_mask = 0;
+        std::vector<int> z_bits, y_bits;
+        for (int q = 0; q < nq; ++q) {
+            const char p = term.pauli[q];
+            const int bit = nq - 1 - q;
+            if (p == 'X' || p == 'x') {
+                flip_mask |= (1ULL << bit);
+            } else if (p == 'Y' || p == 'y') {
+                flip_mask |= (1ULL << bit);
+                y_bits.push_back(bit);
+            } else if (p == 'Z' || p == 'z') {
+                z_bits.push_back(bit);
             }
         }
 
-        result += energy * rho_bb;
+        double tr_re = 0.0, tr_im = 0.0;
+        for (size_t row = 0; row < dim; ++row) {
+            const size_t col = row ^ flip_mask;
+
+            // Build phase from Z and Y qubits.
+            double ph_re = 1.0, ph_im = 0.0;
+            for (int b : z_bits) {
+                if ((row >> b) & 1) { ph_re = -ph_re; ph_im = -ph_im; }
+            }
+            for (int b : y_bits) {
+                // multiply by i: (re,im) → (-im, re)
+                double t = ph_re; ph_re = -ph_im; ph_im = t;
+                // then by (-1)^{bit}
+                if ((row >> b) & 1) { ph_re = -ph_re; ph_im = -ph_im; }
+            }
+
+            const Complex128& rho_rc = data[row * dim + col];
+            tr_re += rho_rc.real * ph_re - rho_rc.imag * ph_im;
+            tr_im += rho_rc.real * ph_im + rho_rc.imag * ph_re;
+        }
+
+        result += term.coeff.real * tr_re - term.coeff.imag * tr_im;
     }
 
     return result;

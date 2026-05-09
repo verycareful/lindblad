@@ -51,53 +51,47 @@ void MPSState::svd_truncate(
     std::vector<Complex128>& Vt_out,
     int& new_rank
 ) {
-    // Map into Eigen complex matrix
+    // Complex128 {double real, double imag} is layout-identical to std::complex<double>.
+    // Zero-copy Eigen::Map avoids the O(rows*cols) element-by-element copy before SVD.
     using EigenCMatrix = Eigen::Matrix<std::complex<double>, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
-    EigenCMatrix mat(rows, cols);
-    for (int i = 0; i < rows; ++i)
-        for (int j = 0; j < cols; ++j)
-            mat(i, j) = std::complex<double>(M[i * cols + j].real, M[i * cols + j].imag);
+    Eigen::Map<const EigenCMatrix> mat(
+        reinterpret_cast<const std::complex<double>*>(M.data()),
+        rows, cols
+    );
 
-    // BDCSVD with full U and V (for thin: rows = left bond * 2, cols = 2 * right bond, both small)
     Eigen::BDCSVD<EigenCMatrix> svd(mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
     const auto& S_eigen = svd.singularValues();  // sorted descending
-    const auto& U_eigen = svd.matrixU();          // rows x rank
-    const auto& V_eigen = svd.matrixV();          // cols x rank  (V, NOT Vt)
+    const auto& U_eigen = svd.matrixU();          // rows × thin_rank, column-major
+    const auto& V_eigen = svd.matrixV();          // cols × thin_rank  (V, not Vt), column-major
 
-    int min_dim = static_cast<int>(S_eigen.size());
+    const int min_dim = static_cast<int>(S_eigen.size());
 
     // Determine truncation rank
     new_rank = 0;
     for (int i = 0; i < min_dim; ++i) {
-        if (S_eigen(i) > cutoff && new_rank < max_bond_dim) {
-            new_rank++;
-        } else {
-            break;
-        }
+        if (S_eigen(i) > cutoff && new_rank < max_bond_dim) new_rank++;
+        else break;
     }
     if (new_rank == 0) new_rank = 1;
 
     // Accumulate truncation error = sum of discarded singular values squared
-    for (int i = new_rank; i < min_dim; ++i) {
+    for (int i = new_rank; i < min_dim; ++i)
         total_truncation_error += S_eigen(i) * S_eigen(i);
-    }
 
-    // Copy U (rows x new_rank)
+    // Copy S (no layout issue — S is real and contiguous)
+    S_out.assign(S_eigen.data(), S_eigen.data() + new_rank);
+
+    // Write U_out (rows × new_rank, row-major) via Eigen assignment — avoids manual loop
     U_out.resize(rows * new_rank);
-    for (int i = 0; i < rows; ++i)
-        for (int r = 0; r < new_rank; ++r)
-            U_out[i * new_rank + r] = Complex128(U_eigen(i, r).real(), U_eigen(i, r).imag());
+    Eigen::Map<EigenCMatrix>(
+        reinterpret_cast<std::complex<double>*>(U_out.data()), rows, new_rank
+    ) = U_eigen.leftCols(new_rank);
 
-    // Copy S
-    S_out.resize(new_rank);
-    for (int r = 0; r < new_rank; ++r)
-        S_out[r] = S_eigen(r);
-
-    // Copy Vt (new_rank x cols) — Eigen gives V, so conjugate-transpose
+    // Write Vt_out (new_rank × cols, row-major) = conj-transpose of V.leftCols(new_rank)
     Vt_out.resize(new_rank * cols);
-    for (int r = 0; r < new_rank; ++r)
-        for (int j = 0; j < cols; ++j)
-            Vt_out[r * cols + j] = Complex128(V_eigen(j, r).real(), -V_eigen(j, r).imag());
+    Eigen::Map<EigenCMatrix>(
+        reinterpret_cast<std::complex<double>*>(Vt_out.data()), new_rank, cols
+    ) = V_eigen.leftCols(new_rank).adjoint();
 }
 
 // =============================================================================
@@ -378,58 +372,120 @@ std::vector<double> MPSState::probabilities_single(int qubit) const {
 
 // =============================================================================
 // measure_sequential — correct correlated sampling via left-to-right projection
-// For each qubit q from 0 to N-1:
-//   1. Compute P(0) and P(1) using left boundary + local tensor + right env
+// Precomputes all right environments O(N·chi^3) then processes left-to-right:
+//   1. Compute P(0) and P(1) using precomputed right_env + incremental left_env + tensor
 //   2. Sample outcome from this conditional distribution
 //   3. Project the local tensor onto the measured outcome (collapse)
-//   4. Renormalize
-// O(N * chi^3) per shot.
+//   4. Renormalize; update left_env incrementally
+// O(N·chi^3) per shot — avoids the O(N^2·chi^3) cost of rebuilding environments per qubit.
 // =============================================================================
 
 std::string MPSState::measure_sequential(std::mt19937_64& rng) {
     std::string bits(n_qubits, '0');
 
-    // Work on a copy so we can project without destroying the state
-    // for multi-shot sampling, the caller should clone before each shot
+    // === Precompute right environments O(N·chi^3) total ===
+    // right_envs[q] = density env for sites q..N-1, size bond_left[q] x bond_left[q].
+    // right_envs[N] = [[1]] (1x1 identity).
+    // Computed from original (unmodified) tensors — valid because we process left-to-right
+    // and tensors[q+1..N-1] are untouched when computing probs for qubit q.
+    std::vector<std::vector<Complex128>> right_envs(n_qubits + 1);
+    right_envs[n_qubits] = {Complex128(1.0, 0.0)};
+
+    for (int q = n_qubits - 1; q >= 0; --q) {
+        const auto& T = tensors[q];
+        const int bl = T.bond_left;
+        const int br = T.bond_right;
+
+        std::vector<Complex128> new_env(bl * bl, Complex128(0.0, 0.0));
+        for (int m1 = 0; m1 < bl; ++m1) {
+            for (int m2 = 0; m2 < bl; ++m2) {
+                Complex128 sum(0.0, 0.0);
+                for (int p = 0; p < 2; ++p) {
+                    for (int r1 = 0; r1 < br; ++r1) {
+                        for (int r2 = 0; r2 < br; ++r2) {
+                            sum += right_envs[q + 1][r1 * br + r2] *
+                                   T(m1, p, r1) * T(m2, p, r2).conj();
+                        }
+                    }
+                }
+                new_env[m1 * bl + m2] = sum;
+            }
+        }
+        right_envs[q] = std::move(new_env);
+    }
+
+    // === Sequential measurement with incremental left environment O(N·chi^3) total ===
+    // left_env starts as 1x1 identity; updated after each projection.
+    std::vector<Complex128> left_env = {Complex128(1.0, 0.0)};
+
     for (int q = 0; q < n_qubits; ++q) {
-        // Compute P(0) and P(1) for qubit q, conditioned on all previous
-        // projections (which have already modified the tensors to the left)
-        auto probs = probabilities_single(q);
+        auto& Tq = tensors[q];
+        const int chi_left  = Tq.bond_left;
+        const int chi_right = Tq.bond_right;
+
+        // Compute P(0) and P(1) using left_env, Tq, and precomputed right_envs[q+1]
+        std::vector<double> probs(2, 0.0);
+        for (int p = 0; p < 2; ++p) {
+            Complex128 sum(0.0, 0.0);
+            for (int l1 = 0; l1 < chi_left; ++l1) {
+                for (int l2 = 0; l2 < chi_left; ++l2) {
+                    const Complex128 lv = left_env[l1 * chi_left + l2];
+                    for (int r1 = 0; r1 < chi_right; ++r1) {
+                        for (int r2 = 0; r2 < chi_right; ++r2) {
+                            sum += lv * Tq(l1, p, r1) * Tq(l2, p, r2).conj() *
+                                   right_envs[q + 1][r1 * chi_right + r2];
+                        }
+                    }
+                }
+            }
+            probs[p] = sum.real;
+        }
 
         double p0 = std::max(0.0, probs[0]);
         double p1 = std::max(0.0, probs[1]);
         double total = p0 + p1;
-        if (total < 1e-30) {
-            // Degenerate — fallback to uniform
-            p0 = p1 = 0.5;
-            total = 1.0;
-        }
+        if (total < 1e-30) { p0 = p1 = 0.5; total = 1.0; }
         p0 /= total;
 
-        // Sample
         std::uniform_real_distribution<double> dist(0.0, 1.0);
         int outcome = (dist(rng) < p0) ? 0 : 1;
         bits[q] = outcome ? '1' : '0';
 
         // Project: zero out the other physical index
-        auto& T = tensors[q];
-        int other = 1 - outcome;
-        for (int l = 0; l < T.bond_left; ++l)
-            for (int r = 0; r < T.bond_right; ++r)
-                T(l, other, r) = Complex128(0.0, 0.0);
-        // Renormalize by the correct conditional probability (computed above via
-        // boundary contraction). The local Frobenius norm differs from probs[outcome]
-        // for non-canonical MPS, causing accumulated error in subsequent measurements.
-        double prob_outcome = (outcome == 0) ? probs[0] : probs[1];
+        const int other = 1 - outcome;
+        for (int l = 0; l < chi_left; ++l)
+            for (int r = 0; r < chi_right; ++r)
+                Tq(l, other, r) = Complex128(0.0, 0.0);
+
+        // Renormalize
+        const double prob_outcome = (outcome == 0) ? probs[0] : probs[1];
         if (prob_outcome > 1e-30) {
-            double inv_norm = 1.0 / std::sqrt(prob_outcome);
-            for (int l = 0; l < T.bond_left; ++l)
-                for (int r = 0; r < T.bond_right; ++r) {
-                    auto& v = T(l, outcome, r);
+            const double inv_norm = 1.0 / std::sqrt(prob_outcome);
+            for (int l = 0; l < chi_left; ++l)
+                for (int r = 0; r < chi_right; ++r) {
+                    auto& v = Tq(l, outcome, r);
                     v.real *= inv_norm;
                     v.imag *= inv_norm;
                 }
         }
+
+        // Incrementally update left environment O(chi^3):
+        // left_env_new[m1,m2] = sum_{l1,l2} left_env[l1,l2] * Tq[l1,o,m1] * conj(Tq[l2,o,m2])
+        // Only outcome physical index survives (other is zeroed above).
+        std::vector<Complex128> new_left(chi_right * chi_right, Complex128(0.0, 0.0));
+        for (int m1 = 0; m1 < chi_right; ++m1) {
+            for (int m2 = 0; m2 < chi_right; ++m2) {
+                Complex128 sum(0.0, 0.0);
+                for (int l1 = 0; l1 < chi_left; ++l1) {
+                    for (int l2 = 0; l2 < chi_left; ++l2) {
+                        sum += left_env[l1 * chi_left + l2] *
+                               Tq(l1, outcome, m1) * Tq(l2, outcome, m2).conj();
+                    }
+                }
+                new_left[m1 * chi_right + m2] = sum;
+            }
+        }
+        left_env = std::move(new_left);
     }
 
     return bits;
@@ -453,32 +509,44 @@ Statevector MPSState::to_statevector() const {
         throw std::runtime_error("Too many qubits for full statevector conversion");
     }
 
-    size_t dim = 1ULL << n_qubits;
-    Statevector sv(n_qubits);
+    // Standard left-to-right site contraction: maintains a (dim_so_far x chi) matrix
+    // that grows 2x per site.  O(N) allocations vs O(N * 2^N) for the per-basis-state loop.
+    //
+    // After site q: current[idx, r] = amplitude of basis state idx (0..2^(q+1)-1)
+    //               with bond index r ∈ [0, bond_right[q]).
+    //
+    // Expansion step: new_current[idx*2 + p, r'] = sum_m current[idx, m] * T[m, p, r']
+    int dim_so_far = 1;
+    std::vector<Complex128> current(1, Complex128(1.0, 0.0));  // 1x1 identity
 
-    for (size_t idx = 0; idx < dim; ++idx) {
-        std::vector<int> phys(n_qubits);
-        for (int q = 0; q < n_qubits; ++q)
-            phys[q] = (idx >> q) & 1;
+    for (int q = 0; q < n_qubits; ++q) {
+        const auto& T  = tensors[q];
+        const int bl   = T.bond_left;
+        const int br   = T.bond_right;
+        const int new_dim = dim_so_far * 2;
 
-        // Contract MPS for this basis state
-        std::vector<Complex128> current(tensors[0].bond_right);
-        for (int r = 0; r < tensors[0].bond_right; ++r)
-            current[r] = tensors[0](0, phys[0], r);
-
-        for (int q = 1; q < n_qubits; ++q) {
-            int new_right = tensors[q].bond_right;
-            std::vector<Complex128> next(new_right, Complex128(0.0, 0.0));
-            for (int r = 0; r < new_right; ++r)
-                for (int m = 0; m < tensors[q].bond_left; ++m)
-                    next[r] += current[m] * tensors[q](m, phys[q], r);
-            current = next;
+        std::vector<Complex128> next(new_dim * br, Complex128(0.0, 0.0));
+        for (int idx = 0; idx < dim_so_far; ++idx) {
+            for (int p = 0; p < 2; ++p) {
+                const int new_row = idx * 2 + p;
+                for (int r = 0; r < br; ++r) {
+                    Complex128 sum(0.0, 0.0);
+                    for (int m = 0; m < bl; ++m)
+                        sum += current[idx * bl + m] * T(m, p, r);
+                    next[new_row * br + r] = sum;
+                }
+            }
         }
-
-        sv.real_parts[idx] = current[0].real;
-        sv.imag_parts[idx] = current[0].imag;
+        current = std::move(next);
+        dim_so_far = new_dim;
     }
 
+    // current now has shape (2^N x 1); write into statevector
+    Statevector sv(n_qubits);
+    for (size_t idx = 0; idx < static_cast<size_t>(dim_so_far); ++idx) {
+        sv.real_parts[idx] = current[idx].real;
+        sv.imag_parts[idx] = current[idx].imag;
+    }
     return sv;
 }
 
@@ -501,15 +569,15 @@ static MPSState mps_from_sv(const Statevector& sv, int n, int max_bond_dim, doub
         int half_cols = right_cols / 2;
         int rows = left_bond * 2;
 
-        // Reshape: M[(alpha*2 + p), c'] = block[alpha*right_cols + p + 2*c']
-        // p = physical index of this site (qubit bit 0 of each column)
+        // Reshape: M[(alpha*2 + p), c2] = block[alpha*right_cols + p*half_cols + c2]
+        // p ∈ {0,1} is the physical index; c2 ∈ [0,half_cols) indexes remaining sites.
         Eigen::MatrixXcd M(rows, half_cols);
         for (int alpha = 0; alpha < left_bond; ++alpha)
             for (int p = 0; p < 2; ++p)
                 for (int c2 = 0; c2 < half_cols; ++c2)
                     M(alpha * 2 + p, c2) = std::complex<double>(
-                        block[alpha * right_cols + p + 2 * c2].real,
-                        block[alpha * right_cols + p + 2 * c2].imag);
+                        block[alpha * right_cols + p * half_cols + c2].real,
+                        block[alpha * right_cols + p * half_cols + c2].imag);
 
         Eigen::BDCSVD<Eigen::MatrixXcd> svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
         const auto& svals = svd.singularValues();
@@ -755,12 +823,64 @@ MPSSimulator::Result MPSSimulator::run(
     result.final_state = MPSState(circuit.n_qubits, max_bond_dim);
 
     auto t_start = std::chrono::high_resolution_clock::now();
+    std::mt19937_64 rng(seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed);
 
     for (const auto& inst : circuit.instructions) {
         using GT = Instruction::GateType;
         if (inst.type == GT::BARRIER) continue;
-        if (inst.type == GT::MEASURE) continue;
-        if (inst.type == GT::RESET) continue;
+
+        if (inst.type == GT::MEASURE) {
+            int qubit = inst.qubits[0];
+            auto probs = result.final_state.probabilities_single(qubit);
+            std::uniform_real_distribution<double> udist(0.0, 1.0);
+            int outcome = (udist(rng) < probs[0]) ? 0 : 1;
+            int keep = outcome, zero_phys = 1 - outcome;
+            auto& T = result.final_state.tensors[qubit];
+            double norm_sq = 0.0;
+            for (int l = 0; l < T.bond_left; ++l)
+                for (int r = 0; r < T.bond_right; ++r) {
+                    T(l, zero_phys, r) = Complex128(0.0, 0.0);
+                    norm_sq += T(l, keep, r).real * T(l, keep, r).real
+                             + T(l, keep, r).imag * T(l, keep, r).imag;
+                }
+            double inv_norm = (norm_sq > 1e-15) ? 1.0 / std::sqrt(norm_sq) : 1.0;
+            for (int l = 0; l < T.bond_left; ++l)
+                for (int r = 0; r < T.bond_right; ++r) {
+                    T(l, keep, r).real *= inv_norm;
+                    T(l, keep, r).imag *= inv_norm;
+                }
+            continue;
+        }
+
+        if (inst.type == GT::RESET) {
+            int qubit = inst.qubits[0];
+            auto probs = result.final_state.probabilities_single(qubit);
+            std::uniform_real_distribution<double> udist(0.0, 1.0);
+            int outcome = (udist(rng) < probs[0]) ? 0 : 1;
+            int keep = outcome, zero_phys = 1 - outcome;
+            auto& T = result.final_state.tensors[qubit];
+            double norm_sq = 0.0;
+            for (int l = 0; l < T.bond_left; ++l)
+                for (int r = 0; r < T.bond_right; ++r) {
+                    T(l, zero_phys, r) = Complex128(0.0, 0.0);
+                    norm_sq += T(l, keep, r).real * T(l, keep, r).real
+                             + T(l, keep, r).imag * T(l, keep, r).imag;
+                }
+            double inv_norm = (norm_sq > 1e-15) ? 1.0 / std::sqrt(norm_sq) : 1.0;
+            for (int l = 0; l < T.bond_left; ++l)
+                for (int r = 0; r < T.bond_right; ++r) {
+                    T(l, keep, r).real *= inv_norm;
+                    T(l, keep, r).imag *= inv_norm;
+                }
+            if (outcome == 1) {
+                const std::array<Complex128, 4> X_g = {
+                    Complex128(0,0), Complex128(1,0),
+                    Complex128(1,0), Complex128(0,0)
+                };
+                result.final_state.apply_single_qubit_gate(X_g, qubit);
+            }
+            continue;
+        }
         if (inst.type == GT::PARAM_RX || inst.type == GT::PARAM_RY ||
             inst.type == GT::PARAM_RZ || inst.type == GT::PARAM_P ||
             inst.type == GT::PARAM_U)

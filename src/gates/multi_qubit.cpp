@@ -1,6 +1,7 @@
 #include "lindblad/gates.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 
@@ -10,17 +11,32 @@ namespace gates {
 // =============================================================================
 // CCX (Toffoli): flip target when both controls are 1
 // =============================================================================
+// Three-level stride pattern: visits only dim/8 pairs that need work instead
+// of dim iterations with 7/8 wasted (no-op) passes.  4–8× faster for large N.
 void apply_ccx(Statevector& sv, int c1, int c2, int tgt) noexcept {
-    const size_t dim = sv.dim;
+    std::array<int,3> qs = {c1, c2, tgt};
+    std::sort(qs.begin(), qs.end());
+    const size_t s0  = 1ULL << qs[0];
+    const size_t s1  = 1ULL << qs[1];
+    const size_t s2  = 1ULL << qs[2];
+    const size_t c1b = 1ULL << c1;
+    const size_t c2b = 1ULL << c2;
+    const size_t tb  = 1ULL << tgt;
+    const int n_outer = static_cast<int>(sv.dim / (2 * s2));
 
-    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
-    for (int ii = 0; ii < static_cast<int>(dim); ++ii) {
-        size_t i = ii;
-        // Act when c1=1, c2=1, tgt=0
-        if (((i >> c1) & 1) && ((i >> c2) & 1) && !((i >> tgt) & 1)) {
-            size_t j = i | (1ULL << tgt);
-            std::swap(sv.real_parts[i], sv.real_parts[j]);
-            std::swap(sv.imag_parts[i], sv.imag_parts[j]);
+    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
+    for (int oi = 0; oi < n_outer; ++oi) {
+        const size_t k2 = static_cast<size_t>(oi) * 2 * s2;
+        for (size_t k1 = 0; k1 < s2; k1 += 2 * s1) {
+            for (size_t k0 = 0; k0 < s1; k0 += 2 * s0) {
+                for (size_t k = 0; k < s0; ++k) {
+                    const size_t base = k2 + k1 + k0 + k;
+                    const size_t i = base | c1b | c2b;       // c1=1, c2=1, tgt=0
+                    const size_t j = base | c1b | c2b | tb;  // c1=1, c2=1, tgt=1
+                    std::swap(sv.real_parts[i], sv.real_parts[j]);
+                    std::swap(sv.imag_parts[i], sv.imag_parts[j]);
+                }
+            }
         }
     }
 }
@@ -29,14 +45,27 @@ void apply_ccx(Statevector& sv, int c1, int c2, int tgt) noexcept {
 // CCZ: negate phase when all three qubits are 1
 // =============================================================================
 void apply_ccz(Statevector& sv, int c1, int c2, int tgt) noexcept {
-    const size_t dim = sv.dim;
+    std::array<int,3> qs = {c1, c2, tgt};
+    std::sort(qs.begin(), qs.end());
+    const size_t s0  = 1ULL << qs[0];
+    const size_t s1  = 1ULL << qs[1];
+    const size_t s2  = 1ULL << qs[2];
+    const size_t c1b = 1ULL << c1;
+    const size_t c2b = 1ULL << c2;
+    const size_t tb  = 1ULL << tgt;
+    const int n_outer = static_cast<int>(sv.dim / (2 * s2));
 
-    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
-    for (int ii = 0; ii < static_cast<int>(dim); ++ii) {
-        size_t i = ii;
-        if (((i >> c1) & 1) && ((i >> c2) & 1) && ((i >> tgt) & 1)) {
-            sv.real_parts[i] = -sv.real_parts[i];
-            sv.imag_parts[i] = -sv.imag_parts[i];
+    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
+    for (int oi = 0; oi < n_outer; ++oi) {
+        const size_t k2 = static_cast<size_t>(oi) * 2 * s2;
+        for (size_t k1 = 0; k1 < s2; k1 += 2 * s1) {
+            for (size_t k0 = 0; k0 < s1; k0 += 2 * s0) {
+                for (size_t k = 0; k < s0; ++k) {
+                    const size_t i = (k2 + k1 + k0 + k) | c1b | c2b | tb;  // all three = 1
+                    sv.real_parts[i] = -sv.real_parts[i];
+                    sv.imag_parts[i] = -sv.imag_parts[i];
+                }
+            }
         }
     }
 }
@@ -45,19 +74,29 @@ void apply_ccz(Statevector& sv, int c1, int c2, int tgt) noexcept {
 // CSWAP (Fredkin): swap q1, q2 when ctrl=1
 // =============================================================================
 void apply_cswap(Statevector& sv, int ctrl, int q1, int q2) noexcept {
-    const size_t dim = sv.dim;
+    std::array<int,3> qs = {ctrl, q1, q2};
+    std::sort(qs.begin(), qs.end());
+    const size_t s0    = 1ULL << qs[0];
+    const size_t s1    = 1ULL << qs[1];
+    const size_t s2    = 1ULL << qs[2];
+    const size_t ctrlb = 1ULL << ctrl;
+    const size_t q1b   = 1ULL << q1;
+    const size_t q2b   = 1ULL << q2;
+    const int n_outer  = static_cast<int>(sv.dim / (2 * s2));
 
-    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
-    for (int ii = 0; ii < static_cast<int>(dim); ++ii) {
-        size_t i = ii;
-        // Act when ctrl=1, q1 and q2 bits differ
-        if (!((i >> ctrl) & 1)) continue;
-        int b1 = (i >> q1) & 1;
-        int b2 = (i >> q2) & 1;
-        if (b1 == 0 && b2 == 1) {
-            size_t j = (i | (1ULL << q1)) & ~(1ULL << q2);
-            std::swap(sv.real_parts[i], sv.real_parts[j]);
-            std::swap(sv.imag_parts[i], sv.imag_parts[j]);
+    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
+    for (int oi = 0; oi < n_outer; ++oi) {
+        const size_t k2 = static_cast<size_t>(oi) * 2 * s2;
+        for (size_t k1 = 0; k1 < s2; k1 += 2 * s1) {
+            for (size_t k0 = 0; k0 < s1; k0 += 2 * s0) {
+                for (size_t k = 0; k < s0; ++k) {
+                    const size_t base = k2 + k1 + k0 + k;
+                    const size_t i = base | ctrlb | q1b;  // ctrl=1, q1=1, q2=0
+                    const size_t j = base | ctrlb | q2b;  // ctrl=1, q1=0, q2=1
+                    std::swap(sv.real_parts[i], sv.real_parts[j]);
+                    std::swap(sv.imag_parts[i], sv.imag_parts[j]);
+                }
+            }
         }
     }
 }
@@ -139,47 +178,50 @@ void apply_unitary(
     // Count number of background groups
     size_t n_groups = sv.dim >> k;
 
-    #pragma omp parallel for schedule(static) if(n_groups > (1<<15))
+    // Thread-local buffers eliminate 3 heap allocations per OpenMP iteration.
+    // Sized on first use; resized only when block_size grows.
+    thread_local std::vector<size_t> tl_indices;
+    thread_local std::vector<double> tl_old_real;
+    thread_local std::vector<double> tl_old_imag;
+
+    #pragma omp parallel for schedule(static) if(n_groups > (1<<15)) \
+        firstprivate(block_size)
     for (int gg = 0; gg < static_cast<int>(n_groups); ++gg) {
+        // Resize thread-local buffers only when needed
+        if (tl_indices.size() < block_size) {
+            tl_indices.resize(block_size);
+            tl_old_real.resize(block_size);
+            tl_old_imag.resize(block_size);
+        }
+
         size_t g = gg;
-        // Map group index g to a background index
-        // Insert zeros at all target bit positions
+        // Map group index g to a background index (zeros at all target bit positions)
         size_t bg_idx = 0;
         size_t g_bits = g;
         int target_idx = 0;
 
         for (int b = 0; b < sv.n_qubits; ++b) {
             if (target_idx < k && b == sorted_targets[target_idx]) {
-                // This is a target bit — skip it (set to 0)
                 target_idx++;
             } else {
-                // Background bit — take from g_bits
-                if (g_bits & 1) {
-                    bg_idx |= (1ULL << b);
-                }
+                if (g_bits & 1) bg_idx |= (1ULL << b);
                 g_bits >>= 1;
             }
         }
 
-        // Now bg_idx has zeros at all target positions.
         // Compute all 2^k indices in this subspace
-        std::vector<size_t> indices(block_size);
         for (size_t s = 0; s < block_size; ++s) {
             size_t idx = bg_idx;
             for (int ti = 0; ti < k; ++ti) {
-                if ((s >> ti) & 1) {
-                    idx |= target_masks[ti];
-                }
+                if ((s >> ti) & 1) idx |= target_masks[ti];
             }
-            indices[s] = idx;
+            tl_indices[s] = idx;
         }
 
-        // Read current amplitudes
-        std::vector<double> old_real(block_size);
-        std::vector<double> old_imag(block_size);
+        // Snapshot current amplitudes
         for (size_t s = 0; s < block_size; ++s) {
-            old_real[s] = sv.real_parts[indices[s]];
-            old_imag[s] = sv.imag_parts[indices[s]];
+            tl_old_real[s] = sv.real_parts[tl_indices[s]];
+            tl_old_imag[s] = sv.imag_parts[tl_indices[s]];
         }
 
         // Apply matrix: new[row] = sum_col matrix[row*block_size + col] * old[col]
@@ -188,11 +230,11 @@ void apply_unitary(
             double new_i = 0.0;
             for (size_t col = 0; col < block_size; ++col) {
                 const Complex128& m = matrix[row * block_size + col];
-                new_r += m.real * old_real[col] - m.imag * old_imag[col];
-                new_i += m.real * old_imag[col] + m.imag * old_real[col];
+                new_r += m.real * tl_old_real[col] - m.imag * tl_old_imag[col];
+                new_i += m.real * tl_old_imag[col] + m.imag * tl_old_real[col];
             }
-            sv.real_parts[indices[row]] = new_r;
-            sv.imag_parts[indices[row]] = new_i;
+            sv.real_parts[tl_indices[row]] = new_r;
+            sv.imag_parts[tl_indices[row]] = new_i;
         }
     }
 }

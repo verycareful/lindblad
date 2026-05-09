@@ -401,7 +401,8 @@ static std::vector<Instruction> decompose_to_cx_u3(
 
         case GT::CRX: {
             double theta = p[0];
-            // CRX(θ) = (I⊗RZ(-π/2)) CX (I⊗RY(θ/2)) CX (I⊗RY(-θ/2)RZ(π/2))
+            // CRX(θ) gate sequence (applied left to right):
+            //   U3(0, 0, π/2) · CX · U3(-θ/2, 0, 0) · CX · U3(θ/2, -π/2, 0)
             out.push_back(u3_inst(0, 0, pi2, q1));
             out.push_back(cx_inst(q0, q1));
             out.push_back(u3_inst(-theta / 2.0, 0, 0, q1));

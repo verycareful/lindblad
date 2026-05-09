@@ -35,6 +35,8 @@ public:
     // Properties
     double trace() const;
     double purity() const;  // Tr(rho^2)
+    // Checks trace==1 and Hermiticity only. Positive semi-definiteness is NOT verified
+    // (full PSD check requires eigendecomposition and is O(4^N)).
     bool is_valid(double atol = 1e-8) const;
 
     // Gate application: rho -> U.rho.U†

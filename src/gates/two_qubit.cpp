@@ -535,23 +535,10 @@ void apply_rzx(Statevector& sv, int q1, int q2, double theta) noexcept {
             for (size_t i = 0; i < lo_step; ++i) {
                 size_t base = k + j + i;
 
-                // Process q1=0 pair: |00⟩ <-> |01⟩ with sign=-1
+                // Process q1=0 pair: |00⟩ <-> |01⟩ — Z=+1, applies exp(-i*t/2*X): off-diag = -i*sin
                 {
                     size_t ia = base + off_00;
                     size_t ib = base + off_01;
-                    double r0 = real_ptr[ia], i0 = imag_ptr[ia];
-                    double r1 = real_ptr[ib], i1 = imag_ptr[ib];
-
-                    real_ptr[ia] = cos_half * r0 - sin_half * i1;
-                    imag_ptr[ia] = cos_half * i0 + sin_half * r1;
-                    real_ptr[ib] = cos_half * r1 - sin_half * i0;
-                    imag_ptr[ib] = cos_half * i1 + sin_half * r0;
-                }
-
-                // Process q1=1 pair: |10⟩ <-> |11⟩ with sign=+1
-                {
-                    size_t ia = base + off_10;
-                    size_t ib = base + off_11;
                     double r0 = real_ptr[ia], i0 = imag_ptr[ia];
                     double r1 = real_ptr[ib], i1 = imag_ptr[ib];
 
@@ -559,6 +546,19 @@ void apply_rzx(Statevector& sv, int q1, int q2, double theta) noexcept {
                     imag_ptr[ia] = cos_half * i0 - sin_half * r1;
                     real_ptr[ib] = cos_half * r1 + sin_half * i0;
                     imag_ptr[ib] = cos_half * i1 - sin_half * r0;
+                }
+
+                // Process q1=1 pair: |10⟩ <-> |11⟩ — Z=-1, applies exp(+i*t/2*X): off-diag = +i*sin
+                {
+                    size_t ia = base + off_10;
+                    size_t ib = base + off_11;
+                    double r0 = real_ptr[ia], i0 = imag_ptr[ia];
+                    double r1 = real_ptr[ib], i1 = imag_ptr[ib];
+
+                    real_ptr[ia] = cos_half * r0 - sin_half * i1;
+                    imag_ptr[ia] = cos_half * i0 + sin_half * r1;
+                    real_ptr[ib] = cos_half * r1 - sin_half * i0;
+                    imag_ptr[ib] = cos_half * i1 + sin_half * r0;
                 }
             }
         }
