@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.3.1] - 2026-05-09
+
+### Tests
+
+- `tests/test_simulators_r130.cpp` (new) — 24 regression tests covering R.1.3.0 fixes: C-1 RZX sign pattern, C-2 SV MEASURE/RESET, C-3 Clifford rowmult phase, C-4 DM qubit ordering, H-1/H-2 Clifford expectation_pauli i^k phase, H-3 DM expectation_value_sparse X/Y terms, C-9 QPE IQFT bit-reversal
+- `tests/test_mps_sim.cpp` (new) — 18 tests covering MPS simulator: basic gate application, Bell/GHZ state fidelity vs statevector, to_statevector roundtrip, measure_sequential, probabilities_single, RESET, truncation error
+- `tests/test_gates_extended.cpp` (new) — extended gate coverage: SDG, TDG, SX/SXdg, P, U/U1/U2/U3, CY, CH, iSWAP, CRX/CRY/CRZ, CP, ECR, RXX/RYY/RZZ, CCZ, CSWAP, apply_unitary
+- `tests/test_operators_qi.cpp` (new) — SparsePauliOp algebra (compose, tensor, to_matrix, batch expectation), Operator (compose, adjoint, power, trace), QuantumInfo (state_fidelity, process_fidelity, entropy, entanglement_entropy, partial_trace), DensityMatrix (purity, trace, is_valid)
+- `tests/test_ising.cpp` (new) — IsingHamiltonian (from_hJ, from_qubo, evaluate, evaluate_spins, to_sparse_pauli_op), SoftDispatchResult (threshold_round, top_k, expected_cost)
+
+### Results
+
+- 223 tests from 35 suites — 193 passed, 30 failed (672 ms, Linux/Clang)
+- Failures: DeutschJozsa (2), BernsteinVazirani (5), RecursiveBernsteinVazirani (5), ProbabilisticBernsteinVazirani (6), SV_MeasureReset (1), CliffordPhase (2), CliffordExpectation (2), DM_ExpectationSparse (1), DM_QubitOrdering (1), MPSSim (4), QuantumInfo_PartialTrace (1)
+
 ## [R.1.3.0] - 2026-05-09
 
 ### Fixed
