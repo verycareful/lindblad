@@ -1,11 +1,17 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/gates.hpp"
 
+#include <cmath>
 #include <chrono>
 #include <memory>
+#include <random>
 #include <stdexcept>
 
 namespace lindblad {
+
+// Thread-local RNG for mid-circuit measurement collapse.
+// Seeded from run() for reproducibility; default-initialised from random_device otherwise.
+thread_local std::mt19937_64 sv_sim_rng{std::random_device{}()};
 
 // =============================================================================
 // apply_instruction — dispatch to the appropriate gate function
@@ -66,11 +72,60 @@ void StatevectorSimulator::apply_instruction(Statevector& sv, const Instruction&
             gates::apply_unitary(sv, q, inst.matrix);
             break;
 
-        // Special — handled at circuit level
-        case GT::MEASURE:
-        case GT::RESET:
+        // BARRIER — no effect on statevector
         case GT::BARRIER:
-            break;  // No effect on statevector
+            break;
+
+        // MEASURE — project qubit to a random outcome, collapse and renormalise
+        case GT::MEASURE: {
+            int qubit = q[0];
+            size_t step = 1ULL << qubit;
+            double prob0 = 0.0;
+            for (size_t i = 0; i < sv.dim; i += 2 * step)
+                for (size_t j = i; j < i + step; ++j)
+                    prob0 += sv.real_parts[j] * sv.real_parts[j]
+                           + sv.imag_parts[j] * sv.imag_parts[j];
+            std::uniform_real_distribution<double> udist(0.0, 1.0);
+            int outcome = (udist(sv_sim_rng) < prob0) ? 0 : 1;
+            double p_out = (outcome == 0) ? prob0 : (1.0 - prob0);
+            double inv_norm = (p_out > 1e-15) ? 1.0 / std::sqrt(p_out) : 1.0;
+            for (size_t i = 0; i < sv.dim; ++i) {
+                if (static_cast<int>((i >> qubit) & 1) != outcome) {
+                    sv.real_parts[i] = 0.0;
+                    sv.imag_parts[i] = 0.0;
+                } else {
+                    sv.real_parts[i] *= inv_norm;
+                    sv.imag_parts[i] *= inv_norm;
+                }
+            }
+            break;
+        }
+
+        // RESET — measure qubit, then apply X if outcome was |1⟩ to restore |0⟩
+        case GT::RESET: {
+            int qubit = q[0];
+            size_t step = 1ULL << qubit;
+            double prob0 = 0.0;
+            for (size_t i = 0; i < sv.dim; i += 2 * step)
+                for (size_t j = i; j < i + step; ++j)
+                    prob0 += sv.real_parts[j] * sv.real_parts[j]
+                           + sv.imag_parts[j] * sv.imag_parts[j];
+            std::uniform_real_distribution<double> udist(0.0, 1.0);
+            int outcome = (udist(sv_sim_rng) < prob0) ? 0 : 1;
+            double p_out = (outcome == 0) ? prob0 : (1.0 - prob0);
+            double inv_norm = (p_out > 1e-15) ? 1.0 / std::sqrt(p_out) : 1.0;
+            for (size_t i = 0; i < sv.dim; ++i) {
+                if (static_cast<int>((i >> qubit) & 1) != outcome) {
+                    sv.real_parts[i] = 0.0;
+                    sv.imag_parts[i] = 0.0;
+                } else {
+                    sv.real_parts[i] *= inv_norm;
+                    sv.imag_parts[i] *= inv_norm;
+                }
+            }
+            if (outcome == 1) gates::apply_x(sv, qubit);
+            break;
+        }
 
         // Parameterised — should have been resolved
         case GT::PARAM_RX:
@@ -124,6 +179,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         } else {
             sv_work->initialize();
         }
+        sv_sim_rng.seed(seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed);
         simulate_circuit(*sv_work, circuit);
 
         if (shots > 0) {

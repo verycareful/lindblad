@@ -21,10 +21,12 @@ DeutschJozsa::Result DeutschJozsa::solve(const QuantumCircuit& oracle, int n,
     auto qc = build_circuit(oracle, n);
     StatevectorSimulator sim;
     auto res = sim.run(qc, shots, seed);
+    // Bitstring has length n (only query qubits 0..n-1 measured).
+    // Constant oracle → all query qubits measure 0 → all-zero bitstring.
     std::string query_zero(n, '0');
     bool constant = false;
     for (const auto& [bits, cnt] : res.counts) {
-        if (bits.size() > static_cast<size_t>(n) && bits.substr(1) == query_zero) {
+        if (bits == query_zero) {
             constant = true;
             break;
         }

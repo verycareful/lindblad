@@ -164,7 +164,8 @@ static void evolve_into(
     int n_cost_params_per_layer,
     int n_mixer_orbits,
     const std::vector<int>& orbit_assignments,
-    const std::vector<double>& initial_thetas = {}  // QSP: empty = standard H init
+    const std::vector<std::vector<int>>& precomp_aq,  // precomputed per-term active qubits
+    const std::vector<double>& initial_thetas = {}    // QSP: empty = standard H init
 ) {
     const int nq          = cost.n_qubits();
     const int cost_terms  = static_cast<int>(cost.terms.size());
@@ -193,12 +194,8 @@ static void evolve_into(
         for (int t = 0; t < cost_terms; ++t) {
             const auto& term = cost.terms[t];
 
-            // Build active qubits first — needed for qubit-indexed gamma dispatch
-            std::vector<int> aq;
-            aq.reserve(nq);
-            for (int q = 0; q < nq; ++q) {
-                if (term.pauli[q] != 'I') aq.push_back(q);
-            }
+            // Use precomputed active qubits — eliminates hot-path allocation.
+            const auto& aq = precomp_aq[t];
             if (aq.empty()) continue;
 
             // Gamma dispatch: orbit-indexed → orbit map; term-indexed → t;
@@ -275,6 +272,7 @@ struct MAQAOACallbackData {
     int nfev;
     double best_val;
     std::vector<double> initial_thetas;
+    const std::vector<std::vector<int>>* active_qubits;
 };
 
 static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, void* data) {
@@ -301,6 +299,7 @@ static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, vo
                 *cb->term_orbit_map, cb->n_cost_params_per_layer,
                 cb->n_mixer_orbits,
                 cb->maqaoa->options.orbit_assignments,
+                *cb->active_qubits,
                 cb->initial_thetas);
     const double value = cb->cost_hamiltonian->expectation_value(*cb->sv);
     ++cb->nfev;
@@ -329,6 +328,7 @@ struct LayerCBData {
     int                  nfev;
     double               best_val;
     std::vector<double>  initial_thetas;
+    const std::vector<std::vector<int>>* active_qubits;
 };
 
 static double layer_objective(unsigned n, const double* x, double* /*grad*/, void* raw) {
@@ -359,6 +359,7 @@ static double layer_objective(unsigned n, const double* x, double* /*grad*/, voi
                 d->all_params, d->p_total,
                 *d->term_orbit_map, d->n_cost_params_per_layer,
                 d->n_mixer_orbits, *d->orbit_assignments,
+                *d->active_qubits,
                 d->initial_thetas);
     const double value = d->cost_hamiltonian->expectation_value(*d->sv);
     const double v     = std::isfinite(value) ? value : 1e12;
@@ -445,6 +446,17 @@ MAQAOA::Result MAQAOA::optimize(
     constexpr double kPi       = 3.14159265358979323846;
     constexpr double kBound    = 2.0 * kPi;
 
+    // Precompute active qubits per cost term once — eliminates ~1M hot-path allocations
+    // across 10K optimizer evaluations x 100 terms (P-8).
+    const int cost_terms_total = static_cast<int>(cost_hamiltonian.terms.size());
+    std::vector<std::vector<int>> active_qubits_per_term(cost_terms_total);
+    for (int t = 0; t < cost_terms_total; ++t) {
+        const auto& term = cost_hamiltonian.terms[t];
+        for (int q = 0; q < nq; ++q) {
+            if (term.pauli[q] != 'I') active_qubits_per_term[t].push_back(q);
+        }
+    }
+
     // Single statevector allocation reused across all evaluations (Change 1)
     Statevector inner_sv(nq);
 
@@ -512,7 +524,8 @@ MAQAOA::Result MAQAOA::optimize(
                 layer,
                 0,
                 std::numeric_limits<double>::infinity(),
-                options.initial_thetas
+                options.initial_thetas,
+                &active_qubits_per_term
             };
 
             std::cout << "[MAQAOA] layer=" << layer
@@ -582,7 +595,7 @@ MAQAOA::Result MAQAOA::optimize(
             evolve_into(inner_sv, cost_hamiltonian, mixer, all_params, options.p,
                         term_orbit_map_cached, n_cost_params_per_layer,
                         n_mixer_orbits, options.orbit_assignments,
-                        options.initial_thetas);
+                        active_qubits_per_term, options.initial_thetas);
             result.optimal_value = cost_hamiltonian.expectation_value(inner_sv);
         }
         result.converged     = all_layers_converged && std::isfinite(result.optimal_value);
@@ -631,7 +644,8 @@ MAQAOA::Result MAQAOA::optimize(
             n_cost_params_per_layer, n_mixer_orbits,
             this, &inner_sv, {}, 0,
             std::numeric_limits<double>::infinity(),
-            options.initial_thetas
+            options.initial_thetas,
+            &active_qubits_per_term
         };
         cb_data.params_buf.resize(n_params);
 
@@ -669,7 +683,7 @@ MAQAOA::Result MAQAOA::optimize(
             evolve_into(inner_sv, cost_hamiltonian, mixer, params, options.p,
                         term_orbit_map_cached, n_cost_params_per_layer,
                         n_mixer_orbits, options.orbit_assignments,
-                        options.initial_thetas);
+                        active_qubits_per_term, options.initial_thetas);
             result.counts = inner_sv.sample_counts(sampler.options.shots, sampler.options.seed);
         }
     }

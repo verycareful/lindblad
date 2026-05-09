@@ -51,7 +51,10 @@ VQE::Result VQE::compute_minimum_eigenvalue(
     // Initial parameters
     std::vector<double> params = initial_params;
     if (params.empty()) {
-        params.resize(n_params, 0.1);
+        std::mt19937_64 rng(42);
+        std::uniform_real_distribution<double> dist(-M_PI, M_PI);
+        params.resize(n_params);
+        for (auto& p : params) p = dist(rng);
     }
 
     // Set up NLopt optimiser

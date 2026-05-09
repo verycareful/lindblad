@@ -37,8 +37,9 @@ DAGCircuit TrivialLayout::run(const DAGCircuit& dag, const TranspilationContext&
 // Score a potential SWAP insertion.
 // H_basic: average distance of 2Q gates in the front layer after applying SWAP.
 static double sabre_heuristic(
-    const std::vector<int>& front_layer_ops,           // node indices
+    const std::vector<int>& front_layer_ops,           // node IDs
     const DAGCircuit& dag,
+    const std::unordered_map<int, const DAGNode*>& node_by_id,
     const std::vector<int>& layout,                    // logical → physical
     const std::vector<std::vector<int>>& dist,
     int swap_l0, int swap_l1,                          // logical qubits to swap
@@ -50,7 +51,7 @@ static double sabre_heuristic(
 
     double cost = 0.0;
     for (int nid : front_layer_ops) {
-        const auto& node = dag.nodes[nid];
+        const auto& node = *node_by_id.at(nid);
         if (node.qubit_wires.size() < 2) continue;
         int la = node.qubit_wires[0];
         int lb = node.qubit_wires[1];
@@ -80,22 +81,30 @@ static SABRERunResult sabre_run(
     int N = dag.n_qubits;
     std::vector<int> layout = initial_layout;
 
-    // Successor tracking
-    std::vector<int> in_degree(dag.nodes.size(), 0);
+    // Build node_id → node pointer so we can look up by node ID (not vector index).
+    std::unordered_map<int, const DAGNode*> node_by_id;
+    for (const auto& node : dag.nodes) node_by_id[node.node_id] = &node;
+
+    // in_degree and executed keyed by node_id, not by vector position.
+    std::unordered_map<int, int>  in_degree;
+    std::unordered_map<int, bool> executed;
+    for (const auto& node : dag.nodes) {
+        in_degree[node.node_id] = 0;
+        executed[node.node_id]  = false;
+    }
     for (const auto& edge : dag.edges) {
         in_degree[edge.dst_node]++;
     }
 
-    // Front layer: nodes with in-degree 0 that are OP nodes
+    // Front layer: OP nodes with in-degree 0 (stored as node IDs).
     std::vector<int> front_layer;
-    for (size_t i = 0; i < dag.nodes.size(); ++i) {
-        if (dag.nodes[i].type == DAGNode::Type::OP && in_degree[i] == 0) {
-            front_layer.push_back(static_cast<int>(i));
+    for (const auto& node : dag.nodes) {
+        if (node.type == DAGNode::Type::OP && in_degree[node.node_id] == 0) {
+            front_layer.push_back(node.node_id);
         }
     }
 
     int swap_count = 0;
-    std::vector<bool> executed(dag.nodes.size(), false);
 
     // Process until empty
     while (!front_layer.empty()) {
@@ -104,7 +113,7 @@ static SABRERunResult sabre_run(
         std::vector<int> blocked;
 
         for (int nid : front_layer) {
-            const auto& node = dag.nodes[nid];
+            const auto& node = *node_by_id[nid];
             if (node.qubit_wires.size() < 2) {
                 // Single-qubit gate: always executable
                 executable.push_back(nid);
@@ -128,7 +137,7 @@ static SABRERunResult sabre_run(
                 if (edge.src_node == nid) {
                     in_degree[edge.dst_node]--;
                     if (in_degree[edge.dst_node] == 0 &&
-                        dag.nodes[edge.dst_node].type == DAGNode::Type::OP &&
+                        node_by_id[edge.dst_node]->type == DAGNode::Type::OP &&
                         !executed[edge.dst_node]) {
                         front_layer.push_back(edge.dst_node);
                     }
@@ -153,7 +162,7 @@ static SABRERunResult sabre_run(
         // Candidate SWAPs: edges adjacent to blocked qubits
         std::vector<std::pair<int,int>> candidates;
         for (int nid : blocked) {
-            for (int lq : dag.nodes[nid].qubit_wires) {
+            for (int lq : node_by_id[nid]->qubit_wires) {
                 int pq = layout[lq];
                 for (const auto& [pa, pb] : coupling_map.edges) {
                     if (pa == pq) {
@@ -175,7 +184,7 @@ static SABRERunResult sabre_run(
         }
 
         for (auto [l0, l1] : candidates) {
-            double cost = sabre_heuristic(blocked, dag, layout, dist, l0, l1, 0.0);
+            double cost = sabre_heuristic(blocked, dag, node_by_id, layout, dist, l0, l1, 0.0);
             if (cost < best_cost) {
                 best_cost = cost;
                 best_l0 = l0;

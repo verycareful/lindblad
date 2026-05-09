@@ -4,6 +4,42 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.3.0] - 2026-05-09
+
+### Fixed
+
+- **C-1** `src/gates/two_qubit.cpp` — `apply_rzx`: sin_half sign pattern was swapped between Z=+1 and Z=-1 subspace blocks; all 8 amplitude terms corrected
+- **C-2** `src/simulators/statevector_sim.cpp` — MEASURE and RESET were no-ops; implemented state collapse, projection, renormalisation, and X-flip for RESET; thread_local RNG seeded from `run()`
+- **C-2** `src/simulators/mps_sim.cpp` — MEASURE and RESET were no-ops; implemented projection of site tensor and renormalisation; RESET applies X gate if outcome was |1⟩
+- **C-3** `src/simulators/clifford_sim.cpp` — `rowmult` phase loop: outer condition was on src (xs,zs) computing phase of src·dest; corrected to outer condition on dest (xd,zd) per Aaronson-Gottesman Table 1
+- **C-4** `src/simulators/density_matrix_sim.cpp` — `apply_gate` sub_offsets used sorted qubit order, swapping control/target for unsorted pairs (e.g. CX(2,0)); fixed to use original `qubits[k-1-qi]`; removed unnecessary sort
+- **C-5** `src/transpiler/optimisation/optimize_1q.cpp` — KAK decompose emitted only the interaction term (RZZ/RYY/RXX), omitting local correction gates V₀,V₁,W₀,W₁; added Takagi factorization and `tensor_factor`/`emit_1q` helpers; full U=(V1⊗V0)·A·(W1⊗W0) now emitted
+- **C-7** `src/simulators/mps_sim.cpp` — `mps_from_sv` reshape stride was `p + 2*c2` instead of `p*half_cols + c2`; swaps physical and bond indices for all non-terminal sites
+- **C-8** `src/algorithms/bernstein_vazirani.cpp` — `substr(1)` stripped a character from a length-n bitstring, losing the last secret bit; removed
+- **C-8** `src/algorithms/deutsch_jozsa.cpp` — `bits.size() > n` always false for length-n bitstring; changed to `bits == query_zero`; removed wrong `substr(1)` from comparison
+- **C-8** `src/algorithms/simon.cpp` — `raw.substr(n)` on a length-n string returns ""; removed substr, raw is already the query register
+- **C-9** `src/algorithms/qpe.cpp` — IQFT outputs eval register in bit-reversed qubit order; added swap loop after IQFT to correct ordering
+- **H-1/H-2** `src/simulators/clifford_sim.cpp` — `expectation_pauli`: p_phase was bool toggle giving wrong ±i phases for Y-count; changed to int (0–3) tracking i^k; pauli_phase_update corrected for all XY/ZY/YX/YZ cases
+- **H-3** `src/simulators/density_matrix_sim.cpp` — `expectation_value_sparse` only accumulated diagonal (I/Z) contributions; X and Y terms silently returned 0; replaced with full Tr(ρP) via flip_mask and complex phase accumulation
+- **H-4** `src/transpiler/layout/trivial_layout.cpp` — SABRE `in_degree` and `executed` were `vector<>` indexed by position but edges use node IDs; changed to `unordered_map` keyed by node_id
+- **H-5** `src/algorithms/vqe.cpp` — default initial parameters all 0.1 causes symmetric barren plateau; replaced with uniform random init in [-π, π] using `mt19937_64(42)`
+
+### Performance
+
+- **P-1** `src/simulators/clifford_sim.cpp`, `include/lindblad/simulators/clifford_sim.hpp` — tableau storage changed from `vector<vector<bool>>` to flat `vector<uint64_t>` (wpr=ceil(2N/64) words per row) + `vector<uint8_t>` phase array; rowmult XOR is now word-level O(N/64) instead of O(N) bit-by-bit; ~64× speedup at N>100
+- **P-2/P-4** `src/gates/multi_qubit.cpp` — CCX/CCZ/CSWAP replaced full-sweep branch loop with four-level stride pattern visiting only dim/8 background addresses; `apply_unitary` replaced per-iteration vector allocation with thread_local pre-sized buffers eliminating ~65K allocations per call on 20 qubits
+- **P-3** `src/simulators/density_matrix_sim.cpp` — `apply_kraus` saves original ρ once and restores in-place per Kraus operator; eliminates n_kraus-1 heap allocations per call
+- **P-5** `src/simulators/mps_sim.cpp` — `svd_truncate`: replaced O(rows·cols) element-by-element input copy with zero-copy `Eigen::Map<const EigenCMatrix>`; U and Vt written via Eigen assignment
+- **P-6** `src/simulators/mps_sim.cpp` — `measure_sequential`: precompute all right_envs[q] O(N·χ³) before loop, then incrementally update left_env after each projection O(χ³) per step — reduces O(N²·χ³) to O(N·χ³)
+- **P-7** `src/simulators/mps_sim.cpp` — `to_statevector`: replaced per-basis-state per-site allocation loop with single left-to-right contraction maintaining one growing buffer; O(N) allocations instead of O(N·2^N)
+- **P-8** `src/algorithms/maqaoa.cpp` — `active_qubits_per_term` precomputed once in `optimize()` before NLopt; eliminates per-call rebuild (~1M allocations at 10K evals × 100 terms)
+
+### Documentation
+
+- **D-1** `src/transpiler/basis_translator.cpp` — CRX comment corrected from wrong formula to explicit gate sequence: U3(0,0,π/2)·CX·U3(-θ/2,0,0)·CX·U3(θ/2,-π/2,0)
+- **D-2** `src/simulators/mps_sim.cpp` — `measure_sequential` comment updated to describe precomputed-right-env algorithm and confirm O(N·χ³) complexity
+- **D-5** `include/lindblad/simulators/density_matrix_sim.hpp` — `is_valid` annotated: PSD is not checked (requires eigendecomposition, O(4^N))
+
 ## [R.1.2.2] - 2026-05-06
 
 ### Fixed
@@ -19,7 +55,7 @@ The format is based on Keep a Changelog and this project uses semantic versionin
 - `docs/algorithms/deutsch-jozsa.md` — `solve` compares `bits.substr(1)` (query register only) against `std::string(n, '0')`; ancilla at position 0 explained
 - `docs/api/backends.md` — version example updated to `R.1.2.2`
 
-### Results
+### Results 
 
 - 94/94 tests passed (WSL / Clang).
 
