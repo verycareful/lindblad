@@ -4,6 +4,38 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.3.2] - 2026-05-11
+
+### Added
+
+- `tests/CMakeLists.txt` — added `diagnose` standalone executable (no gtest dependency) for direct algorithm output inspection
+
+### Fixed
+
+- **F-1** `src/simulators/statevector_sim.cpp` — `run()` called `sample_counts` on an already-collapsed statevector when MEASURE gates were present, producing identical outcomes for every shot; replaced with a per-shot re-execution path that re-initialises the statevector from `|0...0⟩` each shot, collapses on each MEASURE, and records outcomes into the `n_clbits`-wide classical register; fast `sample_counts` path retained for circuits without MEASURE instructions
+- **F-2** `src/simulators/mps_sim.cpp` — same root cause as F-1 for the MPS backend; added per-shot re-execution path mirroring the statevector fix; extracted `mps_apply_instruction()` helper to eliminate duplicated gate-dispatch code between the per-shot and fast paths; `to_statevector()` left-to-right contraction placed qubit 0 at the MSB position — framework convention is qubit 0 = bit 0 (LSB); added index bit-reversal after contraction so `fidelity` and `sample_counts` comparisons against statevector results are correct
+- **F-3** `src/simulators/clifford_sim.cpp` — `expectation_pauli`: Y-qubit loop incremented `p_phase` during Pauli string parsing, double-counting the i phase already tracked by `pauli_phase_update`; removed the extra increment
+- **F-4** `src/quantum_info/metrics.cpp` — `partial_trace(rho, qubits)`: the `qubits` argument specifies qubits to **trace out**; implementation was treating it as the keep set, returning a subsystem of the wrong qubits
+- **F-5** `src/quantum_info/operators.cpp` — `expectation_value` and `expectation_value_batch`: Z parity was computed from the output row index `k` instead of the input column index `j = k ^ x_mask`; Y count was computed per basis state (`popcount(k & y_mask)`) instead of per Pauli term (`popcount(y_mask)`, which is constant)
+- **Frontend** `src/banner.cpp` — Updated the shutdown banner to display a thank-you message instead of a welcome message
+
+### Tests
+
+- `tests/test_simulators_r130.cpp` — `DM_QubitOrdering::CZ_Symmetric`: old assertion compared `unordered_map::begin()` (undefined iteration order); replaced with set-based comparison of non-zero bitstring keys and a per-key check that qubit 1 never fires
+
+### Documentation
+
+- `docs/algorithms/deutsch-jozsa.md` — updated `solve` description: per-shot classical register returns `n`-char bitstrings; no `substr` stripping needed
+- `docs/api/bernstein-vazirani.md` — same correction; removed `substr(1)` ancilla-strip description
+- `docs/algorithms/bernstein-vazirani.md` — same correction
+- `docs/api/operators.md` — `partial_trace` signature updated from `keep_qubits` to `trace_out_qubits`; semantics clarified
+- `docs/api/simulators.md` — execution flow step 5 updated to describe per-shot re-execution path for circuits with MEASURE gates
+- `docs/api/backends.md` — version example updated to `R.1.3.2`
+
+### Results
+
+- 223 tests across 35 suites — all passed (WSL/Clang)
+
 ## [R.1.3.1] - 2026-05-09
 
 ### Tests

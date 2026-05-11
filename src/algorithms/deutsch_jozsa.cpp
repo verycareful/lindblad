@@ -21,8 +21,8 @@ DeutschJozsa::Result DeutschJozsa::solve(const QuantumCircuit& oracle, int n,
     auto qc = build_circuit(oracle, n);
     StatevectorSimulator sim;
     auto res = sim.run(qc, shots, seed);
-    // Bitstring has length n (only query qubits 0..n-1 measured).
-    // Constant oracle → all query qubits measure 0 → all-zero bitstring.
+    // Per-shot execution measures only the n query qubits into the classical register,
+    // so bitstrings have length n. Constant oracle → all-zero query bits.
     std::string query_zero(n, '0');
     bool constant = false;
     for (const auto& [bits, cnt] : res.counts) {

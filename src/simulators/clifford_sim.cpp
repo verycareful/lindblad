@@ -252,7 +252,7 @@ int StabilizerState::expectation_pauli(const std::string& pauli) const {
     for (int i = 0; i < N; ++i) {
         const char c = pauli[i];
         if      (c == 'X' || c == 'x') { px[i] = true; }
-        else if (c == 'Y' || c == 'y') { px[i] = true; pz[i] = true; p_phase = (p_phase + 1) % 4; }
+        else if (c == 'Y' || c == 'y') { px[i] = true; pz[i] = true; }
         else if (c == 'Z' || c == 'z') { pz[i] = true; }
     }
 

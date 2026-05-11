@@ -29,7 +29,8 @@ BernsteinVazirani::Result BernsteinVazirani::solve(const QuantumCircuit& oracle,
     auto res = sim.run(qc, shots, seed);
     auto best = std::max_element(res.counts.begin(), res.counts.end(),
         [](const auto& a, const auto& b){ return a.second < b.second; });
-    // best->first is MSB-first with length n (only query qubits 0..n-1 are measured).
+    // Per-shot execution measures only the n query qubits into the classical register,
+    // so best->first has length n in MSB-first order. Reverse to get index order s[0]..s[n-1].
     std::string secret = best->first;
     std::reverse(secret.begin(), secret.end());   // MSB-first → index order
     return { secret };

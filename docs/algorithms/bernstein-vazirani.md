@@ -119,7 +119,7 @@ Declared in [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.
 - `solve(const QuantumCircuit& oracle, int n, int shots = 1, uint64_t seed = 0)` executes the circuit and returns the recovered secret
 - `Result::secret` stores the recovered bitstring
 
-The most frequent bitstring is selected via `std::max_element` with a count comparator. `sample_counts` returns bitstrings of length `n+1` (the ancilla qubit occupies position 0, MSB-first). `substr(1)` strips the ancilla to yield the `n`-bit query register. The remaining MSB-first string is then reversed so that `secret[i] == '1'` means bit `i` of the hidden string is set (index order).
+The most frequent bitstring is selected via `std::max_element` with a count comparator. Per-shot execution records only the `n` query qubits into the `n`-bit classical register, so bitstrings already have length `n` (the ancilla is never written to the classical register). The `n`-bit MSB-first string is reversed so that `secret[i] == '1'` means bit `i` of the hidden string is set (index order).
 
 ### `RecursiveBernsteinVazirani`
 

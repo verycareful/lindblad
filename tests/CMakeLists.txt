@@ -40,3 +40,8 @@ target_include_directories(lindblad_tests
 # Register tests with CTest
 include(GoogleTest)
 gtest_discover_tests(lindblad_tests PROPERTIES LABELS "lindblad")
+
+# Standalone diagnostic executable (no gtest)
+add_executable(diagnose diagnose.cpp)
+target_link_libraries(diagnose PRIVATE lindblad_core)
+target_include_directories(diagnose PRIVATE ${PROJECT_SOURCE_DIR}/include)

@@ -541,11 +541,24 @@ Statevector MPSState::to_statevector() const {
         dim_so_far = new_dim;
     }
 
-    // current now has shape (2^N x 1); write into statevector
+    // current now has shape (2^N x 1).
+    // The left-to-right contraction places qubit 0 in the MSB position of each
+    // index (new_row = idx*2 + p shifts previous bits left and appends p as LSB,
+    // so the first qubit processed occupies the most-significant bit).
+    //
+    // The Statevector convention — shared by all gate implementations and
+    // sample_counts — uses qubit q as bit q (LSB = qubit 0):
+    //   index i  ↔  qubit q has value (i >> q) & 1
+    //
+    // Reconcile by bit-reversing each index when writing the output.
     Statevector sv(n_qubits);
     for (size_t idx = 0; idx < static_cast<size_t>(dim_so_far); ++idx) {
-        sv.real_parts[idx] = current[idx].real;
-        sv.imag_parts[idx] = current[idx].imag;
+        // Reverse the N-bit representation of idx so that qubit 0 maps to bit 0.
+        size_t rev = 0;
+        for (int b = 0; b < n_qubits; ++b)
+            rev |= ((idx >> b) & 1ULL) << (n_qubits - 1 - b);
+        sv.real_parts[rev] = current[idx].real;
+        sv.imag_parts[rev] = current[idx].imag;
     }
     return sv;
 }
@@ -815,6 +828,136 @@ static std::array<Complex128, 16> gate4x4(const Instruction& inst) {
     return U;
 }
 
+// Helper: apply one instruction to an MPS state.
+// Handles RESET, all gate types. MEASURE and BARRIER must NOT be passed here.
+static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
+                                  std::mt19937_64& rng) {
+    using GT = Instruction::GateType;
+
+    if (inst.type == GT::RESET) {
+        int qubit = inst.qubits[0];
+        auto probs = mps.probabilities_single(qubit);
+        std::uniform_real_distribution<double> udist(0.0, 1.0);
+        int outcome = (udist(rng) < probs[0]) ? 0 : 1;
+        int keep = outcome, zero_phys = 1 - outcome;
+        auto& T = mps.tensors[qubit];
+        double norm_sq = 0.0;
+        for (int l = 0; l < T.bond_left; ++l)
+            for (int r = 0; r < T.bond_right; ++r) {
+                T(l, zero_phys, r) = Complex128(0.0, 0.0);
+                norm_sq += T(l, keep, r).real * T(l, keep, r).real
+                         + T(l, keep, r).imag * T(l, keep, r).imag;
+            }
+        double inv_norm = (norm_sq > 1e-15) ? 1.0 / std::sqrt(norm_sq) : 1.0;
+        for (int l = 0; l < T.bond_left; ++l)
+            for (int r = 0; r < T.bond_right; ++r) {
+                T(l, keep, r).real *= inv_norm;
+                T(l, keep, r).imag *= inv_norm;
+            }
+        if (outcome == 1) {
+            const std::array<Complex128, 4> X_g = {
+                Complex128(0,0), Complex128(1,0),
+                Complex128(1,0), Complex128(0,0)
+            };
+            mps.apply_single_qubit_gate(X_g, qubit);
+        }
+        return;
+    }
+
+    if (inst.type == GT::PARAM_RX || inst.type == GT::PARAM_RY ||
+        inst.type == GT::PARAM_RZ || inst.type == GT::PARAM_P ||
+        inst.type == GT::PARAM_U)
+        throw std::runtime_error("Unresolved parameterised gate in MPS simulation");
+
+    if (inst.qubits.size() == 1) {
+        auto U = gate2x2(inst);
+        mps.apply_single_qubit_gate(U, inst.qubits[0]);
+
+    } else if (inst.qubits.size() == 2) {
+        auto U = gate4x4(inst);
+        mps.apply_two_qubit_gate(U, inst.qubits[0], inst.qubits[1]);
+
+    } else if (inst.qubits.size() == 3) {
+        int q0 = inst.qubits[0], q1 = inst.qubits[1], q2 = inst.qubits[2];
+
+        constexpr double s2 = 0.7071067811865475;
+        const std::array<Complex128, 4> H_g = {
+            Complex128(s2,0), Complex128(s2,0),
+            Complex128(s2,0), Complex128(-s2,0)
+        };
+        const std::array<Complex128, 4> T_g = {
+            Complex128(1,0), Complex128(0,0),
+            Complex128(0,0), Complex128(s2, s2)
+        };
+        const std::array<Complex128, 4> Tdg_g = {
+            Complex128(1,0), Complex128(0,0),
+            Complex128(0,0), Complex128(s2, -s2)
+        };
+        std::array<Complex128, 16> CX_g{};
+        CX_g[0] = CX_g[5] = CX_g[11] = CX_g[14] = Complex128(1,0);
+
+        // CCX decomposition: standard 6-CNOT Toffoli
+        auto apply_ccx = [&](int c1, int c2, int tgt) {
+            mps.apply_single_qubit_gate(H_g, tgt);
+            mps.apply_two_qubit_gate(CX_g, c2, tgt);
+            mps.apply_single_qubit_gate(Tdg_g, tgt);
+            mps.apply_two_qubit_gate(CX_g, c1, tgt);
+            mps.apply_single_qubit_gate(T_g, tgt);
+            mps.apply_two_qubit_gate(CX_g, c2, tgt);
+            mps.apply_single_qubit_gate(Tdg_g, tgt);
+            mps.apply_two_qubit_gate(CX_g, c1, tgt);
+            mps.apply_single_qubit_gate(T_g, c2);
+            mps.apply_single_qubit_gate(T_g, tgt);
+            mps.apply_single_qubit_gate(H_g, tgt);
+            mps.apply_two_qubit_gate(CX_g, c1, c2);
+            mps.apply_single_qubit_gate(T_g, c1);
+            mps.apply_single_qubit_gate(Tdg_g, c2);
+            mps.apply_two_qubit_gate(CX_g, c1, c2);
+        };
+
+        switch (inst.type) {
+            case GT::CCX:
+                apply_ccx(q0, q1, q2);
+                break;
+            case GT::CCZ:
+                mps.apply_single_qubit_gate(H_g, q2);
+                apply_ccx(q0, q1, q2);
+                mps.apply_single_qubit_gate(H_g, q2);
+                break;
+            case GT::CSWAP:
+                mps.apply_two_qubit_gate(CX_g, q2, q1);
+                apply_ccx(q0, q1, q2);
+                mps.apply_two_qubit_gate(CX_g, q2, q1);
+                break;
+            case GT::RCCX:
+                mps.apply_single_qubit_gate(H_g, q2);
+                mps.apply_single_qubit_gate(T_g, q2);
+                mps.apply_two_qubit_gate(CX_g, q1, q2);
+                mps.apply_single_qubit_gate(Tdg_g, q2);
+                mps.apply_two_qubit_gate(CX_g, q0, q2);
+                mps.apply_single_qubit_gate(T_g, q2);
+                mps.apply_two_qubit_gate(CX_g, q1, q2);
+                mps.apply_single_qubit_gate(Tdg_g, q2);
+                mps.apply_single_qubit_gate(H_g, q2);
+                break;
+            case GT::UNITARY: {
+                auto sv = mps.to_statevector();
+                gates::apply_unitary(sv, inst.qubits, inst.matrix);
+                mps = mps_from_sv(sv, mps.n_qubits, mps.max_bond_dim, mps.cutoff);
+                break;
+            }
+            default:
+                throw std::runtime_error(
+                    "MPS simulator: unsupported 3-qubit gate type " +
+                    std::to_string(static_cast<int>(inst.type)));
+        }
+    } else {
+        throw std::runtime_error(
+            "MPS simulator: unsupported " + std::to_string(inst.qubits.size()) +
+            "-qubit gate");
+    }
+}
+
 MPSSimulator::Result MPSSimulator::run(
     const QuantumCircuit& circuit, int max_bond_dim,
     int shots, uint64_t seed
@@ -825,178 +968,101 @@ MPSSimulator::Result MPSSimulator::run(
     auto t_start = std::chrono::high_resolution_clock::now();
     std::mt19937_64 rng(seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed);
 
+    // Determine whether the circuit contains any mid-circuit MEASURE gates.
+    // If so, each shot must re-run the full circuit from |0...0⟩ so that the
+    // stochastic collapse is sampled independently per shot.  If there are no
+    // MEASURE instructions the state is deterministic after one forward pass
+    // and we fall back to the fast sample_counts / measure_sequential path.
+    bool has_measure = false;
+    int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
     for (const auto& inst : circuit.instructions) {
-        using GT = Instruction::GateType;
-        if (inst.type == GT::BARRIER) continue;
-
-        if (inst.type == GT::MEASURE) {
-            int qubit = inst.qubits[0];
-            auto probs = result.final_state.probabilities_single(qubit);
-            std::uniform_real_distribution<double> udist(0.0, 1.0);
-            int outcome = (udist(rng) < probs[0]) ? 0 : 1;
-            int keep = outcome, zero_phys = 1 - outcome;
-            auto& T = result.final_state.tensors[qubit];
-            double norm_sq = 0.0;
-            for (int l = 0; l < T.bond_left; ++l)
-                for (int r = 0; r < T.bond_right; ++r) {
-                    T(l, zero_phys, r) = Complex128(0.0, 0.0);
-                    norm_sq += T(l, keep, r).real * T(l, keep, r).real
-                             + T(l, keep, r).imag * T(l, keep, r).imag;
-                }
-            double inv_norm = (norm_sq > 1e-15) ? 1.0 / std::sqrt(norm_sq) : 1.0;
-            for (int l = 0; l < T.bond_left; ++l)
-                for (int r = 0; r < T.bond_right; ++r) {
-                    T(l, keep, r).real *= inv_norm;
-                    T(l, keep, r).imag *= inv_norm;
-                }
-            continue;
-        }
-
-        if (inst.type == GT::RESET) {
-            int qubit = inst.qubits[0];
-            auto probs = result.final_state.probabilities_single(qubit);
-            std::uniform_real_distribution<double> udist(0.0, 1.0);
-            int outcome = (udist(rng) < probs[0]) ? 0 : 1;
-            int keep = outcome, zero_phys = 1 - outcome;
-            auto& T = result.final_state.tensors[qubit];
-            double norm_sq = 0.0;
-            for (int l = 0; l < T.bond_left; ++l)
-                for (int r = 0; r < T.bond_right; ++r) {
-                    T(l, zero_phys, r) = Complex128(0.0, 0.0);
-                    norm_sq += T(l, keep, r).real * T(l, keep, r).real
-                             + T(l, keep, r).imag * T(l, keep, r).imag;
-                }
-            double inv_norm = (norm_sq > 1e-15) ? 1.0 / std::sqrt(norm_sq) : 1.0;
-            for (int l = 0; l < T.bond_left; ++l)
-                for (int r = 0; r < T.bond_right; ++r) {
-                    T(l, keep, r).real *= inv_norm;
-                    T(l, keep, r).imag *= inv_norm;
-                }
-            if (outcome == 1) {
-                const std::array<Complex128, 4> X_g = {
-                    Complex128(0,0), Complex128(1,0),
-                    Complex128(1,0), Complex128(0,0)
-                };
-                result.final_state.apply_single_qubit_gate(X_g, qubit);
-            }
-            continue;
-        }
-        if (inst.type == GT::PARAM_RX || inst.type == GT::PARAM_RY ||
-            inst.type == GT::PARAM_RZ || inst.type == GT::PARAM_P ||
-            inst.type == GT::PARAM_U)
-            throw std::runtime_error("Unresolved parameterised gate in MPS simulation");
-
-        if (inst.qubits.size() == 1) {
-            auto U = gate2x2(inst);
-            result.final_state.apply_single_qubit_gate(U, inst.qubits[0]);
-
-        } else if (inst.qubits.size() == 2) {
-            auto U = gate4x4(inst);
-            result.final_state.apply_two_qubit_gate(U, inst.qubits[0], inst.qubits[1]);
-
-        } else if (inst.qubits.size() == 3) {
-            // Decompose 3-qubit gates into 1Q+2Q MPS operations
-            auto& mps = result.final_state;
-            int q0 = inst.qubits[0], q1 = inst.qubits[1], q2 = inst.qubits[2];
-
-            constexpr double s2 = 0.7071067811865475;
-            const std::array<Complex128, 4> H_g = {
-                Complex128(s2,0), Complex128(s2,0),
-                Complex128(s2,0), Complex128(-s2,0)
-            };
-            const std::array<Complex128, 4> T_g = {
-                Complex128(1,0), Complex128(0,0),
-                Complex128(0,0), Complex128(s2, s2)
-            };
-            const std::array<Complex128, 4> Tdg_g = {
-                Complex128(1,0), Complex128(0,0),
-                Complex128(0,0), Complex128(s2, -s2)
-            };
-            std::array<Complex128, 16> CX_g{};
-            CX_g[0] = CX_g[5] = CX_g[11] = CX_g[14] = Complex128(1,0);
-
-            // CCX decomposition: standard 6-CNOT Toffoli
-            auto apply_ccx = [&](int c1, int c2, int tgt) {
-                mps.apply_single_qubit_gate(H_g, tgt);
-                mps.apply_two_qubit_gate(CX_g, c2, tgt);
-                mps.apply_single_qubit_gate(Tdg_g, tgt);
-                mps.apply_two_qubit_gate(CX_g, c1, tgt);
-                mps.apply_single_qubit_gate(T_g, tgt);
-                mps.apply_two_qubit_gate(CX_g, c2, tgt);
-                mps.apply_single_qubit_gate(Tdg_g, tgt);
-                mps.apply_two_qubit_gate(CX_g, c1, tgt);
-                mps.apply_single_qubit_gate(T_g, c2);
-                mps.apply_single_qubit_gate(T_g, tgt);
-                mps.apply_single_qubit_gate(H_g, tgt);
-                mps.apply_two_qubit_gate(CX_g, c1, c2);
-                mps.apply_single_qubit_gate(T_g, c1);
-                mps.apply_single_qubit_gate(Tdg_g, c2);
-                mps.apply_two_qubit_gate(CX_g, c1, c2);
-            };
-
-            switch (inst.type) {
-                case GT::CCX:
-                    apply_ccx(q0, q1, q2);
-                    break;
-                case GT::CCZ:
-                    // CCZ = H(tgt) . CCX . H(tgt)
-                    mps.apply_single_qubit_gate(H_g, q2);
-                    apply_ccx(q0, q1, q2);
-                    mps.apply_single_qubit_gate(H_g, q2);
-                    break;
-                case GT::CSWAP:
-                    // Fredkin = CX(q2,q1) . CCX(ctrl,q1,q2) . CX(q2,q1)
-                    mps.apply_two_qubit_gate(CX_g, q2, q1);
-                    apply_ccx(q0, q1, q2);
-                    mps.apply_two_qubit_gate(CX_g, q2, q1);
-                    break;
-                case GT::RCCX:
-                    // Relative-phase Toffoli: H T CX Tdg CX T CX Tdg H
-                    mps.apply_single_qubit_gate(H_g, q2);
-                    mps.apply_single_qubit_gate(T_g, q2);
-                    mps.apply_two_qubit_gate(CX_g, q1, q2);
-                    mps.apply_single_qubit_gate(Tdg_g, q2);
-                    mps.apply_two_qubit_gate(CX_g, q0, q2);
-                    mps.apply_single_qubit_gate(T_g, q2);
-                    mps.apply_two_qubit_gate(CX_g, q1, q2);
-                    mps.apply_single_qubit_gate(Tdg_g, q2);
-                    mps.apply_single_qubit_gate(H_g, q2);
-                    break;
-                case GT::UNITARY: {
-                    // Arbitrary 3-qubit matrix: convert MPS → SV, apply, reconstruct.
-                    auto sv = mps.to_statevector();
-                    gates::apply_unitary(sv, inst.qubits, inst.matrix);
-                    mps = mps_from_sv(sv, mps.n_qubits, mps.max_bond_dim, mps.cutoff);
-                    break;
-                }
-                default:
-                    throw std::runtime_error(
-                        "MPS simulator: unsupported 3-qubit gate type " +
-                        std::to_string(static_cast<int>(inst.type)));
-            }
-        } else {
-            throw std::runtime_error(
-                "MPS simulator: unsupported " + std::to_string(inst.qubits.size()) +
-                "-qubit gate");
+        if (inst.type == Instruction::GateType::MEASURE) {
+            has_measure = true;
+            break;
         }
     }
 
-    // Use full statevector contraction for small N (MPS_SV_CROSSOVER) where it
-    // outperforms sequential MPS sampling. MPS_SV_MAX_QUBITS is the hard memory
-    // limit for to_statevector() and is intentionally larger than the crossover.
-    const bool use_sv = circuit.n_qubits <= MPS_SV_CROSSOVER;
-    if (shots > 0 && use_sv) {
-        auto sv = result.final_state.to_statevector();
-        result.counts = sv.sample_counts(shots, seed);
-    } else if (shots > 0) {
-        // Sequential MPS measurement: correctly handles correlations.
-        // O(N * chi^3) per shot. Each shot works on a copy of the MPS.
-        std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
-        for (int s = 0; s < shots; ++s) {
-            // Clone the MPS for destructive sequential measurement
-            MPSState mps_copy = result.final_state;
-            std::string bits = mps_copy.measure_sequential(rng);
+    if (shots > 0 && has_measure) {
+        // Per-shot execution: re-initialise the MPS to |0...0⟩ and re-simulate
+        // for every shot so that each MEASURE collapses the state independently.
+        result.counts.clear();
+        std::vector<int> clreg(n_clbits, 0);
+
+        for (int shot = 0; shot < shots; ++shot) {
+            // Reset MPS to |0...0⟩
+            result.final_state = MPSState(circuit.n_qubits, max_bond_dim);
+            clreg.assign(n_clbits, 0);
+
+            for (const auto& inst : circuit.instructions) {
+                using GT = Instruction::GateType;
+                if (inst.type == GT::BARRIER) continue;
+
+                if (inst.type == GT::MEASURE) {
+                    // Collapse the qubit and record the outcome in the classical register.
+                    int qubit = inst.qubits[0];
+                    int clbit = inst.clbits.empty() ? -1 : inst.clbits[0];
+                    auto probs = result.final_state.probabilities_single(qubit);
+                    double p0 = std::max(0.0, probs[0]);
+                    double p1 = std::max(0.0, probs[1]);
+                    double total = p0 + p1;
+                    if (total < 1e-30) { p0 = p1 = 0.5; total = 1.0; }
+                    p0 /= total;
+                    std::uniform_real_distribution<double> udist(0.0, 1.0);
+                    int outcome = (udist(rng) < p0) ? 0 : 1;
+                    // Collapse: zero out the other physical index and renormalize
+                    auto& T = result.final_state.tensors[qubit];
+                    int other = 1 - outcome;
+                    double norm_sq = 0.0;
+                    for (int l = 0; l < T.bond_left; ++l)
+                        for (int r = 0; r < T.bond_right; ++r) {
+                            T(l, other, r) = Complex128(0.0, 0.0);
+                            norm_sq += T(l, outcome, r).real * T(l, outcome, r).real
+                                     + T(l, outcome, r).imag * T(l, outcome, r).imag;
+                        }
+                    double inv_norm = (norm_sq > 1e-15) ? 1.0 / std::sqrt(norm_sq) : 1.0;
+                    for (int l = 0; l < T.bond_left; ++l)
+                        for (int r = 0; r < T.bond_right; ++r) {
+                            T(l, outcome, r).real *= inv_norm;
+                            T(l, outcome, r).imag *= inv_norm;
+                        }
+                    if (clbit >= 0 && clbit < n_clbits) {
+                        clreg[clbit] = outcome;
+                    }
+                } else {
+                    mps_apply_instruction(result.final_state, inst, rng);
+                }
+            }
+
+            // Build bitstring: clbit 0 is LSB (rightmost), highest clbit is MSB.
+            std::string bits(n_clbits, '0');
+            for (int c = 0; c < n_clbits; ++c) {
+                if (clreg[c]) bits[n_clbits - 1 - c] = '1';
+            }
             result.counts[bits]++;
+        }
+    } else {
+        // No mid-circuit measurements: run the circuit once, then sample.
+        for (const auto& inst : circuit.instructions) {
+            using GT = Instruction::GateType;
+            if (inst.type == GT::BARRIER || inst.type == GT::MEASURE) continue;
+            mps_apply_instruction(result.final_state, inst, rng);
+        }
+
+        // Use full statevector contraction for small N (MPS_SV_CROSSOVER) where it
+        // outperforms sequential MPS sampling. MPS_SV_MAX_QUBITS is the hard memory
+        // limit for to_statevector() and is intentionally larger than the crossover.
+        const bool use_sv = circuit.n_qubits <= MPS_SV_CROSSOVER;
+        if (shots > 0 && use_sv) {
+            auto sv = result.final_state.to_statevector();
+            result.counts = sv.sample_counts(shots, seed);
+        } else if (shots > 0) {
+            // Sequential MPS measurement: correctly handles correlations.
+            // O(N * chi^3) per shot. Each shot works on a copy of the MPS.
+            for (int s = 0; s < shots; ++s) {
+                MPSState mps_copy = result.final_state;
+                std::string bits = mps_copy.measure_sequential(rng);
+                result.counts[bits]++;
+            }
         }
     }
 

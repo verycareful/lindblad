@@ -180,10 +180,75 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             sv_work->initialize();
         }
         sv_sim_rng.seed(seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed);
-        simulate_circuit(*sv_work, circuit);
 
-        if (shots > 0) {
-            result.counts = sv_work->sample_counts(shots, seed);
+        // Determine whether the circuit contains any mid-circuit MEASURE gates.
+        // If so, each shot must re-run the full circuit from |0...0⟩ so that the
+        // stochastic collapse is sampled independently per shot.  If there are no
+        // MEASURE instructions the state is deterministic after one forward pass
+        // and we fall back to the fast sample_counts path.
+        bool has_measure = false;
+        int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
+        for (const auto& inst : circuit.instructions) {
+            if (inst.type == Instruction::GateType::MEASURE) {
+                has_measure = true;
+                break;
+            }
+        }
+
+        if (shots > 0 && has_measure) {
+            // Per-shot execution: re-initialise and re-simulate for every shot so
+            // that each MEASURE collapses the state independently.
+            result.counts.clear();
+            std::vector<int> clreg(n_clbits, 0);  // classical register for one shot
+
+            for (int shot = 0; shot < shots; ++shot) {
+                sv_work->initialize();
+                clreg.assign(n_clbits, 0);
+
+                for (const auto& inst : circuit.instructions) {
+                    if (inst.type == Instruction::GateType::MEASURE) {
+                        // Collapse the qubit and record the outcome in the classical register.
+                        int qubit = inst.qubits[0];
+                        int clbit = inst.clbits[0];
+                        size_t step = 1ULL << qubit;
+                        double prob0 = 0.0;
+                        for (size_t i = 0; i < sv_work->dim; i += 2 * step)
+                            for (size_t j = i; j < i + step; ++j)
+                                prob0 += sv_work->real_parts[j] * sv_work->real_parts[j]
+                                       + sv_work->imag_parts[j] * sv_work->imag_parts[j];
+                        std::uniform_real_distribution<double> udist(0.0, 1.0);
+                        int outcome = (udist(sv_sim_rng) < prob0) ? 0 : 1;
+                        double p_out = (outcome == 0) ? prob0 : (1.0 - prob0);
+                        double inv_norm = (p_out > 1e-15) ? 1.0 / std::sqrt(p_out) : 1.0;
+                        for (size_t i = 0; i < sv_work->dim; ++i) {
+                            if (static_cast<int>((i >> qubit) & 1) != outcome) {
+                                sv_work->real_parts[i] = 0.0;
+                                sv_work->imag_parts[i] = 0.0;
+                            } else {
+                                sv_work->real_parts[i] *= inv_norm;
+                                sv_work->imag_parts[i] *= inv_norm;
+                            }
+                        }
+                        if (clbit >= 0 && clbit < n_clbits) {
+                            clreg[clbit] = outcome;
+                        }
+                    } else {
+                        apply_instruction(*sv_work, inst);
+                    }
+                }
+
+                // Build bitstring: clbit 0 is LSB (rightmost), highest clbit is MSB.
+                std::string bits(n_clbits, '0');
+                for (int c = 0; c < n_clbits; ++c) {
+                    if (clreg[c]) bits[n_clbits - 1 - c] = '1';
+                }
+                result.counts[bits]++;
+            }
+        } else {
+            simulate_circuit(*sv_work, circuit);
+            if (shots > 0) {
+                result.counts = sv_work->sample_counts(shots, seed);
+            }
         }
 
         auto t_end = std::chrono::high_resolution_clock::now();
