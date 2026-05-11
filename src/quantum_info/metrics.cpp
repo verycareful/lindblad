@@ -188,20 +188,23 @@ double concurrence(const DensityMatrix& rho) {
 // Partial trace
 // =============================================================================
 
-DensityMatrix partial_trace(const DensityMatrix& rho, const std::vector<int>& keep_qubits) {
+DensityMatrix partial_trace(const DensityMatrix& rho, const std::vector<int>& trace_out_qubits) {
     int nq = rho.n_qubits;
-    int nk = static_cast<int>(keep_qubits.size());
-    int nt = nq - nk;
+    int nt = static_cast<int>(trace_out_qubits.size());
+    int nk = nq - nt;
     size_t dim_keep = 1ULL << nk;
     size_t dim_trace = 1ULL << nt;
 
-    // Build set of traced-out qubits
-    std::vector<int> trace_qubits;
+    // Build set of kept qubits (complement of traced-out qubits)
+    std::vector<int> keep_qubits;
     for (int q = 0; q < nq; ++q) {
-        bool keep = false;
-        for (int kq : keep_qubits) if (kq == q) { keep = true; break; }
-        if (!keep) trace_qubits.push_back(q);
+        bool traced = false;
+        for (int tq : trace_out_qubits) if (tq == q) { traced = true; break; }
+        if (!traced) keep_qubits.push_back(q);
     }
+
+    // The traced-out qubits
+    std::vector<int> trace_qubits = trace_out_qubits;
 
     DensityMatrix result(nk);
 
@@ -245,9 +248,9 @@ DensityMatrix partial_trace(const DensityMatrix& rho, const std::vector<int>& ke
     return result;
 }
 
-DensityMatrix partial_trace(const Statevector& sv, const std::vector<int>& keep_qubits) {
+DensityMatrix partial_trace(const Statevector& sv, const std::vector<int>& trace_out_qubits) {
     DensityMatrix rho = DensityMatrix::from_statevector(sv);
-    return partial_trace(rho, keep_qubits);
+    return partial_trace(rho, trace_out_qubits);
 }
 
 // =============================================================================

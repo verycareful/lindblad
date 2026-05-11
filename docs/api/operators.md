@@ -79,7 +79,7 @@ Quantum information metrics and helpers:
 - `entropy(rho, base)`: von Neumann entropy via eigendecomposition
 - `entanglement_entropy(statevector, subsystem)`: entropy of reduced state
 - `concurrence(rho)`: Wootters concurrence for 2-qubit density matrices
-- `partial_trace(rho, keep_qubits)` / `partial_trace(statevector, keep_qubits)`
+- `partial_trace(rho, trace_out_qubits)` / `partial_trace(statevector, trace_out_qubits)`
 - `pauli_expectation_values(statevector, paulis)`
 
 Important behaviors (from the implementation):
@@ -87,7 +87,7 @@ Important behaviors (from the implementation):
 - `process_fidelity` returns the squared quantity; take sqrt for the unsquared
   fidelity
 - `concurrence` throws if `rho.n_qubits != 2`
-- `partial_trace` uses `keep_qubits` ordering to define the output basis
+- `partial_trace` takes the set of qubits to **trace out**; the complement defines the output subsystem
 
 ## Example
 

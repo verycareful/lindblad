@@ -13,6 +13,7 @@
 #include "lindblad/simulators/clifford_sim.hpp"
 
 #include <cmath>
+#include <set>
 
 using namespace lindblad;
 using namespace lindblad::algorithms;
@@ -348,8 +349,9 @@ TEST(DM_QubitOrdering, CX_ControlLtTarget_MatchesSV) {
 }
 
 TEST(DM_QubitOrdering, CZ_Symmetric_MatchesSV) {
-    // CZ is symmetric in control/target — both orderings should give the same
-    // result. This exercises the same sub_offsets path.
+    // H(0) CZ(2,0) H(0) with H(2) on both sides produces a uniform distribution
+    // over {"000","001","100","101"} (qubits 1 stays |0⟩).
+    // Check that DM produces the same set of non-zero bitstrings as SV.
     QuantumCircuit qc(3);
     qc.h(0).h(2);
     qc.cz(2, 0);   // control=2 > target=0
@@ -364,7 +366,15 @@ TEST(DM_QubitOrdering, CZ_Symmetric_MatchesSV) {
     auto dm_res = dm_sim.run(qc, ideal, 256, 42);
 
     ASSERT_FALSE(sv_res.counts.empty());
-    EXPECT_EQ(sv_res.counts.begin()->first, dm_res.counts.begin()->first);
+    ASSERT_FALSE(dm_res.counts.empty());
+
+    // Both must have exactly the same set of non-zero bitstrings.
+    std::set<std::string> sv_keys, dm_keys;
+    for (const auto& [k, v] : sv_res.counts) if (v > 0) sv_keys.insert(k);
+    for (const auto& [k, v] : dm_res.counts) if (v > 0) dm_keys.insert(k);
+    EXPECT_EQ(sv_keys, dm_keys);
+    // qubit 1 must never be |1⟩ — all bitstrings have '0' at position 1 (middle char).
+    for (const auto& k : sv_keys) EXPECT_EQ(k[1], '0') << "unexpected bitstring " << k;
 }
 
 // =============================================================================

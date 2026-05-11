@@ -54,15 +54,14 @@ Behavior:
 - Builds the circuit via `build_circuit`
 - Runs `StatevectorSimulator::run`
 - Selects the most-frequent bitstring via `std::max_element` with a count comparator
-- Calls `substr(1)` to strip the ancilla (MSB position 0 of the `n+1`-length string), yielding the `n`-bit query register
-- Reverses the resulting string to convert MSB-first ordering into index order
+- Reverses the string to convert MSB-first ordering into index order
 - Returns the reversed string as the secret
 
 Bitstring handling detail:
 
-- `sample_counts` returns bitstrings of length `n+1` (ancilla qubit is at position 0, MSB-first)
-- `substr(1)` extracts the `n`-bit query register before reversal
-- The query bits are reversed to convert MSB-first ordering into index order
+- Per-shot execution records only the `n` query qubits (0..n-1) into the `n`-bit classical register; bitstrings have length `n`
+- No `substr` stripping is needed: the ancilla is never written to the classical register
+- The `n`-bit MSB-first string is reversed so that `secret[i] == '1'` means bit `i` of the hidden string is set
 
 ## `RecursiveBernsteinVazirani`
 

@@ -31,7 +31,7 @@ void StatevectorSimulator::apply_instruction(Statevector& sv, const Instruction&
 2. **State initialization**: Allocate and initialize state representation (SV, DM, tableau, or MPS)
 3. **Instruction iteration**: Loop over `circuit.instructions` in order
 4. **Gate dispatch**: Call appropriate `gates::apply_*` or `apply_gate` function
-5. **Measurement handling**: For `GT::MEASURE`, sample bitstrings or accumulate counts
+5. **Measurement handling**: If any `GT::MEASURE` instruction is present and `shots > 0`, the circuit is re-executed from `|0...0⟩` once per shot so that each collapse is independent. Outcomes are written into the classical register (`n_clbits`-wide). If no MEASURE instructions are present, the state is simulated once and `sample_counts` samples the final distribution.
 6. **Result collection**: Extract final state and sampled bitstrings (if shots > 0)
 
 ## StatevectorSimulator

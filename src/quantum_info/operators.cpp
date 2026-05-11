@@ -210,10 +210,11 @@ double SparsePauliOp::expectation_value(const Statevector& sv) const {
             size_t k = kk;
             const size_t j = k ^ x_mask;
 
-            // Phase from Z parity (Z_mask includes Y positions via Y=iXZ)
-            const int z_parity = LINDBLAD_POPCOUNT64(k & z_mask) & 1;
-            // Additional i^y_count factor from Y = iXZ decomposition
-            const int y_count  = LINDBLAD_POPCOUNT64(k & y_mask) & 3;
+            // Phase from Z parity: Z acts on the input (column) state |j⟩, not |k⟩.
+            // Y = iXZ: Z contributes (-1)^{j_bit} for each Y/Z qubit in j = k^x_mask.
+            const int z_parity = LINDBLAD_POPCOUNT64(j & z_mask) & 1;
+            // i^{#Y} factor is constant per Pauli term (independent of k).
+            const int y_count  = LINDBLAD_POPCOUNT64(y_mask) & 3;
 
             // i^y_count: 0->1+0i, 1->0+1i, 2->-1+0i, 3->0-1i
             double phase_r = 1.0, phase_i = 0.0;
@@ -283,8 +284,8 @@ std::vector<double> SparsePauliOp::expectation_value_batch(
 #endif
             for (size_t k = 0; k < dim; ++k) {
                 const size_t j = k ^ xm;
-                const int z_parity = LINDBLAD_POPCOUNT64(k & zm) & 1;
-                const int y_count  = LINDBLAD_POPCOUNT64(k & ym) & 3;
+                const int z_parity = LINDBLAD_POPCOUNT64(j & zm) & 1;
+                const int y_count  = LINDBLAD_POPCOUNT64(ym) & 3;
                 double phase_r = 1.0, phase_i = 0.0;
                 switch (y_count) {
                     case 1: phase_r =  0.0; phase_i =  1.0; break;

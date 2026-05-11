@@ -88,9 +88,9 @@ The implementation measures the query register after the oracle and the second H
 
 - Runs the Deutsch-Jozsa circuit
 - Returns the classification result
-- `sample_counts` returns bitstrings of length `n+1` (ancilla qubit at position 0, MSB-first)
-- Compares `bits.substr(1)` — the `n`-bit query register — against `std::string(n, '0')`; if equal, the oracle is constant; otherwise balanced
-- The full `n+1`-length bitstring is never compared directly because `query_zero` has length `n`
+- Per-shot execution records only the `n` query qubits (0..n-1) into the classical register, so bitstrings have length `n`
+- Compares each bitstring directly against `std::string(n, '0')`; if any match, the oracle is constant; otherwise balanced
+- No `substr` stripping is needed: the classical register already excludes the ancilla
 
 ## Example Code
 
