@@ -5,8 +5,9 @@ This page covers the Bernstein-Vazirani family of algorithms in lindblad:
 - `BernsteinVazirani`
 - `RecursiveBernsteinVazirani`
 - `ProbabilisticBernsteinVazirani`
+- `DistributedBernsteinVazirani`
 
-All three live in the `lindblad::algorithms` namespace and are declared in [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp).
+All four live in the `lindblad::algorithms` namespace and are declared in [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp).
 
 ## Purpose
 
@@ -187,6 +188,7 @@ When the oracle layout is wrong, the algorithm may return an incorrect secret ra
 - Oracle qubit ordering matters. The ancilla must be the final qubit.
 - Recursive and probabilistic BV are variants of the BV family, not separate unrelated algorithms.
 - The probabilistic solver sorts the discovered keys before returning them.
+- For `DistributedBernsteinVazirani`, each party's local oracle must use qubit index `n_bits` for its ancilla — the last qubit in the local circuit. The combined circuit remaps it to the shared global ancilla automatically.
 
 ## Testing Notes
 
@@ -198,6 +200,144 @@ The tests cover:
 - BV secret recovery for multiple secrets
 - recursive BV across multiple depths
 - probabilistic BV discovery, counts, and ordering
+- distributed BV tests are planned for R.1.4.1 (test-suite release)
+
+## DistributedBernsteinVazirani
+
+### Purpose
+
+`DistributedBernsteinVazirani` (DBVA) solves the BV problem when the secret is split across
+multiple independent parties. Each party holds a local oracle over their portion of the secret.
+The quantum protocol recovers the full secret in a single joint circuit execution — one
+communication round — whereas a classical approach must query each party separately, requiring
+as many rounds as there are parties.
+
+### Theory Summary
+
+The n-bit secret `s` is partitioned as:
+
+```
+s = S_{n_0} || S_{n_1} || ... || S_{n_{t-1}},   Σ n_j = n
+```
+
+Party `j` holds `n_j` bits and a local BV oracle:
+
+```
+f_j(m_j) = ⟨S_{n_j} · m_j⟩ mod 2
+```
+
+The combined circuit uses `n + 1` qubits: `n_total = Σ n_j` query qubits laid out as
+`[party 0 slice | party 1 slice | ...]`, plus one shared ancilla at index `n_total`.
+
+**Circuit steps:**
+
+1. `X(ancilla)` — prepare ancilla in |1⟩
+2. `H` on all qubits — query in |+⟩ⁿ, ancilla in |−⟩
+3. For each party j: apply their local oracle, with qubits remapped from local indices
+   `[0..n_j-1, n_j]` to global indices `[offset_j..offset_j+n_j-1, n_total]`
+4. `H` on query register — decode phase kickback
+5. Measure query register — full secret (MSB-first, reversed to index order)
+
+**Complexity:**
+
+| Metric | Quantum | Classical |
+|---|---|---|
+| Communication rounds | 1 | t (one per party) |
+| Query complexity | O(1) | O(n) |
+| Circuit depth | 2^max(n_j) + 3 | 2^n + 3 (monolithic) |
+
+### Required Inputs
+
+- A vector of `Party` objects, one per node
+- Each `Party::local_oracle` is a standard BV oracle on `(n_bits + 1)` qubits:
+  - qubits `0..n_bits-1` = party's query register
+  - qubit `n_bits` = ancilla (will be remapped to the shared global ancilla)
+- `Party::n_bits` = number of bits this party holds
+
+### How to Invoke
+
+```cpp
+#include "lindblad/algorithms.hpp"
+
+using namespace lindblad;
+using namespace lindblad::algorithms;
+
+// Helper: standard BV oracle for a given secret slice
+static QuantumCircuit local_oracle(const std::string& secret) {
+    int n = static_cast<int>(secret.size());
+    QuantumCircuit qc(n + 1);
+    for (int i = 0; i < n; ++i)
+        if (secret[i] == '1') qc.cx(i, n);
+    return qc;
+}
+
+int main() {
+    // Two parties: party 0 holds "101", party 1 holds "010"
+    std::vector<DistributedBernsteinVazirani::Party> parties = {
+        { local_oracle("101"), 3 },
+        { local_oracle("010"), 3 },
+    };
+
+    auto result = DistributedBernsteinVazirani::solve(parties);
+    // result.full_secret    == "101010"
+    // result.party_secrets  == {"101", "010"}
+    // result.quantum_rounds == 1
+    // result.classical_rounds == 2
+}
+```
+
+### Public API Details
+
+#### `DistributedBernsteinVazirani::Party`
+
+- `local_oracle` — `QuantumCircuit` on `(n_bits + 1)` qubits encoding the party's BV oracle
+- `n_bits` — number of secret bits this party holds
+
+#### `DistributedBernsteinVazirani::build_circuit`
+
+```cpp
+static QuantumCircuit build_circuit(const std::vector<Party>& parties);
+```
+
+Builds and returns the combined `(n_total + 1)`-qubit circuit with all oracles remapped.
+
+#### `DistributedBernsteinVazirani::solve`
+
+```cpp
+static Result solve(const std::vector<Party>& parties,
+                    int shots = 1, uint64_t seed = 0);
+```
+
+Builds the circuit, runs the statevector simulator, and decodes the result.
+
+#### `DistributedBernsteinVazirani::Result`
+
+- `full_secret` — complete n-bit recovered secret (index order)
+- `party_secrets` — per-party slices of `full_secret`, length `n_j` each
+- `num_parties` — total number of parties t
+- `total_bits` — total n = Σ n_j
+- `quantum_rounds` — always 1
+- `classical_rounds` — equals `num_parties`
+
+---
+
+## Future Work
+
+### Qudit BV (d-dimensional generalisation)
+
+The BV algorithm generalises to d-dimensional quantum systems (qudits) where each
+"qudit" has d basis states and the inner product is computed mod d. The quantum
+speedup (1 query vs O(n) classical) transfers directly to the qudit setting.
+
+This variant is **not yet implemented** in lindblad. It requires architectural
+changes to support d-dimensional gate matrices, d^n-dimensional statevectors, and
+qudit-aware circuit and simulator backends throughout the framework. Once qudit
+support is added as a core feature, the BV qudit extension will be a straightforward
+addition.
+
+Reference: Bernstein-Vazirani generalisation to qudit systems (Springer Quantum Studies, 2023).
+
+---
 
 ## Related Source Files
 

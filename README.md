@@ -3,7 +3,7 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Lindblad v1.0](https://img.shields.io/badge/License-Lindblad%20v1.0-red.svg)](LICENSE)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-R.1.3.2-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-R.1.4.0-blue?style=flat-square)](CHANGELOG.md)
 
 > **License Notice:** This software is **proprietary and source-available**. Free for non-commercial and academic use only. Commercial use of any kind requires a separate written license agreement. **Redistribution in any form — including forks, copies, and derivative works — is strictly prohibited without explicit written authorization from the author**, regardless of whether the use is commercial or non-commercial. Public GitHub forks are technically permitted by GitHub's platform but are **not licensed** under this agreement for any purpose other than reviewing or submitting contributions via pull request; any other use of a fork constitutes a violation. By submitting any contribution (pull request, code snippet, bug fix, or similar) you irrevocably assign full copyright ownership of that contribution to the author — see §6.3 of [LICENSE](LICENSE). See [LICENSE](LICENSE) for full terms — `qpp.support@proton.me` for licensing inquiries.
 
@@ -52,8 +52,8 @@ Planned algorithm pages live under docs/algorithms/ and will be expanded as the 
 
 ## Release
 
-- Current release: `R.1.3.2` — correctness patch; 30 test failures resolved; all 223 tests pass
-- Previous release: `R.1.3.1` — test suite release; 5 new test files, 223 tests across 35 suites; 193 passed, 30 failed
+- Current release: `R.1.4.0` — new algorithm: `DistributedBernsteinVazirani`; Qudit BV documented as future work
+- Previous release: `R.1.3.2` — correctness patch; 30 test failures resolved; all 223 tests pass
 
 ## Project Scope
 
@@ -78,7 +78,7 @@ The current codebase provides:
   - `Estimator::gradient()` via parameter-shift rule (2P evaluations fully parallelised)
   - Transpiler-result caching in Estimator (structure-keyed; skips SABRE/ZYZ on repeated calls)
   - `SparsePauliOp::expectation_value_batch()` for vectorised multi-state evaluation
-- Algorithms (VQE, QAOA, layerwise MA-QAOA, exact QPE, Grover with MCX, Bernstein-Vazirani family)
+- Algorithms (VQE, QAOA, layerwise MA-QAOA, exact QPE, Grover with MCX, Bernstein-Vazirani family incl. Distributed BV)
   - `IsingHamiltonian` with `from_qubo()` QUBO→Ising conversion and `to_sparse_pauli_op()`
   - `SoftDispatchResult` for post-processing MA-QAOA bitstring distributions into dispatch solutions
   - Orbit-QAOA: symmetry-reduced parameterisation via `MAQAOA::Options::orbit_assignments`

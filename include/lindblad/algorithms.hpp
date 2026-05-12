@@ -340,6 +340,49 @@ public:
 };
 
 // =============================================================================
+// DistributedBernsteinVazirani — recovers s = s0||s1||...||s_{t-1} where
+//   party j holds n_j bits and a local BV oracle on (n_j + 1) qubits.
+//
+// Secret s is an n-bit string partitioned across t parties:
+//   s = S_{n_0} || S_{n_1} || ... || S_{n_{t-1}},  Σ n_j = n
+// Party j's oracle: f_j(m_j) = ⟨S_{n_j} · m_j⟩ mod 2  (n_j input qubits + 1 ancilla)
+//
+// Quantum: O(1) communication rounds (all local oracles applied in one shot).
+// Classical: O(t) rounds (must query each party independently).
+// Circuit depth: 2^max(n_j) + 3  vs  2^n + 3 for monolithic BV.
+// No auxiliary qubits or EPR pairs required beyond the shared ancilla.
+//
+// Reference: Distributed Quantum Computing literature (ScienceDirect 2024).
+// =============================================================================
+
+class DistributedBernsteinVazirani {
+public:
+    // One entry per party. local_oracle acts on (n_bits + 1) qubits:
+    //   qubits 0..n_bits-1 = party's query register
+    //   qubit  n_bits       = shared ancilla (last qubit in the global circuit)
+    struct Party {
+        QuantumCircuit local_oracle;
+        int n_bits;               // n_j — number of bits this party holds
+    };
+
+    struct Result {
+        std::string full_secret;                  // complete n-bit recovered secret
+        std::vector<std::string> party_secrets;   // per-party slice, length n_j each
+        int num_parties;
+        int total_bits;
+        int quantum_rounds = 1;   // always 1 — quantum advantage
+        int classical_rounds;     // equals num_parties — what classical would cost
+    };
+
+    // Build the combined circuit: H+X prep → local oracles (qubit-remapped) → H → measure.
+    static QuantumCircuit build_circuit(const std::vector<Party>& parties);
+
+    // Build, simulate, and decode the full secret.
+    static Result solve(const std::vector<Party>& parties,
+                        int shots = 1, uint64_t seed = 0);
+};
+
+// =============================================================================
 // Simon's Algorithm — finds period s where f(x)=f(x XOR s), O(n) queries
 // =============================================================================
 

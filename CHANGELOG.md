@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.4.0] - 2026-05-12
+
+### Added
+
+- `include/lindblad/algorithms.hpp` — `DistributedBernsteinVazirani` class: t-party distributed BV where the n-bit secret is partitioned as `s = S_{n_0} || ... || S_{n_{t-1}}`; each party holds a local BV oracle on `(n_j + 1)` qubits; combined circuit remaps local qubit indices to the global register with a shared ancilla; recovers the full secret in one quantum round vs t classical rounds; circuit depth `2^max(n_j) + 3` vs `2^n + 3` for monolithic BV
+- `src/algorithms/bernstein_vazirani.cpp` — `DistributedBernsteinVazirani::build_circuit` and `::solve` implementation appended to the BV source file
+
+### Documentation
+
+- `docs/algorithms/bernstein-vazirani.md` — added `DistributedBernsteinVazirani` to family list; added theory, circuit steps, complexity table, API reference, usage example, and common pitfalls sections; added **Future Work** section documenting Qudit BV as a planned architectural extension requiring d-dimensional gate support
+- `docs/api/bernstein-vazirani.md` — added `DistributedBernsteinVazirani` to family overview; added `Party` struct, `build_circuit`, `solve`, and `Result` API sections
+- `README.md` — version badge and release line updated to `R.1.4.0`
+- `docs/api/backends.md` — version example updated to `R.1.4.0`
+
+### Notes
+
+- `R.1.4.1` (next patch) is reserved for the `DistributedBernsteinVazirani` test suite per dev-workflow §4 (C bump → mandatory .1 test release before any .2+ patches).
+
 ## [R.1.3.2] - 2026-05-11
 
 ### Added
