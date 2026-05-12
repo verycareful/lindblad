@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.4.1] - 2026-05-12
+
+### Tests
+
+- `tests/test_classic_algorithms.cpp` — added 10 unit tests for `DistributedBernsteinVazirani` covering edge cases (single party equivalence, multi-party equal/unequal splits, all-zero and all-one secrets) and algorithmic verification (quantum rounds == 1 vs classical rounds == t, party secret string slicing)
+
+### Results
+
+- 233 tests across 36 suites — all passed (WSL/Clang)
+
 ## [R.1.4.0] - 2026-05-12
 
 ### Added
