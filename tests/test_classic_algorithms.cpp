@@ -262,3 +262,127 @@ TEST(RecursiveBernsteinVazirani, Depth2WithShots2) {
     EXPECT_EQ(result.secrets[0], s0);
     EXPECT_EQ(result.secrets[1], s1);
 }
+
+// =============================================================================
+// DistributedBernsteinVazirani
+// =============================================================================
+
+TEST(DistributedBernsteinVazirani, SingleParty_EquivalentToStandardBV) {
+    std::string secret = "101";
+    std::vector<DistributedBernsteinVazirani::Party> parties = {
+        {bv_oracle(secret), 3}
+    };
+    auto result = DistributedBernsteinVazirani::solve(parties);
+    
+    EXPECT_EQ(result.full_secret, "101");
+    ASSERT_EQ(result.party_secrets.size(), 1u);
+    EXPECT_EQ(result.party_secrets[0], "101");
+    EXPECT_EQ(result.quantum_rounds, 1);
+    EXPECT_EQ(result.classical_rounds, 1);
+}
+
+TEST(DistributedBernsteinVazirani, TwoParties_EqualSplit_101_010) {
+    std::vector<DistributedBernsteinVazirani::Party> parties = {
+        {bv_oracle("101"), 3},
+        {bv_oracle("010"), 3}
+    };
+    auto result = DistributedBernsteinVazirani::solve(parties);
+    
+    EXPECT_EQ(result.full_secret, "101010");
+    ASSERT_EQ(result.party_secrets.size(), 2u);
+    EXPECT_EQ(result.party_secrets[0], "101");
+    EXPECT_EQ(result.party_secrets[1], "010");
+    EXPECT_EQ(result.num_parties, 2);
+    EXPECT_EQ(result.total_bits, 6);
+}
+
+TEST(DistributedBernsteinVazirani, TwoParties_UnequalSplit_11_0) {
+    std::vector<DistributedBernsteinVazirani::Party> parties = {
+        {bv_oracle("11"), 2},
+        {bv_oracle("0"), 1}
+    };
+    auto result = DistributedBernsteinVazirani::solve(parties);
+    
+    EXPECT_EQ(result.full_secret, "110");
+    ASSERT_EQ(result.party_secrets.size(), 2u);
+    EXPECT_EQ(result.party_secrets[0], "11");
+    EXPECT_EQ(result.party_secrets[1], "0");
+}
+
+TEST(DistributedBernsteinVazirani, ThreeParties_AllSingleBit) {
+    std::vector<DistributedBernsteinVazirani::Party> parties = {
+        {bv_oracle("1"), 1},
+        {bv_oracle("0"), 1},
+        {bv_oracle("1"), 1}
+    };
+    auto result = DistributedBernsteinVazirani::solve(parties);
+    
+    EXPECT_EQ(result.full_secret, "101");
+    ASSERT_EQ(result.party_secrets.size(), 3u);
+    EXPECT_EQ(result.party_secrets[0], "1");
+    EXPECT_EQ(result.party_secrets[1], "0");
+    EXPECT_EQ(result.party_secrets[2], "1");
+}
+
+TEST(DistributedBernsteinVazirani, ThreeParties_UnequalSplit) {
+    std::vector<DistributedBernsteinVazirani::Party> parties = {
+        {bv_oracle("10"), 2},
+        {bv_oracle("111"), 3},
+        {bv_oracle("0"), 1}
+    };
+    auto result = DistributedBernsteinVazirani::solve(parties);
+    
+    EXPECT_EQ(result.full_secret, "101110");
+    EXPECT_EQ(result.party_secrets[0], "10");
+    EXPECT_EQ(result.party_secrets[1], "111");
+    EXPECT_EQ(result.party_secrets[2], "0");
+}
+
+TEST(DistributedBernsteinVazirani, AllZeroSecret) {
+    std::vector<DistributedBernsteinVazirani::Party> parties = {
+        {bv_oracle("00"), 2},
+        {bv_oracle("000"), 3}
+    };
+    auto result = DistributedBernsteinVazirani::solve(parties);
+    EXPECT_EQ(result.full_secret, "00000");
+}
+
+TEST(DistributedBernsteinVazirani, AllOneSecret) {
+    std::vector<DistributedBernsteinVazirani::Party> parties = {
+        {bv_oracle("11"), 2},
+        {bv_oracle("11"), 2}
+    };
+    auto result = DistributedBernsteinVazirani::solve(parties);
+    EXPECT_EQ(result.full_secret, "1111");
+}
+
+TEST(DistributedBernsteinVazirani, QuantumRoundsAlwaysOne) {
+    std::vector<DistributedBernsteinVazirani::Party> parties = {
+        {bv_oracle("1"), 1}, {bv_oracle("0"), 1}, {bv_oracle("1"), 1}, {bv_oracle("1"), 1}
+    };
+    auto result = DistributedBernsteinVazirani::solve(parties);
+    EXPECT_EQ(result.quantum_rounds, 1);
+    EXPECT_EQ(result.classical_rounds, 4);
+}
+
+TEST(DistributedBernsteinVazirani, ClassicalRoundsEqualsNumParties) {
+    std::vector<DistributedBernsteinVazirani::Party> parties = {
+        {bv_oracle("1"), 1}, {bv_oracle("0"), 1}
+    };
+    auto result = DistributedBernsteinVazirani::solve(parties);
+    EXPECT_EQ(result.classical_rounds, 2);
+    EXPECT_EQ(result.num_parties, 2);
+}
+
+TEST(DistributedBernsteinVazirani, PartySecretsStitchToFullSecret) {
+    std::vector<DistributedBernsteinVazirani::Party> parties = {
+        {bv_oracle("11"), 2}, {bv_oracle("00"), 2}, {bv_oracle("10"), 2}
+    };
+    auto result = DistributedBernsteinVazirani::solve(parties);
+    
+    std::string stitched = "";
+    for (const auto& s : result.party_secrets) {
+        stitched += s;
+    }
+    EXPECT_EQ(stitched, result.full_secret);
+}
