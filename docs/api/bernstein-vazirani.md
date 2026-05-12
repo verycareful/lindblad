@@ -9,13 +9,14 @@ This page documents the public Bernstein-Vazirani family APIs in `lindblad::algo
 
 ## Family Overview
 
-The family includes three solvers:
+The family includes four solvers:
 
 - `BernsteinVazirani`
 - `RecursiveBernsteinVazirani`
 - `ProbabilisticBernsteinVazirani`
+- `DistributedBernsteinVazirani`
 
-All three build circuits with `n` query qubits and one ancilla, then interpret
+All four build circuits with query qubits and one shared ancilla, then interpret
 sampled outputs to return secrets.
 
 ## `BernsteinVazirani`
@@ -127,28 +128,58 @@ Behavior:
 - `key_counts`: map from key to count
 - `shots_used`: total number of shots requested
 
-## Example
+## `DistributedBernsteinVazirani`
+
+### `Party`
 
 ```cpp
-#include "lindblad/algorithms.hpp"
-
-using namespace lindblad;
-using namespace lindblad::algorithms;
-
-QuantumCircuit bv_oracle(const std::string& secret) {
-    QuantumCircuit qc(secret.size() + 1);
-    for (int i = 0; i < static_cast<int>(secret.size()); ++i) {
-        if (secret[i] == '1') qc.cx(i, static_cast<int>(secret.size()));
-    }
-    return qc;
-}
-
-int main() {
-    auto oracle = bv_oracle("101");
-    auto result = BernsteinVazirani::solve(oracle, 3);
-    return result.secret.empty() ? 1 : 0;
-}
+struct Party {
+    QuantumCircuit local_oracle;  // (n_bits + 1) qubits: 0..n_bits-1 query, n_bits ancilla
+    int n_bits;                   // number of bits this party holds
+};
 ```
+
+### `build_circuit`
+
+Signature:
+
+```cpp
+static QuantumCircuit build_circuit(const std::vector<Party>& parties);
+```
+
+Behavior:
+
+- Computes `n_total = Σ party.n_bits`; allocates `(n_total + 1)` qubits, `n_total` classical bits
+- Prepares ancilla as |1⟩ then applies H to all qubits
+- For each party, remaps oracle qubit indices:
+  - local `k < n_bits` → `offset + k` (query slice)
+  - local `k == n_bits` → `n_total` (shared ancilla)
+- Appends H to the full query register, then measures it
+
+### `solve`
+
+Signature:
+
+```cpp
+static Result solve(const std::vector<Party>& parties,
+                    int shots = 1, uint64_t seed = 0);
+```
+
+Behavior:
+
+- Builds the circuit via `build_circuit`
+- Runs `StatevectorSimulator::run`
+- Selects the most-frequent bitstring, reverses it to index order
+- Slices the full secret into per-party portions matching each `party.n_bits`
+
+### `DistributedBernsteinVazirani::Result`
+
+- `full_secret`: complete n-bit recovered secret (index order)
+- `party_secrets`: per-party slices of `full_secret`, length `n_j` each
+- `num_parties`: number of parties t
+- `total_bits`: total n = Σ n_j
+- `quantum_rounds`: always 1
+- `classical_rounds`: equals `num_parties`
 
 ## Related Pages
 
