@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.5.1] - 2026-05-14
+
+### Tests
+
+- `tests/test_feedforward_qft.cpp` — new file: 9 test suites, 100 tests covering feedforward infrastructure and semi-classical QFT:
+  - `CircuitFeedforwardAPI` (17) — `p_if`/`add_if` circuit construction: type, qubit, clbit, angle, and `condition_value` fields; fluent chaining; out-of-range qubit/clbit throws
+  - `FeedforwardStatevector` (7) — conditional-X on SV: gate applied/skipped for `clval` 0 and 1, two independent classical bits triggering different targets, non-conditional gates after `p_if` still execute, total shots preserved
+  - `FeedforwardDensityMatrix` (7) — same conditional-X matrix on DM; Bell-state correctness in single-pass (no-feedforward) mode; mid-circuit DM collapse with feedforward active; total shots preserved
+  - `FeedforwardClifford` (15) — conditional-X; `P(0)`=I, `P(π/2)`=S, `P(π)`=Z, `P(3π/2)`=SDG behaviour; non-Clifford `P(π/4)` throws from direct sim and returns `success=false` from `LocalBackend`; `is_clifford()` recognition for all Clifford angles; conditional `p_if` with Clifford angle on Clifford backend
+  - `FeedforwardMPS` (3) — conditional-X: gate applied, gate skipped, and `clval=0` case
+  - `BuildIterativeCircuit` (17) — qubit/clbit counts for n=1..4; exact instruction count for n=1..4; type, qubit, clbit, angle, and condition per position for n=2 and n=3; all `MEASURE` instructions map qubit j→clbit j; all `p_if` instructions use `clval=1`; invalid n throws
+  - `BuildIterativeInverseCircuit` (13) — same structural checks; ascending qubit order (opposite of forward); negative angles; forward vs inverse angle-sign comparison for n=2; same total instruction count as forward for n=1..5
+  - `RunIterativeCorrectness` (18) — `shots=0` throws on both overloads; n=1 `|+⟩`→"0" and `|−⟩`→"1" deterministically on all 4 backends; `N2_FeedforwardPGateExercised`: `|+i⟩⊗|−⟩` input gives deterministic "11" on all 4 backends (proves the conditional `P(π/2)` gate actually fired); uniform distribution for n=2 `|00⟩` input; result fields (`n_qubits`, `clifford_compatible`, `success`, total shots)
+  - `RunIterativeInverse` (6) — n=1 deterministic on SV; `N2_InverseFeedforwardExercised`: `|−⟩⊗|+i⟩` input gives deterministic "01" on SV, DM, and MPS (proves the negative-angle conditional `P(-π/2)` gate fired); total shots preserved
+- `tests/CMakeLists.txt` — registered `test_feedforward_qft.cpp`
+
+### Results
+
+- 340 tests across 45 suites — all passed (921 ms, WSL/Clang).
+
 ## [R.1.5.0] - 2026-05-14
 
 ### Added
@@ -53,10 +73,6 @@ The format is based on Keep a Changelog and this project uses semantic versionin
 - `README.md` — complete rewrite: structured documentation map table, algorithm list with class names and notes columns, build options and dependency license tables; added QFT, Dispatch, and Ising entries; removed stale "planned pages" line; added `walkthrough.md` link
 - `walkthrough.md` — added `docs/algorithms/` and `docs/api/` to Related Documentation section
 - `.gitignore` — added `commercial_prep.md`
-
-### Notes
-
-- `R.1.5.1` (next patch) is reserved for the feedforward + iterative QFT test suite per dev-workflow §4 (C bump → mandatory .1 test release before any .2+ patches).
 
 ## [R.1.4.1] - 2026-05-12
 

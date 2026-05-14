@@ -406,3 +406,4 @@ TEST(QPE_BitReversal, ZGate_EigenvalueCheck) {
     double phase = QPE::estimate_phase(z_gate, 3, 512, 42);
     EXPECT_NEAR(phase, 0.0, 0.15);
 }
+ 
