@@ -153,7 +153,7 @@ Returns: `"lindblad_local_simulator"`
 std::string version() const;
 ```
 
-Returns the build version string derived from the CMake `LINDBLAD_VERSION_LABEL` compile definition (e.g. `"R.1.4.1"`). The value tracks `LINDBLAD_VERSION_LABEL` in `CMakeLists.txt` and cannot drift from the project version.
+Returns the build version string derived from the CMake `LINDBLAD_VERSION_LABEL` compile definition (e.g. `"R.1.5.0"`). The value tracks `LINDBLAD_VERSION_LABEL` in `CMakeLists.txt` and cannot drift from the project version.
 
 ### `max_qubits()`
 
@@ -204,10 +204,10 @@ for (const auto& [bitstring, count] : result.counts) {
 
 ```cpp
 lindblad::backends::LocalBackend backend;
-backend.noise_model.add_gate_error(
-    lindblad::NoiseChannels::amplitude_damping(0.01), 
-    {"h", "cx"}
-);
+backend.noise_model.add_quantum_error(
+    lindblad::NoiseChannels::amplitude_damping(0.01), "h");
+backend.noise_model.add_quantum_error(
+    lindblad::NoiseChannels::amplitude_damping(0.01), "cx");
 
 lindblad::QuantumCircuit qc(3);
 qc.h(0).h(1).h(2);

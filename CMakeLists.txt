@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
-project(lindblad VERSION 1.1.4.1 LANGUAGES CXX)
-set(LINDBLAD_VERSION_LABEL "R.1.4.1")
+project(lindblad VERSION 1.1.5.0 LANGUAGES CXX)
+set(LINDBLAD_VERSION_LABEL "R.1.5.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -149,6 +149,7 @@ add_library(lindblad_core STATIC
     src/algorithms/deutsch_jozsa.cpp
     src/algorithms/bernstein_vazirani.cpp
     src/algorithms/simon.cpp
+    src/algorithms/qft.cpp
     src/algorithms/ising.cpp
     src/algorithms/dispatch.cpp
     src/qasm/qasm2_parser.cpp

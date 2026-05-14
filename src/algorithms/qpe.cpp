@@ -74,19 +74,12 @@ QuantumCircuit QPE::build_circuit(
         qc.instructions.push_back(ctrl_u);
     }
 
-    for (int i = num_eval_qubits - 1; i >= 0; --i) {
-        for (int j = num_eval_qubits - 1; j > i; --j) {
-            double angle = -PI / (1 << (j - i));
-            qc.cp(angle, j, i);
-        }
-        qc.h(i);
-    }
-
-    // IQFT outputs the phase in bit-reversed qubit order; reverse it so
-    // qubit 0 holds the MSB and estimate_phase decodes correctly.
-    for (int i = 0; i < num_eval_qubits / 2; ++i) {
-        qc.swap(i, num_eval_qubits - 1 - i);
-    }
+    // Inverse QFT on the evaluation register.
+    // Delegated to QFT::build_inverse_circuit — canonical IQFT implementation.
+    // do_swaps=true: output bit-reversal included so estimate_phase reads MSB-first.
+    auto iqft = QFT::build_inverse_circuit(num_eval_qubits, /*do_swaps=*/true);
+    for (const auto& inst : iqft.instructions)
+        qc.instructions.push_back(inst);
 
     return qc;
 }

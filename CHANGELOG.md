@@ -4,6 +4,60 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.5.0] - 2026-05-14
+
+### Added
+
+- **`QFT` class** — new standalone algorithm (`include/lindblad/algorithms.hpp`, `src/algorithms/qft.cpp`):
+  - `QFT::build_circuit(n)` — exact n-qubit quantum Fourier transform circuit
+  - `QFT::build_inverse_circuit(n)` — inverse QFT (IQFT)
+  - `QFT::build_aqft_circuit(n, m)` — approximate QFT (Kitaev/Coppersmith) with `m`-level phase truncation
+  - `QFT::apply(circuit, opts)` — compose QFT onto an existing circuit; returns `QFTResult`
+  - `QFT::run(circuit, shots, seed, opts)` — execute; returns `QFTResult` with backend result, qubit count, and Clifford-compatibility flag
+  - `Options` struct: `approximation_degree` (0 = exact), `do_swaps` (default true)
+  - Clifford-simulable for n ≤ 2 (exact) or AQFT with `m = 1`
+  - `build_iterative_circuit(n)` — semi-classical (Griffiths-Niu) forward QFT: processes qubits `n-1` down to `0`; classically-conditioned `P(π/2^{k-j})` gates replace quantum `CP` gates, driven by prior measurement outcomes `c[k]`; output is `n` classical bits
+  - `build_iterative_inverse_circuit(n)` — inverse semi-classical QFT: processes qubits `0` up to `n-1`; `P(-π/2^{j-k})` feedforward rotations
+  - `run_iterative(input_state, backend, shots, seed)` — compose `input_state` with the iterative QFT circuit and execute on any of the four backends; `shots` must be `> 0`
+  - `run_iterative(input_state, shots, seed)` — convenience overload using the default Statevector backend
+
+- **Feedforward infrastructure** — classically-conditioned gate execution across the full framework:
+  - `QuantumCircuit::p_if(angle, qubit, clbit, clval=1)` — apply `P(angle)` only if `clreg[clbit] == clval`; primary primitive for semi-classical algorithms
+  - `QuantumCircuit::add_if(clbit, clval, type, qubits, params)` — general conditional gate builder for any `GateType`
+  - All four simulators now honour `condition_clbit`/`condition_value` on every instruction:
+    - **StatevectorSimulator** — condition check inserted before `apply_instruction` in the per-shot dispatch loop
+    - **DensityMatrixSimulator** — new feedforward path: when any instruction has a condition, the simulator switches to per-shot mode; each shot re-initialises from `|0⟩⟨0|`, collapses the density matrix on `MEASURE` (project + renormalise), records outcomes in `clreg[n_clbits]`, and evaluates gate conditions; single-pass mode unchanged for circuits without feedforward
+    - **CliffordSimulator** — replaced per-shot `bitstring[q]` indexing with a proper `clreg[n_clbits]` vector; `MEASURE` now writes to `inst.clbits[0]`; condition check added before gate dispatch; `P` gate mapped to equivalent Clifford operation by angle (`P(0)=I`, `P(π/2)=S`, `P(π)=Z`, `P(3π/2)=SDG`); `is_clifford()` updated to accept `P` gates whose angles are Clifford
+    - **MPSSimulator** — condition check added in per-shot dispatch (classical register and mid-circuit collapse already existed from R.1.3.2)
+
+### Changed
+
+- `src/algorithms/qpe.cpp` — refactored inline IQFT to use `QFT::build_inverse_circuit`
+
+### Fixed
+
+- `docs/api/qpe.md` — typo: `tatic double estimate_phase` → `static double estimate_phase`
+- `docs/algorithms/qpe.md` — corrected measurement description: implementation calls `measure_all()`, not selective evaluation-register measurement
+- `docs/api/deutsch-jozsa.md` — removed false `substr(1)` claim; bitstring is an `n`-bit direct comparison with no ancilla stripping
+- `docs/api/simon.md` — removed false `2n`/`substr(n)` claims; classical register is `n` bits wide, bitstring reversed directly
+- `docs/algorithms/qaoa.md` — removed stale "optimizer not wired" note; `optimizer` field is fully wired (COBYLA, NELDER_MEAD, POWELL)
+- `docs/api/maqaoa.md` — corrected `orbits_by_power()` description: sorts powers ascending first (order-independent); removed "order-dependent" claim
+- `docs/api/backends.md` — fixed noise model example: `add_gate_error(chan, {"h","cx"})` → two separate `add_quantum_error(chan, gate)` calls per gate
+- `docs/api/simulators.md` — fixed `DensityMatrixSimulator` workflow example: `noise_model.gate_error(...)` → `noise_model.add_quantum_error(NoiseChannels::depolarizing(...), gate, qubits)`
+
+### Documentation
+
+- `docs/algorithms/qft.md` — new file: exact QFT, AQFT (Kitaev/Coppersmith), IQFT, and semi-classical (Griffiths-Niu) iterative QFT theory; circuit description, complexity table, usage examples for all variants, Clifford-simulability analysis for n ≤ 2 and AQFT m=1, testing notes
+- `docs/api/qft.md` — new file: complete API reference for all `QFT` methods — `build_circuit`, `build_inverse_circuit`, `build_aqft_circuit`, `apply`, `run`, `build_iterative_circuit`, `build_iterative_inverse_circuit`, and both `run_iterative` overloads — with inline examples, exception tables, and `Options` struct documentation
+- `docs/MasterDocumentation.md` — added `qft.md` to algorithm documentation map; updated Current Priority section
+- `README.md` — complete rewrite: structured documentation map table, algorithm list with class names and notes columns, build options and dependency license tables; added QFT, Dispatch, and Ising entries; removed stale "planned pages" line; added `walkthrough.md` link
+- `walkthrough.md` — added `docs/algorithms/` and `docs/api/` to Related Documentation section
+- `.gitignore` — added `commercial_prep.md`
+
+### Notes
+
+- `R.1.5.1` (next patch) is reserved for the feedforward + iterative QFT test suite per dev-workflow §4 (C bump → mandatory .1 test release before any .2+ patches).
+
 ## [R.1.4.1] - 2026-05-12
 
 ### Tests

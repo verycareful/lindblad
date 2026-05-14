@@ -83,10 +83,11 @@ Create one page per public algorithm family. Variants of the same algorithm shou
 - `docs/algorithms/qpe.md`
 - `docs/algorithms/grover.md`
 - `docs/algorithms/deutsch-jozsa.md`
-- `docs/algorithms/bernstein-vazirani.md`  # includes recursive and probabilistic BV variants
+- `docs/algorithms/bernstein-vazirani.md`  # includes recursive, probabilistic, and distributed BV variants
 - `docs/algorithms/simon.md`
 - `docs/algorithms/ising.md`
 - `docs/algorithms/dispatch.md`
+- `docs/algorithms/qft.md`  # exact QFT, IQFT, AQFT (Kitaev approximation), and semi-classical (Griffiths-Niu) QFT with feedforward
 
 MAQAOA is the main exception: it deserves its own dedicated page because it has substantially more modes, configuration surface, and usage patterns than QAOA.
 
@@ -129,13 +130,13 @@ The recommended recovery order is:
 
 ## Current Priority
 
-The first algorithm release is based on Bernstein-Vazirani, so the immediate documentation priority is:
+The initial algorithm documentation pass (BV family, QAOA, MAQAOA, QPE, Grover, Deutsch-Jozsa, Simon, QFT including semi-classical variant) is complete. Remaining priorities:
 
-1. README refresh
-2. BV family docs
-3. QAOA and MAQAOA docs
-4. VQE, QPE, Grover, Deutsch-Jozsa, Simon docs
-5. lower-level API and helper docs
+1. Write test suite for R.1.5.1: feedforward infrastructure + semi-classical QFT correctness.
+2. Ensure all algorithm pages meet the full required-section checklist above.
+3. Keep API deep-dive pages (`docs/api/*.md`) in sync with header changes.
+4. Expand `docs/Architecture.md` and `docs/APIOverview.md` as new subsystems are added.
+5. Add usage examples for noise model workflows and transpiler passes.
 
 ## Notes for Future Sessions
 

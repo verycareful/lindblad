@@ -88,7 +88,7 @@ QAOA uses both `Estimator` and `Sampler`.
 - `p` sets the number of layers
 - `max_iterations` controls the optimizer budget
 - `convergence_threshold` controls stop tolerance
-- `optimizer` is currently not wired; the implementation always uses COBYLA
+- `optimizer` selects the classical optimizer: `"COBYLA"` (default), `"NELDER_MEAD"`, or `"POWELL"`
 - `seed` drives reproducible initialization
 - `initial_thetas` optionally replaces the default H-state preparation with per-qubit `Ry(theta)` initialization
 

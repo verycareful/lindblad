@@ -403,6 +403,38 @@ QuantumCircuit& QuantumCircuit::reset(int qubit) {
 }
 
 // =============================================================================
+// Classically-conditioned gates (feedforward)
+// =============================================================================
+
+QuantumCircuit& QuantumCircuit::p_if(double angle, int qubit, int clbit, int clval) {
+    validate_qubit(qubit);
+    validate_clbit(clbit);
+    Instruction inst;
+    inst.type = Instruction::GateType::P;
+    inst.qubits = {qubit};
+    inst.params = {angle};
+    inst.condition_clbit = clbit;
+    inst.condition_value = clval;
+    instructions.push_back(std::move(inst));
+    return *this;
+}
+
+QuantumCircuit& QuantumCircuit::add_if(int clbit, int clval, Instruction::GateType type,
+                                        const std::vector<int>& qubits,
+                                        const std::vector<double>& params) {
+    validate_clbit(clbit);
+    for (int q : qubits) validate_qubit(q);
+    Instruction inst;
+    inst.type = type;
+    inst.qubits = qubits;
+    inst.params = params;
+    inst.condition_clbit = clbit;
+    inst.condition_value = clval;
+    instructions.push_back(std::move(inst));
+    return *this;
+}
+
+// =============================================================================
 // Parameterised gates
 // =============================================================================
 

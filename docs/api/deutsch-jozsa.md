@@ -56,8 +56,9 @@ Behavior:
 
 Bitstring handling detail:
 
-- The implementation checks `bits.substr(1)` against an all-zero query string,
-  so it expects the query bits to follow the ancilla bit at position 0
+- The classical register contains only the `n` query bits (qubits 0..n-1);
+  the ancilla is not measured. The sampled bitstring has length `n` and is
+  compared directly against `std::string(n, '0')` — no `substr` stripping is needed.
 
 ## Example
 

@@ -52,15 +52,16 @@ Behavior:
 
 - Builds the circuit via `build_circuit`
 - Repeatedly runs the circuit for single-shot samples
-- Extracts the query-register bits by taking `raw.substr(n)` and reversing
+- Reverses the sampled bitstring directly to obtain index-order query bits
 - Skips the all-zero equation and ignores duplicates
 - Stops after `n - 1 + extra_samples` equations or `4n` attempts
 - Solves the system with `gaussian_eliminate`
 
 Bitstring handling detail:
 
-- The sampled bitstring has length `2n`; the query bits are expected in the
-  second half (`raw.substr(n)`), then reversed to index order
+- The classical register contains only the `n` query bits (qubits 0..n-1);
+  the output register is not measured. The sampled bitstring has length `n`
+  and is reversed directly to index order — no `substr` is needed.
 
 ## `gaussian_eliminate`
 

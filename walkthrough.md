@@ -73,3 +73,5 @@ Use tests for correctness checks and benchmarks for performance regressions or o
 - `docs/BuildAndTest.md`
 - `docs/APIOverview.md`
 - `docs/DevelopmentGuide.md`
+- `docs/algorithms/` — one page per algorithm family (QPE, QFT, VQE, QAOA, Grover, BV, Simon, etc.)
+- `docs/api/` — method and class deep-dives (circuit, gates, simulators, backends, noise, transpiler, etc.)
