@@ -20,6 +20,8 @@ set(LINDBLAD_TEST_SOURCES
     test_gates_extended.cpp
     test_operators_qi.cpp
     test_ising.cpp
+    # R.1.5.1 test suite
+    test_feedforward_qft.cpp
 )
 
 # Create test executable
