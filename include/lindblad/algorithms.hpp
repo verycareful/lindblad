@@ -3,6 +3,7 @@
 #include "lindblad/circuit.hpp"
 #include "lindblad/operators.hpp"
 #include "lindblad/primitives.hpp"
+#include "lindblad/backends/local_backend.hpp"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -380,6 +381,156 @@ public:
     // Build, simulate, and decode the full secret.
     static Result solve(const std::vector<Party>& parties,
                         int shots = 1, uint64_t seed = 0);
+};
+
+// =============================================================================
+// QFT — Quantum Fourier Transform family
+//
+// Standard QFT on n qubits:
+//   for j = 0..n-1:  H(j);  for k = j+1..n-1:  CP(π/2^{k-j}, k, j)
+//   then SWAP pairs to reverse bit order (if do_swaps = true)
+//   Total: n(n-1)/2 CP gates + n H gates + ⌊n/2⌋ SWAPs = O(n²)
+//
+// Approximate QFT (AQFT, Kitaev/Coppersmith):
+//   Omit CP(θ) with |θ| < π/2^m.  Gate count reduces to O(n·m).
+//   m = 0  →  exact QFT  (all CP retained)
+//   m = 1  →  keep only CP(π/2) = CS;  Clifford-simulable for all n
+//   m = n-1→  equivalent to exact QFT
+//
+// Inverse QFT (IQFT):
+//   Reverse gate order and negate all CP angles.
+//   Used as the final stage of QPE, Shor's algorithm, and QSP.
+//
+// Clifford-simulability:
+//   CP(π/2^k) is Clifford iff k = 0 (I), 1 (CS = controlled-S), or the gate
+//   reduces to X/Y/Z.  For k ≥ 2, CP(π/2^k) involves T-equivalent rotations
+//   and is non-Clifford.  Exact QFT therefore requires Statevector, DM, or MPS
+//   for n ≥ 3 (n=1: just H; n=2: H + CS + SWAP — both Clifford).
+//   AQFT(m=1) retains only CS gates and is Clifford-simulable for all n.
+//
+// Future work — Clifford+T simulation:
+//   Extending CliffordSimulator via stabilizer-rank decomposition
+//   (Bravyi & Gosset 2016; Bravyi, Browne et al. 2019) would allow
+//   simulation of circuits with a small number of T-equivalent gates (t ≤ ~30)
+//   in O(2^t · n²) time.  This would enable AQFT(m≥2) on the Clifford backend
+//   but would NOT be practical for exact QFT (t = O(n²)).
+//   Tracked as a separate architectural feature for a future minor release.
+//
+// Semi-classical (iterative) QFT — Griffiths & Niu 1996:
+//   Processes qubits from n-1 down to 0.  For each qubit j, previously measured
+//   outcomes (stored in classical registers) drive classical feedforward rotations
+//   P(π/2^{k-j}) conditioned on c[k]==1, replacing the quantum CP gates.
+//   Requires only single-qubit gates + mid-circuit MEASURE + feedforward.
+//   Output: n classical bits holding the QFT Fourier coefficients.
+//   Clifford-compatible for n ≤ 2 (angles reduce to S/Z/SDG gates).
+//
+// References:
+//   Coppersmith (1994), Cleve & Watrous (2000), Barenco et al. (1996 AQFT),
+//   Nielsen & Chuang §5.1, Griffiths & Niu 1996 (iterative QPE/QFT)
+// =============================================================================
+
+class QFT {
+public:
+    // Options for circuit construction.
+    struct Options {
+        // Append bit-reversal SWAP layer at the end of QFT/IQFT (standard convention).
+        // Set false when composing QFT as a subroutine where the caller handles ordering.
+        bool do_swaps;
+        int approximation_degree;
+        bool inverse;
+
+        Options(bool swaps = true, int approx_deg = 0, bool inv = false)
+            : do_swaps(swaps), approximation_degree(approx_deg), inverse(inv) {}
+    };
+
+    // Result returned by run().
+    struct Result {
+        backends::BackendResult backend_result;  // counts, timing, success flag
+        int n_qubits;
+        // true iff the built circuit contains only Clifford-group gates.
+        // (exact QFT: true only for n ≤ 2; AQFT(m=1): always true)
+        bool clifford_compatible;
+    };
+
+    // -------------------------------------------------------------------------
+    // Circuit builders — pure circuit constructors, no simulator dependency.
+    // These are the primary composable subroutine interface.
+    // -------------------------------------------------------------------------
+
+    // Build a QFT or IQFT subcircuit on n qubits.
+    // Returns a QuantumCircuit with no classical bits (measurements not included).
+    static QuantumCircuit build_circuit(int n, const Options& opts = Options{});
+
+    // Convenience: exact IQFT subcircuit, optionally with/without bit-reversal SWAPs.
+    // Equivalent to build_circuit(n, {do_swaps, 0, true}).
+    static QuantumCircuit build_inverse_circuit(int n, bool do_swaps = true);
+
+    // AQFT: exact QFT dropping all CP(θ) with |θ| < π/2^m.
+    // Equivalent to build_circuit(n, {true, m, false}).
+    static QuantumCircuit build_approximate_circuit(int n, int m);
+
+    // Append the QFT subcircuit to an existing circuit (in-place composition).
+    // The input circuit is copied; the QFT subcircuit is appended on all qubits.
+    // Returns the composed circuit (no measurements added).
+    static QuantumCircuit apply(const QuantumCircuit& qc, const Options& opts = Options{});
+
+    // -------------------------------------------------------------------------
+    // run() — terminal entry points: build circuit, execute, return result.
+    // input_state: circuit that prepares the input |ψ⟩ from |0...0⟩.
+    // shots = 0: state inspection (no measure_all appended — use with SV/DM).
+    // shots > 0: measure_all appended, backend samples the distribution.
+    // -------------------------------------------------------------------------
+
+    // Run using an explicit LocalBackend (any SimType: STATEVECTOR, DENSITY_MATRIX,
+    // MPS, AUTO).  CLIFFORD will work only for Clifford-compatible circuits (n ≤ 2
+    // or AQFT m=1); the backend will error otherwise.
+    static Result run(
+        const QuantumCircuit& input_state,
+        backends::LocalBackend& backend,
+        const Options& opts = Options{},
+        int shots = 0,
+        uint64_t seed = 0
+    );
+
+    // Convenience overload: run with a default Statevector backend.
+    static Result run(
+        const QuantumCircuit& input_state,
+        const Options& opts = Options{},
+        int shots = 0,
+        uint64_t seed = 0
+    );
+
+    // -------------------------------------------------------------------------
+    // Semi-classical (iterative) QFT — Griffiths & Niu 1996.
+    // Builds a circuit with n qubits AND n classical bits.
+    // Uses feedforward: P rotations conditioned on prior measurement outcomes.
+    // The circuit always includes final measurements (no shots=0 mode).
+    // Output bitstring c[n-1]...c[0] holds the QFT Fourier coefficients.
+    // -------------------------------------------------------------------------
+
+    // Build the semi-classical forward QFT circuit (n qubits, n classical bits).
+    // Processing order: qubit n-1 first (MSB), qubit 0 last (LSB).
+    static QuantumCircuit build_iterative_circuit(int n);
+
+    // Build the semi-classical inverse QFT circuit (n qubits, n classical bits).
+    // Processing order: qubit 0 first, qubit n-1 last.
+    static QuantumCircuit build_iterative_inverse_circuit(int n);
+
+    // Run semi-classical QFT on input_state using the given backend.
+    // shots: number of samples (must be > 0; feedforward requires per-shot execution).
+    static Result run_iterative(
+        const QuantumCircuit& input_state,
+        backends::LocalBackend& backend,
+        int shots = 1024,
+        uint64_t seed = 0
+    );
+
+    // Convenience overload: run semi-classical QFT with a default Statevector backend.
+    static Result run_iterative(
+        const QuantumCircuit& input_state,
+        int shots = 1024,
+        uint64_t seed = 0
+    );
 };
 
 // =============================================================================

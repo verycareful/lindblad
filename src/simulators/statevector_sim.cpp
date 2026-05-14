@@ -233,6 +233,11 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                             clreg[clbit] = outcome;
                         }
                     } else {
+                        if (inst.condition_clbit >= 0) {
+                            int cv = (inst.condition_clbit < n_clbits)
+                                     ? clreg[inst.condition_clbit] : 0;
+                            if (cv != inst.condition_value) continue;
+                        }
                         apply_instruction(*sv_work, inst);
                     }
                 }

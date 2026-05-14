@@ -1,6 +1,7 @@
 #include "lindblad/simulators/clifford_sim.hpp"
 #include "lindblad/circuit.hpp"
 
+#include <cmath>
 #include <random>
 #include <stdexcept>
 
@@ -350,6 +351,7 @@ int StabilizerState::expectation_pauli(const std::string& pauli) const {
 
 bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
     using GT = Instruction::GateType;
+    const double pi = M_PI;
     for (const auto& inst : circuit.instructions) {
         switch (inst.type) {
             case GT::H: case GT::X: case GT::Y: case GT::Z:
@@ -357,6 +359,18 @@ bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
             case GT::CX: case GT::CZ: case GT::SWAP:
             case GT::MEASURE: case GT::RESET: case GT::BARRIER:
                 break;
+            case GT::P: {
+                // Accept P only if the angle maps to a Clifford gate.
+                if (inst.params.empty()) return false;
+                double a = std::fmod(inst.params[0], 2.0 * pi);
+                if (a < 0) a += 2.0 * pi;
+                if (!(std::abs(a) < 1e-9 ||
+                      std::abs(a - pi / 2.0) < 1e-9 ||
+                      std::abs(a - pi)        < 1e-9 ||
+                      std::abs(a - 3.0 * pi / 2.0) < 1e-9))
+                    return false;
+                break;
+            }
             default:
                 return false;
         }
@@ -370,14 +384,23 @@ CliffordSimulator::Result CliffordSimulator::run(
     using GT = Instruction::GateType;
     Result result(circuit.n_qubits);
 
+    const int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
+    const double pi = M_PI;
+
     std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
 
     for (int s = 0; s < shots; ++s) {
         StabilizerState state(circuit.n_qubits);
-
-        std::string bitstring(circuit.n_qubits, '0');
+        std::vector<int> clreg(n_clbits, 0);
 
         for (const auto& inst : circuit.instructions) {
+            // Classical condition check (feedforward)
+            if (inst.condition_clbit >= 0) {
+                int cv = (inst.condition_clbit < n_clbits)
+                         ? clreg[inst.condition_clbit] : 0;
+                if (cv != inst.condition_value) continue;
+            }
+
             switch (inst.type) {
                 case GT::H: state.apply_h(inst.qubits[0]); break;
                 case GT::S: state.apply_s(inst.qubits[0]); break;
@@ -387,6 +410,25 @@ CliffordSimulator::Result CliffordSimulator::run(
                 case GT::X: state.apply_x(inst.qubits[0]); break;
                 case GT::Y: state.apply_y(inst.qubits[0]); break;
                 case GT::Z: state.apply_z(inst.qubits[0]); break;
+                case GT::P: {
+                    // Map to the equivalent Clifford gate by angle.
+                    double a = std::fmod(inst.params[0], 2.0 * pi);
+                    if (a < 0) a += 2.0 * pi;
+                    if (std::abs(a) < 1e-9 || std::abs(a - 2.0 * pi) < 1e-9) {
+                        // P(0) = identity
+                    } else if (std::abs(a - pi / 2.0) < 1e-9) {
+                        state.apply_s(inst.qubits[0]);
+                    } else if (std::abs(a - pi) < 1e-9) {
+                        state.apply_z(inst.qubits[0]);
+                    } else if (std::abs(a - 3.0 * pi / 2.0) < 1e-9) {
+                        state.apply_sdg(inst.qubits[0]);
+                    } else {
+                        throw std::runtime_error(
+                            "CliffordSimulator: P(" + std::to_string(inst.params[0]) +
+                            ") is not Clifford. Only P(0), P(π/2), P(π), P(3π/2) are supported.");
+                    }
+                    break;
+                }
                 case GT::CX:
                     state.apply_cx(inst.qubits[0], inst.qubits[1]);
                     break;
@@ -404,8 +446,10 @@ CliffordSimulator::Result CliffordSimulator::run(
                     break;
                 case GT::MEASURE: {
                     int q = inst.qubits[0];
+                    int clbit = inst.clbits.empty() ? q : inst.clbits[0];
                     int outcome = state.measure(q, true, rng);
-                    bitstring[circuit.n_qubits - 1 - q] = '0' + outcome;
+                    if (clbit >= 0 && clbit < n_clbits)
+                        clreg[clbit] = outcome;
                     break;
                 }
                 case GT::RESET: {
@@ -419,6 +463,11 @@ CliffordSimulator::Result CliffordSimulator::run(
             }
         }
 
+        // Build bitstring: clbit 0 = LSB (rightmost), highest clbit = MSB.
+        std::string bitstring(n_clbits, '0');
+        for (int c = 0; c < n_clbits; ++c) {
+            if (clreg[c]) bitstring[n_clbits - 1 - c] = '1';
+        }
         result.counts[bitstring]++;
         result.final_state = std::move(state);
     }

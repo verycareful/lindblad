@@ -43,7 +43,7 @@ Implementation details:
 Signature:
 
 ```cpp
-tatic double estimate_phase(
+static double estimate_phase(
     const QuantumCircuit& unitary,
     int num_eval_qubits,
     int shots = 1024,

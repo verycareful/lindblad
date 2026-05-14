@@ -1029,6 +1029,11 @@ MPSSimulator::Result MPSSimulator::run(
                         clreg[clbit] = outcome;
                     }
                 } else {
+                    if (inst.condition_clbit >= 0) {
+                        int cv = (inst.condition_clbit < n_clbits)
+                                 ? clreg[inst.condition_clbit] : 0;
+                        if (cv != inst.condition_value) continue;
+                    }
                     mps_apply_instruction(result.final_state, inst, rng);
                 }
             }

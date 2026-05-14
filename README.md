@@ -3,125 +3,178 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Lindblad v1.0](https://img.shields.io/badge/License-Lindblad%20v1.0-red.svg)](LICENSE)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-R.1.4.1-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-R.1.5.0-blue?style=flat-square)](CHANGELOG.md)
 
 > **License Notice:** This software is **proprietary and source-available**. Free for non-commercial and academic use only. Commercial use of any kind requires a separate written license agreement. **Redistribution in any form — including forks, copies, and derivative works — is strictly prohibited without explicit written authorization from the author**, regardless of whether the use is commercial or non-commercial. Public GitHub forks are technically permitted by GitHub's platform but are **not licensed** under this agreement for any purpose other than reviewing or submitting contributions via pull request; any other use of a fork constitutes a violation. By submitting any contribution (pull request, code snippet, bug fix, or similar) you irrevocably assign full copyright ownership of that contribution to the author — see §6.3 of [LICENSE](LICENSE). See [LICENSE](LICENSE) for full terms — `qpp.support@proton.me` for licensing inquiries.
 
-lindblad is a high-performance C++23 quantum computing framework focused on circuit construction, simulation, transpilation, noise modeling, and variational algorithms. The project is structured as a static core library with optional Python bindings and benchmarking targets.
+Lindblad is a high-performance C++23 quantum computing framework for circuit construction, simulation, noise modeling, transpilation, and variational algorithms. It is distributed as a static core library with optional Python bindings and benchmarking targets.
 
-## Documentation Map
+---
 
-The documentation is organized so new users can start broad and then drill into the exact API or algorithm they need.
+## Contents
 
-- [docs/MasterDocumentation.md](docs/MasterDocumentation.md) - canonical doc-writing guide and recovery plan for future sessions
-- [docs/Architecture.md](docs/Architecture.md) - subsystem layout and runtime flow
-- [docs/APIOverview.md](docs/APIOverview.md) - public header and class index
-- [docs/BuildAndTest.md](docs/BuildAndTest.md) - configure, build, and test instructions
-- [docs/DevelopmentGuide.md](docs/DevelopmentGuide.md) - contributor workflow and quality checks
-- [docs/algorithms/bernstein-vazirani.md](docs/algorithms/bernstein-vazirani.md) - Bernstein-Vazirani family, including recursive and probabilistic variants
-- [docs/algorithms/vqe.md](docs/algorithms/vqe.md) - VQE optimization workflow and ansatz helpers
-- [docs/algorithms/qaoa.md](docs/algorithms/qaoa.md) - QAOA usage, options, and circuit construction
-- [docs/algorithms/maqaoa.md](docs/algorithms/maqaoa.md) - MAQAOA usage, variants, and parameter layouts
-- [docs/algorithms/qpe.md](docs/algorithms/qpe.md) - QPE phase estimation workflow and outputs
-- [docs/algorithms/grover.md](docs/algorithms/grover.md) - Grover oracle usage and iteration control
-- [docs/algorithms/deutsch-jozsa.md](docs/algorithms/deutsch-jozsa.md) - Deutsch-Jozsa constant/balanced classification
-- [docs/algorithms/simon.md](docs/algorithms/simon.md) - Simon period finding and GF(2) elimination details
-- [docs/algorithms/ising.md](docs/algorithms/ising.md) - IsingHamiltonian and QUBO conversion
-- [docs/algorithms/dispatch.md](docs/algorithms/dispatch.md) - dispatch post-processing helpers for sampled bitstrings
-- [docs/api/vqe.md](docs/api/vqe.md) - VQE options, results, and ansatz generator deep dive
-- [docs/api/ising.md](docs/api/ising.md) - IsingHamiltonian fields, conversion, evaluation, and export
-- [docs/api/dispatch.md](docs/api/dispatch.md) - SoftDispatchResult fields, rounding, cost estimation, and top-k helpers
-- [docs/api/circuit.md](docs/api/circuit.md) - QuantumCircuit and Instruction API details
-- [docs/api/operators.md](docs/api/operators.md) - PauliString, SparsePauliOp, Operator, and QuantumInfo helpers
-- [docs/api/noise.md](docs/api/noise.md) - Noise channels, NoiseModel, and readout error handling
-- [docs/api/estimator.md](docs/api/estimator.md) - Estimator primitive options, caching, and expectation evaluation
-- [docs/api/sampler.md](docs/api/sampler.md) - Sampler primitive options and sampling behavior
-- [docs/api/gates.md](docs/api/gates.md) - Gates API covering single-qubit, two-qubit, and N-qubit operations
-- [docs/api/simulators.md](docs/api/simulators.md) - Simulators (Statevector, Density Matrix, Clifford, MPS) architecture and selection
-- [docs/api/transpiler.md](docs/api/transpiler.md) - Transpiler passes (layout, routing, optimization, basis translation, scheduling)
-- [docs/api/backends.md](docs/api/backends.md) - LocalBackend simulator wrapper and AUTO selection heuristic
-- [docs/api/qaoa.md](docs/api/qaoa.md) - QAOA options, optimizer behavior, and circuit construction
-- [docs/api/maqaoa.md](docs/api/maqaoa.md) - MAQAOA options, parameter layouts, and layerwise optimization
-- [docs/api/qpe.md](docs/api/qpe.md) - QPE circuit construction, phase extraction, and implementation notes
-- [docs/api/grover.md](docs/api/grover.md) - Grover circuit construction, iteration defaults, and search output
-- [docs/api/deutsch-jozsa.md](docs/api/deutsch-jozsa.md) - Deutsch-Jozsa circuit construction and classification logic
-- [docs/api/bernstein-vazirani.md](docs/api/bernstein-vazirani.md) - Bernstein-Vazirani family API details and result fields
-- [docs/api/simon.md](docs/api/simon.md) - Simon API details for circuit construction and period recovery
+- [Documentation](#documentation)
+- [Release](#release)
+- [Features](#features)
+- [Repository Layout](#repository-layout)
+- [Build Requirements](#build-requirements)
+- [Quick Start](#quick-start)
+- [License](#license)
 
-Planned algorithm pages live under docs/algorithms/ and will be expanded as the public API is documented in detail.
+---
+
+## Documentation
+
+| Document | Description |
+|---|---|
+| [docs/MasterDocumentation.md](docs/MasterDocumentation.md) | Canonical doc-writing guide and recovery plan for future sessions |
+| [docs/Architecture.md](docs/Architecture.md) | Subsystem layout and runtime flow |
+| [walkthrough.md](walkthrough.md) | Practical end-to-end flow and where to find each subsystem |
+| [docs/APIOverview.md](docs/APIOverview.md) | Public header and class index |
+| [docs/BuildAndTest.md](docs/BuildAndTest.md) | Platform-specific build and test instructions |
+| [docs/DevelopmentGuide.md](docs/DevelopmentGuide.md) | Contributor workflow and quality checks |
+
+### Algorithm Pages
+
+| Algorithm | Page | API Reference |
+|---|---|---|
+| VQE | [docs/algorithms/vqe.md](docs/algorithms/vqe.md) | [docs/api/vqe.md](docs/api/vqe.md) |
+| QAOA | [docs/algorithms/qaoa.md](docs/algorithms/qaoa.md) | [docs/api/qaoa.md](docs/api/qaoa.md) |
+| MA-QAOA | [docs/algorithms/maqaoa.md](docs/algorithms/maqaoa.md) | [docs/api/maqaoa.md](docs/api/maqaoa.md) |
+| QPE | [docs/algorithms/qpe.md](docs/algorithms/qpe.md) | [docs/api/qpe.md](docs/api/qpe.md) |
+| Grover | [docs/algorithms/grover.md](docs/algorithms/grover.md) | [docs/api/grover.md](docs/api/grover.md) |
+| Deutsch-Jozsa | [docs/algorithms/deutsch-jozsa.md](docs/algorithms/deutsch-jozsa.md) | [docs/api/deutsch-jozsa.md](docs/api/deutsch-jozsa.md) |
+| Bernstein-Vazirani (all variants) | [docs/algorithms/bernstein-vazirani.md](docs/algorithms/bernstein-vazirani.md) | [docs/api/bernstein-vazirani.md](docs/api/bernstein-vazirani.md) |
+| Simon | [docs/algorithms/simon.md](docs/algorithms/simon.md) | [docs/api/simon.md](docs/api/simon.md) |
+| QFT / IQFT / AQFT | [docs/algorithms/qft.md](docs/algorithms/qft.md) | [docs/api/qft.md](docs/api/qft.md) |
+| Ising / QUBO | [docs/algorithms/ising.md](docs/algorithms/ising.md) | [docs/api/ising.md](docs/api/ising.md) |
+| Dispatch | [docs/algorithms/dispatch.md](docs/algorithms/dispatch.md) | [docs/api/dispatch.md](docs/api/dispatch.md) |
+
+### API Reference Pages
+
+| Component | Page |
+|---|---|
+| QuantumCircuit | [docs/api/circuit.md](docs/api/circuit.md) |
+| Gates | [docs/api/gates.md](docs/api/gates.md) |
+| Operators | [docs/api/operators.md](docs/api/operators.md) |
+| Simulators | [docs/api/simulators.md](docs/api/simulators.md) |
+| Backends | [docs/api/backends.md](docs/api/backends.md) |
+| Noise | [docs/api/noise.md](docs/api/noise.md) |
+| Transpiler | [docs/api/transpiler.md](docs/api/transpiler.md) |
+| Estimator | [docs/api/estimator.md](docs/api/estimator.md) |
+| Sampler | [docs/api/sampler.md](docs/api/sampler.md) |
+
+---
 
 ## Release
 
-- Current release: `R.1.4.1` — test suite release; added `DistributedBernsteinVazirani` unit tests
-- Previous release: `R.1.4.0` — new algorithm: `DistributedBernsteinVazirani`; Qudit BV documented as future work
+| Version | Description |
+|---|---|
+| `R.1.5.0` | Feedforward infrastructure + semi-classical (Griffiths-Niu) QFT; standalone `QFT` class (exact/AQFT/IQFT/iterative); `p_if`/`add_if` circuit API; all 4 simulators support classically-conditioned gates |
+| `R.1.4.1` | Test suite release — `DistributedBernsteinVazirani` unit tests |
+| `R.1.4.0` | New algorithm: `DistributedBernsteinVazirani`; Qudit BV deferred as future work |
+| `R.1.3.1` | Test suite release — 5 new test files, 223 tests across 35 suites |
+| `R.1.3.0` | Full audit: 15 correctness + 8 performance + 3 doc fixes across all subsystems |
 
-## Project Scope
+---
 
-The current codebase provides:
+## Features
 
-- Circuit construction with symbolic and numeric parameters
-- High-performance exact and approximate simulators:
-  - **Statevector**: OpenMP-accelerated full amplitude tracking
-  - **Density Matrix**: Cache-blocked tensor gate applications with exact Kraus operator noise
-  - **Clifford**: Stabilizer tableau with exact GF(2) expectation value tracking
-  - **MPS**: Boundary contraction marginals and Eigen BDCSVD truncation
-- Noise channels and composable noise models (T1/T2 thermal relaxation, depolarizing, amplitude/phase damping)
-  - `NoiseModel::from_t1_t2()` for device-realistic per-qubit noise from T1/T2/gate-time specs
-- Exact quantum information metrics via Eigen eigendecomposition (Uhlmann-Jozsa fidelity, Wootters concurrence, etc.)
-- Advanced Transpiler passes:
-  - ZYZ decomposition and KAK Weyl-chamber block consolidation
-  - 3-pass bidirectional SABRE layout heuristic
-  - SABRE SWAP routing with H_basic + H_extended lookahead
-  - True IBM heavy-hex topology coupling maps
-  - `BasisTranslator`: full CX+U3 decomposition of all standard gates for hardware targeting
-- Primitives (Estimator and Sampler)
-  - `Estimator::gradient()` via parameter-shift rule (2P evaluations fully parallelised)
-  - Transpiler-result caching in Estimator (structure-keyed; skips SABRE/ZYZ on repeated calls)
-  - `SparsePauliOp::expectation_value_batch()` for vectorised multi-state evaluation
-- Algorithms (VQE, QAOA, layerwise MA-QAOA, exact QPE, Grover with MCX, Bernstein-Vazirani family incl. Distributed BV)
-  - `IsingHamiltonian` with `from_qubo()` QUBO→Ising conversion and `to_sparse_pauli_op()`
-  - `SoftDispatchResult` for post-processing MA-QAOA bitstring distributions into dispatch solutions
-  - Orbit-QAOA: symmetry-reduced parameterisation via `MAQAOA::Options::orbit_assignments`
-  - **QAOA optimiser enhancements** (v2.2.0): parameter bounds `[-2π, 2π]`, initial step-size 0.3, and `QAOA::Result::initial_params` for trajectory analysis. Bitstring selection ranks by computational-basis cost eigenvalue (physics-informed) rather than sample count alone. Convergence distinguishes true completion from iteration-limit exhaustion.
-  - **PI-MA-QAOA initialisation**: `mixer_weights` + `beta_base` in `MAQAOA::Options` for physics-informed beta init (expensive generators → large angle, cheap generators → small); all initial parameters (gammas and betas) are perturbed by a reproducible `U(-0.05, 0.05)` noise seeded by `MAQAOA::Options::seed`, enabling multi-seed landscape exploration
-  - `orbits_by_power(powers, tolerance)` utility: assigns orbit indices by power tier for automatic Orbit-QAOA setup
-  - **Direct statevector evolution** in `MAQAOA::optimize()`: inner loop bypasses `QuantumCircuit` construction, parameter binding, transpile cache, and instruction dispatch — expected 3–5× wall-time reduction on N=20 layerwise runs
-  - **Qubit-indexed gammas by default** (N gammas per layer, matching Python baseline); `term_indexed_gammas = true` opts into the more expressive term-indexed path for ablation
-  - Extended `MAQAOA::Result`: `initial_params`, `per_layer_costs`, `layer_nfev`, `wall_time_by_layer`, `wall_time_seconds` for research-grade convergence analysis
+### Simulators
+
+- **Statevector** — OpenMP-parallelized full amplitude tracking; exact gate application via dense matrix contraction
+- **Density Matrix** — Cache-blocked tensor gate application; exact Kraus operator noise channels
+- **Clifford** — Stabilizer tableau simulation with exact GF(2) expectation value tracking; exponential speedup for Clifford circuits
+- **MPS** — Boundary contraction marginals; Eigen BDCSVD truncation for low-entanglement states
+- **AUTO** — Heuristic backend selection based on qubit count and noise model presence
+
+### Noise and Quantum Information
+
+- Composable noise models: depolarizing, amplitude damping, phase damping, T1/T2 thermal relaxation
+- `NoiseModel::from_t1_t2()` for device-realistic per-qubit noise from T1/T2/gate-time specs
+- Exact quantum information metrics via Eigen eigendecomposition: Uhlmann-Jozsa fidelity, Wootters concurrence, von Neumann entropy, purity
+
+### Transpiler
+
+- **ZYZ decomposition** and **KAK Weyl-chamber block consolidation** for two-qubit gate compression
+- **SABRE layout** — 3-pass bidirectional heuristic for initial qubit placement
+- **SABRE SWAP routing** — H_basic + H_extended lookahead cost minimization
+- **True IBM heavy-hex topology** coupling maps
+- **BasisTranslator** — full CX+U3 decomposition of all standard gates for hardware targeting
+- Single-qubit optimization, CX cancellation, commutative gate cancellation, diagonal gate removal, scheduling
+
+### Primitives
+
+- **Estimator** — `gradient()` via parameter-shift rule with 2P evaluations fully parallelized; transpiler-result caching (structure-keyed) to skip redundant SABRE/ZYZ on repeated calls
+- **Sampler** — configurable shot-based sampling with noise model injection
+- `SparsePauliOp::expectation_value_batch()` for vectorized multi-state evaluation
+
+### Algorithms
+
+| Algorithm | Class | Notes |
+|---|---|---|
+| VQE | `VQE` | EfficientSU2, RealAmplitudes, TwoLocal ansatz builders; COBYLA/Nelder-Mead/Powell optimizers |
+| QAOA | `QAOA` | Physics-informed bitstring selection; `initial_params` in result for trajectory analysis |
+| MA-QAOA | `MAQAOA` | Layerwise and joint optimization; orbit symmetry reduction; PI-MA-QAOA beta initialization; QSP initial state; direct statevector evolution (3–5× speedup); extended result with per-layer diagnostics |
+| QPE | `QPE` | Exact phase estimation; uses `QFT::build_inverse_circuit` internally |
+| Grover | `Grover` | MCX-based oracle; auto iteration count via π/4 √N formula |
+| Deutsch-Jozsa | `DeutschJozsa` | Constant vs balanced in one oracle query |
+| Bernstein-Vazirani | `BernsteinVazirani` | Standard, recursive, probabilistic (Shukla-Vedula 2023), and distributed variants |
+| Simon | `Simon` | Period finding via GF(2) Gaussian elimination |
+| QFT | `QFT` | Exact QFT, IQFT, AQFT (Kitaev/Coppersmith); Clifford-simulable for n≤2 or AQFT m=1 |
+| IsingHamiltonian | `IsingHamiltonian` | `from_qubo()` QUBO→Ising conversion; `to_sparse_pauli_op()` export |
+| Dispatch | `SoftDispatchResult` | Post-process MA-QAOA bitstring distributions into unit-commitment dispatch solutions |
+
+**MA-QAOA extensions:** `orbits_by_power()` utility for automatic Orbit-QAOA setup; qubit-indexed gammas by default (N gammas/layer, matches Qiskit baseline); `term_indexed_gammas = true` for term-indexed ablation path.
+
+### I/O
+
 - OpenQASM 2.0 parsing and export (fully wired)
-- Unit tests and performance benchmarks
-- Optional Python bindings through pybind11
+- Optional Python bindings via pybind11
+
+---
 
 ## Repository Layout
 
 ```text
-include/lindblad/                Public C++ API headers
-src/                        Core implementations
-tests/                      Unit tests (GoogleTest)
-benchmarks/                 Micro and algorithm benchmarks (Google Benchmark)
-bindings/                   Optional Python extension module
-docs/                       Project documentation
-  algorithms/               One page per algorithm family
-  api/                      Optional method/class deep-dives
+include/lindblad/          Public C++ API headers
+src/                       Core implementations
+  algorithms/              Algorithm implementations (VQE, QAOA, MAQAOA, QPE, QFT, ...)
+  simulators/              Statevector, DM, Clifford, MPS simulator backends
+  transpiler/              Layout, routing, optimization, scheduling passes
+  noise/                   Kraus channels and noise model builders
+  primitives/              Estimator and Sampler
+  qasm/                    OpenQASM 2.0/3.0 parser
+  backends/                LocalBackend wrapper
+tests/                     Unit tests (GoogleTest)
+benchmarks/                Micro and algorithm benchmarks (Google Benchmark)
+bindings/                  Optional Python extension module (pybind11)
+docs/
+  algorithms/              One page per algorithm family
+  api/                     Method and class deep-dives
 ```
 
-The detailed documentation pages are intentionally close to the public headers and tests so the examples stay aligned with the implementation.
+---
 
 ## Build Requirements
 
 - CMake 3.20 or newer
-- C++23 compiler
-  - GCC or Clang (OpenMP enabled)
-  - MSVC with OpenMP support
-- Git (for FetchContent dependencies)
+- C++23 compiler:
+  - GCC or Clang (with OpenMP)
+  - MSVC with `/openmp` support
+- Git (for CMake FetchContent)
 
-Dependencies are downloaded during configure using CMake FetchContent:
+Dependencies fetched automatically at configure time:
 
-- Eigen3 (v3.4.0)
-- GoogleTest
-- Google Benchmark (optional)
-- pybind11 (optional)
-- NLopt
+| Dependency | Version | License | Use |
+|---|---|---|---|
+| Eigen3 | 3.4.0 | MPL 2.0 | SVD, eigendecomposition, linear algebra |
+| NLopt | 2.7.1 | LGPL 2.1 | Classical optimizer (COBYLA, Nelder-Mead, Powell) |
+| GoogleTest | 1.14.0 | BSD 3-Clause | Test suite only |
+| Google Benchmark | 1.8.3 | Apache 2.0 | Benchmarks only (optional) |
+| pybind11 | 2.12.0 | BSD 3-Clause | Python bindings (optional) |
+
+---
 
 ## Quick Start
 
@@ -142,8 +195,11 @@ ctest --test-dir build --output-on-failure
 
 ### Build options
 
-- `LINDBLAD_BUILD_BENCHMARKS=ON|OFF` (default: `ON`)
-- `LINDBLAD_BUILD_PYTHON=ON|OFF` (default: `OFF`)
+| Option | Default | Description |
+|---|---|---|
+| `LINDBLAD_BUILD_BENCHMARKS` | `ON` | Build Google Benchmark targets |
+| `LINDBLAD_BUILD_PYTHON` | `OFF` | Build pybind11 Python extension |
+| `LINDBLAD_MARCH_NATIVE` | `OFF` | Compile with `-march=native` (non-distributable, max performance) |
 
 Example:
 
@@ -151,7 +207,7 @@ Example:
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLINDBLAD_BUILD_BENCHMARKS=ON -DLINDBLAD_BUILD_PYTHON=OFF
 ```
 
-### Building with Clang (Recommended for Performance)
+### Building with Clang (recommended for performance)
 
 For maximum performance on Linux with Clang 18+ and libomp:
 
@@ -164,20 +220,15 @@ cmake -S . -B build-clang -G Ninja \
 cmake --build build-clang -j$(nproc)
 ```
 
-This builds with:
-- Clang 18.1.3+ (proven compatible)
-- libomp (LLVM OpenMP runtime)
-- `-O3 -march=native` for maximum CPU-specific optimizations
-- `-Wno-nan-infinity-disabled` to suppress NaN/infinity warnings safe under `-ffast-math`
+Verified with Clang 18.1.3+ and LLVM libomp. `-Wno-nan-infinity-disabled` suppresses NaN/infinity warnings that are safe under `-ffast-math`.
 
-- `docs/Architecture.md`: architecture, module boundaries, and execution flow
-- `docs/BuildAndTest.md`: platform-specific build and test instructions
-- `docs/APIOverview.md`: public API map and usage guidance
-- `docs/DevelopmentGuide.md`: coding workflow and quality checks
+---
 
 ## Status
 
-The project already includes a substantial implementation across simulation, transpilation, and algorithms. Remaining work is tracked as local planning and `TODO.txt` is intentionally ignored by git.
+Active development. The core simulation, transpilation, and algorithm subsystems are production-quality. Remaining work is tracked in local planning files (`TODO.txt` is gitignored).
+
+---
 
 ## License
 
@@ -185,5 +236,6 @@ Copyright © 2026 Sricharan Suresh (github.com/verycareful)
 
 This project is licensed under the **[Lindblad Software License Agreement v1.0](LICENSE)** — source-available, free for non-commercial and academic use. Commercial use requires a separate license agreement.
 
-See the [LICENSE](LICENSE) file for full terms, [NOTICE](NOTICE) for copyright notice, and [CITATION.cff](CITATION.cff) for citation information.
-Licensing inquiries: qpp.support@proton.me
+See [LICENSE](LICENSE) for full terms, [NOTICE](NOTICE) for copyright notice, and [CITATION.cff](CITATION.cff) for citation information.
+
+Licensing inquiries: `qpp.support@proton.me`

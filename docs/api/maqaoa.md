@@ -47,12 +47,11 @@ std::vector<int> orbits_by_power(
 
 Behavior (from the implementation):
 
-- Scans `powers` in input order
-- Assigns each power to the first orbit whose center is within `tolerance`
+- Sorts `powers` by value (ascending) before processing, making the result order-independent
+- Assigns each sorted power to the first orbit whose center is within `tolerance`
 - Creates a new orbit when no existing center matches; the center is the current power
-- Returns a vector of orbit indices the same length as `powers`
+- Returns a vector of orbit indices in input order (same length as `powers`)
 - Empty input returns an empty vector
-- Order-dependent; orbit centers are not recomputed
 
 Example:
 

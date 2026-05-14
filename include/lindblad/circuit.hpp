@@ -143,6 +143,14 @@ public:
     QuantumCircuit& barrier(std::vector<int> qubits = {});
     QuantumCircuit& reset(int qubit);
 
+    // Classically-conditioned gates (feedforward)
+    // p_if: apply P(angle) to qubit only if clreg[clbit] == clval (default: ==1)
+    QuantumCircuit& p_if(double angle, int qubit, int clbit, int clval = 1);
+    // add_if: general conditional gate — applies any gate type when clreg[clbit] == clval
+    QuantumCircuit& add_if(int clbit, int clval, Instruction::GateType type,
+                           const std::vector<int>& qubits,
+                           const std::vector<double>& params = {});
+
     // Parameterised gate versions (symbolic)
     QuantumCircuit& rx(const std::string& param_name, int qubit);
     QuantumCircuit& ry(const std::string& param_name, int qubit);

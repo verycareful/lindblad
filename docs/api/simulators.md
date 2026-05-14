@@ -229,7 +229,8 @@ void DensityMatrix::apply_kraus(const std::vector<std::vector<Complex128>>& krau
 ```cpp
 DensityMatrixSimulator sim;
 NoiseModel noise_model;
-noise_model.gate_error("cx", 0.001, {0, 1});  // 0.1% CNOT error on qubits 0, 1
+noise_model.add_quantum_error(
+    lindblad::NoiseChannels::depolarizing(0.001), "cx", {0, 1});
 
 auto result = sim.run(circuit, noise_model, 1024);  // shots=1024
 ```

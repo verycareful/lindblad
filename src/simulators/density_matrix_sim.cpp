@@ -455,43 +455,40 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
 
     try {
         auto t_start = std::chrono::high_resolution_clock::now();
-        DensityMatrix dm(circuit.n_qubits);
 
+        // Detect feedforward: any instruction with a classical condition.
+        // When present, every shot must re-simulate from |0><0| so that
+        // mid-circuit MEASURE outcomes stochastically drive subsequent gates.
+        bool has_feedforward = false;
+        const int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
         for (const auto& inst : circuit.instructions) {
+            if (inst.condition_clbit >= 0) { has_feedforward = true; break; }
+        }
+
+        // Reusable Kraus operators for RESET (|0><0| and |0><1| channels).
+        const std::vector<Complex128> K0_reset = {
+            Complex128(1,0), Complex128(0,0),
+            Complex128(0,0), Complex128(0,0)
+        };
+        const std::vector<Complex128> K1_reset = {
+            Complex128(0,0), Complex128(1,0),
+            Complex128(0,0), Complex128(0,0)
+        };
+
+        // Helper: apply a single instruction (except MEASURE/BARRIER) to a DM.
+        auto apply_inst = [&](DensityMatrix& dm, const Instruction& inst) {
             using GT = Instruction::GateType;
-            if (inst.type == GT::BARRIER) continue;
             if (inst.type == GT::RESET) {
-                // Reset qubit to |0⟩: rho -> K0*rho*K0† + K1*rho*K1†
-                // K0 = |0><0|, K1 = |0><1| — trace-preserving (K0†K0 + K1†K1 = I)
-                std::vector<Complex128> K0 = {
-                    Complex128(1,0), Complex128(0,0),
-                    Complex128(0,0), Complex128(0,0)
-                };
-                std::vector<Complex128> K1 = {
-                    Complex128(0,0), Complex128(1,0),
-                    Complex128(0,0), Complex128(0,0)
-                };
-                dm.apply_kraus({K0, K1}, inst.qubits);
-                continue;
-            }
-            if (inst.type == GT::MEASURE) {
-                // Apply readout noise if defined, then skip (collapse is deferred to sampling)
-                // Readout error is applied probabilistically during bitstring sampling
-                continue;
+                dm.apply_kraus({K0_reset, K1_reset}, inst.qubits);
+                return;
             }
             if (inst.type == GT::PARAM_RX || inst.type == GT::PARAM_RY ||
                 inst.type == GT::PARAM_RZ || inst.type == GT::PARAM_P ||
                 inst.type == GT::PARAM_U) {
                 throw std::runtime_error("Unresolved parameterised gate: call assign_parameters() first.");
             }
-
-            // Build gate matrix analytically
             auto gate_mat = gate_matrix_for_dm(inst);
-
-            // Apply gate: rho -> U * rho * U†
             dm.apply_gate(gate_mat, inst.qubits);
-
-            // Apply noise AFTER the gate
             if (!noise_model.is_ideal()) {
                 auto gate_errors = noise_model.errors_for_gate(inst.gate_name(), inst.qubits);
                 for (const auto& error : gate_errors) {
@@ -502,38 +499,128 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                     }
                 }
             }
-        }
+        };
 
-        // Sample measurements from diagonal of density matrix
-        if (shots > 0) {
-            auto probs = dm.probabilities();
-            // Build cumulative probability array and sample via binary search —
-            // avoids the O(2^N) alias table built by std::discrete_distribution.
-            std::vector<double> cum(probs.size());
-            std::partial_sum(probs.begin(), probs.end(), cum.begin());
-
+        if (has_feedforward) {
+            // Per-shot feedforward path.
+            // Each shot: fresh DM, iterate instructions with condition checks,
+            // collapse DM on MEASURE and record outcome to clreg.
             std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
             std::uniform_real_distribution<double> udist(0.0, 1.0);
+            std::vector<int> clreg(n_clbits, 0);
 
-            for (int s = 0; s < shots; ++s) {
-                double r = udist(rng);
-                auto it = std::lower_bound(cum.begin(), cum.end(), r);
-                size_t outcome = static_cast<size_t>(std::distance(cum.begin(), it));
-                if (outcome >= dm.dim) outcome = dm.dim - 1;
+            const int n_shots = std::max(1, shots);
+            DensityMatrix dm_last(circuit.n_qubits);
 
-                std::string bits(circuit.n_qubits, '0');
-                for (int b = circuit.n_qubits - 1; b >= 0; --b) {
-                    if ((outcome >> b) & 1)
-                        bits[circuit.n_qubits - 1 - b] = '1';
+            for (int shot = 0; shot < n_shots; ++shot) {
+                DensityMatrix dm(circuit.n_qubits);
+                clreg.assign(n_clbits, 0);
+
+                for (const auto& inst : circuit.instructions) {
+                    using GT = Instruction::GateType;
+                    if (inst.type == GT::BARRIER) continue;
+
+                    // Classical condition check
+                    if (inst.condition_clbit >= 0) {
+                        int cv = (inst.condition_clbit < n_clbits)
+                                 ? clreg[inst.condition_clbit] : 0;
+                        if (cv != inst.condition_value) continue;
+                    }
+
+                    if (inst.type == GT::MEASURE) {
+                        const int qubit = inst.qubits[0];
+                        const int clbit = inst.clbits.empty() ? qubit : inst.clbits[0];
+
+                        // P(qubit=0) = sum of diagonal elements with qubit bit = 0
+                        double prob0 = 0.0;
+                        for (size_t i = 0; i < dm.dim; ++i) {
+                            if (!((i >> qubit) & 1))
+                                prob0 += dm.data[i * dm.dim + i].real;
+                        }
+                        prob0 = std::max(0.0, std::min(1.0, prob0));
+
+                        const int outcome = (udist(rng) < prob0) ? 0 : 1;
+                        const double p_out = (outcome == 0) ? prob0 : (1.0 - prob0);
+
+                        // Project: zero out rho_{ij} where qubit bit of i or j != outcome
+                        for (size_t i = 0; i < dm.dim; ++i) {
+                            const int bi = (i >> qubit) & 1;
+                            for (size_t j = 0; j < dm.dim; ++j) {
+                                const int bj = (j >> qubit) & 1;
+                                if (bi != outcome || bj != outcome)
+                                    dm.data[i * dm.dim + j] = Complex128(0.0, 0.0);
+                            }
+                        }
+                        // Renormalize
+                        if (p_out > 1e-15) {
+                            const double inv_p = 1.0 / p_out;
+                            for (auto& v : dm.data) { v.real *= inv_p; v.imag *= inv_p; }
+                        }
+
+                        if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
+                        continue;
+                    }
+
+                    apply_inst(dm, inst);
                 }
-                result.counts[bits]++;
+
+                // Record shot result
+                if (shots > 0) {
+                    std::string bits(n_clbits, '0');
+                    for (int c = 0; c < n_clbits; ++c) {
+                        if (clreg[c]) bits[n_clbits - 1 - c] = '1';
+                    }
+                    result.counts[bits]++;
+                }
+
+                dm_last = dm;
             }
+
+            result.final_state = std::move(dm_last);
+
+        } else {
+            // Standard single-pass mode: gates applied once, MEASURE deferred.
+            DensityMatrix dm(circuit.n_qubits);
+
+            for (const auto& inst : circuit.instructions) {
+                using GT = Instruction::GateType;
+                if (inst.type == GT::BARRIER) continue;
+                if (inst.type == GT::MEASURE) continue;  // deferred to sampling below
+                apply_inst(dm, inst);
+            }
+
+            // Sample measurements from diagonal of density matrix
+            if (shots > 0) {
+                auto probs = dm.probabilities();
+                // Build cumulative probability array and sample via binary search —
+                // avoids the O(2^N) alias table built by std::discrete_distribution.
+                std::vector<double> cum(probs.size());
+                std::partial_sum(probs.begin(), probs.end(), cum.begin());
+
+                std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
+                std::uniform_real_distribution<double> udist(0.0, 1.0);
+
+                for (int s = 0; s < shots; ++s) {
+                    double r = udist(rng);
+                    auto it = std::lower_bound(cum.begin(), cum.end(), r);
+                    size_t outcome = static_cast<size_t>(std::distance(cum.begin(), it));
+                    if (outcome >= dm.dim) outcome = dm.dim - 1;
+
+                    std::string bits(circuit.n_qubits, '0');
+                    for (int b = circuit.n_qubits - 1; b >= 0; --b) {
+                        if ((outcome >> b) & 1)
+                            bits[circuit.n_qubits - 1 - b] = '1';
+                    }
+                    result.counts[bits]++;
+                }
+            }
+
+            result.final_state = std::move(dm);
         }
 
         auto t_end = std::chrono::high_resolution_clock::now();
         result.simulation_time_seconds =
             std::chrono::duration<double>(t_end - t_start).count();
-        result.final_state = std::move(dm);
         result.success = true;
 
     } catch (const std::exception& e) {

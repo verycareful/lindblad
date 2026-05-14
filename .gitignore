@@ -1,6 +1,7 @@
 # Build artifacts
 /build/
 /build-clang/
+/build_win/
 /out/
 /bin/
 /lib/
@@ -28,6 +29,7 @@ __pycache__/
 
 # Misc
 TODO.txt
+commercial_prep.md
 Build Logs.txt
 changes_version.md
 edits_temp
@@ -41,4 +43,4 @@ docs/superpowers/
 .claude/
 
 #Website - different repo
-lindblad-page/
+/lindblad-page/

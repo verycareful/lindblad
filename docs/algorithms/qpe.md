@@ -65,7 +65,7 @@ Use:
 
 QPE uses `StatevectorSimulator` internally to evaluate the controlled-unitary circuit and sample measurement counts.
 
-The implementation in lindblad builds the controlled powers of the unitary explicitly and then measures the evaluation register.
+The implementation in lindblad builds the controlled powers of the unitary explicitly and then calls `measure_all()`, measuring every qubit. Only the evaluation register bits are used to extract the phase.
 
 ## Public API Details
 
@@ -80,7 +80,7 @@ The implementation in lindblad builds the controlled powers of the unitary expli
 ### `QPE::estimate_phase`
 
 - Builds the QPE circuit
-- Measures the evaluation register
+- Calls `measure_all()` (measures all qubits); extracts the evaluation register bits to decode the phase
 - Returns the estimated phase as a floating-point value in the range `[0, 1)`
 
 ## Example Code
