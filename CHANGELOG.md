@@ -4,6 +4,75 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.6.0] - 2026-05-15
+
+### Added
+
+- **Qudit statevector layer** — `include/lindblad/qudit/qudit_statevector.hpp`, `src/qudit/qudit_statevector.cpp`:
+  - `QuditStatevector(n, d)` — d^n-dimensional statevector with mixed-radix (little-endian) indexing; `amplitudes[0] = 1` at construction
+  - `apply_1qudit(q, U)` — applies d×d unitary to qudit q via stride-d tensor contraction
+  - `apply_2qudit(q0, q1, U)` — applies d²×d² unitary to qudits (q0, q1); base-index scan avoids full d^n pass
+  - `apply_kqudit(qudits, U)` — applies d^k×d^k unitary to k distinct qudits; dispatches to 1/2-qudit fast paths for k≤2
+  - `apply_function_oracle(n_query, n_output, f)` — unitary oracle `|x⟩|y⟩ → |x⟩|(y+f(x)) mod d⟩` via amplitude permutation
+  - `apply_phase_oracle(phase_fn)` — per-basis-state phase multiplication; used by Grover oracle and diffusion
+  - `measure(seed)` — cumulative-probability sampling; returns `vector<int>` of d-ary digits
+  - `index_to_digits` / `digits_to_index` — static mixed-radix conversion helpers
+
+- **Qudit gate library** — `include/lindblad/qudit/qudit_gates.hpp`, `src/qudit/qudit_gates.cpp`:
+  - `qft_matrix(d)` — d×d QFT: `F[j,k] = ω^{jk}/√d`, `ω = exp(2πi/d)`
+  - `iqft_matrix(d)` — d×d inverse QFT (conjugate transpose of `qft_matrix`)
+  - `shift_matrix(d, m)` — d×d forward shift: `X|k⟩ = |(k+m) mod d⟩`; `X[j,k] = 1` if `j = (k+m) mod d`
+  - `cadd_matrix(d, s)` — d²×d² controlled-ADD: `|x⟩|y⟩ → |x⟩|(y+s·x) mod d⟩`
+  - `controlled_power_matrix(d, U, k)` — d²×d² gate where clock value `c` applies `U^{c·k}` to the target qudit; built via `mat_pow` (binary exponentiation, O(log m) matrix multiplications)
+
+- **Qudit simulator** — `include/lindblad/qudit/qudit_simulator.hpp`, `src/qudit/qudit_simulator.cpp`:
+  - `QuditSimulator::run(sv, ops, seed)` — applies a sequence of `QuditGateOp` (SINGLE or TWO type) to a statevector, then measures once; returns outcome digits and wall-clock time
+
+- **`QuditBernsteinVazirani`** — `src/algorithms/bernstein_vazirani.cpp`:
+  - Recovers secret `s ∈ Z_d^n` from `f(x) = s·x mod d` in a single quantum query; ancilla prepared in `|−⟩_d = F_d·X^{d-1}|0⟩`; CADD oracle applies controlled-ADD per query qudit; IQFT decodes phase kickback; majority-vote over `shots` for robustness
+  - `oracle_gate(d, s_i)` — returns `cadd_matrix(d, s_i)` for use in custom circuit construction
+  - Works for any `d ≥ 2` including composite d
+
+- **`QuditDeutschJozsa`** — `src/algorithms/deutsch_jozsa.cpp`:
+  - Distinguishes constant from balanced `f: Z_d^n → Z_d` in one oracle query; ancilla `|−⟩_d` picks up phase `ω^{f(x)}`; all-zero measurement → CONSTANT, any non-zero digit → BALANCED
+  - Requires `d ≥ 2`; works for any n ≥ 1
+
+- **`QuditGrover`** — `src/algorithms/grover.cpp`:
+  - QFT-based amplitude amplification for d-ary search: each iteration applies the phase oracle (`−1` to marked state), `F_d†`, `R_0` (phase `−1` to non-`|0...0⟩`), `F_d`
+  - Auto-iteration count uses exact formula `round(π/(4·arcsin(1/√N)) − 0.5)` (correct for all N; approximation `round(π/4·√N)` was wrong for N=4 and N=5)
+  - `search(n, d, target, ...)` — target given as `vector<int>`; delegates to `search_with_oracle`
+  - `search_with_oracle(n, d, is_marked, ...)` — predicate oracle; shots histogram; returns mode outcome and empirical probability
+
+- **`QuditPhaseEstimation`** — `src/algorithms/qpe.cpp`:
+  - Estimates eigenphase `φ ∈ [0,1)` of a d×d unitary `U` given its eigenstate: `m` clock qudits in little-endian order; clock qudit `j` applies `controlled_power_matrix(d, U, d^j)`; d-ary IQFT on clock; phase decoded as `φ = Σ_j digit_j / d^{j+1}`
+  - Input validation: `d ≥ 2`, `m ≥ 1`, `U` must be `d×d`, eigenstate must have length `d`
+
+- **`QuditSimon`** — `src/algorithms/simon.cpp`:
+  - Finds hidden period `s ∈ Z_d^n` of `f(x) = f(y) ↔ x − y ≡ 0 or s (mod d)` using O(n) quantum queries and GF(d) Gaussian elimination
+  - Quantum circuit: 2n qudits; `F_d` on query register, `apply_function_oracle`, `F_d†` on query, measure; collect n-1+extra_samples non-zero non-duplicate vectors
+  - Classical post-processing: `null_space_gf` — reduced row echelon form over GF(d); modular inverse via Fermat's little theorem (`a^{p-2} mod p`)
+  - Requires `d` prime (GF(d) field structure); composite d throws `std::invalid_argument`
+
+### Fixed
+
+- **`shift_matrix` forward-shift convention** (`src/qudit/qudit_gates.cpp`) — implementation set `X[row=j, col=(j+m)%d] = 1` (backward shift: `X|k⟩ = |(k−m) mod d⟩`); corrected to `X[row=(k+m)%d, col=k] = 1` (forward shift: `X|k⟩ = |(k+m) mod d⟩`). This was the root cause of all QuditBV secret-recovery failures for `d ≥ 3` (ancilla prepared in `|1⟩` instead of `|d−1⟩`, yielding `−s mod d` instead of `s`)
+- **`qudit_grover_auto_iters` exact formula** (`src/algorithms/grover.cpp`) — replaced `round(π/4·√N)` with `round(π/(4·arcsin(1/√N)) − 0.5)` to minimise `|(2R+1)θ − π/2|`; old formula gave R=2 for N=4 (optimal R=1, P=1.0) and N=5 (optimal R=1, P≈0.97)
+
+### Documentation
+
+- `docs/algorithms/bernstein-vazirani.md` — added full `QuditBernsteinVazirani` section: purpose, theory (phase kickback in Z_d^n), circuit diagram, gate definitions, complexity, invocation, supported d, Result, exceptions, simulator dependency, pitfalls
+- `docs/api/bernstein-vazirani.md` — added `QuditBernsteinVazirani` section: `Result`, `solve`, `oracle_gate`, exceptions; updated Family Overview
+- `docs/algorithms/deutsch-jozsa.md` — added `QuditDeutschJozsa` section: circuit, phase kickback, promise, invocation, Result, exceptions, simulator dependency
+- `docs/api/deutsch-jozsa.md` — added `QuditDeutschJozsa` section: `Verdict` enum, `Result`, `solve` signature
+- `docs/algorithms/grover.md` — added `QuditGrover` section: circuit table, iteration formula derivation, `search` + `search_with_oracle` examples, Result, exceptions
+- `docs/api/grover.md` — added `QuditGrover` section: `Result`, `search`, `search_with_oracle` signatures and throws
+- `docs/algorithms/qpe.md` — added `QuditPhaseEstimation` section: m+1 qudit circuit, little-endian phase decode, `controlled_power_matrix` construction, invocation, pitfalls
+- `docs/api/qpe.md` — added `QuditPhaseEstimation` section: `Result`, `estimate` signature
+- `docs/algorithms/simon.md` — added `QuditSimon` section: 2n-qudit circuit, GF(d) Gaussian elimination, prime-d restriction, invocation, pitfalls
+- `docs/api/simon.md` — added `QuditSimon` section: `Result`, `solve` signature, `extra_samples`, prime-d note
+- `docs/api/qudit.md` — new file: qudit layer overview (`QuditStatevector`, `QuditGates`, `QuditSimulator`); implemented algorithm list; design notes on simulator extensibility
+- `README.md` — version badge updated to R.1.6.0; R.1.6.0 release row added; `docs/api/qudit.md` added to API Reference table
+
 ## [R.1.5.1] - 2026-05-14
 
 ### Tests

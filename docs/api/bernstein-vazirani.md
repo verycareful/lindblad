@@ -9,15 +9,18 @@ This page documents the public Bernstein-Vazirani family APIs in `lindblad::algo
 
 ## Family Overview
 
-The family includes four solvers:
+The family includes five solvers:
 
 - `BernsteinVazirani`
 - `RecursiveBernsteinVazirani`
 - `ProbabilisticBernsteinVazirani`
 - `DistributedBernsteinVazirani`
+- `QuditBernsteinVazirani` (d-dimensional generalisation, d ≥ 2)
 
-All four build circuits with query qubits and one shared ancilla, then interpret
-sampled outputs to return secrets.
+The first four build circuits over qubits with one shared ancilla and interpret
+sampled bitstrings as secrets. `QuditBernsteinVazirani` runs on the qudit layer
+(`QuditStatevector` / `QuditGates` / `QuditSimulator` — documented in
+[docs/api/qudit.md](qudit.md)) and recovers an integer-valued secret in Z_d^n.
 
 ## `BernsteinVazirani`
 
@@ -181,7 +184,78 @@ Behavior:
 - `quantum_rounds`: always 1
 - `classical_rounds`: equals `num_parties`
 
+## `QuditBernsteinVazirani`
+
+The d-dimensional BV variant runs on qudits rather than qubits. The secret is
+an integer vector `s ∈ Z_d^n` and the oracle computes `f(x) = s·x mod d`.
+Operates on the qudit layer documented in [docs/api/qudit.md](qudit.md).
+
+### `Result`
+
+```cpp
+struct Result {
+    std::vector<int> secret;  // recovered s, each element in {0..d-1}
+    int d;                    // qudit dimension used
+    int n;                    // number of query qudits
+};
+```
+
+### `solve`
+
+Signature:
+
+```cpp
+static Result solve(
+    const std::vector<int>& secret,
+    int d,
+    int shots = 1,
+    uint64_t seed = 0
+);
+```
+
+Behavior (verified against `src/algorithms/qudit_bv.cpp`):
+
+- Validates inputs (`d >= 2`, `secret` non-empty, all `secret[i]` in `[0, d)`)
+- Constructs a `QuditStatevector` of `(n + 1)` qudits and dimension `d`
+- Prepares the ancilla in `|−⟩_d` via `X_d^{d-1}` then `F_d`
+- Applies `F_d` to each query qudit
+- For every `i` with `secret[i] != 0`, applies the controlled-ADD gate
+  `CADD_{s_i}` from query qudit `i` to the ancilla
+- Applies `F_d†` to each query qudit
+- Calls `QuditSimulator::run`, which measures the full register once
+- Accumulates per-position votes across `shots` (only the first `n` qudits;
+  the ancilla is ignored)
+- Returns the per-position argmax as the recovered secret
+
+For exact statevector simulation, `shots = 1` is sufficient — the protocol is
+deterministic. Higher shot counts exist for future noise-aware experiments.
+
+### `oracle_gate`
+
+Signature:
+
+```cpp
+static std::vector<Complex128> oracle_gate(int d, int s_i);
+```
+
+Returns the d²×d² CADD gate matrix for secret component `s_i`. Equivalent to
+`qudit_gates::cadd_matrix(d, s_i)`. Exposed for testing and inspection.
+
+### `QuditBernsteinVazirani::Result`
+
+- `secret`: recovered `s ∈ Z_d^n`, length n
+- `d`: qudit dimension used
+- `n`: number of query qudits
+
+### Exceptions
+
+`solve()` throws `std::invalid_argument` if:
+- `d < 2`
+- `secret` is empty
+- any `secret[i]` is outside `[0, d)`
+
 ## Related Pages
 
 - [docs/algorithms/bernstein-vazirani.md](../algorithms/bernstein-vazirani.md)
+- [docs/api/qudit.md](qudit.md) — qudit layer API (state vector, gates, simulator)
 - [docs/APIOverview.md](../APIOverview.md)

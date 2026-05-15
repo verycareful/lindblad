@@ -4,6 +4,9 @@
 #include "lindblad/operators.hpp"
 #include "lindblad/primitives.hpp"
 #include "lindblad/backends/local_backend.hpp"
+#include "lindblad/qudit/qudit_statevector.hpp"
+#include "lindblad/qudit/qudit_gates.hpp"
+#include "lindblad/qudit/qudit_simulator.hpp"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -381,6 +384,230 @@ public:
     // Build, simulate, and decode the full secret.
     static Result solve(const std::vector<Party>& parties,
                         int shots = 1, uint64_t seed = 0);
+};
+
+// =============================================================================
+// QuditBernsteinVazirani — recovers s in Z_d^n from f(x) = s·x mod d in 1 query.
+//
+// Generalises standard BV from binary to d-dimensional quantum systems (qudits).
+// Works for any d ≥ 2 (prime or composite). When d=2 the algorithm is identical
+// to standard BV and returns the same result.
+//
+// Circuit on (n + 1) qudits, dimension d each, total dim = d^{n+1}:
+//   1. X_d^{d-1} on ancilla (qudit n)        → |d-1>
+//   2. F_d on ancilla                        → |->_d  (phase-kickback receiver)
+//   3. F_d on each query qudit               → |+>_d^n (uniform superposition)
+//   4. For each i with s_i != 0:
+//        CADD_{s_i}(query_i → ancilla)       (oracle: encodes phase ω^{s·x})
+//   5. F_d^† on each query qudit             → |s>
+//   6. Measure query register                → s  (deterministic, 1 shot)
+//
+// Quantum advantage: 1 oracle query vs O(n) classical queries over Z_d.
+//
+// Reference: Bernstein–Vazirani generalisation to qudit systems
+// (Springer Quantum Studies, 2023).
+// =============================================================================
+
+class QuditBernsteinVazirani {
+public:
+    struct Result {
+        std::vector<int> secret;  // recovered s, each element in {0..d-1}
+        int d;                    // qudit dimension used
+        int n;                    // number of query qudits
+    };
+
+    // Exposed for testing/inspection: returns the d²×d² CADD gate matrix for
+    // secret component s_i.  Equivalent to qudit_gates::cadd_matrix(d, s_i).
+    static std::vector<Complex128> oracle_gate(int d, int s_i);
+
+    // Recover the hidden secret s ∈ Z_d^n.
+    // shots = 1 is always sufficient (deterministic algorithm).  Higher shots
+    // take a per-position majority vote (robustness against floating-point drift
+    // on near-term hardware simulation; not needed for exact statevector).
+    //
+    // Throws std::invalid_argument if:
+    //   - d < 2
+    //   - secret is empty
+    //   - any secret[i] is outside [0, d)
+    static Result solve(const std::vector<int>& secret, int d,
+                        int shots = 1, uint64_t seed = 0);
+};
+
+// =============================================================================
+// QuditDeutschJozsa — determine constant vs balanced f: Z_d^n → Z_d in 1 query
+//
+// Generalises Deutsch-Jozsa from binary to d-dimensional quantum systems.
+// Works for any d ≥ 2 (prime or composite). When d=2, identical to standard D-J.
+//
+// Promise: f is either constant (same output for all inputs) or balanced
+//   (each value in Z_d appears exactly d^{n-1} times).
+//
+// Circuit on (n + 1) qudits, dimension d:
+//   1. X_d^{d-1} on ancilla → |d-1⟩
+//   2. F_d on ancilla        → |−⟩_d (phase-kickback receiver)
+//   3. F_d on each query qudit → uniform superposition |+⟩_d^n
+//   4. Oracle U_f: |x⟩|y⟩ → |x⟩|(y + f(x)) mod d⟩
+//   5. F_d† on each query qudit
+//   6. Measure query register → all-zero iff constant, nonzero iff balanced
+//
+// Quantum advantage: 1 oracle query vs 2·d^{n-1} + 1 classical queries.
+// =============================================================================
+
+class QuditDeutschJozsa {
+public:
+    enum class Verdict { CONSTANT, BALANCED };
+
+    struct Result {
+        Verdict verdict;
+        int d;
+        int n;
+    };
+
+    // f: accepts n query digits each in Z_d, returns single digit in Z_d.
+    // Throws std::invalid_argument if d < 2, n < 1, or f returns value outside [0, d).
+    static Result solve(
+        int n, int d,
+        const std::function<int(const std::vector<int>&)>& f,
+        uint64_t seed = 0
+    );
+};
+
+// =============================================================================
+// QuditGrover — Grover's search over Z_d^n (d-ary amplitude amplification)
+//
+// Generalises Grover's algorithm from binary to d-dimensional quantum systems.
+// Searches a d^n-element space for marked state(s) in O(√(d^n)) oracle queries.
+// Works for any d ≥ 2. When d=2, identical to standard Grover.
+//
+// Circuit per Grover iteration:
+//   1. Oracle:    apply_phase_oracle — phase -1 for marked, +1 otherwise
+//   2. Diffusion: F_d†^n → apply_phase_oracle(-1 on all non-|0…0⟩) → F_d^n
+//
+// Optimal iterations: R ≈ round(π/4 · √(d^n))  (assumes 1 marked item).
+// Pass num_iterations explicitly when the number of marked items > 1.
+// =============================================================================
+
+class QuditGrover {
+public:
+    struct Result {
+        std::vector<int> solution;   // per-qudit digit of most probable marked state
+        double probability;           // fraction of shots returning solution
+        int num_iterations;
+        int d;
+        int n;
+    };
+
+    // search — marks a single explicit target state.
+    // target must have size n, each element in [0, d).
+    static Result search(
+        int n, int d,
+        const std::vector<int>& target,
+        int num_iterations = -1,   // -1 = auto: round(π/4 · √(d^n))
+        int shots = 100,
+        uint64_t seed = 0
+    );
+
+    // search_with_oracle — marks states via arbitrary predicate.
+    // is_marked may flag any number of states ≥ 1.
+    static Result search_with_oracle(
+        int n, int d,
+        const std::function<bool(const std::vector<int>&)>& is_marked,
+        int num_iterations = -1,
+        int shots = 100,
+        uint64_t seed = 0
+    );
+};
+
+// =============================================================================
+// QuditPhaseEstimation — estimate eigenphase of a d×d unitary over a d-ary clock
+//
+// Generalises QPE from binary to d-dimensional quantum systems. Uses m clock
+// qudits to estimate φ ∈ [0, 1) to d-ary precision d^{-m}.
+//
+// For U|ψ⟩ = exp(2πiφ)|ψ⟩ the clock register after IQFT measures φ in base d.
+//
+// Circuit on (m + 1) qudits (m clock + 1 target):
+//   1. Set target qudit to eigenstate |ψ⟩ (provided as amplitude vector)
+//   2. F_d on each clock qudit
+//   3. For clock qudit j = 0..m-1 (little-endian, j=0 is stride d^0):
+//        controlled-U^{d^j}: control = clock qudit j, target = last qudit
+//   4. F_d† on each clock qudit (inverse d-ary QFT on clock)
+//   5. Measure clock register
+//
+// Phase estimate: φ ≈ N / d^m,  N = Σ_j digit_j · d^j  (little-endian integer).
+// Precision: |φ_est − φ_true| < d^{-m}.
+//
+// Requires the target register to be exactly an eigenstate of U.
+// Supports only statevector simulation; only a 1-qudit target register.
+// =============================================================================
+
+class QuditPhaseEstimation {
+public:
+    struct Result {
+        std::vector<int> phase_digits;   // measured clock digits, little-endian base d
+        double phase_estimate;            // Σ_j digit_j / d^{j+1} ∈ [0, 1)
+        int m;                            // number of clock qudits
+        int d;                            // qudit dimension
+    };
+
+    // U:          d×d row-major unitary matrix (size d*d).
+    // eigenstate: d-element normalised amplitude vector (exact eigenstate of U).
+    // m:          number of clock qudits; precision = d^{-m}.
+    // Throws std::invalid_argument if d < 2, m < 1, or sizes are wrong.
+    static Result estimate(
+        int m, int d,
+        const std::vector<Complex128>& U,
+        const std::vector<Complex128>& eigenstate,
+        uint64_t seed = 0
+    );
+};
+
+// =============================================================================
+// QuditSimon — find hidden period s ∈ Z_d^n from f(x+s)=f(x) in O(n) queries
+//
+// Generalises Simon's algorithm from binary to d-dimensional quantum systems.
+// Requires d to be prime for exact Gaussian elimination over GF(d).
+//
+// Promise: f: Z_d^n → Z_d^n satisfies f(x) = f(y) ⟺ x − y ≡ 0 or s (mod d).
+//
+// Circuit per query (2n qudits: n query + n output):
+//   1. F_d on each query qudit
+//   2. Oracle U_f: |x⟩|0⟩ → |x⟩|f(x)⟩  (apply_function_oracle)
+//   3. F_d† on each query qudit
+//   4. Measure query register → y satisfying s·y ≡ 0 (mod d)
+//
+// Classical post-processing: Gaussian elimination over GF(d) on ~n+extra samples.
+// Quantum advantage: O(n) queries vs exponential classical.
+//
+// Restriction: d must be prime. Composite d requires CRT (not implemented).
+// =============================================================================
+
+class QuditSimon {
+public:
+    struct Result {
+        std::vector<int> period;   // s in Z_d^n, each element in {0..d-1}
+        bool is_trivial;           // true iff s = 0…0 (f is injective)
+        int d;
+        int n;
+        int quantum_queries;       // number of quantum circuit executions
+    };
+
+    // f: Z_d^n → Z_d^n — the periodic function satisfying the Simon promise.
+    // d must be prime. extra_samples: additional queries beyond the minimum n-1.
+    // Throws std::invalid_argument if d < 2, d is not prime, n < 1,
+    //   or f returns a vector of wrong size.
+    static Result solve(
+        int n, int d,
+        const std::function<std::vector<int>(const std::vector<int>&)>& f,
+        int extra_samples = 3,
+        uint64_t seed = 0
+    );
+
+private:
+    static bool is_prime(int d);
+    static int  mod_inv(int a, int p);   // modular inverse, p prime, a != 0
+    static std::vector<std::vector<int>> null_space_gf(
+        std::vector<std::vector<int>> M, int n, int d);
 };
 
 // =============================================================================

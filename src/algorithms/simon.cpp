@@ -82,5 +82,182 @@ Simon::Result Simon::solve(const QuantumCircuit& oracle, int n,
     return { period, equations };
 }
 
+// =============================================================================
+// QuditSimon
+// =============================================================================
+
+bool QuditSimon::is_prime(int d) {
+    if (d < 2) return false;
+    if (d == 2) return true;
+    if (d % 2 == 0) return false;
+    for (int i = 3; i * i <= d; i += 2)
+        if (d % i == 0) return false;
+    return true;
+}
+
+int QuditSimon::mod_inv(int a, int p) {
+    // Fermat's little theorem: a^{p-2} mod p (p prime, a != 0)
+    int result = 1;
+    a = ((a % p) + p) % p;
+    int exp = p - 2;
+    while (exp > 0) {
+        if (exp % 2 == 1) result = (result * a) % p;
+        a = (a * a) % p;
+        exp /= 2;
+    }
+    return result;
+}
+
+std::vector<std::vector<int>> QuditSimon::null_space_gf(
+    std::vector<std::vector<int>> M, int n, int d)
+{
+    const int rows = static_cast<int>(M.size());
+    std::vector<int> pivot_col_for_row(static_cast<size_t>(rows), -1);
+    std::vector<bool> col_has_pivot(static_cast<size_t>(n), false);
+
+    int r = 0;
+    for (int c = 0; c < n && r < rows; ++c) {
+        // Find pivot in column c at or below row r
+        int piv = -1;
+        for (int i = r; i < rows; ++i)
+            if (M[static_cast<size_t>(i)][static_cast<size_t>(c)] != 0) {
+                piv = i; break;
+            }
+        if (piv < 0) continue;
+
+        std::swap(M[static_cast<size_t>(r)], M[static_cast<size_t>(piv)]);
+        pivot_col_for_row[static_cast<size_t>(r)] = c;
+        col_has_pivot[static_cast<size_t>(c)] = true;
+
+        // Scale row r so leading entry = 1 (mod d)
+        const int inv = mod_inv(M[static_cast<size_t>(r)][static_cast<size_t>(c)], d);
+        for (int j = 0; j < n; ++j)
+            M[static_cast<size_t>(r)][static_cast<size_t>(j)] =
+                (M[static_cast<size_t>(r)][static_cast<size_t>(j)] * inv) % d;
+
+        // Eliminate column c in all other rows
+        for (int i = 0; i < rows; ++i) {
+            if (i == r || M[static_cast<size_t>(i)][static_cast<size_t>(c)] == 0)
+                continue;
+            const int factor = M[static_cast<size_t>(i)][static_cast<size_t>(c)];
+            for (int j = 0; j < n; ++j)
+                M[static_cast<size_t>(i)][static_cast<size_t>(j)] =
+                    ((M[static_cast<size_t>(i)][static_cast<size_t>(j)]
+                      - factor * M[static_cast<size_t>(r)][static_cast<size_t>(j)]) % d + d) % d;
+        }
+        ++r;
+    }
+    const int rank = r;
+
+    // Build null space: one vector per free variable (column without pivot)
+    std::vector<std::vector<int>> null_vecs;
+    for (int fc = 0; fc < n; ++fc) {
+        if (col_has_pivot[static_cast<size_t>(fc)]) continue;
+
+        // Set free variable fc = 1, other free variables = 0; back-substitute pivots
+        std::vector<int> v(static_cast<size_t>(n), 0);
+        v[static_cast<size_t>(fc)] = 1;
+
+        for (int ri = 0; ri < rank; ++ri) {
+            const int pc = pivot_col_for_row[static_cast<size_t>(ri)];
+            if (pc < 0) continue;
+            // pivot row ri: v[pc] = −M[ri][fc] * v[fc] mod d  (other free vars = 0)
+            v[static_cast<size_t>(pc)] =
+                ((-M[static_cast<size_t>(ri)][static_cast<size_t>(fc)]) % d + d) % d;
+        }
+        null_vecs.push_back(v);
+    }
+    return null_vecs;
+}
+
+QuditSimon::Result QuditSimon::solve(
+    int n, int d,
+    const std::function<std::vector<int>(const std::vector<int>&)>& f,
+    int extra_samples, uint64_t seed)
+{
+    if (d < 2)
+        throw std::invalid_argument("QuditSimon::solve: d must be >= 2");
+    if (!is_prime(d))
+        throw std::invalid_argument(
+            "QuditSimon::solve: d must be prime for GF(d) post-processing");
+    if (n < 1)
+        throw std::invalid_argument("QuditSimon::solve: n must be >= 1");
+
+    const auto F  = qudit_gates::qft_matrix(d);
+    const auto Fd = qudit_gates::iqft_matrix(d);
+
+    std::mt19937_64 rng(seed == 0
+        ? static_cast<uint64_t>(std::random_device{}())
+        : seed);
+
+    const int target_samples = n - 1 + extra_samples;
+    const int max_attempts   = (n + extra_samples) * 6;
+
+    std::vector<std::vector<int>> equations;
+    int queries = 0;
+
+    for (int attempt = 0;
+         attempt < max_attempts &&
+         static_cast<int>(equations.size()) < target_samples;
+         ++attempt)
+    {
+        // 2n qudits: 0..n-1 = query register, n..2n-1 = output register
+        QuditStatevector sv(2 * n, d);
+
+        // F_d on query register
+        for (int i = 0; i < n; ++i) sv.apply_1qudit(i, F);
+
+        // Oracle: |x⟩|0⟩ → |x⟩|f(x)⟩
+        sv.apply_function_oracle(n, n,
+            [&](const std::vector<int>& x) -> std::vector<int> {
+                auto fx = f(x);
+                if (static_cast<int>(fx.size()) != n)
+                    throw std::invalid_argument(
+                        "QuditSimon::solve: f returned wrong size vector");
+                for (int v : fx)
+                    if (v < 0 || v >= d)
+                        throw std::invalid_argument(
+                            "QuditSimon::solve: f returned digit out of [0, d)");
+                return fx;
+            });
+
+        // F_d† on query register
+        for (int i = 0; i < n; ++i) sv.apply_1qudit(i, Fd);
+
+        // Measure; extract first n digits (query register)
+        const auto outcome = sv.measure(rng());
+        ++queries;
+
+        std::vector<int> y(outcome.begin(), outcome.begin() + n);
+
+        // Skip all-zero (uninformative) and duplicate vectors
+        bool is_zero = true;
+        for (int v : y) if (v != 0) { is_zero = false; break; }
+        if (is_zero) continue;
+
+        bool dup = false;
+        for (const auto& eq : equations)
+            if (eq == y) { dup = true; break; }
+        if (!dup) equations.push_back(y);
+    }
+
+    // Classical post-processing: null space of M (rows = equations) over GF(d)
+    const std::vector<std::vector<int>> null_vecs =
+        null_space_gf(equations, n, d);
+
+    if (null_vecs.empty()) {
+        // Null space is trivial → s = 0 (f is injective)
+        return Result{std::vector<int>(static_cast<size_t>(n), 0),
+                      true, d, n, queries};
+    }
+
+    // The Simon promise guarantees at most one non-trivial null vector
+    const std::vector<int>& period = null_vecs[0];
+    bool trivial = true;
+    for (int v : period) if (v != 0) { trivial = false; break; }
+
+    return Result{period, trivial, d, n, queries};
+}
+
 } // namespace algorithms
 } // namespace lindblad

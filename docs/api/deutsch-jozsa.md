@@ -80,6 +80,40 @@ int main() {
 - The oracle must act on `n + 1` qubits with the ancilla as the last qubit
 - The solver uses the sampled counts; `shots` should be > 1 if you want repeated sampling
 
+## QuditDeutschJozsa
+
+Declared in `include/lindblad/algorithms.hpp`. Implemented in `src/algorithms/deutsch_jozsa.cpp`.
+
+### Verdict enum
+
+```cpp
+enum class Verdict { CONSTANT, BALANCED };
+```
+
+### Result struct
+
+```cpp
+struct Result {
+    QuditDeutschJozsa::Verdict verdict;  // CONSTANT or BALANCED
+    int d;                               // qudit dimension
+    int n;                               // number of query qudits
+};
+```
+
+### solve
+
+```cpp
+static Result solve(
+    int n, int d,
+    const std::function<int(const std::vector<int>&)>& f,
+    uint64_t seed = 0
+);
+```
+
+Runs the qudit Deutsch-Jozsa circuit (n+1 qudits) and measures once. Single-shot — deterministic under the promise. `seed` controls measurement sampling (result is identical for any seed under exact simulation).
+
+**Throws** `std::invalid_argument` if `d < 2`, `n < 1`, or `f` returns a value outside `[0, d)`.
+
 ## Related Pages
 
 - [docs/algorithms/deutsch-jozsa.md](../algorithms/deutsch-jozsa.md)

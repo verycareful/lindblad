@@ -22,6 +22,10 @@ set(LINDBLAD_TEST_SOURCES
     test_ising.cpp
     # R.1.5.1 test suite
     test_feedforward_qft.cpp
+    # Qudit BV
+    test_qudit_bv.cpp
+    # Qudit algorithms (DJ, Grover, QPE, Simon)
+    test_qudit_algorithms.cpp
 )
 
 # Create test executable

@@ -82,6 +82,36 @@ int main() {
 - The full circuit measures all qubits, but only the evaluation register bits are used to extract the phase
 - Precision depends on `num_eval_qubits`
 
+## QuditPhaseEstimation
+
+Declared in `include/lindblad/algorithms.hpp`. Implemented in `src/algorithms/qpe.cpp`.
+
+### Result struct
+
+```cpp
+struct Result {
+    std::vector<int> phase_digits;   // m clock digits in little-endian base d
+    double phase_estimate;            // φ = Σ_j digit_j / d^{j+1} ∈ [0, 1)
+    int m;                            // number of clock qudits
+    int d;                            // qudit dimension
+};
+```
+
+### estimate
+
+```cpp
+static Result estimate(
+    int m, int d,
+    const std::vector<Complex128>& U,          // d×d row-major unitary
+    const std::vector<Complex128>& eigenstate,  // d-element normalised amplitude vector
+    uint64_t seed = 0
+);
+```
+
+Runs the qudit QPE circuit and measures once. Single-shot — deterministic when `eigenstate` is an exact eigenstate of `U`.
+
+**Throws** `std::invalid_argument` if `d < 2`, `m < 1`, `U.size() != d*d`, or `eigenstate.size() != d`.
+
 ## Related Pages
 
 - [docs/algorithms/qpe.md](../algorithms/qpe.md)
