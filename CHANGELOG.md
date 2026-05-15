@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.6.1] - 2026-05-15
+
+### Tests
+
+- `tests/test_qudit_bv.cpp` — 45 tests: `QuditStatevector` construction, normalisation, `apply_1qudit`, `apply_2qudit`, `measure`; `QuditGates` unitarity and entry-correctness for d ∈ {2,3,4,5,6,7}; `QuditBernsteinVazirani` secret recovery for n=1,2 and d ∈ {2,3,4,5,6,7}; input validation (invalid d, zero-length secret)
+- `tests/test_qudit_algorithms.cpp` — 63 tests: `QuditDeutschJozsa` constant/balanced for d ∈ {2,3,5,7}; `QuditGrover` auto-iteration formula correctness, `search` success rate, `search_with_oracle` predicate path; `QuditPhaseEstimation` phase recovery for rational φ; `QuditSimon` period recovery for d ∈ {3,5,7} with GF(d) scalar-equivalence assertions; `shift_eigenstate` construction for d ∈ {2,3,5}. (2 N=2 Grover tests omitted — P=0.5 is the theoretical maximum for a 2-state search regardless of target.)
+
+### Results
+
+- 448 tests across 52 suites — all passed (788 ms, WSL/CLang).
+
 ## [R.1.6.0] - 2026-05-15
 
 ### Added
