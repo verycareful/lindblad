@@ -129,6 +129,66 @@ Common issues include:
 
 Grover behavior is exercised indirectly through the simulator and algorithm coverage already present in the repository.
 
+## QuditGrover
+
+**Purpose:** Search a d^n-element space for marked state(s) in O(√(d^n)) oracle queries.
+
+**d-ary generalization:** Extends Grover's algorithm from binary (d=2) to d-dimensional quantum systems. Works for any d ≥ 2. When d=2, identical to standard Grover.
+
+**Circuit per Grover iteration** (n qudits, dimension d):
+
+| Step | Gate | Operation |
+|------|------|-----------|
+| 1 | Oracle | apply_phase_oracle: −1 for marked states, +1 otherwise |
+| 2 | F_d†^n | IQFT on all qudits |
+| 3 | R_0 | apply_phase_oracle: −1 for all non-\|0...0⟩ states |
+| 4 | F_d^n | QFT on all qudits (completes diffusion) |
+
+Initial state: F_d^n\|0...0⟩ = uniform superposition (1/√(d^n)) Σ_x \|x⟩.
+
+**Optimal iterations:** R ≈ round(π/4 · √(d^n)) (assumes 1 marked item). Pass `num_iterations` explicitly when the number of marked items ≠ 1.
+
+**Quantum advantage:** O(√(d^n)) vs O(d^n) classical.
+
+**Required Inputs:**
+- `n` — number of qudits (≥ 1)
+- `d` — qudit dimension (≥ 2)
+- `target` — explicit target state (for `search`), or `is_marked` predicate (for `search_with_oracle`)
+- `shots` — number of independent circuit executions (default 100)
+
+**How to Invoke:**
+```cpp
+#include "lindblad/algorithms.hpp"
+using namespace lindblad::algorithms;
+
+// Single target (explicit)
+auto r = QuditGrover::search(/*n=*/2, /*d=*/3, {1, 2}, /*shots=*/200);
+// r.solution == {1, 2},  r.probability > 0.5
+
+// Arbitrary predicate
+auto r2 = QuditGrover::search_with_oracle(2, 3,
+    [](const std::vector<int>& x) { return x[0] == 1 && x[1] == 2; },
+    /*num_iterations=*/-1, 200);
+```
+
+**Supported d:** Any d ≥ 2. For d=2 reproduces qubit Grover exactly.
+
+**Result:**
+```cpp
+struct Result {
+    std::vector<int> solution;  // most probable marked state across shots
+    double probability;          // fraction of shots returning solution
+    int num_iterations;
+    int d;
+    int n;
+};
+```
+
+**Exceptions:**
+- `std::invalid_argument` if `d < 2`, `n < 1`, `target.size() != n`, or any `target[i]` outside `[0, d)`
+
+**Simulator dependency:** `QuditStatevector`. Each shot creates a fresh state vector.
+
 ## Related Source Files
 
 - [docs/api/grover.md](../api/grover.md)

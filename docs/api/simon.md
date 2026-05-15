@@ -91,6 +91,40 @@ int main() {
 - The oracle must act on `2n` qubits with the query register in the first half
 - Recovery quality depends on the number of independent equations
 
+## QuditSimon
+
+Declared in `include/lindblad/algorithms.hpp`. Implemented in `src/algorithms/simon.cpp`.
+
+### Result struct
+
+```cpp
+struct Result {
+    std::vector<int> period;   // s in Z_d^n, each element in {0..d-1}
+    bool is_trivial;           // true iff s = 0...0 (f is injective)
+    int d;
+    int n;
+    int quantum_queries;       // number of quantum circuit executions performed
+};
+```
+
+### solve
+
+```cpp
+static Result solve(
+    int n, int d,
+    const std::function<std::vector<int>(const std::vector<int>&)>& f,
+    int extra_samples = 3,
+    uint64_t seed = 0
+);
+```
+
+Runs O(n+extra_samples) quantum circuit queries, then performs Gaussian elimination over GF(d) to recover s.
+
+- `extra_samples`: additional queries beyond the minimum (n-1). Increase if incorrect results are obtained.
+- `d` must be **prime**. Throws `std::invalid_argument` if d is composite.
+
+**Throws** `std::invalid_argument` if `d < 2`, `d` is not prime, `n < 1`, or `f` returns a vector of wrong size or with out-of-range digits.
+
 ## Related Pages
 
 - [docs/algorithms/simon.md](../algorithms/simon.md)

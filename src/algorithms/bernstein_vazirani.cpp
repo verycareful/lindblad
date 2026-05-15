@@ -188,5 +188,82 @@ DistributedBernsteinVazirani::Result DistributedBernsteinVazirani::solve(
     return result;
 }
 
+// =============================================================================
+// QuditBernsteinVazirani — recovers s in Z_d^n from f(x) = s·x mod d in 1 query
+// =============================================================================
+
+std::vector<Complex128> QuditBernsteinVazirani::oracle_gate(int d, int s_i) {
+    return qudit_gates::cadd_matrix(d, s_i);
+}
+
+QuditBernsteinVazirani::Result QuditBernsteinVazirani::solve(
+    const std::vector<int>& secret, int d, int shots, uint64_t seed)
+{
+    if (d < 2)
+        throw std::invalid_argument(
+            "QuditBernsteinVazirani::solve: d must be >= 2");
+    if (secret.empty())
+        throw std::invalid_argument(
+            "QuditBernsteinVazirani::solve: secret must not be empty");
+    for (int x : secret)
+        if (x < 0 || x >= d)
+            throw std::invalid_argument(
+                "QuditBernsteinVazirani::solve: "
+                "all secret values must be in [0, d)");
+    if (shots < 1) shots = 1;
+
+    const int n = static_cast<int>(secret.size());
+
+    const auto Fd  = qudit_gates::qft_matrix(d);
+    const auto Fdi = qudit_gates::iqft_matrix(d);
+    const auto Xm  = qudit_gates::shift_matrix(d, d - 1);
+
+    std::vector<std::vector<Complex128>> cadd(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i)
+        if (secret[static_cast<size_t>(i)] != 0)
+            cadd[static_cast<size_t>(i)] =
+                qudit_gates::cadd_matrix(d, secret[static_cast<size_t>(i)]);
+
+    std::vector<std::vector<int>> votes(
+        static_cast<size_t>(n), std::vector<int>(static_cast<size_t>(d), 0));
+
+    for (int shot = 0; shot < shots; ++shot) {
+        QuditStatevector sv(n + 1, d);
+
+        std::vector<QuditGateOp> ops;
+        ops.reserve(static_cast<size_t>(2 + 3 * n));
+
+        ops.push_back({QuditGateOp::Type::SINGLE, n, -1, Xm});
+        ops.push_back({QuditGateOp::Type::SINGLE, n, -1, Fd});
+
+        for (int i = 0; i < n; ++i)
+            ops.push_back({QuditGateOp::Type::SINGLE, i, -1, Fd});
+
+        for (int i = 0; i < n; ++i)
+            if (secret[static_cast<size_t>(i)] != 0)
+                ops.push_back({QuditGateOp::Type::TWO, i, n,
+                               cadd[static_cast<size_t>(i)]});
+
+        for (int i = 0; i < n; ++i)
+            ops.push_back({QuditGateOp::Type::SINGLE, i, -1, Fdi});
+
+        auto res = QuditSimulator::run(
+            sv, ops, seed + static_cast<uint64_t>(shot));
+
+        for (int i = 0; i < n; ++i)
+            votes[static_cast<size_t>(i)]
+                 [static_cast<size_t>(res.outcome[static_cast<size_t>(i)])]++;
+    }
+
+    std::vector<int> recovered(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        const auto& v = votes[static_cast<size_t>(i)];
+        recovered[static_cast<size_t>(i)] = static_cast<int>(
+            std::max_element(v.begin(), v.end()) - v.begin());
+    }
+
+    return Result{recovered, d, n};
+}
+
 } // namespace algorithms
 } // namespace lindblad

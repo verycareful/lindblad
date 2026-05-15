@@ -2,6 +2,8 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 
 #include <cmath>
+#include <map>
+#include <random>
 #include <vector>
 
 namespace lindblad {
@@ -98,6 +100,110 @@ Grover::Result Grover::search(
     result.probability = static_cast<double>(max_count) / shots;
     result.num_iterations = num_iterations;
 
+    return result;
+}
+
+// =============================================================================
+// QuditGrover
+// =============================================================================
+
+namespace {
+// Exact optimal Grover iteration count: minimises |(2R+1)θ - π/2| where sin(θ)=1/√N.
+// Approximation round(π/4·√N) is inaccurate for small N (e.g. N=4→gives 2, optimal=1).
+int qudit_grover_auto_iters(int n, int d) {
+    const double N = std::pow(static_cast<double>(d), static_cast<double>(n));
+    const double theta = std::asin(1.0 / std::sqrt(N));
+    return std::max(1, static_cast<int>(std::round(PI / (4.0 * theta) - 0.5)));
+}
+} // anonymous namespace
+
+QuditGrover::Result QuditGrover::search(
+    int n, int d,
+    const std::vector<int>& target,
+    int num_iterations, int shots, uint64_t seed)
+{
+    if (d < 2)
+        throw std::invalid_argument("QuditGrover::search: d must be >= 2");
+    if (n < 1)
+        throw std::invalid_argument("QuditGrover::search: n must be >= 1");
+    if (static_cast<int>(target.size()) != n)
+        throw std::invalid_argument(
+            "QuditGrover::search: target size must equal n");
+    for (int v : target)
+        if (v < 0 || v >= d)
+            throw std::invalid_argument(
+                "QuditGrover::search: target digit out of [0, d)");
+
+    return search_with_oracle(n, d,
+        [&](const std::vector<int>& x) -> bool { return x == target; },
+        num_iterations, shots, seed);
+}
+
+QuditGrover::Result QuditGrover::search_with_oracle(
+    int n, int d,
+    const std::function<bool(const std::vector<int>&)>& is_marked,
+    int num_iterations, int shots, uint64_t seed)
+{
+    if (d < 2)
+        throw std::invalid_argument(
+            "QuditGrover::search_with_oracle: d must be >= 2");
+    if (n < 1)
+        throw std::invalid_argument(
+            "QuditGrover::search_with_oracle: n must be >= 1");
+    if (shots < 1) shots = 1;
+
+    if (num_iterations < 0) num_iterations = qudit_grover_auto_iters(n, d);
+
+    const auto F  = qudit_gates::qft_matrix(d);
+    const auto Fd = qudit_gates::iqft_matrix(d);
+
+    // Oracle: phase −1 for marked, +1 otherwise
+    const auto oracle_phase = [&](const std::vector<int>& digits) -> Complex128 {
+        return is_marked(digits) ? Complex128(-1.0, 0.0) : Complex128(1.0, 0.0);
+    };
+
+    // Diffusion R_0 = 2|0><0| − I: phase −1 for all non-|0...0⟩
+    const auto diffusion_phase = [](const std::vector<int>& digits) -> Complex128 {
+        for (int x : digits)
+            if (x != 0) return Complex128(-1.0, 0.0);
+        return Complex128(1.0, 0.0);
+    };
+
+    std::mt19937_64 rng(seed == 0
+        ? static_cast<uint64_t>(std::random_device{}())
+        : seed);
+    std::map<std::vector<int>, int> counts;
+
+    for (int shot = 0; shot < shots; ++shot) {
+        QuditStatevector sv(n, d);
+
+        // Initial uniform superposition: F_d on each qudit
+        for (int q = 0; q < n; ++q) sv.apply_1qudit(q, F);
+
+        // Grover iterations
+        for (int iter = 0; iter < num_iterations; ++iter) {
+            sv.apply_phase_oracle(oracle_phase);          // mark target
+            for (int q = 0; q < n; ++q) sv.apply_1qudit(q, Fd);  // F_d†
+            sv.apply_phase_oracle(diffusion_phase);       // inversion about |0⟩
+            for (int q = 0; q < n; ++q) sv.apply_1qudit(q, F);   // F_d
+        }
+
+        counts[sv.measure(rng())]++;
+    }
+
+    // Find most probable outcome
+    Result result;
+    result.num_iterations = num_iterations;
+    result.d = d;
+    result.n = n;
+    int max_count = 0;
+    for (const auto& [outcome, count] : counts) {
+        if (count > max_count) {
+            max_count = count;
+            result.solution = outcome;
+        }
+    }
+    result.probability = static_cast<double>(max_count) / static_cast<double>(shots);
     return result;
 }
 

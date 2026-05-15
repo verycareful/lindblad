@@ -92,6 +92,54 @@ int main() {
 - The diffusion operator uses a dense `UNITARY` for the multi-controlled X when
     `n > 3`
 
+## QuditGrover
+
+Declared in `include/lindblad/algorithms.hpp`. Implemented in `src/algorithms/grover.cpp`.
+
+### Result struct
+
+```cpp
+struct Result {
+    std::vector<int> solution;   // per-qudit digit of most probable marked state
+    double probability;           // fraction of shots returning solution
+    int num_iterations;
+    int d;
+    int n;
+};
+```
+
+### search
+
+```cpp
+static Result search(
+    int n, int d,
+    const std::vector<int>& target,
+    int num_iterations = -1,   // -1 = auto: round(π/4 · √(d^n))
+    int shots = 100,
+    uint64_t seed = 0
+);
+```
+
+Marks a single explicit target state. Equivalent to `search_with_oracle` with predicate `x == target`.
+
+**Throws** `std::invalid_argument` if `d < 2`, `n < 1`, `target.size() != n`, or any `target[i] ∉ [0, d)`.
+
+### search_with_oracle
+
+```cpp
+static Result search_with_oracle(
+    int n, int d,
+    const std::function<bool(const std::vector<int>&)>& is_marked,
+    int num_iterations = -1,
+    int shots = 100,
+    uint64_t seed = 0
+);
+```
+
+Marks states via an arbitrary predicate. Suitable for multiple marked states (pass `num_iterations` explicitly for non-unit marked count).
+
+**Throws** `std::invalid_argument` if `d < 2` or `n < 1`.
+
 ## Related Pages
 
 - [docs/algorithms/grover.md](../algorithms/grover.md)

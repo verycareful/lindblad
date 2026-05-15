@@ -123,6 +123,75 @@ Common problems include:
 
 At the moment the primary validation is implementation-level coverage through the algorithm source and the general simulator tests used elsewhere in the repo.
 
+## QuditPhaseEstimation
+
+**Purpose:** Estimate the eigenphase φ ∈ [0,1) of a d×d unitary U to precision d^{-m} using m clock qudits.
+
+**d-ary generalization:** Extends QPE from binary (d=2) to d-dimensional quantum systems. Uses the d-ary QFT on the clock register. When d=2, equivalent to standard QPE.
+
+**Setup:** For U\|ψ⟩ = exp(2πiφ)\|ψ⟩, the circuit estimates φ to m base-d digits.
+
+**Circuit** (m+1 qudits: 0..m-1 = clock, m = target):
+
+| Step | Operation | Detail |
+|------|-----------|--------|
+| 1 | Initialize target | Set target qudit to eigenstate \|ψ⟩ (provided as amplitude vector) |
+| 2 | F_d on each clock qudit | Uniform superposition on clock |
+| 3 | Controlled-U^{d^j} | Clock qudit j (little-endian) controls U^{d^j} on target |
+| 4 | F_d† on each clock qudit | Inverse d-ary QFT decodes clock |
+| 5 | Measure clock | phase_digits in base d |
+
+**Phase decoding (little-endian):** φ ≈ Σ_j digit_j · d^{-(j+1)}, where j=0 is the least-significant digit (stride d^0). Equivalently, reading the digits as a d-ary fraction.
+
+**Controlled-U^{d^j} gate:** d²×d² matrix where clock value c applies U^{c·d^j} to the target. Built via `qudit_gates::controlled_power_matrix(d, U, d^j)`.
+
+**Precision:** |φ_estimate − φ_true| < d^{-m}.
+
+**Required Inputs:**
+- `m` — number of clock qudits (≥ 1); precision = d^{-m}
+- `d` — qudit dimension (≥ 2)
+- `U` — d×d row-major unitary matrix (size d*d)
+- `eigenstate` — d-element normalised amplitude vector, exact eigenstate of U
+
+**How to Invoke:**
+```cpp
+#include "lindblad/algorithms.hpp"
+#include "lindblad/qudit/qudit_gates.hpp"
+using namespace lindblad;
+using namespace lindblad::algorithms;
+
+// X = shift_matrix(d,1) has eigenstates with phases k/d
+auto U   = qudit_gates::shift_matrix(3, 1);
+// Eigenstate for k=1: psi[j] = exp(2*pi*i*j/3) / sqrt(3), phi = 1/3
+std::vector<Complex128> psi(3);
+for (int j = 0; j < 3; ++j)
+    psi[j] = Complex128::exp_i(2 * M_PI * j / 3.0) / std::sqrt(3.0);
+
+auto r = QuditPhaseEstimation::estimate(/*m=*/3, /*d=*/3, U, psi, /*seed=*/42);
+// r.phase_estimate ≈ 1.0/3.0  (within 1/27)
+```
+
+**Supported d:** Any d ≥ 2. Only a 1-qudit target register is supported.
+
+**Result:**
+```cpp
+struct Result {
+    std::vector<int> phase_digits;   // m measured clock digits, little-endian base d
+    double phase_estimate;            // decimal φ ∈ [0, 1)
+    int m;
+    int d;
+};
+```
+
+**Exceptions:**
+- `std::invalid_argument` if `d < 2`, `m < 1`, `U.size() != d*d`, or `eigenstate.size() != d`
+
+**Simulator dependency:** `QuditStatevector`. Only statevector simulation is supported. Only a single-qudit target register is supported (multi-qudit target requires k-qudit controlled operations, a planned extension).
+
+**Common pitfalls:**
+- The eigenstate must be normalised and must be an exact eigenstate of U; passing an approximate eigenstate gives probabilistic (not deterministic) results.
+- Little-endian clock: phase_digits[0] is the least significant digit. Convert to decimal with Σ_j digit_j/d^{j+1}.
+
 ## Related Source Files
 
 - [docs/api/qpe.md](../api/qpe.md)

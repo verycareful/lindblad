@@ -135,6 +135,65 @@ Relevant tests live in:
 
 - [tests/test_classic_algorithms.cpp](../../tests/test_classic_algorithms.cpp)
 
+## QuditDeutschJozsa
+
+**Purpose:** Determine in one quantum query whether f: Z_d^n → Z_d is constant or balanced.
+
+**d-ary generalization:** Extends Deutsch-Jozsa from binary (d=2) to d-dimensional quantum systems. Works for any d ≥ 2, prime or composite. When d=2, identical to standard D-J.
+
+**Promise:** f is either constant (same value for all inputs) or balanced (each value in Z_d appears exactly d^{n-1} times).
+
+**Circuit** (n+1 qudits, dimension d; qudits 0..n-1 = query, qudit n = ancilla):
+
+| Step | Gate | Target | State after |
+|------|------|--------|-------------|
+| 1 | X_d^{d-1} | ancilla n | \|d-1⟩ |
+| 2 | F_d | ancilla n | \|−⟩_d (phase-kickback receiver) |
+| 3 | F_d | each query qudit | \|+⟩_d^n (uniform superposition) |
+| 4 | U_f | query→ancilla | phase ω^{f(x)} on each \|x⟩ |
+| 5 | F_d† | each query qudit | decode phase kickback |
+| 6 | Measure | query register | all-zero ↔ constant |
+
+**Phase kickback:** After the oracle, each query basis state |x⟩ acquires phase ω^{f(x)} = exp(2πi·f(x)/d). For constant f=c, every state has the same phase; after F_d†, amplitude collapses to |0...0⟩. For balanced f, the sum Σ_x ω^{f(x)} vanishes at frequency k=0, so |0...0⟩ has zero amplitude after F_d†.
+
+**Quantum advantage:** 1 oracle query vs 2·d^{n-1}+1 classical queries.
+
+**Required Inputs:**
+- `n` — number of query qudits (≥ 1)
+- `d` — qudit dimension (≥ 2)
+- `f` — `std::function<int(const std::vector<int>&)>` mapping n digits to one digit in [0, d)
+
+**How to Invoke:**
+```cpp
+#include "lindblad/algorithms.hpp"
+using namespace lindblad::algorithms;
+
+// f: Z_d^n → Z_d
+auto f = [](const std::vector<int>& x) -> int { return x[0]; };  // balanced
+auto result = QuditDeutschJozsa::solve(/*n=*/2, /*d=*/3, f);
+if (result.verdict == QuditDeutschJozsa::Verdict::CONSTANT)
+    std::cout << "Constant\n";
+else
+    std::cout << "Balanced\n";
+```
+
+**Supported d:** Any d ≥ 2 (prime or composite). For d=2 reproduces qubit D-J exactly.
+
+**Result:**
+```cpp
+struct Result {
+    QuditDeutschJozsa::Verdict verdict;  // CONSTANT or BALANCED
+    int d;
+    int n;
+};
+```
+
+**Exceptions:**
+- `std::invalid_argument` if `d < 2` or `n < 1`
+- `std::invalid_argument` if `f` returns a value outside `[0, d)`
+
+**Simulator dependency:** `QuditStatevector` (dense statevector, O(d^{n+1}) amplitudes). Only statevector simulation is supported.
+
 ## Related Source Files
 
 - [docs/api/deutsch-jozsa.md](../api/deutsch-jozsa.md)
