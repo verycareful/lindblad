@@ -1,5 +1,10 @@
 #include "lindblad/algorithms.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/qudit/qudit_backend.hpp"
+#include "lindblad/qudit/qudit_density_matrix.hpp"
+#include "lindblad/qudit/qudit_mps.hpp"
+#include "lindblad/qudit/qudit_clifford.hpp"
+#include "lindblad/qudit/qudit_noise_model.hpp"
 
 #include <cmath>
 #include <map>
@@ -120,7 +125,8 @@ int qudit_grover_auto_iters(int n, int d) {
 QuditGrover::Result QuditGrover::search(
     int n, int d,
     const std::vector<int>& target,
-    int num_iterations, int shots, uint64_t seed)
+    int num_iterations, int shots, uint64_t seed,
+    QuditBackend backend, const QuditNoiseModel* noise)
 {
     if (d < 2)
         throw std::invalid_argument("QuditGrover::search: d must be >= 2");
@@ -136,13 +142,14 @@ QuditGrover::Result QuditGrover::search(
 
     return search_with_oracle(n, d,
         [&](const std::vector<int>& x) -> bool { return x == target; },
-        num_iterations, shots, seed);
+        num_iterations, shots, seed, backend, noise);
 }
 
 QuditGrover::Result QuditGrover::search_with_oracle(
     int n, int d,
     const std::function<bool(const std::vector<int>&)>& is_marked,
-    int num_iterations, int shots, uint64_t seed)
+    int num_iterations, int shots, uint64_t seed,
+    QuditBackend backend, const QuditNoiseModel* noise)
 {
     if (d < 2)
         throw std::invalid_argument(
@@ -152,46 +159,73 @@ QuditGrover::Result QuditGrover::search_with_oracle(
             "QuditGrover::search_with_oracle: n must be >= 1");
     if (shots < 1) shots = 1;
 
+    if (backend == QuditBackend::CLIFFORD)
+        throw std::invalid_argument(
+            "QuditGrover: CLIFFORD backend is not supported "
+            "(Grover's phase oracle applies -1 to marked states, which is non-Clifford)");
+
     if (num_iterations < 0) num_iterations = qudit_grover_auto_iters(n, d);
 
-    const auto F  = qudit_gates::qft_matrix(d);
-    const auto Fd = qudit_gates::iqft_matrix(d);
-
-    // Oracle: phase −1 for marked, +1 otherwise
     const auto oracle_phase = [&](const std::vector<int>& digits) -> Complex128 {
         return is_marked(digits) ? Complex128(-1.0, 0.0) : Complex128(1.0, 0.0);
     };
-
-    // Diffusion R_0 = 2|0><0| − I: phase −1 for all non-|0...0⟩
     const auto diffusion_phase = [](const std::vector<int>& digits) -> Complex128 {
         for (int x : digits)
             if (x != 0) return Complex128(-1.0, 0.0);
         return Complex128(1.0, 0.0);
     };
+    const auto F  = qudit_gates::qft_matrix(d);
+    const auto Fd = qudit_gates::iqft_matrix(d);
 
     std::mt19937_64 rng(seed == 0
         ? static_cast<uint64_t>(std::random_device{}())
         : seed);
     std::map<std::vector<int>, int> counts;
 
-    for (int shot = 0; shot < shots; ++shot) {
-        QuditStatevector sv(n, d);
-
-        // Initial uniform superposition: F_d on each qudit
-        for (int q = 0; q < n; ++q) sv.apply_1qudit(q, F);
-
-        // Grover iterations
-        for (int iter = 0; iter < num_iterations; ++iter) {
-            sv.apply_phase_oracle(oracle_phase);          // mark target
-            for (int q = 0; q < n; ++q) sv.apply_1qudit(q, Fd);  // F_d†
-            sv.apply_phase_oracle(diffusion_phase);       // inversion about |0⟩
-            for (int q = 0; q < n; ++q) sv.apply_1qudit(q, F);   // F_d
+    // ── DENSITY_MATRIX path ──────────────────────────────────────────────────
+    if (backend == QuditBackend::DENSITY_MATRIX) {
+        for (int shot = 0; shot < shots; ++shot) {
+            QuditDensityMatrix dm(n, d);
+            for (int q = 0; q < n; ++q) dm.apply_1qudit(q, F);
+            for (int iter = 0; iter < num_iterations; ++iter) {
+                dm.apply_phase_oracle(oracle_phase);
+                for (int q = 0; q < n; ++q) dm.apply_1qudit(q, Fd);
+                dm.apply_phase_oracle(diffusion_phase);
+                for (int q = 0; q < n; ++q) dm.apply_1qudit(q, F);
+            }
+            if (noise) dm.apply_noise(*noise);
+            counts[dm.measure(rng())]++;
         }
-
-        counts[sv.measure(rng())]++;
+    }
+    // ── MPS path ─────────────────────────────────────────────────────────────
+    else if (backend == QuditBackend::MPS) {
+        for (int shot = 0; shot < shots; ++shot) {
+            QuditMPS mps(n, d);
+            for (int q = 0; q < n; ++q) mps.apply_1qudit(q, F);
+            for (int iter = 0; iter < num_iterations; ++iter) {
+                mps.apply_phase_oracle(oracle_phase);
+                for (int q = 0; q < n; ++q) mps.apply_1qudit(q, Fd);
+                mps.apply_phase_oracle(diffusion_phase);
+                for (int q = 0; q < n; ++q) mps.apply_1qudit(q, F);
+            }
+            counts[mps.measure(rng())]++;
+        }
+    }
+    // ── STATEVECTOR path (default) ───────────────────────────────────────────
+    else {
+        for (int shot = 0; shot < shots; ++shot) {
+            QuditStatevector sv(n, d);
+            for (int q = 0; q < n; ++q) sv.apply_1qudit(q, F);
+            for (int iter = 0; iter < num_iterations; ++iter) {
+                sv.apply_phase_oracle(oracle_phase);
+                for (int q = 0; q < n; ++q) sv.apply_1qudit(q, Fd);
+                sv.apply_phase_oracle(diffusion_phase);
+                for (int q = 0; q < n; ++q) sv.apply_1qudit(q, F);
+            }
+            counts[sv.measure(rng())]++;
+        }
     }
 
-    // Find most probable outcome
     Result result;
     result.num_iterations = num_iterations;
     result.d = d;

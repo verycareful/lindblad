@@ -1,5 +1,10 @@
 #include "lindblad/algorithms.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/qudit/qudit_backend.hpp"
+#include "lindblad/qudit/qudit_density_matrix.hpp"
+#include "lindblad/qudit/qudit_mps.hpp"
+#include "lindblad/qudit/qudit_clifford.hpp"
+#include "lindblad/qudit/qudit_noise_model.hpp"
 
 #include <complex>
 #include <string>
@@ -123,25 +128,93 @@ QuditPhaseEstimation::Result QuditPhaseEstimation::estimate(
     int m, int d,
     const std::vector<Complex128>& U,
     const std::vector<Complex128>& eigenstate,
-    uint64_t seed)
+    uint64_t seed,
+    QuditBackend backend,
+    const QuditNoiseModel* noise)
 {
     if (d < 2)
-        throw std::invalid_argument(
-            "QuditPhaseEstimation::estimate: d must be >= 2");
+        throw std::invalid_argument("QuditPhaseEstimation::estimate: d must be >= 2");
     if (m < 1)
-        throw std::invalid_argument(
-            "QuditPhaseEstimation::estimate: m must be >= 1");
+        throw std::invalid_argument("QuditPhaseEstimation::estimate: m must be >= 1");
     if (static_cast<int>(U.size()) != d * d)
-        throw std::invalid_argument(
-            "QuditPhaseEstimation::estimate: U must be a d×d matrix (size d*d)");
+        throw std::invalid_argument("QuditPhaseEstimation::estimate: U must be a d×d matrix (size d*d)");
     if (static_cast<int>(eigenstate.size()) != d)
+        throw std::invalid_argument("QuditPhaseEstimation::estimate: eigenstate must have d elements");
+
+    if (backend == QuditBackend::CLIFFORD)
         throw std::invalid_argument(
-            "QuditPhaseEstimation::estimate: eigenstate must have d elements");
+            "QuditPhaseEstimation::estimate: CLIFFORD backend is not supported "
+            "(controlled-U^k operations are not Clifford in general)");
 
-    // Layout: clock qudits 0..m-1, target qudit m
+    const auto F  = qudit_gates::qft_matrix(d);
+    const auto Fd = qudit_gates::iqft_matrix(d);
+
+    // ── DENSITY_MATRIX path ──────────────────────────────────────────────────
+    if (backend == QuditBackend::DENSITY_MATRIX) {
+        // Build a QuditStatevector first, then construct DM from it
+        QuditStatevector sv_tmp(m + 1, d);
+        sv_tmp.amplitudes.assign(sv_tmp.dim, Complex128(0.0, 0.0));
+        for (int v = 0; v < d; ++v) {
+            std::vector<int> digs(static_cast<size_t>(m + 1), 0);
+            digs[static_cast<size_t>(m)] = v;
+            sv_tmp.amplitudes[QuditStatevector::digits_to_index(digs, d)] =
+                eigenstate[static_cast<size_t>(v)];
+        }
+
+        QuditDensityMatrix dm(sv_tmp);
+        for (int j = 0; j < m; ++j) dm.apply_1qudit(j, F);
+        for (int j = 0; j < m; ++j) {
+            const int power = static_cast<int>(QuditStatevector::ipow(static_cast<size_t>(d), j));
+            const auto ctrl_U = qudit_gates::controlled_power_matrix(d, U, power);
+            dm.apply_2qudit(j, m, ctrl_U);
+        }
+        for (int j = 0; j < m; ++j) dm.apply_1qudit(j, Fd);
+        if (noise) dm.apply_noise(*noise);
+        const auto outcome = dm.measure(seed);
+
+        std::vector<int> phase_digits(outcome.begin(), outcome.begin() + m);
+        double phase = 0.0;
+        double power_inv = 1.0 / static_cast<double>(d);
+        for (int j = 0; j < m; ++j) {
+            phase += static_cast<double>(outcome[static_cast<size_t>(j)]) * power_inv;
+            power_inv /= static_cast<double>(d);
+        }
+        return Result{phase_digits, phase, m, d};
+    }
+
+    // ── MPS path ─────────────────────────────────────────────────────────────
+    if (backend == QuditBackend::MPS) {
+        QuditStatevector sv_tmp(m + 1, d);
+        sv_tmp.amplitudes.assign(sv_tmp.dim, Complex128(0.0, 0.0));
+        for (int v = 0; v < d; ++v) {
+            std::vector<int> digs(static_cast<size_t>(m + 1), 0);
+            digs[static_cast<size_t>(m)] = v;
+            sv_tmp.amplitudes[QuditStatevector::digits_to_index(digs, d)] =
+                eigenstate[static_cast<size_t>(v)];
+        }
+
+        QuditMPS mps(sv_tmp);
+        for (int j = 0; j < m; ++j) mps.apply_1qudit(j, F);
+        for (int j = 0; j < m; ++j) {
+            const int power = static_cast<int>(QuditStatevector::ipow(static_cast<size_t>(d), j));
+            const auto ctrl_U = qudit_gates::controlled_power_matrix(d, U, power);
+            mps.apply_2qudit(j, m, ctrl_U);
+        }
+        for (int j = 0; j < m; ++j) mps.apply_1qudit(j, Fd);
+        const auto outcome = mps.measure(seed);
+
+        std::vector<int> phase_digits(outcome.begin(), outcome.begin() + m);
+        double phase = 0.0;
+        double power_inv = 1.0 / static_cast<double>(d);
+        for (int j = 0; j < m; ++j) {
+            phase += static_cast<double>(outcome[static_cast<size_t>(j)]) * power_inv;
+            power_inv /= static_cast<double>(d);
+        }
+        return Result{phase_digits, phase, m, d};
+    }
+
+    // ── STATEVECTOR path (default) ───────────────────────────────────────────
     QuditStatevector sv(m + 1, d);
-
-    // Step 1: initialise target qudit to |eigenstate⟩, clock to |0...0⟩
     sv.amplitudes.assign(sv.dim, Complex128(0.0, 0.0));
     for (int v = 0; v < d; ++v) {
         std::vector<int> digs(static_cast<size_t>(m + 1), 0);
@@ -149,36 +222,22 @@ QuditPhaseEstimation::Result QuditPhaseEstimation::estimate(
         sv.amplitudes[QuditStatevector::digits_to_index(digs, d)] =
             eigenstate[static_cast<size_t>(v)];
     }
-
-    const auto F  = qudit_gates::qft_matrix(d);
-    const auto Fd = qudit_gates::iqft_matrix(d);
-
-    // Step 2: F_d on each clock qudit → uniform superposition
     for (int j = 0; j < m; ++j) sv.apply_1qudit(j, F);
-
-    // Step 3: controlled-U^{d^j} for each clock qudit j (little-endian)
     for (int j = 0; j < m; ++j) {
-        const int power = static_cast<int>(
-            QuditStatevector::ipow(static_cast<size_t>(d), j));
+        const int power = static_cast<int>(QuditStatevector::ipow(static_cast<size_t>(d), j));
         const auto ctrl_U = qudit_gates::controlled_power_matrix(d, U, power);
         sv.apply_2qudit(j, m, ctrl_U);
     }
-
-    // Step 4: F_d† on each clock qudit (inverse d-ary QFT)
     for (int j = 0; j < m; ++j) sv.apply_1qudit(j, Fd);
-
-    // Step 5: measure
     const auto outcome = sv.measure(seed);
 
-    // Step 6: decode phase estimate φ = Σ_j digit_j / d^{j+1} ∈ [0, 1)
+    std::vector<int> phase_digits(outcome.begin(), outcome.begin() + m);
     double phase = 0.0;
     double power_inv = 1.0 / static_cast<double>(d);
     for (int j = 0; j < m; ++j) {
         phase += static_cast<double>(outcome[static_cast<size_t>(j)]) * power_inv;
         power_inv /= static_cast<double>(d);
     }
-
-    std::vector<int> phase_digits(outcome.begin(), outcome.begin() + m);
     return Result{phase_digits, phase, m, d};
 }
 

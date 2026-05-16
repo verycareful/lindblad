@@ -155,6 +155,8 @@ Initial state: F_d^n\|0...0⟩ = uniform superposition (1/√(d^n)) Σ_x \|x⟩.
 - `d` — qudit dimension (≥ 2)
 - `target` — explicit target state (for `search`), or `is_marked` predicate (for `search_with_oracle`)
 - `shots` — number of independent circuit executions (default 100)
+- `backend` (optional): `QuditBackend` — simulator to use (default `STATEVECTOR`); `CLIFFORD` throws
+- `noise` (optional): `const QuditNoiseModel*` — noise model; only applied with `DENSITY_MATRIX` (default `nullptr`)
 
 **How to Invoke:**
 ```cpp
@@ -186,8 +188,18 @@ struct Result {
 
 **Exceptions:**
 - `std::invalid_argument` if `d < 2`, `n < 1`, `target.size() != n`, or any `target[i]` outside `[0, d)`
+- `std::invalid_argument` if `backend == QuditBackend::CLIFFORD` (Grover is not Clifford-simulable)
 
-**Simulator dependency:** `QuditStatevector`. Each shot creates a fresh state vector.
+**Backend:**
+
+| Backend | Supported | Notes |
+|---|---|---|
+| `STATEVECTOR` | ✓ | Default. Exact dense statevector; each shot creates a fresh state vector. |
+| `DENSITY_MATRIX` | ✓ | Full mixed-state; applies `noise` model if provided. |
+| `MPS` | ✓ | Tensor-network. |
+| `CLIFFORD` | ✗ | Throws `std::invalid_argument`. Grover's diffusion operator is not Clifford-simulable. |
+
+The `noise` argument is applied only in the `DENSITY_MATRIX` path. See [docs/api/qudit-simulators.md](../api/qudit-simulators.md) for the full backend API reference.
 
 ## Related Source Files
 

@@ -385,6 +385,10 @@ and the algorithm is mathematically identical to standard `BernsteinVazirani`.
 
 - `secret`: `std::vector<int>` of length n, each element in `[0, d)`
 - `d`: integer ≥ 2 (the qudit dimension)
+- `shots` (optional): number of independent executions for majority-vote robustness (default 1; 1 is always sufficient for exact simulation)
+- `seed` (optional): RNG seed for measurement sampling (default 0)
+- `backend` (optional): `QuditBackend` — simulator to use (default `STATEVECTOR`)
+- `noise` (optional): `const QuditNoiseModel*` — noise model; only applied with `DENSITY_MATRIX` (default `nullptr`)
 
 ### How to Invoke
 
@@ -423,12 +427,18 @@ exercised explicitly in the test suite.
 - `secret` is empty
 - any `secret[i]` is outside `[0, d)`
 
-### Simulator Dependency
+### Backend
 
-QuditBV uses `QuditSimulator` (which wraps `QuditStatevector`) internally for
-exact statevector simulation. The qudit layer is documented separately in
-[docs/api/qudit.md](../api/qudit.md). No noise model is supported in this
-initial release; qudit noise channels are tracked as future work.
+QuditBV supports all four backends via the optional `backend` parameter:
+
+| Backend | Supported | Notes |
+|---|---|---|
+| `STATEVECTOR` | ✓ | Default. Exact dense statevector, O(d^{n+1}) amplitudes. |
+| `DENSITY_MATRIX` | ✓ | Full mixed-state; applies `noise` model if provided. O(d^{2(n+1)}) memory. |
+| `MPS` | ✓ | Tensor-network; truncates bond dimension χ. Efficient for low-entanglement states. |
+| `CLIFFORD` | ✓ | Stabilizer tableau. Valid because BV uses only Clifford gates (QFT and CADD). |
+
+The `noise` argument is applied only in the `DENSITY_MATRIX` path; it is silently ignored in all other backends. See [docs/api/qudit-simulators.md](../api/qudit-simulators.md) for the full backend API reference.
 
 ### Common Pitfalls
 

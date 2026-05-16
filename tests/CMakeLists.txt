@@ -26,6 +26,8 @@ set(LINDBLAD_TEST_SOURCES
     test_qudit_bv.cpp
     # Qudit algorithms (DJ, Grover, QPE, Simon)
     test_qudit_algorithms.cpp
+    # R.1.7.1 test suite — qudit backend simulators (DM, MPS, Clifford, noise)
+    test_qudit_simulators.cpp
 )
 
 # Create test executable

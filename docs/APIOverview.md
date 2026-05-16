@@ -256,10 +256,15 @@ Main classes:
 - `algorithms::RecursiveBernsteinVazirani`
 - `algorithms::ProbabilisticBernsteinVazirani`
 - `algorithms::Simon`
+- `algorithms::QuditBernsteinVazirani`
+- `algorithms::QuditDeutschJozsa`
+- `algorithms::QuditGrover`
+- `algorithms::QuditPhaseEstimation`
+- `algorithms::QuditSimon`
 
 Detailed usage notes for these algorithms live under the family pages in [docs/algorithms/](algorithms/).
 
-Deep dives: [docs/api/vqe.md](api/vqe.md), [docs/api/qaoa.md](api/qaoa.md), [docs/api/maqaoa.md](api/maqaoa.md), [docs/api/qpe.md](api/qpe.md), [docs/api/grover.md](api/grover.md), [docs/api/deutsch-jozsa.md](api/deutsch-jozsa.md), [docs/api/bernstein-vazirani.md](api/bernstein-vazirani.md), [docs/api/simon.md](api/simon.md)
+Deep dives: [docs/api/vqe.md](api/vqe.md), [docs/api/qaoa.md](api/qaoa.md), [docs/api/maqaoa.md](api/maqaoa.md), [docs/api/qpe.md](api/qpe.md), [docs/api/grover.md](api/grover.md), [docs/api/deutsch-jozsa.md](api/deutsch-jozsa.md), [docs/api/bernstein-vazirani.md](api/bernstein-vazirani.md), [docs/api/simon.md](api/simon.md), [docs/api/qudit-simulators.md](api/qudit-simulators.md)
 
 Variational algorithms use `Estimator`/`Sampler` and optimizer settings in their `Options` structures.
 

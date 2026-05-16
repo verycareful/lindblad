@@ -1,0 +1,814 @@
+#include "lindblad/qudit/qudit_mps.hpp"
+
+#include <Eigen/SVD>
+
+#include <algorithm>
+#include <cmath>
+#include <complex>
+#include <stdexcept>
+#include <utility>
+
+namespace lindblad {
+
+// =============================================================================
+// Local helpers — conversion between Complex128 and std::complex<double>
+// =============================================================================
+
+static inline std::complex<double> to_std(const Complex128& c) noexcept {
+    return std::complex<double>(c.real, c.imag);
+}
+
+static inline Complex128 from_std(const std::complex<double>& z) noexcept {
+    return Complex128(z.real(), z.imag());
+}
+
+// =============================================================================
+// MPSSiteTensor
+// =============================================================================
+
+MPSSiteTensor::MPSSiteTensor(int d_, int chi_L_, int chi_R_)
+    : d(d_), chi_L(chi_L_), chi_R(chi_R_),
+      data(static_cast<size_t>(d_) * static_cast<size_t>(chi_L_) *
+               static_cast<size_t>(chi_R_),
+           Complex128(0.0, 0.0))
+{}
+
+Complex128& MPSSiteTensor::at(int sigma, int aL, int aR) {
+    const size_t idx = static_cast<size_t>(sigma) *
+                           static_cast<size_t>(chi_L) *
+                           static_cast<size_t>(chi_R) +
+                       static_cast<size_t>(aL) * static_cast<size_t>(chi_R) +
+                       static_cast<size_t>(aR);
+    return data[idx];
+}
+
+const Complex128& MPSSiteTensor::at(int sigma, int aL, int aR) const {
+    const size_t idx = static_cast<size_t>(sigma) *
+                           static_cast<size_t>(chi_L) *
+                           static_cast<size_t>(chi_R) +
+                       static_cast<size_t>(aL) * static_cast<size_t>(chi_R) +
+                       static_cast<size_t>(aR);
+    return data[idx];
+}
+
+// Row index = sigma * chi_L + aL; col index = aR.
+Eigen::MatrixXcd MPSSiteTensor::as_left_matrix() const {
+    Eigen::MatrixXcd M(d * chi_L, chi_R);
+    for (int sigma = 0; sigma < d; ++sigma)
+        for (int aL = 0; aL < chi_L; ++aL)
+            for (int aR = 0; aR < chi_R; ++aR)
+                M(sigma * chi_L + aL, aR) = to_std(at(sigma, aL, aR));
+    return M;
+}
+
+// Row index = aL; col index = sigma * chi_R + aR.
+Eigen::MatrixXcd MPSSiteTensor::as_right_matrix() const {
+    Eigen::MatrixXcd M(chi_L, d * chi_R);
+    for (int sigma = 0; sigma < d; ++sigma)
+        for (int aL = 0; aL < chi_L; ++aL)
+            for (int aR = 0; aR < chi_R; ++aR)
+                M(aL, sigma * chi_R + aR) = to_std(at(sigma, aL, aR));
+    return M;
+}
+
+MPSSiteTensor MPSSiteTensor::from_left_matrix(const Eigen::MatrixXcd& M,
+                                              int d, int chi_L) {
+    const int chi_R = static_cast<int>(M.cols());
+    if (M.rows() != static_cast<Eigen::Index>(d) * chi_L)
+        throw std::invalid_argument(
+            "MPSSiteTensor::from_left_matrix: row count must be d * chi_L");
+    MPSSiteTensor T(d, chi_L, chi_R);
+    for (int sigma = 0; sigma < d; ++sigma)
+        for (int aL = 0; aL < chi_L; ++aL)
+            for (int aR = 0; aR < chi_R; ++aR)
+                T.at(sigma, aL, aR) = from_std(M(sigma * chi_L + aL, aR));
+    return T;
+}
+
+MPSSiteTensor MPSSiteTensor::from_right_matrix(const Eigen::MatrixXcd& M,
+                                               int d, int chi_R) {
+    const int chi_L = static_cast<int>(M.rows());
+    if (M.cols() != static_cast<Eigen::Index>(d) * chi_R)
+        throw std::invalid_argument(
+            "MPSSiteTensor::from_right_matrix: col count must be d * chi_R");
+    MPSSiteTensor T(d, chi_L, chi_R);
+    for (int sigma = 0; sigma < d; ++sigma)
+        for (int aL = 0; aL < chi_L; ++aL)
+            for (int aR = 0; aR < chi_R; ++aR)
+                T.at(sigma, aL, aR) = from_std(M(aL, sigma * chi_R + aR));
+    return T;
+}
+
+// =============================================================================
+// QuditMPS — construction
+// =============================================================================
+
+size_t QuditMPS::ipow(size_t base, int exp) noexcept {
+    size_t result = 1;
+    for (int i = 0; i < exp; ++i) result *= base;
+    return result;
+}
+
+QuditMPS::QuditMPS(int n_qudits_, int d_, int max_bond_dim_, double svd_cutoff_)
+    : n_qudits(n_qudits_), d(d_),
+      max_bond_dim(max_bond_dim_), svd_cutoff(svd_cutoff_)
+{
+    if (d_ < 2)
+        throw std::invalid_argument("QuditMPS: d must be >= 2");
+    if (n_qudits_ < 1)
+        throw std::invalid_argument("QuditMPS: n_qudits must be >= 1");
+    if (max_bond_dim_ < 1)
+        throw std::invalid_argument("QuditMPS: max_bond_dim must be >= 1");
+
+    tensors.reserve(static_cast<size_t>(n_qudits_));
+    for (int q = 0; q < n_qudits_; ++q) {
+        MPSSiteTensor T(d_, 1, 1);
+        T.at(0, 0, 0) = Complex128(1.0, 0.0);  // |0> on every site
+        tensors.push_back(std::move(T));
+    }
+}
+
+QuditMPS::QuditMPS(const QuditStatevector& sv,
+                   int max_bond_dim_, double svd_cutoff_)
+    : n_qudits(sv.n_qudits), d(sv.d),
+      max_bond_dim(max_bond_dim_), svd_cutoff(svd_cutoff_)
+{
+    if (max_bond_dim_ < 1)
+        throw std::invalid_argument("QuditMPS: max_bond_dim must be >= 1");
+
+    tensors.reserve(static_cast<size_t>(n_qudits));
+
+    // Pack the amplitudes into a dense complex matrix.
+    //
+    // At step q the residual matrix has
+    //   rows  = chi_L * d   (left bond of current site times physical leg)
+    //   cols  = d^(n-1-q)   (flat index of qudits q+1..n-1, little-endian)
+    //
+    // Initial reshape (q=0, chi_L=1): rows = d, cols = d^(n-1).
+    //   M[sigma_0, col] = sv.amplitudes[sigma_0 * d^0 + col * d]
+    //                   = sv.amplitudes[sigma_0 + col * d]
+    //
+    // Subsequent residuals come from absorbing S * V^dagger into the left side
+    // of the next reshape: M_new[(aL_prev * d) + sigma_q, col] = residual[..]
+    //   where aL_prev runs over chi (truncated rank from previous step).
+
+    int chi_L = 1;
+    size_t cols = ipow(static_cast<size_t>(d), n_qudits - 1);
+
+    // Initial residual matrix from sv.amplitudes
+    Eigen::MatrixXcd M(static_cast<Eigen::Index>(d) * chi_L,
+                       static_cast<Eigen::Index>(cols));
+    for (int sigma = 0; sigma < d; ++sigma)
+        for (size_t col = 0; col < cols; ++col)
+            M(sigma, static_cast<Eigen::Index>(col)) =
+                to_std(sv.amplitudes[static_cast<size_t>(sigma) + col *
+                                     static_cast<size_t>(d)]);
+
+    for (int q = 0; q < n_qudits - 1; ++q) {
+        Eigen::BDCSVD<Eigen::MatrixXcd> svd(
+            M, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        const auto& S = svd.singularValues();
+        const auto& U = svd.matrixU();
+        const auto& V = svd.matrixV();
+
+        const int full_rank = static_cast<int>(S.size());
+        const double smax = (full_rank > 0) ? S(0) : 0.0;
+        const double threshold = smax * svd_cutoff;
+
+        int chi = 0;
+        for (int i = 0; i < full_rank; ++i) {
+            if (S(i) > threshold && chi < max_bond_dim) ++chi;
+            else break;
+        }
+        if (chi == 0) chi = 1;
+
+        // Left tensor: shape (d, chi_L, chi) from leftmost chi columns of U.
+        MPSSiteTensor Tq(d, chi_L, chi);
+        for (int sigma = 0; sigma < d; ++sigma)
+            for (int aL = 0; aL < chi_L; ++aL)
+                for (int alpha = 0; alpha < chi; ++alpha)
+                    Tq.at(sigma, aL, alpha) =
+                        from_std(U(sigma * chi_L + aL, alpha));
+        tensors.push_back(std::move(Tq));
+
+        // Build residual M' = diag(S_truncated) * V^dagger_truncated
+        // Vt rows are indexed by the singular values; we keep top `chi`.
+        Eigen::MatrixXcd Vt_trunc(chi, static_cast<Eigen::Index>(cols));
+        for (int alpha = 0; alpha < chi; ++alpha)
+            for (Eigen::Index c = 0; c < static_cast<Eigen::Index>(cols); ++c)
+                Vt_trunc(alpha, c) = std::conj(V(c, alpha));
+
+        Eigen::MatrixXcd residual(chi, static_cast<Eigen::Index>(cols));
+        for (int alpha = 0; alpha < chi; ++alpha)
+            for (Eigen::Index c = 0; c < static_cast<Eigen::Index>(cols); ++c)
+                residual(alpha, c) = S(alpha) * Vt_trunc(alpha, c);
+
+        // Reshape for next step.  Residual columns currently index the
+        // sub-register of qudits (q+1..n-1) in little-endian order, so qudit
+        // (q+1) has stride 1 and the higher qudits have stride d, d^2, ...
+        //   old_col = sigma_{q+1} + next_col * d
+        // where next_col indexes qudits (q+2..n-1) — again little-endian.
+        // We fold sigma_{q+1} into the row dimension:
+        //   M_next[aL_prev * d + sigma_{q+1}, next_col] =
+        //       residual[aL_prev, sigma_{q+1} + next_col * d]
+        const size_t new_cols = cols / static_cast<size_t>(d);
+        Eigen::MatrixXcd M_next(static_cast<Eigen::Index>(chi) * d,
+                                static_cast<Eigen::Index>(new_cols));
+        for (int aL_prev = 0; aL_prev < chi; ++aL_prev)
+            for (int sigma_next = 0; sigma_next < d; ++sigma_next)
+                for (size_t next_col = 0; next_col < new_cols; ++next_col)
+                    M_next(aL_prev * d + sigma_next,
+                           static_cast<Eigen::Index>(next_col)) =
+                        residual(aL_prev,
+                                 static_cast<Eigen::Index>(
+                                     static_cast<size_t>(sigma_next) +
+                                     next_col * static_cast<size_t>(d)));
+        M = std::move(M_next);
+        chi_L = chi;
+        cols = new_cols;
+    }
+
+    // Final site: M has shape (chi_L * d, 1).
+    {
+        MPSSiteTensor Tlast(d, chi_L, 1);
+        for (int sigma = 0; sigma < d; ++sigma)
+            for (int aL = 0; aL < chi_L; ++aL)
+                Tlast.at(sigma, aL, 0) = from_std(M(aL * d + sigma, 0));
+        tensors.push_back(std::move(Tlast));
+    }
+}
+
+// =============================================================================
+// to_statevector — left-to-right contraction
+// =============================================================================
+
+QuditStatevector QuditMPS::to_statevector() const {
+    // C has shape (dim_so_far, chi).
+    // Start with chi = chi_L of site 0 (= 1), dim_so_far = 1, C = [[1]].
+    Eigen::MatrixXcd C(1, 1);
+    C(0, 0) = std::complex<double>(1.0, 0.0);
+    size_t dim_so_far = 1;
+
+    for (int q = 0; q < n_qudits; ++q) {
+        const auto& T = tensors[static_cast<size_t>(q)];
+        const int chi_L = T.chi_L;
+        const int chi_R = T.chi_R;
+        const size_t new_dim = dim_so_far * static_cast<size_t>(d);
+
+        Eigen::MatrixXcd next(static_cast<Eigen::Index>(new_dim), chi_R);
+        next.setZero();
+        for (size_t i = 0; i < dim_so_far; ++i) {
+            for (int sigma = 0; sigma < d; ++sigma) {
+                // new row = i + sigma * dim_so_far (little-endian: qudit q
+                // is the most-significant new digit relative to qudits 0..q-1)
+                const size_t new_row = i + static_cast<size_t>(sigma) * dim_so_far;
+                for (int aR = 0; aR < chi_R; ++aR) {
+                    std::complex<double> acc(0.0, 0.0);
+                    for (int aL = 0; aL < chi_L; ++aL)
+                        acc += C(static_cast<Eigen::Index>(i), aL) *
+                               to_std(T.at(sigma, aL, aR));
+                    next(static_cast<Eigen::Index>(new_row), aR) = acc;
+                }
+            }
+        }
+        C = std::move(next);
+        dim_so_far = new_dim;
+    }
+
+    QuditStatevector sv(n_qudits, d);
+    // After the loop chi should be 1.
+    for (size_t i = 0; i < sv.dim; ++i)
+        sv.amplitudes[i] = from_std(C(static_cast<Eigen::Index>(i), 0));
+    return sv;
+}
+
+// =============================================================================
+// norm_sq / normalize
+// =============================================================================
+
+double QuditMPS::norm_sq() const {
+    // Left-to-right transfer matrix contraction:
+    //   E_{q+1}[aR', aR] = sum_{sigma, aL', aL} conj(A_q[sigma,aL',aR']) *
+    //                                              E_q[aL', aL] * A_q[sigma,aL,aR]
+    // Boundary: E_0 = [[1]] (1x1).
+    Eigen::MatrixXcd E(1, 1);
+    E(0, 0) = std::complex<double>(1.0, 0.0);
+
+    for (int q = 0; q < n_qudits; ++q) {
+        const auto& T = tensors[static_cast<size_t>(q)];
+        const int chi_L = T.chi_L;
+        const int chi_R = T.chi_R;
+
+        // First contract: tmp[aL', sigma, aR] = sum_{aL} E[aL', aL] * A[sigma,aL,aR]
+        // Then: E_new[aR', aR] = sum_{sigma, aL'} conj(A[sigma,aL',aR']) * tmp[aL',sigma,aR]
+        Eigen::MatrixXcd E_new(chi_R, chi_R);
+        E_new.setZero();
+
+        // Build A as a (d*chi_L) x chi_R matrix for one multiplication.
+        Eigen::MatrixXcd A_left = T.as_left_matrix();  // (d*chi_L, chi_R)
+
+        // tmp[(sigma, aL'), aR] = sum_{aL} E[aL', aL] * A[(sigma,aL), aR]
+        // Build as block: tmp(sigma*chi_L + aL', aR)
+        //   = sum_aL E(aL', aL) * A_left(sigma*chi_L + aL, aR)
+        Eigen::MatrixXcd tmp(static_cast<Eigen::Index>(d) * chi_L, chi_R);
+        for (int sigma = 0; sigma < d; ++sigma) {
+            // Block product: E (chi_L x chi_L) * A_block (chi_L x chi_R)
+            Eigen::MatrixXcd A_block = A_left.block(
+                sigma * chi_L, 0, chi_L, chi_R);
+            tmp.block(sigma * chi_L, 0, chi_L, chi_R) = E * A_block;
+        }
+
+        // E_new(aR', aR) = sum_{sigma, aL'} conj(A_left(sigma*chi_L + aL', aR'))
+        //                                    * tmp(sigma*chi_L + aL', aR)
+        // = (A_left.adjoint() * tmp) sized (chi_R x chi_R)
+        E_new = A_left.adjoint() * tmp;
+        E = std::move(E_new);
+    }
+
+    // Final E is 1x1 (since chi_R[n-1] = 1).
+    return E(0, 0).real();
+}
+
+void QuditMPS::normalize() {
+    const double n2 = norm_sq();
+    if (n2 < 1e-30) return;
+    const double inv = 1.0 / std::sqrt(n2);
+    auto& T0 = tensors[0];
+    for (auto& v : T0.data) { v.real *= inv; v.imag *= inv; }
+}
+
+// =============================================================================
+// apply_1qudit — O(d^2 * chi_L * chi_R)
+// =============================================================================
+
+void QuditMPS::apply_1qudit(int q, const std::vector<Complex128>& U) {
+    if (q < 0 || q >= n_qudits)
+        throw std::invalid_argument("apply_1qudit: q out of range");
+    if (U.size() != static_cast<size_t>(d) * static_cast<size_t>(d))
+        throw std::invalid_argument("apply_1qudit: U must have d*d entries");
+
+    auto& T = tensors[static_cast<size_t>(q)];
+    const int chi_L = T.chi_L;
+    const int chi_R = T.chi_R;
+
+    std::vector<Complex128> old_v(static_cast<size_t>(d));
+    std::vector<Complex128> new_v(static_cast<size_t>(d));
+
+    for (int aL = 0; aL < chi_L; ++aL) {
+        for (int aR = 0; aR < chi_R; ++aR) {
+            for (int s = 0; s < d; ++s)
+                old_v[static_cast<size_t>(s)] = T.at(s, aL, aR);
+            for (int so = 0; so < d; ++so) {
+                Complex128 acc(0.0, 0.0);
+                for (int si = 0; si < d; ++si)
+                    acc += U[static_cast<size_t>(so * d + si)] *
+                           old_v[static_cast<size_t>(si)];
+                new_v[static_cast<size_t>(so)] = acc;
+            }
+            for (int s = 0; s < d; ++s)
+                T.at(s, aL, aR) = new_v[static_cast<size_t>(s)];
+        }
+    }
+}
+
+// =============================================================================
+// contract_two_sites — Theta[sigma_q*chi_L + aL, sigma_{q+1}*chi_R + aR]
+//   = sum_{am} A_q[sigma_q, aL, am] * A_{q+1}[sigma_{q+1}, am, aR]
+// =============================================================================
+
+Eigen::MatrixXcd QuditMPS::contract_two_sites(int q) const {
+    const auto& T0 = tensors[static_cast<size_t>(q)];
+    const auto& T1 = tensors[static_cast<size_t>(q + 1)];
+    const int chi_L = T0.chi_L;
+    const int chi_M = T0.chi_R;  // = T1.chi_L
+    const int chi_R = T1.chi_R;
+
+    if (T1.chi_L != chi_M)
+        throw std::runtime_error("contract_two_sites: bond dimension mismatch");
+
+    Eigen::MatrixXcd Theta(static_cast<Eigen::Index>(d) * chi_L,
+                           static_cast<Eigen::Index>(d) * chi_R);
+    Theta.setZero();
+    for (int s0 = 0; s0 < d; ++s0) {
+        for (int aL = 0; aL < chi_L; ++aL) {
+            for (int s1 = 0; s1 < d; ++s1) {
+                for (int aR = 0; aR < chi_R; ++aR) {
+                    std::complex<double> acc(0.0, 0.0);
+                    for (int am = 0; am < chi_M; ++am)
+                        acc += to_std(T0.at(s0, aL, am)) *
+                               to_std(T1.at(s1, am, aR));
+                    Theta(s0 * chi_L + aL, s1 * chi_R + aR) = acc;
+                }
+            }
+        }
+    }
+    return Theta;
+}
+
+// =============================================================================
+// split_two_sites — SVD-truncate Theta into tensors[q] and tensors[q+1]
+// Theta shape: (d*chi_L) x (d*chi_R).
+// =============================================================================
+
+void QuditMPS::split_two_sites(int q, const Eigen::MatrixXcd& Theta) {
+    const int chi_L = tensors[static_cast<size_t>(q)].chi_L;
+    const int chi_R = tensors[static_cast<size_t>(q + 1)].chi_R;
+
+    if (Theta.rows() != static_cast<Eigen::Index>(d) * chi_L ||
+        Theta.cols() != static_cast<Eigen::Index>(d) * chi_R)
+        throw std::runtime_error("split_two_sites: shape mismatch");
+
+    Eigen::BDCSVD<Eigen::MatrixXcd> svd(
+        Theta, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    const auto& S = svd.singularValues();
+    const auto& U = svd.matrixU();
+    const auto& V = svd.matrixV();
+
+    const int full_rank = static_cast<int>(S.size());
+    const double smax = (full_rank > 0) ? S(0) : 0.0;
+    const double threshold = smax * svd_cutoff;
+
+    int chi = 0;
+    for (int i = 0; i < full_rank; ++i) {
+        if (S(i) > threshold && chi < max_bond_dim) ++chi;
+        else break;
+    }
+    if (chi == 0) chi = 1;
+
+    // Left tensor: shape (d, chi_L, chi) from leftmost chi columns of U.
+    MPSSiteTensor Tq(d, chi_L, chi);
+    for (int sigma = 0; sigma < d; ++sigma)
+        for (int aL = 0; aL < chi_L; ++aL)
+            for (int alpha = 0; alpha < chi; ++alpha)
+                Tq.at(sigma, aL, alpha) =
+                    from_std(U(sigma * chi_L + aL, alpha));
+
+    // Right tensor: shape (d, chi, chi_R) absorbing S into V^dagger.
+    //   right[sigma_{q+1}, alpha, aR] = S(alpha) * conj(V(sigma_{q+1}*chi_R + aR, alpha))
+    MPSSiteTensor Tq1(d, chi, chi_R);
+    for (int sigma = 0; sigma < d; ++sigma)
+        for (int alpha = 0; alpha < chi; ++alpha)
+            for (int aR = 0; aR < chi_R; ++aR) {
+                const std::complex<double> vt =
+                    std::conj(V(sigma * chi_R + aR, alpha));
+                Tq1.at(sigma, alpha, aR) =
+                    from_std(std::complex<double>(S(alpha), 0.0) * vt);
+            }
+
+    tensors[static_cast<size_t>(q)]     = std::move(Tq);
+    tensors[static_cast<size_t>(q + 1)] = std::move(Tq1);
+}
+
+// =============================================================================
+// apply_2qudit_adjacent — d^2 x d^2 gate on sites (q, q+1)
+// =============================================================================
+
+void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U) {
+    if (q < 0 || q + 1 >= n_qudits)
+        throw std::invalid_argument(
+            "apply_2qudit_adjacent: q out of range (need 0 <= q < n_qudits-1)");
+    const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
+    if (U.size() != d2 * d2)
+        throw std::invalid_argument(
+            "apply_2qudit_adjacent: U must have d^2 * d^2 entries");
+
+    Eigen::MatrixXcd Theta = contract_two_sites(q);
+    const int chi_L = tensors[static_cast<size_t>(q)].chi_L;
+    const int chi_R = tensors[static_cast<size_t>(q + 1)].chi_R;
+
+    // Theta_new[out_q*chi_L + aL, out_{q+1}*chi_R + aR]
+    //   = sum_{in_q, in_{q+1}}
+    //         U[(out_q*d + out_{q+1}), (in_q*d + in_{q+1})] *
+    //         Theta[in_q*chi_L + aL, in_{q+1}*chi_R + aR]
+    Eigen::MatrixXcd Theta_new(static_cast<Eigen::Index>(d) * chi_L,
+                               static_cast<Eigen::Index>(d) * chi_R);
+    Theta_new.setZero();
+
+    for (int aL = 0; aL < chi_L; ++aL) {
+        for (int aR = 0; aR < chi_R; ++aR) {
+            for (int so0 = 0; so0 < d; ++so0) {
+                for (int so1 = 0; so1 < d; ++so1) {
+                    std::complex<double> acc(0.0, 0.0);
+                    const size_t u_row = static_cast<size_t>(so0) *
+                                             static_cast<size_t>(d) +
+                                         static_cast<size_t>(so1);
+                    for (int si0 = 0; si0 < d; ++si0) {
+                        for (int si1 = 0; si1 < d; ++si1) {
+                            const size_t u_col = static_cast<size_t>(si0) *
+                                                     static_cast<size_t>(d) +
+                                                 static_cast<size_t>(si1);
+                            const Complex128& u_el =
+                                U[u_row * d2 + u_col];
+                            acc += to_std(u_el) *
+                                   Theta(si0 * chi_L + aL, si1 * chi_R + aR);
+                        }
+                    }
+                    Theta_new(so0 * chi_L + aL, so1 * chi_R + aR) = acc;
+                }
+            }
+        }
+    }
+
+    split_two_sites(q, Theta_new);
+}
+
+// =============================================================================
+// apply_swap — SWAP gate between adjacent qudits (q, q+1)
+// =============================================================================
+
+void QuditMPS::apply_swap(int q) {
+    const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
+    std::vector<Complex128> swap_mat(d2 * d2, Complex128(0.0, 0.0));
+    // swap[(out_q*d + out_{q+1})*d^2 + (in_q*d + in_{q+1})] = delta(out_q, in_{q+1}) * delta(out_{q+1}, in_q)
+    for (int i = 0; i < d; ++i) {
+        for (int j = 0; j < d; ++j) {
+            const size_t row = static_cast<size_t>(j) * static_cast<size_t>(d) +
+                               static_cast<size_t>(i);
+            const size_t col = static_cast<size_t>(i) * static_cast<size_t>(d) +
+                               static_cast<size_t>(j);
+            swap_mat[row * d2 + col] = Complex128(1.0, 0.0);
+        }
+    }
+    apply_2qudit_adjacent(q, swap_mat);
+}
+
+// =============================================================================
+// apply_2qudit — arbitrary pair (q0, q1); SWAP chain for non-adjacent pairs
+// =============================================================================
+
+void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U) {
+    if (q0 == q1)
+        throw std::invalid_argument("apply_2qudit: q0 must not equal q1");
+    if (q0 < 0 || q1 < 0 || q0 >= n_qudits || q1 >= n_qudits)
+        throw std::invalid_argument("apply_2qudit: qudit index out of range");
+
+    const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
+    if (U.size() != d2 * d2)
+        throw std::invalid_argument("apply_2qudit: U must have d^2 * d^2 entries");
+
+    // Normalise so q0 < q1, transposing U if necessary.
+    if (q0 > q1) {
+        std::swap(q0, q1);
+        // U'[(out_q0*d + out_q1), (in_q0*d + in_q1)] = U[(out_q1*d + out_q0), (in_q1*d + in_q0)]
+        std::vector<Complex128> U_swapped(d2 * d2, Complex128(0.0, 0.0));
+        for (int o0 = 0; o0 < d; ++o0)
+            for (int o1 = 0; o1 < d; ++o1)
+                for (int i0 = 0; i0 < d; ++i0)
+                    for (int i1 = 0; i1 < d; ++i1) {
+                        const size_t r_new =
+                            static_cast<size_t>(o0) * static_cast<size_t>(d) +
+                            static_cast<size_t>(o1);
+                        const size_t c_new =
+                            static_cast<size_t>(i0) * static_cast<size_t>(d) +
+                            static_cast<size_t>(i1);
+                        const size_t r_old =
+                            static_cast<size_t>(o1) * static_cast<size_t>(d) +
+                            static_cast<size_t>(o0);
+                        const size_t c_old =
+                            static_cast<size_t>(i1) * static_cast<size_t>(d) +
+                            static_cast<size_t>(i0);
+                        U_swapped[r_new * d2 + c_new] = U[r_old * d2 + c_old];
+                    }
+        apply_2qudit(q0, q1, U_swapped);
+        return;
+    }
+
+    if (q1 == q0 + 1) {
+        apply_2qudit_adjacent(q0, U);
+        return;
+    }
+
+    // Bring qudit q0 up next to q1 by swapping it rightward.
+    // After this sequence the physical leg originally at q0 sits at position q1 - 1
+    // and the leg originally at q1 stays at position q1.  The gate then acts on
+    // adjacent sites (q1 - 1, q1) and we undo the swaps to restore the order.
+    for (int i = q0; i < q1 - 1; ++i)
+        apply_swap(i);
+
+    apply_2qudit_adjacent(q1 - 1, U);
+
+    for (int i = q1 - 2; i >= q0; --i)
+        apply_swap(i);
+}
+
+// =============================================================================
+// apply_phase_oracle / apply_function_oracle — fallback via statevector
+// =============================================================================
+
+void QuditMPS::apply_phase_oracle(
+    const std::function<Complex128(const std::vector<int>&)>& phase_fn)
+{
+    auto sv = to_statevector();
+    sv.apply_phase_oracle(phase_fn);
+    *this = QuditMPS(sv, max_bond_dim, svd_cutoff);
+}
+
+void QuditMPS::apply_function_oracle(int n_query, int n_output,
+                                     const std::function<int(int)>& f)
+{
+    auto sv = to_statevector();
+    const int d_local = d;
+    // Wrap the int->int oracle into the vector<int>->vector<int> signature
+    // that QuditStatevector::apply_function_oracle expects.
+    auto f_digits = [&f, d_local, n_query, n_output]
+        (const std::vector<int>& x) -> std::vector<int>
+    {
+        // Decode query digits into a flat integer (little-endian: x[0] is LSB).
+        int x_flat = 0;
+        for (int i = n_query - 1; i >= 0; --i)
+            x_flat = x_flat * d_local + x[static_cast<size_t>(i)];
+        int y = f(x_flat);
+        std::vector<int> result(static_cast<size_t>(n_output));
+        for (int i = 0; i < n_output; ++i) {
+            result[static_cast<size_t>(i)] = y % d_local;
+            y /= d_local;
+        }
+        return result;
+    };
+    sv.apply_function_oracle(n_query, n_output, f_digits);
+    *this = QuditMPS(sv, max_bond_dim, svd_cutoff);
+}
+
+std::vector<int> QuditMPS::measure(uint64_t seed) {
+    auto sv = to_statevector();
+    return sv.measure(seed);
+}
+
+// =============================================================================
+// left_canonicalize / right_canonicalize via SVD
+// =============================================================================
+
+void QuditMPS::left_canonicalize() {
+    for (int q = 0; q < n_qudits - 1; ++q) {
+        auto& Tq = tensors[static_cast<size_t>(q)];
+        // M = as_left_matrix has shape (d * chi_L, chi_R).
+        Eigen::MatrixXcd M = Tq.as_left_matrix();
+
+        Eigen::BDCSVD<Eigen::MatrixXcd> svd(
+            M, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        const auto& S = svd.singularValues();
+        const auto& U = svd.matrixU();
+        const auto& V = svd.matrixV();
+
+        const int full_rank = static_cast<int>(S.size());
+        const double smax = (full_rank > 0) ? S(0) : 0.0;
+        const double threshold = smax * svd_cutoff;
+        int chi = 0;
+        for (int i = 0; i < full_rank; ++i) {
+            if (S(i) > threshold && chi < max_bond_dim) ++chi;
+            else break;
+        }
+        if (chi == 0) chi = 1;
+
+        // tensors[q] = U_truncated reshaped from (d*chi_L, chi) back to (d, chi_L, chi).
+        const int chi_L = Tq.chi_L;
+        MPSSiteTensor Tnew(d, chi_L, chi);
+        for (int sigma = 0; sigma < d; ++sigma)
+            for (int aL = 0; aL < chi_L; ++aL)
+                for (int alpha = 0; alpha < chi; ++alpha)
+                    Tnew.at(sigma, aL, alpha) =
+                        from_std(U(sigma * chi_L + aL, alpha));
+        tensors[static_cast<size_t>(q)] = std::move(Tnew);
+
+        // Absorb S * V^dagger into tensors[q+1].
+        //   tensors[q+1] new chi_L = chi (replacing the old chi_R of tensors[q]).
+        //   absorb: A_{q+1}_new[sigma, alpha, aR] = sum_{aL_old} (S*Vt)(alpha, aL_old) *
+        //                                          A_{q+1}_old[sigma, aL_old, aR]
+        auto& Tq1 = tensors[static_cast<size_t>(q + 1)];
+        const int aL_old_dim = Tq1.chi_L;
+        const int aR_dim     = Tq1.chi_R;
+        if (V.rows() != static_cast<Eigen::Index>(aL_old_dim))
+            throw std::runtime_error("left_canonicalize: V row count mismatch");
+
+        // SV[alpha, aL_old] = S(alpha) * conj(V(aL_old, alpha))
+        Eigen::MatrixXcd SVt(chi, aL_old_dim);
+        for (int alpha = 0; alpha < chi; ++alpha)
+            for (int aL_old = 0; aL_old < aL_old_dim; ++aL_old)
+                SVt(alpha, aL_old) = std::complex<double>(S(alpha), 0.0) *
+                                     std::conj(V(aL_old, alpha));
+
+        MPSSiteTensor Tq1_new(d, chi, aR_dim);
+        for (int sigma = 0; sigma < d; ++sigma) {
+            for (int alpha = 0; alpha < chi; ++alpha) {
+                for (int aR = 0; aR < aR_dim; ++aR) {
+                    std::complex<double> acc(0.0, 0.0);
+                    for (int aL_old = 0; aL_old < aL_old_dim; ++aL_old)
+                        acc += SVt(alpha, aL_old) *
+                               to_std(Tq1.at(sigma, aL_old, aR));
+                    Tq1_new.at(sigma, alpha, aR) = from_std(acc);
+                }
+            }
+        }
+        tensors[static_cast<size_t>(q + 1)] = std::move(Tq1_new);
+    }
+}
+
+void QuditMPS::right_canonicalize() {
+    for (int q = n_qudits - 1; q > 0; --q) {
+        auto& Tq = tensors[static_cast<size_t>(q)];
+        // M = as_right_matrix has shape (chi_L, d * chi_R).
+        Eigen::MatrixXcd M = Tq.as_right_matrix();
+
+        Eigen::BDCSVD<Eigen::MatrixXcd> svd(
+            M, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        const auto& S = svd.singularValues();
+        const auto& U = svd.matrixU();
+        const auto& V = svd.matrixV();
+
+        const int full_rank = static_cast<int>(S.size());
+        const double smax = (full_rank > 0) ? S(0) : 0.0;
+        const double threshold = smax * svd_cutoff;
+        int chi = 0;
+        for (int i = 0; i < full_rank; ++i) {
+            if (S(i) > threshold && chi < max_bond_dim) ++chi;
+            else break;
+        }
+        if (chi == 0) chi = 1;
+
+        // tensors[q] = V^dagger_truncated reshaped from (chi, d*chi_R) -> (d, chi, chi_R).
+        const int chi_R = Tq.chi_R;
+        MPSSiteTensor Tnew(d, chi, chi_R);
+        // Vt[alpha, sigma*chi_R + aR] = conj(V(sigma*chi_R + aR, alpha))
+        for (int sigma = 0; sigma < d; ++sigma)
+            for (int alpha = 0; alpha < chi; ++alpha)
+                for (int aR = 0; aR < chi_R; ++aR)
+                    Tnew.at(sigma, alpha, aR) =
+                        from_std(std::conj(V(sigma * chi_R + aR, alpha)));
+        tensors[static_cast<size_t>(q)] = std::move(Tnew);
+
+        // Absorb U * S into tensors[q-1].
+        //   tensors[q-1] new chi_R = chi.
+        //   A_{q-1}_new[sigma, aL, alpha] = sum_{aR_old} A_{q-1}_old[sigma, aL, aR_old] *
+        //                                                (U*S)(aR_old, alpha)
+        auto& Tqm1 = tensors[static_cast<size_t>(q - 1)];
+        const int aL_dim     = Tqm1.chi_L;
+        const int aR_old_dim = Tqm1.chi_R;
+        if (U.rows() != static_cast<Eigen::Index>(aR_old_dim))
+            throw std::runtime_error("right_canonicalize: U row count mismatch");
+
+        Eigen::MatrixXcd US(aR_old_dim, chi);
+        for (int aR_old = 0; aR_old < aR_old_dim; ++aR_old)
+            for (int alpha = 0; alpha < chi; ++alpha)
+                US(aR_old, alpha) = U(aR_old, alpha) *
+                                    std::complex<double>(S(alpha), 0.0);
+
+        MPSSiteTensor Tqm1_new(d, aL_dim, chi);
+        for (int sigma = 0; sigma < d; ++sigma) {
+            for (int aL = 0; aL < aL_dim; ++aL) {
+                for (int alpha = 0; alpha < chi; ++alpha) {
+                    std::complex<double> acc(0.0, 0.0);
+                    for (int aR_old = 0; aR_old < aR_old_dim; ++aR_old)
+                        acc += to_std(Tqm1.at(sigma, aL, aR_old)) *
+                               US(aR_old, alpha);
+                    Tqm1_new.at(sigma, aL, alpha) = from_std(acc);
+                }
+            }
+        }
+        tensors[static_cast<size_t>(q - 1)] = std::move(Tqm1_new);
+    }
+}
+
+// =============================================================================
+// build_right_envs — diagnostic helper (unused by the public API)
+// Returns the right environments E_q s.t. E_n = [[1]] and
+//   E_q[aL', aL] = sum_{sigma, aR', aR} A_q[sigma, aL', aR']
+//                                       * E_{q+1}[aR', aR]
+//                                       * conj(A_q[sigma, aL, aR])
+// is the network of all sites from q..n-1 traced over their physical legs.
+// =============================================================================
+
+std::vector<Eigen::MatrixXcd> QuditMPS::build_right_envs() const {
+    std::vector<Eigen::MatrixXcd> envs(static_cast<size_t>(n_qudits + 1));
+    envs[static_cast<size_t>(n_qudits)] = Eigen::MatrixXcd(1, 1);
+    envs[static_cast<size_t>(n_qudits)](0, 0) = std::complex<double>(1.0, 0.0);
+
+    for (int q = n_qudits - 1; q >= 0; --q) {
+        const auto& T = tensors[static_cast<size_t>(q)];
+        const int chi_L = T.chi_L;
+        const int chi_R = T.chi_R;
+        const auto& E_next = envs[static_cast<size_t>(q + 1)];
+
+        Eigen::MatrixXcd E_new(chi_L, chi_L);
+        E_new.setZero();
+        for (int aLp = 0; aLp < chi_L; ++aLp) {
+            for (int aL = 0; aL < chi_L; ++aL) {
+                std::complex<double> acc(0.0, 0.0);
+                for (int sigma = 0; sigma < d; ++sigma) {
+                    for (int aRp = 0; aRp < chi_R; ++aRp) {
+                        for (int aR = 0; aR < chi_R; ++aR) {
+                            acc += to_std(T.at(sigma, aLp, aRp)) *
+                                   E_next(aRp, aR) *
+                                   std::conj(to_std(T.at(sigma, aL, aR)));
+                        }
+                    }
+                }
+                E_new(aLp, aL) = acc;
+            }
+        }
+        envs[static_cast<size_t>(q)] = std::move(E_new);
+    }
+
+    return envs;
+}
+
+} // namespace lindblad

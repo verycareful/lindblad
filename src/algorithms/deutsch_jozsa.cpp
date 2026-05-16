@@ -1,5 +1,10 @@
 #include "lindblad/algorithms.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/qudit/qudit_backend.hpp"
+#include "lindblad/qudit/qudit_density_matrix.hpp"
+#include "lindblad/qudit/qudit_mps.hpp"
+#include "lindblad/qudit/qudit_clifford.hpp"
+#include "lindblad/qudit/qudit_noise_model.hpp"
 
 #include <string>
 
@@ -41,43 +46,74 @@ DeutschJozsa::Result DeutschJozsa::solve(const QuantumCircuit& oracle, int n,
 QuditDeutschJozsa::Result QuditDeutschJozsa::solve(
     int n, int d,
     const std::function<int(const std::vector<int>&)>& f,
-    uint64_t seed)
+    uint64_t seed,
+    QuditBackend backend,
+    const QuditNoiseModel* noise)
 {
     if (d < 2)
-        throw std::invalid_argument(
-            "QuditDeutschJozsa::solve: d must be >= 2");
+        throw std::invalid_argument("QuditDeutschJozsa::solve: d must be >= 2");
     if (n < 1)
-        throw std::invalid_argument(
-            "QuditDeutschJozsa::solve: n must be >= 1");
-
-    // Qudit layout: 0..n-1 = query register, n = ancilla
-    QuditStatevector sv(n + 1, d);
+        throw std::invalid_argument("QuditDeutschJozsa::solve: n must be >= 1");
 
     const auto Fd  = qudit_gates::qft_matrix(d);
     const auto Fdi = qudit_gates::iqft_matrix(d);
-    const auto Xm  = qudit_gates::shift_matrix(d, d - 1);  // X^{d-1}: |0⟩→|d-1⟩
+    const auto Xm  = qudit_gates::shift_matrix(d, d - 1);
 
-    // Steps 1–2: ancilla → |d-1⟩ then F_d → |−⟩_d
+    auto oracle_fn = [&](const std::vector<int>& x) -> std::vector<int> {
+        const int val = f(x);
+        if (val < 0 || val >= d)
+            throw std::invalid_argument(
+                "QuditDeutschJozsa::solve: f returned value out of [0, d)");
+        return {val};
+    };
+
+    // ── DENSITY_MATRIX path ──────────────────────────────────────────────────
+    if (backend == QuditBackend::DENSITY_MATRIX) {
+        QuditDensityMatrix dm(n + 1, d);
+        dm.apply_1qudit(n, Xm);
+        dm.apply_1qudit(n, Fd);
+        for (int i = 0; i < n; ++i) dm.apply_1qudit(i, Fd);
+        dm.apply_function_oracle(n, 1, oracle_fn);
+        for (int i = 0; i < n; ++i) dm.apply_1qudit(i, Fdi);
+        if (noise) dm.apply_noise(*noise);
+        const auto outcome = dm.measure(seed);
+        for (int i = 0; i < n; ++i)
+            if (outcome[static_cast<size_t>(i)] != 0)
+                return {Verdict::BALANCED, d, n};
+        return {Verdict::CONSTANT, d, n};
+    }
+
+    // ── MPS path ─────────────────────────────────────────────────────────────
+    if (backend == QuditBackend::MPS) {
+        QuditMPS mps(n + 1, d);
+        mps.apply_1qudit(n, Xm);
+        mps.apply_1qudit(n, Fd);
+        for (int i = 0; i < n; ++i) mps.apply_1qudit(i, Fd);
+        // MPS oracle: f takes flat query index, returns flat output index (addend)
+        mps.apply_function_oracle(n, 1,
+            [&](int x_flat) -> int {
+                auto digits = QuditStatevector::index_to_digits(
+                    static_cast<size_t>(x_flat), d, n);
+                return f(digits);
+            });
+        for (int i = 0; i < n; ++i) mps.apply_1qudit(i, Fdi);
+        const auto outcome = mps.measure(seed);
+        for (int i = 0; i < n; ++i)
+            if (outcome[static_cast<size_t>(i)] != 0)
+                return {Verdict::BALANCED, d, n};
+        return {Verdict::CONSTANT, d, n};
+    }
+
+    // ── CLIFFORD path — falls back to statevector (general oracle may not be
+    // Clifford-decomposable from a black-box function; TODO: structured oracle API)
+    // ── STATEVECTOR path (default + CLIFFORD fallback) ───────────────────────
+    (void)backend; // STATEVECTOR and CLIFFORD both use this path
+    QuditStatevector sv(n + 1, d);
     sv.apply_1qudit(n, Xm);
     sv.apply_1qudit(n, Fd);
-
-    // Step 3: uniform superposition on query register
     for (int i = 0; i < n; ++i) sv.apply_1qudit(i, Fd);
-
-    // Step 4: oracle U_f — phase kickback via |x⟩|−⟩_d → ω^{f(x)}|x⟩|−⟩_d
-    sv.apply_function_oracle(n, 1,
-        [&](const std::vector<int>& x) -> std::vector<int> {
-            const int val = f(x);
-            if (val < 0 || val >= d)
-                throw std::invalid_argument(
-                    "QuditDeutschJozsa::solve: f returned value out of [0, d)");
-            return {val};
-        });
-
-    // Step 5: inverse QFT on query register
+    sv.apply_function_oracle(n, 1, oracle_fn);
     for (int i = 0; i < n; ++i) sv.apply_1qudit(i, Fdi);
-
-    // Step 6: measure — all-zero query ↔ constant; any nonzero ↔ balanced
     const auto outcome = sv.measure(seed);
     for (int i = 0; i < n; ++i)
         if (outcome[static_cast<size_t>(i)] != 0)

@@ -1,5 +1,10 @@
 #include "lindblad/algorithms.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/qudit/qudit_backend.hpp"
+#include "lindblad/qudit/qudit_density_matrix.hpp"
+#include "lindblad/qudit/qudit_mps.hpp"
+#include "lindblad/qudit/qudit_clifford.hpp"
+#include "lindblad/qudit/qudit_noise_model.hpp"
 
 #include <random>
 #include <string>
@@ -173,7 +178,9 @@ std::vector<std::vector<int>> QuditSimon::null_space_gf(
 QuditSimon::Result QuditSimon::solve(
     int n, int d,
     const std::function<std::vector<int>(const std::vector<int>&)>& f,
-    int extra_samples, uint64_t seed)
+    int extra_samples, uint64_t seed,
+    QuditBackend backend,
+    const QuditNoiseModel* noise)
 {
     if (d < 2)
         throw std::invalid_argument("QuditSimon::solve: d must be >= 2");
@@ -182,6 +189,11 @@ QuditSimon::Result QuditSimon::solve(
             "QuditSimon::solve: d must be prime for GF(d) post-processing");
     if (n < 1)
         throw std::invalid_argument("QuditSimon::solve: n must be >= 1");
+
+    if (backend == QuditBackend::CLIFFORD)
+        throw std::invalid_argument(
+            "QuditSimon::solve: CLIFFORD backend is not supported "
+            "(Simon's oracle is a general function oracle, not a Clifford circuit)");
 
     const auto F  = qudit_gates::qft_matrix(d);
     const auto Fd = qudit_gates::iqft_matrix(d);
@@ -193,69 +205,101 @@ QuditSimon::Result QuditSimon::solve(
     const int target_samples = n - 1 + extra_samples;
     const int max_attempts   = (n + extra_samples) * 6;
 
+    auto validated_f = [&](const std::vector<int>& x) -> std::vector<int> {
+        auto fx = f(x);
+        if (static_cast<int>(fx.size()) != n)
+            throw std::invalid_argument("QuditSimon::solve: f returned wrong size vector");
+        for (int v : fx)
+            if (v < 0 || v >= d)
+                throw std::invalid_argument("QuditSimon::solve: f returned digit out of [0, d)");
+        return fx;
+    };
+
     std::vector<std::vector<int>> equations;
     int queries = 0;
 
-    for (int attempt = 0;
-         attempt < max_attempts &&
-         static_cast<int>(equations.size()) < target_samples;
-         ++attempt)
-    {
-        // 2n qudits: 0..n-1 = query register, n..2n-1 = output register
-        QuditStatevector sv(2 * n, d);
+    // ── DENSITY_MATRIX path ──────────────────────────────────────────────────
+    if (backend == QuditBackend::DENSITY_MATRIX) {
+        for (int attempt = 0;
+             attempt < max_attempts && static_cast<int>(equations.size()) < target_samples;
+             ++attempt)
+        {
+            QuditDensityMatrix dm(2 * n, d);
+            for (int i = 0; i < n; ++i) dm.apply_1qudit(i, F);
+            dm.apply_function_oracle(n, n, validated_f);
+            for (int i = 0; i < n; ++i) dm.apply_1qudit(i, Fd);
+            if (noise) dm.apply_noise(*noise);
+            const auto outcome = dm.measure(rng());
+            ++queries;
 
-        // F_d on query register
-        for (int i = 0; i < n; ++i) sv.apply_1qudit(i, F);
+            std::vector<int> y(outcome.begin(), outcome.begin() + n);
+            bool is_zero = true;
+            for (int v : y) if (v != 0) { is_zero = false; break; }
+            if (is_zero) continue;
+            bool dup = false;
+            for (const auto& eq : equations) if (eq == y) { dup = true; break; }
+            if (!dup) equations.push_back(y);
+        }
+    }
+    // ── MPS path ─────────────────────────────────────────────────────────────
+    else if (backend == QuditBackend::MPS) {
+        for (int attempt = 0;
+             attempt < max_attempts && static_cast<int>(equations.size()) < target_samples;
+             ++attempt)
+        {
+            QuditMPS mps(2 * n, d);
+            for (int i = 0; i < n; ++i) mps.apply_1qudit(i, F);
+            // MPS function oracle: takes flat query index, returns flat addend
+            mps.apply_function_oracle(n, n,
+                [&](int x_flat) -> int {
+                    auto digits = QuditStatevector::index_to_digits(
+                        static_cast<size_t>(x_flat), d, n);
+                    auto out = validated_f(digits);
+                    return static_cast<int>(QuditStatevector::digits_to_index(out, d));
+                });
+            for (int i = 0; i < n; ++i) mps.apply_1qudit(i, Fd);
+            const auto outcome = mps.measure(rng());
+            ++queries;
 
-        // Oracle: |x⟩|0⟩ → |x⟩|f(x)⟩
-        sv.apply_function_oracle(n, n,
-            [&](const std::vector<int>& x) -> std::vector<int> {
-                auto fx = f(x);
-                if (static_cast<int>(fx.size()) != n)
-                    throw std::invalid_argument(
-                        "QuditSimon::solve: f returned wrong size vector");
-                for (int v : fx)
-                    if (v < 0 || v >= d)
-                        throw std::invalid_argument(
-                            "QuditSimon::solve: f returned digit out of [0, d)");
-                return fx;
-            });
+            std::vector<int> y(outcome.begin(), outcome.begin() + n);
+            bool is_zero = true;
+            for (int v : y) if (v != 0) { is_zero = false; break; }
+            if (is_zero) continue;
+            bool dup = false;
+            for (const auto& eq : equations) if (eq == y) { dup = true; break; }
+            if (!dup) equations.push_back(y);
+        }
+    }
+    // ── STATEVECTOR path (default) ───────────────────────────────────────────
+    else {
+        for (int attempt = 0;
+             attempt < max_attempts && static_cast<int>(equations.size()) < target_samples;
+             ++attempt)
+        {
+            QuditStatevector sv(2 * n, d);
+            for (int i = 0; i < n; ++i) sv.apply_1qudit(i, F);
+            sv.apply_function_oracle(n, n, validated_f);
+            for (int i = 0; i < n; ++i) sv.apply_1qudit(i, Fd);
+            const auto outcome = sv.measure(rng());
+            ++queries;
 
-        // F_d† on query register
-        for (int i = 0; i < n; ++i) sv.apply_1qudit(i, Fd);
-
-        // Measure; extract first n digits (query register)
-        const auto outcome = sv.measure(rng());
-        ++queries;
-
-        std::vector<int> y(outcome.begin(), outcome.begin() + n);
-
-        // Skip all-zero (uninformative) and duplicate vectors
-        bool is_zero = true;
-        for (int v : y) if (v != 0) { is_zero = false; break; }
-        if (is_zero) continue;
-
-        bool dup = false;
-        for (const auto& eq : equations)
-            if (eq == y) { dup = true; break; }
-        if (!dup) equations.push_back(y);
+            std::vector<int> y(outcome.begin(), outcome.begin() + n);
+            bool is_zero = true;
+            for (int v : y) if (v != 0) { is_zero = false; break; }
+            if (is_zero) continue;
+            bool dup = false;
+            for (const auto& eq : equations) if (eq == y) { dup = true; break; }
+            if (!dup) equations.push_back(y);
+        }
     }
 
-    // Classical post-processing: null space of M (rows = equations) over GF(d)
-    const std::vector<std::vector<int>> null_vecs =
-        null_space_gf(equations, n, d);
+    const std::vector<std::vector<int>> null_vecs = null_space_gf(equations, n, d);
+    if (null_vecs.empty())
+        return Result{std::vector<int>(static_cast<size_t>(n), 0), true, d, n, queries};
 
-    if (null_vecs.empty()) {
-        // Null space is trivial → s = 0 (f is injective)
-        return Result{std::vector<int>(static_cast<size_t>(n), 0),
-                      true, d, n, queries};
-    }
-
-    // The Simon promise guarantees at most one non-trivial null vector
     const std::vector<int>& period = null_vecs[0];
     bool trivial = true;
     for (int v : period) if (v != 0) { trivial = false; break; }
-
     return Result{period, trivial, d, n, queries};
 }
 

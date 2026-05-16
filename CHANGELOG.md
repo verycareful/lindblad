@@ -4,6 +4,67 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.7.0] - 2026-05-17
+
+### Added
+
+- **`QuditNoiseModel`** — `include/lindblad/qudit/qudit_noise_model.hpp`, `src/qudit/qudit_noise_model.cpp`:
+  - `depolarizing_channel(d, p)` — d²-Kraus-operator depolarizing channel for a single qudit
+  - `amplitude_damping_channel(d, gamma)` — d-operator amplitude damping
+  - `phase_damping_channel(d, gamma)` — (d+1)-operator phase damping
+  - `lindblad_op(d, L)` — single Lindblad operator wrapped as a `QuditLindbladOp`
+  - `add_depolarizing` / `add_amplitude_damping` / `add_phase_damping` convenience methods that register channels into the `per_qudit` map for algorithm dispatch
+
+- **`QuditDensityMatrix`** — `include/lindblad/qudit/qudit_density_matrix.hpp`, `src/qudit/qudit_density_matrix.cpp`:
+  - Full mixed-state simulation of d^n-dimensional qudit systems; ρ stored as dim²-element flat vector (row-major)
+  - `apply_1qudit(q, U)` / `apply_2qudit(q0, q1, U)` — superoperator gate application via `apply_to_ket` + conjugate `apply_to_bra` sweep
+  - `apply_kraus_1qudit(q, ops)` / `apply_kraus_2qudit(q0, q1, ops)` — Kraus channel application
+  - `apply_noise(model)` — dispatches all per-qudit Kraus channels from a `QuditNoiseModel`
+  - `lindblad_step(ops, dt)` — first-order Euler Lindblad master-equation step
+  - `apply_function_oracle(n_query, f)` / `apply_phase_oracle(phase_fn)` — unitary oracle application
+  - `measure(seed)` — projective measurement with state collapse; returns digit vector
+  - `partial_trace(keep_qudits)` — traces out all qudits not in `keep_qudits`; returns reduced density matrix
+  - `purity()` — `Tr(ρ²)` (1.0 for pure states)
+
+- **`QuditMPS`** — `include/lindblad/qudit/qudit_mps.hpp`, `src/qudit/qudit_mps.cpp`:
+  - Tensor-network representation with `MPSSiteTensor{d, chi_L, chi_R, data}`; Eigen BDCSVD-based left-canonical construction from statevector
+  - `apply_1qudit(q, U)` — O(d²·χ²) single-site contraction
+  - `apply_2qudit(q0, q1, U)` — adjacent (SVD split, O(d²·χ_L·χ_R + SVD)) or non-adjacent (SWAP chain)
+  - `apply_function_oracle(n_query, f)` / `apply_phase_oracle(phase_fn)` — via `to_statevector()` + reconstruct fallback
+  - `to_statevector()` — O(d^n) full reconstruction; `norm()` / `left_canonicalize()`
+  - `measure(seed)` — single-shot sampling
+
+- **`QuditCliffordSimulator`** — `include/lindblad/qudit/qudit_clifford.hpp`, `src/qudit/qudit_clifford.cpp`:
+  - Stabilizer tableau for prime-d qudit systems; 2n rows (rows 0..n-1 = destabilizers, rows n..2n-1 = stabilizers)
+  - Heisenberg-Weyl Pauli group with phase tracking mod 2d; tableau columns = (xbits, zbits, phase) per row
+  - `apply_X(q)` / `apply_Z(q)` / `apply_H(q)` / `apply_CSUM(ctrl, tgt)` with full conjugation rules
+  - `measure(q, seed)` — syndrome extraction; deterministic if qudit is in eigenstate, probabilistic otherwise
+  - Throws `std::invalid_argument` for non-prime d
+
+- **`QuditBackend` enum** — `include/lindblad/qudit/qudit_backend.hpp`: `STATEVECTOR`, `DENSITY_MATRIX`, `MPS`, `CLIFFORD`
+
+- **Backend dispatch for all qudit algorithms** — `include/lindblad/algorithms.hpp`, `src/algorithms/{bernstein_vazirani,deutsch_jozsa,grover,qpe,simon}.cpp`:
+  - `QuditBernsteinVazirani::solve` — all four backends supported; CLIFFORD is valid (BV uses only Clifford gates)
+  - `QuditDeutschJozsa::solve` — STATEVECTOR/DENSITY_MATRIX/MPS supported; CLIFFORD falls back to STATEVECTOR (function oracle not Clifford-simulable in general)
+  - `QuditGrover::search` / `search_with_oracle` — STATEVECTOR/DENSITY_MATRIX/MPS supported; CLIFFORD throws `std::invalid_argument`
+  - `QuditPhaseEstimation::estimate` — STATEVECTOR/DENSITY_MATRIX/MPS supported; CLIFFORD throws `std::invalid_argument`
+  - `QuditSimon::solve` — STATEVECTOR/DENSITY_MATRIX/MPS supported; CLIFFORD throws `std::invalid_argument`
+  - Noise (`QuditNoiseModel*`) applied only in the DENSITY_MATRIX path; silently ignored in all others
+
+- **`CMakeLists.txt`** — four new source files added to `lindblad_core`: `src/qudit/qudit_noise_model.cpp`, `src/qudit/qudit_density_matrix.cpp`, `src/qudit/qudit_mps.cpp`, `src/qudit/qudit_clifford.cpp`
+
+### Documentation
+
+- `docs/api/qudit-simulators.md` — new: full API reference for all four qudit backend simulators; backend × algorithm compatibility matrix; usage examples for DM+noise BV, MPS QPE, and Clifford BV; Related Algorithm Pages links
+- `docs/api/qudit.md` — updated: backend table expanded to 5 columns (Memory, Restrictions); "Clifford stabilizer (prime d)" corrected
+- `docs/algorithms/bernstein-vazirani.md` — updated: QuditBV "Simulator Dependency" replaced with Backend table; Required Inputs expanded with `backend`/`noise`/`shots`/`seed`
+- `docs/algorithms/deutsch-jozsa.md` — updated: QuditDJ "Simulator Dependency" replaced with Backend table (CLIFFORD fallback noted); Required Inputs expanded
+- `docs/algorithms/grover.md` — updated: QuditGrover "Simulator Dependency" replaced with Backend table (CLIFFORD throws); Exceptions updated
+- `docs/algorithms/qpe.md` — updated: QuditQPE "Simulator Dependency" replaced with Backend table (CLIFFORD throws); Exceptions updated
+- `docs/algorithms/simon.md` — updated: QuditSimon "Simulator Dependency" replaced with Backend table (CLIFFORD throws); Exceptions updated
+- `docs/APIOverview.md` — updated: five qudit algorithm variants added to the Algorithms class list; `qudit-simulators.md` added to deep-dives
+- `README.md` — version badge updated to R.1.7.0; R.1.7.0 release row added; `docs/api/qudit-simulators.md` added to API Reference table
+
 ## [R.1.6.1] - 2026-05-15
 
 ### Tests

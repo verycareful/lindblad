@@ -1,5 +1,10 @@
 #include "lindblad/algorithms.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/qudit/qudit_backend.hpp"
+#include "lindblad/qudit/qudit_density_matrix.hpp"
+#include "lindblad/qudit/qudit_mps.hpp"
+#include "lindblad/qudit/qudit_clifford.hpp"
+#include "lindblad/qudit/qudit_noise_model.hpp"
 
 #include <algorithm>
 #include <random>
@@ -197,19 +202,16 @@ std::vector<Complex128> QuditBernsteinVazirani::oracle_gate(int d, int s_i) {
 }
 
 QuditBernsteinVazirani::Result QuditBernsteinVazirani::solve(
-    const std::vector<int>& secret, int d, int shots, uint64_t seed)
+    const std::vector<int>& secret, int d, int shots, uint64_t seed,
+    QuditBackend backend, const QuditNoiseModel* noise)
 {
     if (d < 2)
-        throw std::invalid_argument(
-            "QuditBernsteinVazirani::solve: d must be >= 2");
+        throw std::invalid_argument("QuditBernsteinVazirani::solve: d must be >= 2");
     if (secret.empty())
-        throw std::invalid_argument(
-            "QuditBernsteinVazirani::solve: secret must not be empty");
+        throw std::invalid_argument("QuditBernsteinVazirani::solve: secret must not be empty");
     for (int x : secret)
         if (x < 0 || x >= d)
-            throw std::invalid_argument(
-                "QuditBernsteinVazirani::solve: "
-                "all secret values must be in [0, d)");
+            throw std::invalid_argument("QuditBernsteinVazirani::solve: all secret values must be in [0, d)");
     if (shots < 1) shots = 1;
 
     const int n = static_cast<int>(secret.size());
@@ -221,12 +223,104 @@ QuditBernsteinVazirani::Result QuditBernsteinVazirani::solve(
     std::vector<std::vector<Complex128>> cadd(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i)
         if (secret[static_cast<size_t>(i)] != 0)
-            cadd[static_cast<size_t>(i)] =
-                qudit_gates::cadd_matrix(d, secret[static_cast<size_t>(i)]);
+            cadd[static_cast<size_t>(i)] = qudit_gates::cadd_matrix(d, secret[static_cast<size_t>(i)]);
 
-    std::vector<std::vector<int>> votes(
-        static_cast<size_t>(n), std::vector<int>(static_cast<size_t>(d), 0));
+    std::vector<std::vector<int>> votes(static_cast<size_t>(n), std::vector<int>(static_cast<size_t>(d), 0));
 
+    // ── CLIFFORD path ────────────────────────────────────────────────────────
+    if (backend == QuditBackend::CLIFFORD) {
+        if (!QuditCliffordSimulator::is_prime(d))
+            throw std::invalid_argument(
+                "QuditBernsteinVazirani::solve: CLIFFORD backend requires prime d");
+
+        for (int shot = 0; shot < shots; ++shot) {
+            QuditCliffordSimulator c(n + 1, d);
+
+            // Step 1: X^{d-1} on ancilla qudit n → |d-1>
+            c.apply_X(n, d - 1);
+            // Step 2: H (QFT) on ancilla → |->_d
+            c.apply_H(n);
+            // Step 3: H on each query qudit
+            for (int i = 0; i < n; ++i) c.apply_H(i);
+            // Step 4: CADD(s_i) from query_i to ancilla  (CADD(k) = CSUM applied k times)
+            for (int i = 0; i < n; ++i)
+                for (int rep = 0; rep < secret[static_cast<size_t>(i)]; ++rep)
+                    c.apply_CSUM(i, n);
+            // Step 5: H† = H^3 (since H^4 = I in the qudit Clifford group) on each query qudit
+            for (int i = 0; i < n; ++i) {
+                c.apply_H(i); c.apply_H(i); c.apply_H(i);
+            }
+            // Step 6: measure
+            auto outcome = c.measure(seed + static_cast<uint64_t>(shot));
+            for (int i = 0; i < n; ++i)
+                votes[static_cast<size_t>(i)][static_cast<size_t>(outcome[static_cast<size_t>(i)])]++;
+        }
+
+        std::vector<int> recovered(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) {
+            const auto& v = votes[static_cast<size_t>(i)];
+            recovered[static_cast<size_t>(i)] = static_cast<int>(
+                std::max_element(v.begin(), v.end()) - v.begin());
+        }
+        return Result{recovered, d, n};
+    }
+
+    // ── DENSITY_MATRIX path ──────────────────────────────────────────────────
+    if (backend == QuditBackend::DENSITY_MATRIX) {
+        for (int shot = 0; shot < shots; ++shot) {
+            QuditDensityMatrix dm(n + 1, d);
+
+            dm.apply_1qudit(n, Xm);
+            dm.apply_1qudit(n, Fd);
+            for (int i = 0; i < n; ++i) dm.apply_1qudit(i, Fd);
+            for (int i = 0; i < n; ++i)
+                if (secret[static_cast<size_t>(i)] != 0)
+                    dm.apply_2qudit(i, n, cadd[static_cast<size_t>(i)]);
+            for (int i = 0; i < n; ++i) dm.apply_1qudit(i, Fdi);
+            if (noise) dm.apply_noise(*noise);
+
+            auto outcome = dm.measure(seed + static_cast<uint64_t>(shot));
+            for (int i = 0; i < n; ++i)
+                votes[static_cast<size_t>(i)][static_cast<size_t>(outcome[static_cast<size_t>(i)])]++;
+        }
+
+        std::vector<int> recovered(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) {
+            const auto& v = votes[static_cast<size_t>(i)];
+            recovered[static_cast<size_t>(i)] = static_cast<int>(
+                std::max_element(v.begin(), v.end()) - v.begin());
+        }
+        return Result{recovered, d, n};
+    }
+
+    // ── MPS path ─────────────────────────────────────────────────────────────
+    if (backend == QuditBackend::MPS) {
+        for (int shot = 0; shot < shots; ++shot) {
+            QuditMPS mps(n + 1, d);
+
+            mps.apply_1qudit(n, Xm);
+            mps.apply_1qudit(n, Fd);
+            for (int i = 0; i < n; ++i) mps.apply_1qudit(i, Fd);
+            for (int i = 0; i < n; ++i)
+                if (secret[static_cast<size_t>(i)] != 0)
+                    mps.apply_2qudit(i, n, cadd[static_cast<size_t>(i)]);
+            for (int i = 0; i < n; ++i) mps.apply_1qudit(i, Fdi);
+
+            auto outcome = mps.measure(seed + static_cast<uint64_t>(shot));
+            for (int i = 0; i < n; ++i)
+                votes[static_cast<size_t>(i)][static_cast<size_t>(outcome[static_cast<size_t>(i)])]++;
+        }
+
+        std::vector<int> recovered(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) {
+            const auto& v = votes[static_cast<size_t>(i)];
+            recovered[static_cast<size_t>(i)] = static_cast<int>(
+                std::max_element(v.begin(), v.end()) - v.begin());
+        }
+        return Result{recovered, d, n};
+    }
+
+    // ── STATEVECTOR path (default) ───────────────────────────────────────────
     for (int shot = 0; shot < shots; ++shot) {
         QuditStatevector sv(n + 1, d);
 
@@ -235,24 +329,17 @@ QuditBernsteinVazirani::Result QuditBernsteinVazirani::solve(
 
         ops.push_back({QuditGateOp::Type::SINGLE, n, -1, Xm});
         ops.push_back({QuditGateOp::Type::SINGLE, n, -1, Fd});
-
         for (int i = 0; i < n; ++i)
             ops.push_back({QuditGateOp::Type::SINGLE, i, -1, Fd});
-
         for (int i = 0; i < n; ++i)
             if (secret[static_cast<size_t>(i)] != 0)
-                ops.push_back({QuditGateOp::Type::TWO, i, n,
-                               cadd[static_cast<size_t>(i)]});
-
+                ops.push_back({QuditGateOp::Type::TWO, i, n, cadd[static_cast<size_t>(i)]});
         for (int i = 0; i < n; ++i)
             ops.push_back({QuditGateOp::Type::SINGLE, i, -1, Fdi});
 
-        auto res = QuditSimulator::run(
-            sv, ops, seed + static_cast<uint64_t>(shot));
-
+        auto res = QuditSimulator::run(sv, ops, seed + static_cast<uint64_t>(shot));
         for (int i = 0; i < n; ++i)
-            votes[static_cast<size_t>(i)]
-                 [static_cast<size_t>(res.outcome[static_cast<size_t>(i)])]++;
+            votes[static_cast<size_t>(i)][static_cast<size_t>(res.outcome[static_cast<size_t>(i)])]++;
     }
 
     std::vector<int> recovered(static_cast<size_t>(n));
@@ -261,7 +348,6 @@ QuditBernsteinVazirani::Result QuditBernsteinVazirani::solve(
         recovered[static_cast<size_t>(i)] = static_cast<int>(
             std::max_element(v.begin(), v.end()) - v.begin());
     }
-
     return Result{recovered, d, n};
 }
 

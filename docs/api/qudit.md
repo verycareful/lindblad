@@ -5,6 +5,23 @@ the d-dimensional state vector, the qudit gate matrix generators, and the
 qudit simulator. The layer is independent of the existing qubit infrastructure
 and provides a reusable foundation for any d-dimensional quantum algorithm.
 
+## Backend simulators
+
+This page covers the foundational statevector layer. Three additional backends
+are available for mixed-state, tensor-network, and stabilizer simulation:
+
+| Backend | Class | Header | Memory | Restrictions |
+|---|---|---|---|---|
+| Density matrix | `QuditDensityMatrix` | `qudit/qudit_density_matrix.hpp` | O(d^{2n}) | Supports noise; no prime-d restriction |
+| Matrix Product State | `QuditMPS` | `qudit/qudit_mps.hpp` | O(n·χ²·d) | χ = bond dimension; oracle fallback is O(d^n) |
+| Clifford stabilizer | `QuditCliffordSimulator` | `qudit/qudit_clifford.hpp` | O(n²) | Prime d only; Grover/QPE/Simon throw |
+
+All algorithms accept a `QuditBackend` enum argument and an optional
+`QuditNoiseModel*`. See [qudit-simulators.md](qudit-simulators.md) for the
+complete API reference for all backends.
+
+---
+
 ## Header and Namespace
 
 - Headers:

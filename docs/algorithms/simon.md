@@ -157,6 +157,8 @@ Relevant tests live in:
 - `n` — number of qudits (≥ 1)
 - `d` — qudit dimension; must be prime
 - `f` — `std::function<std::vector<int>(const std::vector<int>&)>` mapping n digits to n digits
+- `backend` (optional): `QuditBackend` — simulator to use (default `STATEVECTOR`); `CLIFFORD` throws
+- `noise` (optional): `const QuditNoiseModel*` — noise model; only applied with `DENSITY_MATRIX` (default `nullptr`)
 
 **How to Invoke:**
 ```cpp
@@ -195,8 +197,18 @@ struct Result {
 **Exceptions:**
 - `std::invalid_argument` if `d < 2`, `d` is not prime, `n < 1`
 - `std::invalid_argument` if `f` returns a vector of wrong size or with digits outside `[0, d)`
+- `std::invalid_argument` if `backend == QuditBackend::CLIFFORD`
 
-**Simulator dependency:** `QuditStatevector`. Each quantum query creates a fresh 2n-qudit state vector.
+**Backend:**
+
+| Backend | Supported | Notes |
+|---|---|---|
+| `STATEVECTOR` | ✓ | Default. Exact dense statevector; each query creates a fresh 2n-qudit state vector. |
+| `DENSITY_MATRIX` | ✓ | Full mixed-state; applies `noise` model if provided. |
+| `MPS` | ✓ | Tensor-network. |
+| `CLIFFORD` | ✗ | Throws `std::invalid_argument`. Simon's function oracle is not Clifford in general. |
+
+The `noise` argument is applied only in the `DENSITY_MATRIX` path. See [docs/api/qudit-simulators.md](../api/qudit-simulators.md) for the full backend API reference.
 
 **Common pitfalls:**
 - `d` must be prime. Passing d=4, 6, 8, etc. throws.

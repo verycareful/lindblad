@@ -162,6 +162,8 @@ Relevant tests live in:
 - `n` — number of query qudits (≥ 1)
 - `d` — qudit dimension (≥ 2)
 - `f` — `std::function<int(const std::vector<int>&)>` mapping n digits to one digit in [0, d)
+- `backend` (optional): `QuditBackend` — simulator to use (default `STATEVECTOR`)
+- `noise` (optional): `const QuditNoiseModel*` — noise model; only applied with `DENSITY_MATRIX` (default `nullptr`)
 
 **How to Invoke:**
 ```cpp
@@ -192,7 +194,16 @@ struct Result {
 - `std::invalid_argument` if `d < 2` or `n < 1`
 - `std::invalid_argument` if `f` returns a value outside `[0, d)`
 
-**Simulator dependency:** `QuditStatevector` (dense statevector, O(d^{n+1}) amplitudes). Only statevector simulation is supported.
+**Backend:**
+
+| Backend | Supported | Notes |
+|---|---|---|
+| `STATEVECTOR` | ✓ | Default. Exact dense statevector, O(d^{n+1}) amplitudes. |
+| `DENSITY_MATRIX` | ✓ | Full mixed-state; applies `noise` model if provided. |
+| `MPS` | ✓ | Tensor-network. |
+| `CLIFFORD` | ✓ (fallback) | The function oracle is not Clifford-simulable in general; CLIFFORD silently falls back to `STATEVECTOR`. |
+
+The `noise` argument is applied only in the `DENSITY_MATRIX` path. See [docs/api/qudit-simulators.md](../api/qudit-simulators.md) for the full backend API reference.
 
 ## Related Source Files
 
