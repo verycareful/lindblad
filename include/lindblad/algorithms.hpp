@@ -7,6 +7,8 @@
 #include "lindblad/qudit/qudit_statevector.hpp"
 #include "lindblad/qudit/qudit_gates.hpp"
 #include "lindblad/qudit/qudit_simulator.hpp"
+#include "lindblad/qudit/qudit_noise_model.hpp"
+#include "lindblad/qudit/qudit_backend.hpp"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -430,7 +432,9 @@ public:
     //   - secret is empty
     //   - any secret[i] is outside [0, d)
     static Result solve(const std::vector<int>& secret, int d,
-                        int shots = 1, uint64_t seed = 0);
+                        int shots = 1, uint64_t seed = 0,
+                        QuditBackend backend = QuditBackend::STATEVECTOR,
+                        const QuditNoiseModel* noise = nullptr);
 };
 
 // =============================================================================
@@ -468,7 +472,9 @@ public:
     static Result solve(
         int n, int d,
         const std::function<int(const std::vector<int>&)>& f,
-        uint64_t seed = 0
+        uint64_t seed = 0,
+        QuditBackend backend = QuditBackend::STATEVECTOR,
+        const QuditNoiseModel* noise = nullptr
     );
 };
 
@@ -504,7 +510,9 @@ public:
         const std::vector<int>& target,
         int num_iterations = -1,   // -1 = auto: round(π/4 · √(d^n))
         int shots = 100,
-        uint64_t seed = 0
+        uint64_t seed = 0,
+        QuditBackend backend = QuditBackend::STATEVECTOR,
+        const QuditNoiseModel* noise = nullptr
     );
 
     // search_with_oracle — marks states via arbitrary predicate.
@@ -514,7 +522,9 @@ public:
         const std::function<bool(const std::vector<int>&)>& is_marked,
         int num_iterations = -1,
         int shots = 100,
-        uint64_t seed = 0
+        uint64_t seed = 0,
+        QuditBackend backend = QuditBackend::STATEVECTOR,
+        const QuditNoiseModel* noise = nullptr
     );
 };
 
@@ -558,7 +568,9 @@ public:
         int m, int d,
         const std::vector<Complex128>& U,
         const std::vector<Complex128>& eigenstate,
-        uint64_t seed = 0
+        uint64_t seed = 0,
+        QuditBackend backend = QuditBackend::STATEVECTOR,
+        const QuditNoiseModel* noise = nullptr
     );
 };
 
@@ -600,7 +612,9 @@ public:
         int n, int d,
         const std::function<std::vector<int>(const std::vector<int>&)>& f,
         int extra_samples = 3,
-        uint64_t seed = 0
+        uint64_t seed = 0,
+        QuditBackend backend = QuditBackend::STATEVECTOR,
+        const QuditNoiseModel* noise = nullptr
     );
 
 private:

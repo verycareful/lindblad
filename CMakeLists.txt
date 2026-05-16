@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
-project(lindblad VERSION 1.1.6.1 LANGUAGES CXX)
-set(LINDBLAD_VERSION_LABEL "R.1.6.1")
+project(lindblad VERSION 1.1.7.0 LANGUAGES CXX)
+set(LINDBLAD_VERSION_LABEL "R.1.7.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -155,6 +155,10 @@ add_library(lindblad_core STATIC
     src/qudit/qudit_statevector.cpp
     src/qudit/qudit_gates.cpp
     src/qudit/qudit_simulator.cpp
+    src/qudit/qudit_noise_model.cpp
+    src/qudit/qudit_density_matrix.cpp
+    src/qudit/qudit_clifford.cpp
+    src/qudit/qudit_mps.cpp
     src/qasm/qasm2_parser.cpp
     src/qasm/qasm3_parser.cpp
     src/backends/local_backend.cpp

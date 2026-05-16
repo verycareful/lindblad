@@ -3,7 +3,7 @@
 [![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Lindblad v1.0](https://img.shields.io/badge/License-Lindblad%20v1.0-red.svg)](LICENSE)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-R.1.6.1-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-R.1.7.0-blue?style=flat-square)](CHANGELOG.md)
 
 > **License Notice:** This software is **proprietary and source-available**. Free for non-commercial and academic use only. Commercial use of any kind requires a separate written license agreement. **Redistribution in any form — including forks, copies, and derivative works — is strictly prohibited without explicit written authorization from the author**, regardless of whether the use is commercial or non-commercial. Public GitHub forks are technically permitted by GitHub's platform but are **not licensed** under this agreement for any purpose other than reviewing or submitting contributions via pull request; any other use of a fork constitutes a violation. By submitting any contribution (pull request, code snippet, bug fix, or similar) you irrevocably assign full copyright ownership of that contribution to the author — see §6.3 of [LICENSE](LICENSE). See [LICENSE](LICENSE) for full terms — `qpp.support@proton.me` for licensing inquiries.
 
@@ -56,6 +56,7 @@ Lindblad is a high-performance C++23 quantum computing framework for circuit con
 |---|---|
 | QuantumCircuit | [docs/api/circuit.md](docs/api/circuit.md) |
 | Qudit layer | [docs/api/qudit.md](docs/api/qudit.md) |
+| Qudit backend simulators | [docs/api/qudit-simulators.md](docs/api/qudit-simulators.md) |
 | Gates | [docs/api/gates.md](docs/api/gates.md) |
 | Operators | [docs/api/operators.md](docs/api/operators.md) |
 | Simulators | [docs/api/simulators.md](docs/api/simulators.md) |
@@ -71,6 +72,7 @@ Lindblad is a high-performance C++23 quantum computing framework for circuit con
 
 | Version | Description |
 |---|---|
+| `R.1.7.0` | Qudit backend simulator suite: `QuditDensityMatrix` (Kraus/Lindblad/noise/partial trace), `QuditMPS` (SVD tensor-network, SWAP chain), `QuditCliffordSimulator` (stabilizer tableau, prime d); `QuditNoiseModel` (depolarizing, amplitude damping, phase damping, Lindblad); backend dispatch (`STATEVECTOR`/`DENSITY_MATRIX`/`MPS`/`CLIFFORD`) wired into all 5 qudit algorithms |
 | `R.1.6.1` | Test suite release — qudit algorithm suite: 45 tests (`test_qudit_bv`) + 63 tests (`test_qudit_algorithms`); 108 tests, 448 total passing |
 | `R.1.6.0` | Qudit algorithm suite: `QuditBernsteinVazirani`, `QuditDeutschJozsa`, `QuditGrover`, `QuditPhaseEstimation`, `QuditSimon` for any d ≥ 2; `QuditStatevector` / `QuditGates` / `QuditSimulator` layer; fixed `shift_matrix` forward-shift convention and Grover exact auto-iteration formula |
 | `R.1.5.1` | Test suite release — feedforward + iterative QFT: 9 suites, 100 tests across all 4 simulators |

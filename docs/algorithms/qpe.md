@@ -152,6 +152,8 @@ At the moment the primary validation is implementation-level coverage through th
 - `d` — qudit dimension (≥ 2)
 - `U` — d×d row-major unitary matrix (size d*d)
 - `eigenstate` — d-element normalised amplitude vector, exact eigenstate of U
+- `backend` (optional): `QuditBackend` — simulator to use (default `STATEVECTOR`); `CLIFFORD` throws
+- `noise` (optional): `const QuditNoiseModel*` — noise model; only applied with `DENSITY_MATRIX` (default `nullptr`)
 
 **How to Invoke:**
 ```cpp
@@ -185,8 +187,18 @@ struct Result {
 
 **Exceptions:**
 - `std::invalid_argument` if `d < 2`, `m < 1`, `U.size() != d*d`, or `eigenstate.size() != d`
+- `std::invalid_argument` if `backend == QuditBackend::CLIFFORD`
 
-**Simulator dependency:** `QuditStatevector`. Only statevector simulation is supported. Only a single-qudit target register is supported (multi-qudit target requires k-qudit controlled operations, a planned extension).
+**Backend:**
+
+| Backend | Supported | Notes |
+|---|---|---|
+| `STATEVECTOR` | ✓ | Default. Exact dense statevector. |
+| `DENSITY_MATRIX` | ✓ | Full mixed-state; applies `noise` model if provided. |
+| `MPS` | ✓ | Tensor-network. |
+| `CLIFFORD` | ✗ | Throws `std::invalid_argument`. The controlled-U^{d^j} power gates are not Clifford in general. |
+
+The `noise` argument is applied only in the `DENSITY_MATRIX` path. Only a single-qudit target register is supported (multi-qudit target requires k-qudit controlled operations, a planned extension). See [docs/api/qudit-simulators.md](../api/qudit-simulators.md) for the full backend API reference.
 
 **Common pitfalls:**
 - The eigenstate must be normalised and must be an exact eigenstate of U; passing an approximate eigenstate gives probabilistic (not deterministic) results.
