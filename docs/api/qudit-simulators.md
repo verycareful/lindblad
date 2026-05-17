@@ -333,10 +333,10 @@ All gates update the tableau in-place (Heisenberg picture).
 |---|---|---|
 | `apply_X(q, m=1)` | X^m | phase -= 2m·z_q |
 | `apply_Z(q, m=1)` | Z^m | phase += 2m·x_q |
-| `apply_H(q)` | QFT | swap x_q↔z_q, negate new z_q, phase -= 2·old_x_q·old_z_q |
+| `apply_H(q)` | QFT | x_q ← −z_q mod d; z_q ← x_q; phase −= 2·old_x_q·old_z_q |
 | `apply_P(q)` | Phase (d=2 only) | d>2 throws |
-| `apply_CSUM(c, t)` | SUM gate | x_t += x_c; z_c -= z_t; phase -= 2·z_c·x_t (before update) |
-| `apply_CSUM_dag(c, t)` | SUM† | x_t -= x_c; z_c += z_t |
+| `apply_CSUM(c, t)` | SUM gate | x_t += x_c; z_c -= z_t; phase -= 2·x_c·z_t (before update) |
+| `apply_CSUM_dag(c, t)` | SUM† | x_t -= x_c; z_c += z_t; phase += 2·x_c·z_t (before update) |
 
 All arithmetic is mod d (bits) or mod 2d (phase).
 
@@ -352,7 +352,10 @@ std::vector<int> measure(uint64_t seed = 0);   // all n qudits
 Returns outcomes in `{0, …, d−1}`. When the outcome is **indeterminate**
 (qudit q anti-commutes with some stabilizer), a uniformly random outcome is
 chosen and the tableau is updated to the post-measurement state. When
-**determined**, the outcome is computed from the stabilizer phase.
+**determined**, the implementation solves a linear system over Z_d to find the
+stabilizer combination equal to Z_q, then reads the outcome from that
+combination's phase via `phase + 2·m·k ≡ 0 (mod 2d)`. The tableau is
+collapsed to the post-measurement state in both cases.
 
 ### Utilities
 
@@ -453,4 +456,5 @@ Each qudit algorithm page documents how to pass `backend` and `noise` to that al
 - [Qudit Deutsch-Jozsa](../algorithms/deutsch-jozsa.md#quditdeutschjozsa)
 - [Qudit Grover](../algorithms/grover.md#quditgrover)
 - [Qudit Phase Estimation](../algorithms/qpe.md#quditphaseestimation)
-- [Qudit Simon's Algorithm](../algorithms/simon.md#quditsimone)
+- [Qudit Simon's Algorithm](../algorithms/simon.md#quditsimonsalgorithm)
+- [tests/test_qudit_simulators.cpp](../../tests/test_qudit_simulators.cpp) — full coverage for all four backends and `QuditNoiseModel`

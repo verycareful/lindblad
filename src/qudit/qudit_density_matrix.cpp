@@ -180,20 +180,12 @@ void QuditDensityMatrix::apply_to_bra(int q, const std::vector<Complex128>& U)
     const size_t stride = ipow(static_cast<size_t>(d), q);
     const size_t block  = stride * static_cast<size_t>(d);
 
-    // Build U†
-    std::vector<Complex128> Ud(static_cast<size_t>(d * d));
-    for (int r = 0; r < d; ++r)
-        for (int c = 0; c < d; ++c)
-            Ud[static_cast<size_t>(c * d + r)] =
-                U[static_cast<size_t>(r * d + c)].conj();
-
     std::vector<Complex128> old_col(static_cast<size_t>(d));
     std::vector<Complex128> new_col(static_cast<size_t>(d));
 
     for (size_t outer = 0; outer < dim; outer += block) {
         for (size_t inner = 0; inner < stride; ++inner) {
             const size_t base = outer + inner;
-            // For each ket row i, apply U† to the d bra positions
             for (size_t i = 0; i < dim; ++i) {
                 for (int k = 0; k < d; ++k)
                     old_col[static_cast<size_t>(k)] =
@@ -201,7 +193,7 @@ void QuditDensityMatrix::apply_to_bra(int q, const std::vector<Complex128>& U)
                 for (int k = 0; k < d; ++k) {
                     Complex128 acc(0.0, 0.0);
                     for (int l = 0; l < d; ++l)
-                        acc += Ud[static_cast<size_t>(k * d + l)]
+                        acc += U[static_cast<size_t>(k * d + l)].conj()
                              * old_col[static_cast<size_t>(l)];
                     new_col[static_cast<size_t>(k)] = acc;
                 }
@@ -290,13 +282,6 @@ void QuditDensityMatrix::apply_to_bra_2q(int q0, int q1,
     const size_t stride1 = ipow(static_cast<size_t>(d), q1);
     const int dd = d * d;
 
-    // Build U†
-    std::vector<Complex128> Ud(static_cast<size_t>(dd * dd));
-    for (int r = 0; r < dd; ++r)
-        for (int c = 0; c < dd; ++c)
-            Ud[static_cast<size_t>(c * dd + r)] =
-                U[static_cast<size_t>(r * dd + c)].conj();
-
     std::vector<Complex128> old_amp(static_cast<size_t>(dd));
     std::vector<Complex128> new_amp(static_cast<size_t>(dd));
 
@@ -313,11 +298,11 @@ void QuditDensityMatrix::apply_to_bra_2q(int q0, int q1,
                         rho[i * dim + (idx + static_cast<size_t>(x0) * stride0
                                            + static_cast<size_t>(x1) * stride1)];
 
-            // Matrix multiply with U†
+            // Matrix multiply with conj(U)
             for (int r = 0; r < dd; ++r) {
                 Complex128 acc(0.0, 0.0);
                 for (int c = 0; c < dd; ++c)
-                    acc += Ud[static_cast<size_t>(r * dd + c)]
+                    acc += U[static_cast<size_t>(r * dd + c)].conj()
                          * old_amp[static_cast<size_t>(c)];
                 new_amp[static_cast<size_t>(r)] = acc;
             }
@@ -385,14 +370,7 @@ void QuditDensityMatrix::apply_kraus_1qudit(
             }
         }
 
-        // Build K†
-        std::vector<Complex128> Kd(static_cast<size_t>(d * d));
-        for (int r = 0; r < d; ++r)
-            for (int c = 0; c < d; ++c)
-                Kd[static_cast<size_t>(c * d + r)] =
-                    K[static_cast<size_t>(r * d + c)].conj();
-
-        // Bra pass (apply K† to bra index of temp)
+        // Bra pass (apply conj(K) to bra index of temp)
         for (size_t outer = 0; outer < dim; outer += block) {
             for (size_t inner = 0; inner < stride; ++inner) {
                 const size_t base = outer + inner;
@@ -403,7 +381,7 @@ void QuditDensityMatrix::apply_kraus_1qudit(
                     for (int k = 0; k < d; ++k) {
                         Complex128 acc(0.0, 0.0);
                         for (int l = 0; l < d; ++l)
-                            acc += Kd[static_cast<size_t>(k * d + l)]
+                            acc += K[static_cast<size_t>(k * d + l)].conj()
                                  * old_v[static_cast<size_t>(l)];
                         new_v[static_cast<size_t>(k)] = acc;
                     }
@@ -503,7 +481,7 @@ void QuditDensityMatrix::apply_lindblad_step(
                 }
             }
 
-            // Apply L† to bra
+            // Apply conj(L) to bra
             for (size_t outer = 0; outer < dim; outer += block) {
                 for (size_t inner = 0; inner < stride; ++inner) {
                     const size_t base = outer + inner;
@@ -514,7 +492,7 @@ void QuditDensityMatrix::apply_lindblad_step(
                         for (int k = 0; k < d; ++k) {
                             Complex128 acc(0.0, 0.0);
                             for (int l = 0; l < d; ++l)
-                                acc += Ld[static_cast<size_t>(k * d + l)]
+                                acc += L[static_cast<size_t>(k * d + l)].conj()
                                      * old_v[static_cast<size_t>(l)];
                             new_v[static_cast<size_t>(k)] = acc;
                         }

@@ -203,7 +203,7 @@ The tests cover:
 - BV secret recovery for multiple secrets
 - recursive BV across multiple depths
 - probabilistic BV discovery, counts, and ordering
-- distributed BV tests are planned for R.1.4.1 (test-suite release)
+- distributed BV: 10 tests in `tests/test_classic_algorithms.cpp` (R.1.4.1)
 - QuditBV secret recovery for d ∈ {2, 3, 4, 5, 6, 7}, including d = 2 (qubit-BV
   equivalence) and d = 6 (composite-d ring case)
 - QuditStatevector init, gate application, measurement, and index/digit conversion

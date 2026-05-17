@@ -261,6 +261,7 @@ These build on the layer with one or two extra gate generators:
 - [docs/algorithms/bernstein-vazirani.md](../algorithms/bernstein-vazirani.md) — Qudit BV theory
 - [include/lindblad/qudit/](../../include/lindblad/qudit/) — public headers
 - [src/qudit/](../../src/qudit/) — implementations
-- [tests/test_qudit_bv.cpp](../../tests/test_qudit_bv.cpp) — coverage for statevector, gates, simulator, and BV
+- [tests/test_qudit_bv.cpp](../../tests/test_qudit_bv.cpp) — statevector, gates, simulator, and BV
+- [tests/test_qudit_simulators.cpp](../../tests/test_qudit_simulators.cpp) — `QuditDensityMatrix`, `QuditMPS`, `QuditCliffordSimulator`, `QuditNoiseModel`, and backend dispatch across all 5 qudit algorithms
 - [docs/APIOverview.md](../APIOverview.md)
 - [docs/MasterDocumentation.md](../MasterDocumentation.md)
