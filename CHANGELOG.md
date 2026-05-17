@@ -4,6 +4,49 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.7.2] - 2026-05-17
+
+### Fixed
+
+- **`QuditCliffordSimulator::apply_H`** (`src/qudit/qudit_clifford.cpp`): Corrected
+  Hadamard conjugation rule. Was `x ← z, z ← −x`; correct qudit QFT rule is
+  `x ← −z mod d, z ← x`. Phase update `phase −= 2·old_x·old_z` was already correct.
+
+- **`QuditCliffordSimulator::apply_CSUM` / `apply_CSUM_dag`** (`src/qudit/qudit_clifford.cpp`):
+  Fixed Gottesman-style phase cross-term. Was `phase −= 2·z_c·x_t`; correct
+  term (from reordering Z_t^{b_t} past X_c^{a_c} in normal form) is
+  `phase −= 2·x_c·z_t` (and `+= 2·x_c·z_t` for the dagger).
+
+- **`QuditCliffordSimulator::measure_qudit`** (`src/qudit/qudit_clifford.cpp`):
+  Rewrote deterministic-outcome path. Solves a linear system over Z_d to find
+  the unique stabilizer combination equal to Z_q, reads the outcome from that
+  combination's phase via `phase + 2·m·k ≡ 0 (mod 2d)`, and collapses the
+  tableau to the post-measurement state. The previous scan returned the outcome
+  but did not update the tableau.
+
+- **`QuditBernsteinVazirani::solve` (Clifford path)** (`src/algorithms/bernstein_vazirani.cpp`):
+  Measures the ancilla once, then recovers each query qudit from an independent
+  Clifford state snapshot to avoid cross-talk between successive stateful
+  `measure_qudit` calls.
+
+- **`QuditDensityMatrix::apply_to_bra` / `apply_to_bra_2q` / `apply_kraus_1qudit` / `apply_lindblad_step`**
+  (`src/qudit/qudit_density_matrix.cpp`): Removed pre-built U†/K†/L† auxiliary
+  matrices; inline `U[k·d+l].conj()` directly in the multiply loop. The bra-side
+  transform requires the element-wise conjugate conj(U), not the conjugate-transpose
+  U† — the previous code applied the wrong operation.
+
+### Changed
+
+- **`docs/api/qudit-simulators.md`**: Corrected Gate API table — `apply_H` rule
+  (`x_q ← −z_q, z_q ← x_q`), `apply_CSUM` / `apply_CSUM_dag` phase cross-terms
+  (`2·x_c·z_t`; dagger term was previously omitted). Extended measurement
+  description to document the linear-system solve used for determined outcomes.
+  Fixed broken Simon anchor (`#quditsimone` → `#quditsimonsalgorithm`). Added
+  `test_qudit_simulators.cpp` reference.
+- **`docs/api/qudit.md`**: Added `tests/test_qudit_simulators.cpp` to Related Files.
+- **`docs/algorithms/bernstein-vazirani.md`**: Replaced stale "distributed BV tests are
+  planned for R.1.4.1" note with the completed test reference (`tests/test_classic_algorithms.cpp`, R.1.4.1).
+
 ## [R.1.7.1] - 2026-05-17
 
 ### Tests

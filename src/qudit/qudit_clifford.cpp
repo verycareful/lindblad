@@ -110,8 +110,8 @@ void QuditCliffordSimulator::apply_H(int q) {
     for (int r = 0; r < rows; ++r) {
         const int old_x = xbits[r][q];
         const int old_z = zbits[r][q];
-        xbits[r][q] = old_z;
-        zbits[r][q] = mod(-old_x, d);
+        xbits[r][q] = mod(-old_z, d);
+        zbits[r][q] = old_x;
         phase[r] = mod(phase[r] - 2 * old_x * old_z, two_d);
     }
 }
@@ -151,9 +151,9 @@ void QuditCliffordSimulator::apply_CSUM(int q_control, int q_target) {
     //   new z_c = (z_c - z_t) mod d
     //   x_c, z_t unchanged
     //
-    // Phase update (Gottesman-style cross term, derived from reordering the
-    // X_t^{x_c} factor past the existing Z's when normalising to standard form):
-    //   phase -= 2 * z_c * x_t   (using OLD values, before updating)
+    // Phase update (Gottesman-style cross term, from reordering Z_t^{b_t}
+    // past X_c^{a_c} when normalising to standard form):
+    //   phase -= 2 * x_c * z_t   (using OLD values, before updating)
     const int rows = 2 * n_qudits;
     const int two_d = 2 * d;
     const int c = q_control;
@@ -164,7 +164,7 @@ void QuditCliffordSimulator::apply_CSUM(int q_control, int q_target) {
         const int old_zc = zbits[r][c];
         const int old_zt = zbits[r][t];
 
-        phase[r] = mod(phase[r] - 2 * old_zc * old_xt, two_d);
+        phase[r] = mod(phase[r] - 2 * old_xc * old_zt, two_d);
         xbits[r][t] = mod(old_xt + old_xc, d);
         zbits[r][c] = mod(old_zc - old_zt, d);
         // xbits[r][c], zbits[r][t] unchanged.
@@ -181,7 +181,7 @@ void QuditCliffordSimulator::apply_CSUM_dag(int q_control, int q_target) {
     //   new x_t = (x_t - x_c) mod d
     //   new z_c = (z_c + z_t) mod d
     //   x_c, z_t unchanged
-    // Phase: opposite sign of the CSUM cross term  =>  phase += 2 * z_c * x_t.
+    // Phase: opposite sign of the CSUM cross term  =>  phase += 2 * x_c * z_t.
     const int rows = 2 * n_qudits;
     const int two_d = 2 * d;
     const int c = q_control;
@@ -192,7 +192,7 @@ void QuditCliffordSimulator::apply_CSUM_dag(int q_control, int q_target) {
         const int old_zc = zbits[r][c];
         const int old_zt = zbits[r][t];
 
-        phase[r] = mod(phase[r] + 2 * old_zc * old_xt, two_d);
+        phase[r] = mod(phase[r] + 2 * old_xc * old_zt, two_d);
         xbits[r][t] = mod(old_xt - old_xc, d);
         zbits[r][c] = mod(old_zc + old_zt, d);
     }
@@ -293,29 +293,116 @@ int QuditCliffordSimulator::measure_qudit(int q, uint64_t seed) {
     // eigenvalue equation
     //     phase + 2 * m * k ≡ 0 (mod 2d)
     // i.e. k = -phase / (2m) (mod d).
+    int p_z = -1;
+    for (int r = n; r < rows; ++r) {
+        if (zbits[r][q] != 0) { p_z = r; break; }
+    }
+    if (p_z == -1) {
+        // Fallback: no Z_q component found anywhere.  This can occur only for
+        // pathological states.  Return 0 by convention.
+        return 0;
+    }
+
+    // Solve for coefficients c_r such that the product of stabilizers equals Z_q
+    // (in the Pauli exponent space): sum_r c_r * x_r = 0, sum_r c_r * z_r = e_q.
+    const int m_rows = 2 * n;
+    std::vector<std::vector<int>> A(static_cast<size_t>(m_rows), std::vector<int>(static_cast<size_t>(n), 0));
+    std::vector<int> b(static_cast<size_t>(m_rows), 0);
+    b[static_cast<size_t>(n + q)] = 1;
+
+    for (int r = 0; r < n; ++r) {
+        const int sr = n + r;
+        for (int j = 0; j < n; ++j) {
+            A[static_cast<size_t>(j)][static_cast<size_t>(r)] = mod(xbits[sr][j], d);
+            A[static_cast<size_t>(n + j)][static_cast<size_t>(r)] = mod(zbits[sr][j], d);
+        }
+    }
+
+    int row = 0;
+    std::vector<int> pivot_col(static_cast<size_t>(m_rows), -1);
+    for (int col = 0; col < n && row < m_rows; ++col) {
+        int pivot = -1;
+        for (int r = row; r < m_rows; ++r) {
+            if (A[static_cast<size_t>(r)][static_cast<size_t>(col)] != 0) { pivot = r; break; }
+        }
+        if (pivot == -1) continue;
+
+        if (pivot != row) {
+            std::swap(A[static_cast<size_t>(pivot)], A[static_cast<size_t>(row)]);
+            std::swap(b[static_cast<size_t>(pivot)], b[static_cast<size_t>(row)]);
+        }
+
+        const int inv_pivot = mod_inv(A[static_cast<size_t>(row)][static_cast<size_t>(col)], d);
+        for (int c = 0; c < n; ++c)
+            A[static_cast<size_t>(row)][static_cast<size_t>(c)] =
+                mod(A[static_cast<size_t>(row)][static_cast<size_t>(c)] * inv_pivot, d);
+        b[static_cast<size_t>(row)] = mod(b[static_cast<size_t>(row)] * inv_pivot, d);
+
+        for (int r = 0; r < m_rows; ++r) {
+            if (r == row) continue;
+            const int factor = A[static_cast<size_t>(r)][static_cast<size_t>(col)];
+            if (factor == 0) continue;
+            for (int c = 0; c < n; ++c) {
+                A[static_cast<size_t>(r)][static_cast<size_t>(c)] = mod(
+                    A[static_cast<size_t>(r)][static_cast<size_t>(c)]
+                    - factor * A[static_cast<size_t>(row)][static_cast<size_t>(c)], d);
+            }
+            b[static_cast<size_t>(r)] = mod(b[static_cast<size_t>(r)] - factor * b[static_cast<size_t>(row)], d);
+        }
+
+        pivot_col[static_cast<size_t>(row)] = col;
+        ++row;
+    }
+
+    for (int r = 0; r < m_rows; ++r) {
+        bool all_zero = true;
+        for (int c = 0; c < n; ++c) {
+            if (A[static_cast<size_t>(r)][static_cast<size_t>(c)] != 0) { all_zero = false; break; }
+        }
+        if (all_zero && b[static_cast<size_t>(r)] != 0) {
+            return 0;
+        }
+    }
+
+    std::vector<int> coeffs(static_cast<size_t>(n), 0);
+    for (int r = 0; r < m_rows; ++r) {
+        const int col = pivot_col[static_cast<size_t>(r)];
+        if (col >= 0 && col < n) {
+            coeffs[static_cast<size_t>(col)] = b[static_cast<size_t>(r)];
+        }
+    }
+
     std::vector<int> scratch_x(n, 0);
     std::vector<int> scratch_z(n, 0);
     int scratch_phase = 0;
-
-    for (int r = n; r < rows; ++r) {
-        if (zbits[r][q] == 0) continue;
-        // scratch *= row r  (using the same product formula as row_multiply).
-        long long delta = 0;
-        for (int qq = 0; qq < n; ++qq) {
-            delta -= 2LL * scratch_z[qq] * xbits[r][qq];
-            scratch_x[qq] = mod(scratch_x[qq] + xbits[r][qq], d);
-            scratch_z[qq] = mod(scratch_z[qq] + zbits[r][qq], d);
+    for (int r = 0; r < n; ++r) {
+        const int k = mod(coeffs[static_cast<size_t>(r)], d);
+        const int sr = n + r;
+        for (int rep = 0; rep < k; ++rep) {
+            long long delta = 0;
+            for (int qq = 0; qq < n; ++qq) {
+                delta -= 2LL * scratch_z[qq] * xbits[sr][qq];
+            }
+            for (int qq = 0; qq < n; ++qq) {
+                scratch_x[qq] = mod(scratch_x[qq] + xbits[sr][qq], d);
+                scratch_z[qq] = mod(scratch_z[qq] + zbits[sr][qq], d);
+            }
+            int delta_mod = mod(static_cast<int>(delta % two_d), two_d);
+            scratch_phase = mod(scratch_phase + delta_mod + phase[sr], two_d);
         }
-        int delta_mod = mod(static_cast<int>(delta % two_d), two_d);
-        scratch_phase = mod(scratch_phase + delta_mod + phase[r], two_d);
     }
 
     const int m = scratch_z[q];
     if (m == 0) {
-        // Fallback: no Z_q component found anywhere.  This can occur only for
-        // pathological states (e.g. when the stabilizer for qudit q has been
-        // entirely scrambled into a global identity).  Return 0 by convention.
         return 0;
+    }
+
+    const int inv_zpq = mod_inv(zbits[p_z][q], d);
+    for (int r = 0; r < rows; ++r) {
+        if (r == p_z) continue;
+        if (zbits[r][q] == 0) continue;
+        const int k = mod(-zbits[r][q] * inv_zpq, d);
+        for (int i = 0; i < k; ++i) row_multiply(r, p_z);
     }
 
     // Solve phase + 2*m*k ≡ 0 (mod 2d) for k in {0,...,d-1}.
@@ -328,12 +415,32 @@ int QuditCliffordSimulator::measure_qudit(int q, uint64_t seed) {
         // 2*m*k ≡ -ph (mod 4).  m and ph are in {0,1,2,3} with ph even.
         // Solutions: k = ((4 - ph) / 2) * m^{-1} mod 2.  For prime d=2,
         // m must be 1 (only nonzero value mod 2), so k = (4 - ph)/2 mod 2.
-        return mod((-ph / 2), 2);
+        const int outcome = mod((-ph / 2), 2);
+        const int dest_row = p_z - n;
+        xbits[dest_row] = xbits[p_z];
+        zbits[dest_row] = zbits[p_z];
+        phase[dest_row] = phase[p_z];
+        std::fill(xbits[p_z].begin(), xbits[p_z].end(), 0);
+        std::fill(zbits[p_z].begin(), zbits[p_z].end(), 0);
+        zbits[p_z][q] = 1;
+        phase[p_z] = mod(-2 * outcome, two_d);
+        return outcome;
     }
     // Odd prime d: ph is even, so ph/2 is a well-defined integer; reduce mod d.
     const int ph_half = mod(ph / 2, d);
     const int inv_m = mod_inv(m, d);
-    return mod(-ph_half * inv_m, d);
+    const int outcome = mod(-ph_half * inv_m, d);
+
+    const int dest_row = p_z - n;
+    xbits[dest_row] = xbits[p_z];
+    zbits[dest_row] = zbits[p_z];
+    phase[dest_row] = phase[p_z];
+    std::fill(xbits[p_z].begin(), xbits[p_z].end(), 0);
+    std::fill(zbits[p_z].begin(), zbits[p_z].end(), 0);
+    zbits[p_z][q] = 1;
+    phase[p_z] = mod(-2 * outcome, two_d);
+
+    return outcome;
 }
 
 std::vector<int> QuditCliffordSimulator::measure(uint64_t seed) {

@@ -250,10 +250,15 @@ QuditBernsteinVazirani::Result QuditBernsteinVazirani::solve(
             for (int i = 0; i < n; ++i) {
                 c.apply_H(i); c.apply_H(i); c.apply_H(i);
             }
-            // Step 6: measure
-            auto outcome = c.measure(seed + static_cast<uint64_t>(shot));
-            for (int i = 0; i < n; ++i)
-                votes[static_cast<size_t>(i)][static_cast<size_t>(outcome[static_cast<size_t>(i)])]++;
+            // Step 6: measure ancilla first, then decode each query qudit from
+            // an independent snapshot to avoid cross-talk between measurements.
+            c.measure_qudit(n, seed + static_cast<uint64_t>(shot));
+            for (int i = 0; i < n; ++i) {
+                QuditCliffordSimulator snapshot = c;
+                const int outcome = snapshot.measure_qudit(
+                    i, seed + static_cast<uint64_t>(shot) + static_cast<uint64_t>(i) + 1);
+                votes[static_cast<size_t>(i)][static_cast<size_t>(outcome)]++;
+            }
         }
 
         std::vector<int> recovered(static_cast<size_t>(n));
