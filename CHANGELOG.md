@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.7.1] - 2026-05-17
+
+### Tests
+
+- `tests/test_qudit_simulators.cpp` — 90 tests across 14 suites covering the full R.1.7.0 backend suite:
+  - `QuditDensityMatrix` (20 tests): zero-state initialisation, purity, statevector construction, `apply_1qudit`/`apply_2qudit` agreement with `QuditStatevector`, trace preservation after gates (d=3), Kraus trace preservation (depolarising d=2), purity decay (d=2/d=3), amplitude damping population decay, `apply_noise` dispatch, Lindblad Euler step, `measure` collapse, `partial_trace` (zero state, entangled state, empty-keep throws)
+  - `QuditMPS` (12 tests): zero-state init (d=2/d=3), statevector round-trip (d=2/d=3/d=5), norm unity after gates, `apply_1qudit` agreement with SV (d=2/d=3), `apply_2qudit` adjacent and non-adjacent agreement with SV, `measure` zero-state, `left_canonicalize` norm preservation
+  - `QuditClifford` (13 tests): tableau initialisation (d=2/d=3), `apply_X` phase update, `apply_H` X/Z swap and double-H identity, `apply_CSUM` target-X and control-Z updates, `measure` zero-state (d=2/d=3), H-then-measure uniform distribution (d=2), non-prime d=4/d=6 throws, prime d=5 constructs
+  - `QuditNoiseModel` (8 tests): Kraus operator counts for depolarising (d=2/d=3), amplitude damping (d=2/d=3), phase damping (d=2/d=3), `add_depolarizing` registration, `amplitude_damping_lindblad` rate
+  - `QuditBV_Backend` (8 tests): STATEVECTOR/DENSITY_MATRIX/MPS/CLIFFORD backends recover secret (d=2); Clifford d=3 and d=5; all-backends agreement on d=2
+  - `QuditBV_Errors` (2 tests): invalid-d and zero-length-secret throw paths
+  - `QuditDJ_Backend` (6 tests): constant and balanced oracles across STATEVECTOR/DENSITY_MATRIX/MPS backends (d=3)
+  - `QuditDJ_Errors` (1 test): invalid-d throw
+  - `QuditGrover_Backend` (4 tests): STATEVECTOR/DENSITY_MATRIX/MPS success rate; CLIFFORD throws
+  - `QuditQPE_Backend` (4 tests): phase recovery across STATEVECTOR/DENSITY_MATRIX/MPS; CLIFFORD throws
+  - `QuditQPE_Errors` (2 tests): invalid-d and mismatched-size throws
+  - `QuditSimon_Backend` (6 tests): period recovery across STATEVECTOR/DENSITY_MATRIX/MPS for d∈{3,5,7}; CLIFFORD throws
+  - `DM_SV_Agreement` (2 tests): density-matrix trace and purity match statevector reference (d=2/d=3) after gate sequence
+  - `MPS_SV_Agreement` (2 tests): MPS amplitude agreement with statevector after multi-gate circuit (d=2/d=3)
+
+### Results
+
+- 538 tests across 66 suites — 526 passed, 12 failed (798 ms, WSL/Clang). Failures resolved in R.1.7.2.
+
 ## [R.1.7.0] - 2026-05-17
 
 ### Added
