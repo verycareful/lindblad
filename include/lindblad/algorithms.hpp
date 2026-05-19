@@ -795,5 +795,73 @@ private:
         const std::vector<std::string>& equations, int n);
 };
 
+// =============================================================================
+// Shor — Integer factorisation via quantum order finding (Shor 1994)
+//
+// Factorises N into two non-trivial factors p, q (N = p × q).
+//
+// Algorithm:
+//   1. Classical: even N, perfect-power N, small trial GCDs.
+//   2. Pick random a coprime to N.
+//   3. Quantum: QPE-based period finding — build circuit |x⟩|1⟩ → |x⟩|aˣ mod N⟩,
+//      apply IQFT on eval register, measure, recover r via continued fractions.
+//   4. If r is even and a^(r/2) ≢ −1 (mod N):
+//        p = gcd(a^(r/2)−1, N),  q = gcd(a^(r/2)+1, N).
+//   5. Repeat up to max_attempts.
+//
+// Supported backends: STATEVECTOR (default), DENSITY_MATRIX, MPS.
+// CLIFFORD is not supported — modular exponentiation requires non-Clifford gates.
+//
+// Practical range: N ≤ ~100 (circuit has O(n²) UNITARY gates, n=⌈log₂N⌉).
+// Larger N requires exponentially more memory and simulation time.
+//
+// References:
+//   Shor (1994), FOCS §5; Nielsen & Chuang §5.3; Beauregard (2002).
+// =============================================================================
+
+class Shor {
+public:
+    struct Options {
+        int  n_eval_qubits = 0;   // 0 = auto: 2*⌈log₂N⌉ + 1
+        int  max_attempts  = 10;
+        uint64_t seed      = 0;
+        backends::LocalBackend::SimType simulator =
+            backends::LocalBackend::SimType::STATEVECTOR;
+    };
+
+    struct Result {
+        uint64_t    factor;     // non-trivial factor p (0 on failure)
+        uint64_t    cofactor;   // N / p (0 on failure)
+        bool        success;
+        int         attempts;
+        std::string method;     // "trivial_gcd" | "perfect_power" | "quantum"
+    };
+
+    Options options;
+
+    Shor() = default;
+    explicit Shor(const Options& o) : options(o) {}
+
+    // Factor N. Throws std::invalid_argument if N < 4 or N is prime.
+    // Returns Result::success = false if all attempts are exhausted.
+    Result factorize(uint64_t N) const;
+
+    // Build the QPE circuit for a^x mod N.
+    // Eval register: qubits 0..n_eval-1 (H-initialised, then IQFT).
+    // Target register: qubits n_eval..n_eval+n_target-1 (initialised to |1⟩).
+    // Qubit count = n_eval + n_target. No measurements appended.
+    static QuantumCircuit build_period_finding_circuit(
+        uint64_t a, uint64_t N, int n_eval, int n_target
+    );
+
+    // Run the period-finding circuit on backend and recover r = ord_N(a)
+    // via continued-fraction expansion of the measured phase. Returns 0 on failure.
+    static uint64_t find_order(
+        uint64_t a, uint64_t N, int n_eval,
+        backends::LocalBackend& backend,
+        uint64_t seed = 0
+    );
+};
+
 } // namespace algorithms
 } // namespace lindblad

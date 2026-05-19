@@ -88,6 +88,7 @@ Create one page per public algorithm family. Variants of the same algorithm shou
 - `docs/algorithms/ising.md`
 - `docs/algorithms/dispatch.md`
 - `docs/algorithms/qft.md`  # exact QFT, IQFT, AQFT (Kitaev approximation), and semi-classical (Griffiths-Niu) QFT with feedforward
+- `docs/algorithms/shor.md`  # Shor's integer factorisation via QPE-based period finding
 
 MAQAOA is the main exception: it deserves its own dedicated page because it has substantially more modes, configuration surface, and usage patterns than QAOA.
 
@@ -130,7 +131,7 @@ The recommended recovery order is:
 
 ## Current Priority
 
-The initial algorithm documentation pass (BV family, QAOA, MAQAOA, QPE, Grover, Deutsch-Jozsa, Simon, QFT including semi-classical variant) is complete. Remaining priorities as of R.1.7.8:
+The initial algorithm documentation pass (BV family, QAOA, MAQAOA, QPE, Grover, Deutsch-Jozsa, Simon, QFT including semi-classical variant, Shor) is complete. Remaining priorities as of R.1.8.0:
 
 1. Ensure all algorithm pages meet the full required-section checklist above.
 2. Keep API deep-dive pages (`docs/api/*.md`) in sync with header changes.

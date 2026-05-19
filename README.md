@@ -3,7 +3,7 @@
 [![CMake](https://img.shields.io/badge/CMake-3.21+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Lindblad v2.1](https://img.shields.io/badge/License-Lindblad%20v2.1-red.svg)](LICENSE)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-R.1.7.8-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-R.1.8.0-blue?style=flat-square)](CHANGELOG.md)
 
 > **License Notice:** This software is **proprietary and source-available**. Free for non-commercial and academic use only. Commercial use of any kind requires a separate written license agreement. Private non-commercial redistribution of unmodified copies to peers/collaborators is permitted under the same license terms (see §3.1 of [LICENSE](LICENSE)). **Public redistribution in any form — including forks, copies, mirrors, package registries, and derivative works — is strictly prohibited without explicit written authorization from the author.** Public GitHub forks are technically permitted by GitHub's platform but are **not licensed** under this agreement for any purpose other than reviewing or submitting contributions via pull request; any other use of a fork constitutes a violation. By submitting any contribution (pull request, code snippet, bug fix, or similar) you irrevocably assign full copyright ownership of that contribution to the author — see §6.3 of [LICENSE](LICENSE). See [LICENSE](LICENSE) for full terms — `qpp.support@proton.me` for licensing inquiries.
 
@@ -49,6 +49,7 @@ Lindblad is a high-performance C++23 quantum computing framework for circuit con
 | QFT / IQFT / AQFT | [docs/algorithms/qft.md](docs/algorithms/qft.md) | [docs/api/qft.md](docs/api/qft.md) |
 | Ising / QUBO | [docs/algorithms/ising.md](docs/algorithms/ising.md) | [docs/api/ising.md](docs/api/ising.md) |
 | Dispatch | [docs/algorithms/dispatch.md](docs/algorithms/dispatch.md) | [docs/api/dispatch.md](docs/api/dispatch.md) |
+| Shor | [docs/algorithms/shor.md](docs/algorithms/shor.md) | [docs/api/shor.md](docs/api/shor.md) |
 
 ### API Reference Pages
 
@@ -72,6 +73,7 @@ Lindblad is a high-performance C++23 quantum computing framework for circuit con
 
 | Version | Description |
 |---|---|
+| `R.1.8.0` | `algorithms::Shor` — integer factorisation via QPE-based quantum order finding with classical pre-screening, continued-fraction period recovery, and GCD post-processing. Supports SV, DM, MPS backends; CLIFFORD unsupported (non-Clifford modular exponentiation). Practical for N ≤ ~100 |
 | `R.1.7.8` | Test suite expansion: `test_primitives.cpp` (Estimator, Sampler), `test_dag.cpp` (DAG properties), and `test_qasm_parser.cpp` (QASM2 multi-register support); 594 tests across 71 suites — all passing |
 | `R.1.7.7` | `Estimator` hot path: added `StatevectorSimulator::eval_expectation`; eliminates `final_state` copy on variational loop. Removed 3 stale TODO entries. |
 | `R.1.7.6` | Structural fix: `SabreLayout::run` and all SABRE internals extracted from `trivial_layout.cpp` into `sabre_layout.cpp`; 556 tests across 67 suites — all passing |
@@ -135,6 +137,7 @@ Lindblad is a high-performance C++23 quantum computing framework for circuit con
 | Deutsch-Jozsa | `DeutschJozsa` | Constant vs balanced in one oracle query |
 | Bernstein-Vazirani | `BernsteinVazirani` | Standard, recursive, probabilistic (Shukla-Vedula 2023), and distributed variants |
 | Simon | `Simon` | Period finding via GF(2) Gaussian elimination |
+| Shor | `Shor` | Integer factorisation via QPE-based quantum order finding; classical pre-screening + continued-fraction period recovery; SV/DM/MPS backends |
 | QFT | `QFT` | Exact QFT, IQFT, AQFT (Kitaev/Coppersmith); Clifford-simulable for n≤2 or AQFT m=1 |
 | IsingHamiltonian | `IsingHamiltonian` | `from_qubo()` QUBO→Ising conversion; `to_sparse_pauli_op()` export |
 | Dispatch | `SoftDispatchResult` | Post-process MA-QAOA bitstring distributions into unit-commitment dispatch solutions |

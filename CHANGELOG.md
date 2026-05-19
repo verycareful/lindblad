@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.8.0] - 2026-05-20
+
+### Added
+- `algorithms::Shor` — integer factorisation via quantum order finding (Shor 1994).
+  `Shor::factorize(N)` performs classical pre-screening (even N, perfect powers,
+  small trial GCDs) then quantum period finding via a QPE-based circuit.
+  `Shor::build_period_finding_circuit(a, N, n_eval, n_target)` and
+  `Shor::find_order(a, N, n_eval, backend)` are exposed for testing and composition.
+  Supports STATEVECTOR (default), DENSITY_MATRIX, and MPS backends.
+  CLIFFORD backend is not supported (modular exponentiation is non-Clifford).
+  Practical for N ≤ ~100; larger N requires exponentially more simulation memory.
+
+### Documentation
+- `docs/algorithms/shor.md` — Algorithm explanation page covering theory, circuit architecture, backend compatibility, and usage examples.
+- `docs/api/shor.md` — API deep dive for the `Shor` class, `Options`, `Result`, and all public methods.
+- `docs/APIOverview.md` — Added `algorithms::Shor` to the class index and deep dive links.
+- `docs/MasterDocumentation.md` — Added `shor.md` to algorithm documentation map.
+
 ## [R.1.7.8] - 2026-05-19
 
 ### Tests
