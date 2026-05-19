@@ -105,6 +105,10 @@ std::unordered_map<std::string, int> counts = result.counts;
 4. If shots > 0, sample `sv.sample_counts(shots, seed)` via cumulative distribution
 5. Return Result with final state and counts
 
+### Fast Expectation Values
+
+For variational inner loops, `StatevectorSimulator::eval_expectation(circuit, observable)` simulates the circuit and computes the expectation value in-place, bypassing the `Result` struct and avoiding an $O(2^n)$ allocation of the final state vector. This is used by the `Estimator` ideal path.
+
 ### Complexity Analysis
 
 - **Time**: $O(2^n k)$ where $k$ = number of instructions; $O(2^{2k})$ for $k$-qubit gates

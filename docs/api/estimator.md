@@ -72,8 +72,7 @@ Behavior (verified against the implementation):
   routes through `DensityMatrixSimulator`; uses `options.shots` shots (defaults to 8192 if
   `shots == 0` but noise model is non-ideal); returns
   `dm_result.final_state.expectation_value_sparse(observable)`
-- **Exact path** (when noise model is ideal and `shots == 0`): runs `StatevectorSimulator`
-  and returns `observable.expectation_value(result.final_state)`
+- **Exact path** (when noise model is ideal and `shots == 0`): runs `StatevectorSimulator::eval_expectation(circuit, observable)` which evaluates the observable in-place, avoiding a $O(2^n)$ allocation for the final state vector.
 - Throws `std::runtime_error` if simulation fails on either path
 
 Preconditions:

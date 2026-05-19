@@ -3,7 +3,7 @@
 [![CMake](https://img.shields.io/badge/CMake-3.21+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Lindblad v2.1](https://img.shields.io/badge/License-Lindblad%20v2.1-red.svg)](LICENSE)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-R.1.7.7-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-R.1.7.8-blue?style=flat-square)](CHANGELOG.md)
 
 > **License Notice:** This software is **proprietary and source-available**. Free for non-commercial and academic use only. Commercial use of any kind requires a separate written license agreement. Private non-commercial redistribution of unmodified copies to peers/collaborators is permitted under the same license terms (see §3.1 of [LICENSE](LICENSE)). **Public redistribution in any form — including forks, copies, mirrors, package registries, and derivative works — is strictly prohibited without explicit written authorization from the author.** Public GitHub forks are technically permitted by GitHub's platform but are **not licensed** under this agreement for any purpose other than reviewing or submitting contributions via pull request; any other use of a fork constitutes a violation. By submitting any contribution (pull request, code snippet, bug fix, or similar) you irrevocably assign full copyright ownership of that contribution to the author — see §6.3 of [LICENSE](LICENSE). See [LICENSE](LICENSE) for full terms — `qpp.support@proton.me` for licensing inquiries.
 
@@ -72,6 +72,7 @@ Lindblad is a high-performance C++23 quantum computing framework for circuit con
 
 | Version | Description |
 |---|---|
+| `R.1.7.8` | Test suite expansion: `test_primitives.cpp` (Estimator, Sampler), `test_dag.cpp` (DAG properties), and `test_qasm_parser.cpp` (QASM2 multi-register support); 594 tests across 71 suites — all passing |
 | `R.1.7.7` | `Estimator` hot path: added `StatevectorSimulator::eval_expectation`; eliminates `final_state` copy on variational loop. Removed 3 stale TODO entries. |
 | `R.1.7.6` | Structural fix: `SabreLayout::run` and all SABRE internals extracted from `trivial_layout.cpp` into `sabre_layout.cpp`; 556 tests across 67 suites — all passing |
 | `R.1.7.5` | Bug fixes: MPS UNITARY gate correctly dispatched via SV fallback (B3); `Estimator` routes through `DensityMatrixSimulator` for noisy/shot-based runs (B5); `DensityMatrixSimulator` `before_gate` noise now applied (B6); `to_qasm2()` emits valid QASM2 for `UNITARY`/`PARAM_*` gates (B7). Regression suite: 14 new tests, 556 total across 67 suites |

@@ -30,6 +30,10 @@ set(LINDBLAD_TEST_SOURCES
     test_qudit_simulators.cpp
     # Bug regression suite — black-box tests for the 8 open TODOs at R.1.7.4
     test_bug_regression.cpp
+    # R.1.7.8 test suite — Primitives, DAG, and QASM parser
+    test_primitives.cpp
+    test_dag.cpp
+    test_qasm_parser.cpp
 )
 
 # Create test executable

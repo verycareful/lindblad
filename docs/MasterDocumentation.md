@@ -130,7 +130,7 @@ The recommended recovery order is:
 
 ## Current Priority
 
-The initial algorithm documentation pass (BV family, QAOA, MAQAOA, QPE, Grover, Deutsch-Jozsa, Simon, QFT including semi-classical variant) is complete. Remaining priorities as of R.1.7.5:
+The initial algorithm documentation pass (BV family, QAOA, MAQAOA, QPE, Grover, Deutsch-Jozsa, Simon, QFT including semi-classical variant) is complete. Remaining priorities as of R.1.7.8:
 
 1. Ensure all algorithm pages meet the full required-section checklist above.
 2. Keep API deep-dive pages (`docs/api/*.md`) in sync with header changes.
