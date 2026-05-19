@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.7.8] - 2026-05-19
+
+### Tests
+- `tests/test_primitives.cpp` — New test suite covering `Estimator` and `Sampler` primitives, including exact statevector evaluation, analytical parameter-shift gradient verification, noisy path dispatch, and batch execution consistency.
+- `tests/test_dag.cpp` — New test suite for `DAGCircuit` covering topological sorting, parallel layer extraction, dependency tracking, and graph properties.
+- `tests/test_qasm_parser.cpp` — New test suite for QASM 2.0 parsing covering `QASM2Parser`, multi-register layouts, and gate resolution.
+
+### Documentation
+- `docs/api/estimator.md` — Updated the `run_single` exact path to accurately reflect the R.1.7.7 optimization using `StatevectorSimulator::eval_expectation`.
+- `docs/api/simulators.md` — Added a "Fast Expectation Values" section detailing the `eval_expectation` API and its memory benefits.
+- `docs/MasterDocumentation.md` — Bumped the documentation status tracker to R.1.7.8.
+
+### Results
+- 594 tests from 71 test suites ran. All passed.
+
+
 ## [R.1.7.7] - 2026-05-19
 
 ### Changed
