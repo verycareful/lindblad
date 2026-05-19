@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.7.6] - 2026-05-19
+
+### Fixed
+
+- **`src/transpiler/layout/sabre_layout.cpp`**: `SabreLayout::run`, `sabre_run`, `sabre_heuristic`, and `SABRERunResult` extracted from `trivial_layout.cpp` into their own translation unit. File was previously an empty stub; implementation now lives where the build system and structural convention expect it.
+- **`src/transpiler/layout/trivial_layout.cpp`**: Stripped to `TrivialLayout::run` only; removed SABRE-specific includes (`<algorithm>`, `<limits>`, `<numeric>`, `<unordered_map>`, `<vector>`) that are no longer needed.
+- **`tests/test_bug_regression.cpp`**: B8 header comment updated to reflect the structural fix resolved in R.1.7.6.
+
 ## [R.1.7.5] - 2026-05-19
 
 ### Fixed
