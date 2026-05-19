@@ -1,5 +1,5 @@
 Lindblad SOFTWARE LICENSE AGREEMENT
-Version 2.0
+Version 2.1
 Effective Date: 2026
 Copyright © 2026 Sricharan Suresh
 All Rights Reserved
@@ -78,7 +78,7 @@ Contact: qpp.support@proton.me
 This software makes use of Lindblad (github.com/verycareful),
 developed by Sricharan Suresh.
 Copyright © 2026 Sricharan Suresh. All Rights Reserved.
-Used under the Lindblad Software License Agreement Version 2.0.
+Used under the Lindblad Software License Agreement Version 2.1.
 5.4 Attribution requirements under this Section apply to all Non-Commercial Licensees regardless of institutional affiliation.
 
 6. CONTRIBUTIONS AND COMMUNITY
@@ -169,3 +169,8 @@ Author: Sricharan Suresh
 Email: qpp.support@proton.me
 GitHub: github.com/verycareful
 This is a proprietary source-available license. It is not an Open Source Initiative (OSI) approved open source license. Access to the source code is provided for the purposes of transparency, academic use, and research. Such access does not constitute an open source license and does not grant rights beyond those explicitly stated herein. Use of this Software in any capacity constitutes full acceptance of the terms of this License Agreement.
+
+14. THIRD-PARTY COMPONENTS
+14.1 The Software incorporates third-party open-source components that are subject to their own license terms independently of this Agreement. A complete list of these components, their versions, copyright holders, and applicable license notices is provided in the NOTICE file distributed with this Software.
+14.2 Non-commercial licensees' obligations with respect to these third-party components are governed solely by those components' respective open-source licenses, which are reproduced in the NOTICE file. Where any obligation imposed by a third-party license conflicts with this Agreement, the third-party license governs with respect to that component only.
+14.3 Nothing in this Agreement restricts any right granted to You by an applicable open-source license with respect to those third-party components.

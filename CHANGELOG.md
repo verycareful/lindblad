@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.7.4] - 2026-05-19
+
+### Changed
+
+- **`NOTICE`**: Rewritten — updates stale Q++/v1.0 content to Lindblad SLA v2.1; adds full third-party component notices for Eigen (MPL-2.0), NLopt (LGPL-2.1, static-link relinking note), GoogleTest (BSD 3-Clause), Google Benchmark (Apache 2.0), and pybind11 (BSD 3-Clause); includes source-download warning for test and benchmark files in GitHub archives.
+- **`LICENSE`**: Revised to Version 2.1. §14 Third-Party Components added — points to `NOTICE` for full notices; states that non-commercial licensees' obligations under third-party licenses are independent of this Agreement; omits commercial context (addressed in individual license agreements).
+- **`CMakeLists.txt`**: `cmake_minimum_required` bumped to 3.21; `EIGEN_MPL2_ONLY` compile definition added to `lindblad_core` (restricts Eigen inclusion to MPL-2.0-only headers); `LINDBLAD_BUILD_TESTS` option added defaulting to `PROJECT_IS_TOP_LEVEL` with guarded `enable_testing()` / `add_subdirectory(tests)` and conditional `FetchContent_MakeAvailable(googletest)`; `LINDBLAD_BUILD_BENCHMARKS` default changed from `ON` to `PROJECT_IS_TOP_LEVEL`; build options moved before `FetchContent_MakeAvailable` calls so all fetches are conditional.
+- **`lindblad-page/src/pages.tsx`**: `ThirdPartyNotices` component and section added to the license page listing all five dependencies with license identifiers and usage notes. `KEY_TERMS` corrected for SLA v2.1 structure: §3↔§4 section numbers swapped (§3 = Redistribution, §4 = Commercial use); §3 body updated to reflect §3.1 permitted private sharing; standalone Modifications row merged into §2 (Permitted use); §7 Citations renamed §5 Attribution & citations; §14 Third-party components row added. PATH A card: redistribution bullet updated to reflect §3.1 permitted private sharing. All SLA version references updated to v2.1.
+- **`lindblad-page/src/components/chrome.tsx`**: SLA version updated to v2.1.
+
 ## [R.1.7.3] - 2026-05-19
 
 ### Changed
