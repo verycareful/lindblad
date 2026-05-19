@@ -8,9 +8,9 @@ authors:
     given-names: Sricharan
     alias: verycareful
     orcid: https://orcid.org/0009-0004-6873-5692
-version: R.1.7.3
-date-released: 2026-05-17
-license: "LicenseRef-Lindblad-2.0"
+version: R.1.7.4
+date-released: 2026-05-19
+license: "LicenseRef-Lindblad-2.1"
 repository-code: https://github.com/verycareful
 contact:
   - email: qpp.support@proton.me
@@ -21,6 +21,6 @@ preferred-citation:
     - family-names: Suresh
       given-names: Sricharan
       orcid: https://orcid.org/0009-0004-6873-5692
-  version: R.1.7.3
+  version: R.1.7.4
   year: 2026
   url: https://github.com/verycareful

@@ -1,9 +1,9 @@
 # Lindblad
 [![C++](https://img.shields.io/badge/C%2B%2B-23-00599C?style=flat-square&logo=cplusplus&logoColor=white)](https://isocpp.org/)
-[![CMake](https://img.shields.io/badge/CMake-3.20+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
-[![License: Lindblad v2.0](https://img.shields.io/badge/License-Lindblad%20v2.0-red.svg)](LICENSE)
+[![CMake](https://img.shields.io/badge/CMake-3.21+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
+[![License: Lindblad v2.1](https://img.shields.io/badge/License-Lindblad%20v2.1-red.svg)](LICENSE)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-R.1.7.3-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-R.1.7.4-blue?style=flat-square)](CHANGELOG.md)
 
 > **License Notice:** This software is **proprietary and source-available**. Free for non-commercial and academic use only. Commercial use of any kind requires a separate written license agreement. Private non-commercial redistribution of unmodified copies to peers/collaborators is permitted under the same license terms (see §3.1 of [LICENSE](LICENSE)). **Public redistribution in any form — including forks, copies, mirrors, package registries, and derivative works — is strictly prohibited without explicit written authorization from the author.** Public GitHub forks are technically permitted by GitHub's platform but are **not licensed** under this agreement for any purpose other than reviewing or submitting contributions via pull request; any other use of a fork constitutes a violation. By submitting any contribution (pull request, code snippet, bug fix, or similar) you irrevocably assign full copyright ownership of that contribution to the author — see §6.3 of [LICENSE](LICENSE). See [LICENSE](LICENSE) for full terms — `qpp.support@proton.me` for licensing inquiries.
 
@@ -72,6 +72,7 @@ Lindblad is a high-performance C++23 quantum computing framework for circuit con
 
 | Version | Description |
 |---|---|
+| `R.1.7.4` | License v2.1: §14 third-party components; `NOTICE` rewritten with full dep notices (Eigen MPL-2.0 + `EIGEN_MPL2_ONLY`, NLopt LGPL-2.1 relinking note, GoogleTest/Benchmark/pybind11). CMake: 3.21+, `LINDBLAD_BUILD_TESTS` guard (default OFF as dep), googletest fetch gated. Website: `ThirdPartyNotices` section, KEY_TERMS corrected for v2.1 structure |
 | `R.1.7.3` | License revised to v2.0: private non-commercial redistribution permitted under same-license; §6 acknowledgment added. Website synced to R.1.7.2 state: QFT added to capability matrix and catalog, qudit suite referenced, "Nine families". `CITATION.cff` description updated |
 | `R.1.7.2` | Correctness fixes: `apply_H` conjugation (x←−z, z←x), `apply_CSUM`/`apply_CSUM_dag` phase cross-term (x_c·z_t), `measure_qudit` linear-system solve + tableau collapse, BV Clifford per-qudit snapshots; `apply_to_bra` inlines conj(U); docs updated |
 | `R.1.7.1` | Test suite release — `test_qudit_simulators.cpp`: 90 tests across 14 suites covering `QuditDensityMatrix`, `QuditMPS`, `QuditCliffordSimulator`, `QuditNoiseModel`, and backend dispatch for all 5 qudit algorithms; 526/538 passed, 12 failures fixed in R.1.7.2 |
@@ -167,7 +168,7 @@ docs/
 
 ## Build Requirements
 
-- CMake 3.20 or newer
+- CMake 3.21 or newer
 - C++23 compiler:
   - GCC or Clang (with OpenMP)
   - MSVC with `/openmp` support
@@ -206,9 +207,14 @@ ctest --test-dir build --output-on-failure
 
 | Option | Default | Description |
 |---|---|---|
-| `LINDBLAD_BUILD_BENCHMARKS` | `ON` | Build Google Benchmark targets |
+| `LINDBLAD_BUILD_TESTS` | `ON` (top-level), `OFF` (dependency) | Build GoogleTest test suite |
+| `LINDBLAD_BUILD_BENCHMARKS` | `ON` (top-level), `OFF` (dependency) | Build Google Benchmark targets |
 | `LINDBLAD_BUILD_PYTHON` | `OFF` | Build pybind11 Python extension |
 | `LINDBLAD_MARCH_NATIVE` | `OFF` | Compile with `-march=native` (non-distributable, max performance) |
+
+When Lindblad is consumed via CMake `FetchContent`, `LINDBLAD_BUILD_TESTS` and `LINDBLAD_BUILD_BENCHMARKS` default to `OFF` so the test and benchmark targets do not propagate into the parent build.
+
+> **Note (direct clone or GitHub archive download):** The test suite and benchmark sources are part of this repository and are present in any direct clone or release archive. If you download the source directly rather than consuming it through CMake, be aware that the test files (under `tests/`) and benchmark files (under `benchmarks/`) are included. GoogleTest and Google Benchmark are fetched at build time; their license notices are in [NOTICE](NOTICE).
 
 Example:
 
@@ -243,7 +249,7 @@ Active development. The core simulation, transpilation, and algorithm subsystems
 
 Copyright © 2026 Sricharan Suresh (github.com/verycareful)
 
-This project is licensed under the **[Lindblad Software License Agreement v2.0](LICENSE)** — source-available, free for non-commercial and academic use. Commercial use requires a separate license agreement.
+This project is licensed under the **[Lindblad Software License Agreement v2.1](LICENSE)** — source-available, free for non-commercial and academic use. Commercial use requires a separate license agreement.
 
 See [LICENSE](LICENSE) for full terms, [NOTICE](NOTICE) for copyright notice, and [CITATION.cff](CITATION.cff) for citation information.
 

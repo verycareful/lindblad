@@ -1,6 +1,6 @@
-cmake_minimum_required(VERSION 3.20)
-project(lindblad VERSION 1.1.7.3 LANGUAGES CXX)
-set(LINDBLAD_VERSION_LABEL "R.1.7.3")
+cmake_minimum_required(VERSION 3.21)
+project(lindblad VERSION 1.1.7.4 LANGUAGES CXX)
+set(LINDBLAD_VERSION_LABEL "R.1.7.4")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -90,12 +90,16 @@ set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
 set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(googletest nlopt eigen)
+# Options declared before FetchContent_MakeAvailable so each fetch is conditional
+option(LINDBLAD_BUILD_TESTS      "Build test suite (ON when building Lindblad directly, OFF when consumed as a dependency)" ${PROJECT_IS_TOP_LEVEL})
+option(LINDBLAD_BUILD_BENCHMARKS "Build benchmarks (ON when building Lindblad directly, OFF when consumed as a dependency)" ${PROJECT_IS_TOP_LEVEL})
+option(LINDBLAD_BUILD_PYTHON     "Build Python bindings" OFF)
 
-# Benchmark and pybind11 are optional — only fetch if requested
-option(LINDBLAD_BUILD_BENCHMARKS "Build benchmarks" ON)
-option(LINDBLAD_BUILD_PYTHON "Build Python bindings" OFF)
+FetchContent_MakeAvailable(nlopt eigen)
 
+if(LINDBLAD_BUILD_TESTS)
+    FetchContent_MakeAvailable(googletest)
+endif()
 if(LINDBLAD_BUILD_BENCHMARKS)
     FetchContent_MakeAvailable(benchmark)
 endif()
@@ -171,7 +175,11 @@ target_include_directories(lindblad_core PUBLIC
 add_library(lindblad::core ALIAS lindblad_core)
 
 # Expose version label as a compile definition so version() never drifts from CMakeLists.txt
-target_compile_definitions(lindblad_core PUBLIC LINDBLAD_VERSION_LABEL="${LINDBLAD_VERSION_LABEL}")
+# EIGEN_MPL2_ONLY restricts inclusion to MPL-2.0-only headers; Eigen's LGPL files are excluded
+target_compile_definitions(lindblad_core PUBLIC
+    LINDBLAD_VERSION_LABEL="${LINDBLAD_VERSION_LABEL}"
+    EIGEN_MPL2_ONLY
+)
 
 # Link OpenMP
 find_package(OpenMP REQUIRED)
@@ -195,8 +203,10 @@ endif()
 # ==============================================================================
 # Tests
 # ==============================================================================
-enable_testing()
-add_subdirectory(tests)
+if(LINDBLAD_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 # ==============================================================================
 # Benchmarks

@@ -27,7 +27,7 @@ void print_lindblad_banner_once() {
 
         std::cout
             << "\n"
-            << "    Welcome to Lindblad Quantum Toolkit R.1.7.3 | CLI startup\n"
+            << "    Welcome to Lindblad Quantum Toolkit R.1.7.4 | CLI startup\n"
             << "__________________________________________________________________________________________________________________________________________________\n\n"
             << "              _     <─. (`─')_  _(`─')   <─.(`─')           (`─')  _ _(`─')             \n"
             << "      <─.    (_)       ╲( OO) )( (OO ).─> __( OO)    <─.    (OO ).─╱( (OO ).─>          \n"
@@ -39,7 +39,16 @@ void print_lindblad_banner_once() {
             << "    `─────'  `──'   `──'  `──'  `──────' `──────'  `─────'  `──' `──'`──────'           \n"
             << "__________________________________________________________________________________________________________________________________________________\n\n"
             << "    Made with no love (jk lol) and too much coffee (Or are those monster energy drinks?) by Sricharan (verycareful)!\n"
-            << "    License Notice: This software is proprietary and source-available (Lindblad SLA v2.0). Free for non-commercial and academic use only.\n\nCommercial use requires a separate written license agreement. Private non-commercial redistribution of unmodified\ncopies to peers/collaborators is permitted under the same license terms (see LICENSE §3.1). Public redistribution\nin any form — including forks, mirrors, and package registries — is prohibited without explicit written authorization.\nPublic GitHub forks are not licensed under this agreement for any purpose other than PR review.\nBy submitting any contribution you irrevocably assign full copyright ownership to the author — see LICENSE §6.3.\nSee LICENSE for full terms — qpp.support@proton.me for licensing inquiries.\n"
+            << "\n"
+            << "    License Notice: This software is proprietary and source-available (Lindblad SLA v2.1).\n"
+            << "    Free for non-commercial and academic use only. Commercial use requires a separate written license agreement.\n"
+            << "    Private non-commercial redistribution of unmodified copies to peers/collaborators is permitted\n"
+            << "    under the same license terms (see LICENSE §3.1). Public redistribution in any form — including\n"
+            << "    forks, mirrors, and package registries — is prohibited without explicit written authorization.\n"
+            << "    Public GitHub forks are not licensed under this agreement for any purpose other than PR review.\n"
+            << "    By submitting any contribution you irrevocably assign full copyright ownership to the author\n"
+            << "    — see LICENSE §6.3. Full terms: LICENSE | Inquiries: qpp.support@proton.me\n"
+            << "\n"
             << "    Ready to run tests and simulations.\n\n";
     });
 }
@@ -49,7 +58,7 @@ void print_lindblad_exit_banner() {
     std::cout
         << "\n"
 
-        << "    Thank you for using Lindblad Quantum Toolkit R.1.7.3\n"
+        << "    Thank you for using Lindblad Quantum Toolkit R.1.7.4\n"
         << "__________________________________________________________________________________________________________________________________________________\n\n"
         << "              _     <─. (`─')_  _(`─')   <─.(`─')           (`─')  _ _(`─')             \n"
         << "      <─.    (_)       ╲( OO) )( (OO ).─> __( OO)    <─.    (OO ).─╱( (OO ).─>          \n"
@@ -60,7 +69,15 @@ void print_lindblad_exit_banner() {
         << "    │     │' │  │'─>│  │ ╲   │  │  '─'  ╱│ '──'  ╱ │     │' │  │ │  ││  '─'  ╱          \n"
         << "    `─────'  `──'   `──'  `──'  `──────' `──────'  `─────'  `──' `──'`──────'           \n"
         << "__________________________________________________________________________________________________________________________________________________\n\n"
-        << "    License Notice: This software is proprietary and source-available (Lindblad SLA v2.0). Free for non-commercial and academic use only.\n\nCommercial use requires a separate written license agreement. Private non-commercial redistribution of unmodified\ncopies to peers/collaborators is permitted under the same license terms (see LICENSE §3.1). Public redistribution\nin any form — including forks, mirrors, and package registries — is prohibited without explicit written authorization.\nPublic GitHub forks are not licensed under this agreement for any purpose other than PR review.\nBy submitting any contribution you irrevocably assign full copyright ownership to the author — see LICENSE §6.3.\nSee LICENSE for full terms — qpp.support@proton.me for licensing inquiries.\n"
+        << "    License Notice: This software is proprietary and source-available (Lindblad SLA v2.1).\n"
+        << "    Free for non-commercial and academic use only. Commercial use requires a separate written license agreement.\n"
+        << "    Private non-commercial redistribution of unmodified copies to peers/collaborators is permitted\n"
+        << "    under the same license terms (see LICENSE §3.1). Public redistribution in any form — including\n"
+        << "    forks, mirrors, and package registries — is prohibited without explicit written authorization.\n"
+        << "    Public GitHub forks are not licensed under this agreement for any purpose other than PR review.\n"
+        << "    By submitting any contribution you irrevocably assign full copyright ownership to the author\n"
+        << "    — see LICENSE §6.3. Full terms: LICENSE | Inquiries: qpp.support@proton.me\n"
+        << "\n"
         << "__________________________________________________________________________________________________________________________________________________\n\n"
         << "    Lindblad simulation finished. May your qubits stay coherent!\n"
         << "__________________________________________________________________________________________________________________________________________________\n\n";
