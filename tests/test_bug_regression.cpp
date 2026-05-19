@@ -399,13 +399,9 @@ TEST(BugRegression, B7_ToQasm2UnitaryRoundTrip) {
 }
 
 // =============================================================================
-// B8 — sabre_layout.cpp is intentionally empty; SabreLayout::run lives in
-//       trivial_layout.cpp (structural issue, not a runtime correctness bug).
-// Test: transpile a 5-qubit circuit at optimization_level=2 with a linear
-//       coupling map (forces SabreLayout + SabreSwap to run); verify the
-//       transpiled circuit produces a correct GHZ-state distribution.
-//       EXPECTED RESULT: PASS — the implementation exists in trivial_layout.cpp.
-//       A FAIL here means SabreLayout is broken, not merely misplaced.
+// B8 — SabreLayout structural fix: SabreLayout::run and all SABRE internals
+//       extracted from trivial_layout.cpp into sabre_layout.cpp (R.1.7.6).
+//       Tests below verify correctness is preserved after the extraction.
 // =============================================================================
 
 // =============================================================================
