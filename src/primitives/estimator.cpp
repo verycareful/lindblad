@@ -115,13 +115,7 @@ double Estimator::run_single(
     }
 
     StatevectorSimulator sim;
-    auto result = sim.run(to_simulate);
-
-    if (!result.success) {
-        throw std::runtime_error("Simulation failed: " + result.error_message);
-    }
-
-    return observable.expectation_value(result.final_state);
+    return sim.eval_expectation(to_simulate, observable);
 }
 
 // =============================================================================

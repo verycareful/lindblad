@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.7.7] - 2026-05-19
+
+### Changed
+- `StatevectorSimulator::eval_expectation` — new method; runs circuit into the
+  thread-local working buffer and returns ⟨ψ|H|ψ⟩ directly, with no
+  `Result::final_state` allocation. For variational hot paths (VQE, QAOA).
+- `Estimator::run_single` — ideal path (no noise, shots=0) now calls
+  `eval_expectation` instead of `run().final_state`.
+
+### Results
+- 556 tests from 67 test suites ran. All passed.
+
 ## [R.1.7.6] - 2026-05-19
 
 ### Fixed
