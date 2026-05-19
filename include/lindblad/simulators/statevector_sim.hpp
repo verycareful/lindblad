@@ -59,6 +59,14 @@ public:
         const QuantumCircuit& circuit
     );
 
+    // Run circuit into the thread-local working buffer and compute ⟨ψ|observable|ψ⟩
+    // without allocating or populating Result::final_state. For the Estimator
+    // ideal-path hot loop. Circuit must contain no MEASURE instructions.
+    double eval_expectation(
+        const QuantumCircuit& circuit,
+        const SparsePauliOp& observable
+    );
+
     void apply_instruction(Statevector& sv, const Instruction& inst);
 };
 

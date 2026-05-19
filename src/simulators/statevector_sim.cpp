@@ -1,6 +1,6 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/gates.hpp"
-
+#include "lindblad/operators.hpp"
 #include <cmath>
 #include <chrono>
 #include <memory>
@@ -151,6 +151,29 @@ void StatevectorSimulator::simulate_circuit(
     for (const auto& inst : circuit.instructions) {
         apply_instruction(sv, inst);
     }
+}
+
+// =============================================================================
+// eval_expectation
+// =============================================================================
+
+double StatevectorSimulator::eval_expectation(
+    const QuantumCircuit& circuit,
+    const SparsePauliOp& observable
+) {
+    if (circuit.n_qubits < 1)
+        throw std::invalid_argument(
+            "StatevectorSimulator::eval_expectation: circuit must have at least 1 qubit");
+
+    thread_local std::unique_ptr<Statevector> sv_work;
+    if (!sv_work || sv_work->n_qubits != circuit.n_qubits) {
+        sv_work = std::make_unique<Statevector>(circuit.n_qubits);
+    } else {
+        sv_work->initialize();
+    }
+
+    simulate_circuit(*sv_work, circuit);
+    return observable.expectation_value(*sv_work);
 }
 
 // =============================================================================
