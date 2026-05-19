@@ -1,11 +1,11 @@
 Lindblad SOFTWARE LICENSE AGREEMENT
-Version 1.0
+Version 2.0
 Effective Date: 2026
 Copyright © 2026 Sricharan Suresh
 All Rights Reserved
 
 PREAMBLE
-This License Agreement governs the use, reproduction, modification, and distribution of the Lindblad Quantum Computing Framework (hereinafter "the Software"), a high-performance classical simulation framework for quantum circuits, developed and maintained by Sricharan Suresh (hereinafter "the Author"). This Software is made available under the terms set forth herein with the intent of supporting academic research and scientific advancement while preserving the Author's rights with respect to commercial exploitation.
+This License Agreement governs the use, reproduction, modification, and distribution of the Lindblad Quantum Computing Framework (hereinafter "the Software"), a high-performance C++23 quantum computing framework, developed and maintained by Sricharan Suresh (hereinafter "the Author"). This Software is made available under the terms set forth herein with the intent of supporting academic research and scientific advancement while preserving the Author's rights with respect to commercial exploitation.
 By accessing, downloading, copying, modifying, or using the Software in any capacity, You agree to be bound by the terms of this License Agreement. If You do not agree to these terms, You must not use the Software.
 
 1. DEFINITIONS
@@ -31,14 +31,23 @@ By accessing, downloading, copying, modifying, or using the Software in any capa
 
 2.2 The rights granted under Section 2.1 are conditioned upon Your continued compliance with all terms of this License Agreement. Any breach of these terms immediately and automatically terminates the rights granted herein.
 
-3. NON-COMMERCIAL USE — RESTRICTIONS
-3.1 The following acts are expressly prohibited under the Non-Commercial license granted by Section 2 and require a separate Commercial License Agreement:
+3. NON-COMMERCIAL USE — RESTRICTIONS AND REDISTRIBUTION
+3.1 Permitted Private Redistribution. You may share unmodified copies of the Software privately with individual peers, colleagues, or collaborators solely for Non-Commercial purposes, provided that all of the following conditions are met:
 
-(a) Any Distribution of the Software or any Modification thereof to any third party;
-(b) Any use of the Software in connection with a for-profit entity, product, or service, whether directly or indirectly;
-(c) Any use of the Software that generates or is intended to generate monetary compensation or commercial advantage of any kind;
-(d) Sublicensing, selling, renting, leasing, or otherwise transferring rights in the Software to any third party;
-(e) Removing, altering, obscuring, or misrepresenting any copyright notices, license terms, attribution statements, or proprietary markings contained within the Software.
+(a) The Software is shared in unmodified form and is accompanied by this License Agreement in its entirety, without alteration;
+(b) No charge, fee, or other compensation of any kind is sought from or imposed upon the recipient;
+(c) All copyright notices, attribution statements, proprietary markings, and license terms contained within the Software are preserved intact;
+(d) The recipient is clearly informed that their use of the Software is governed exclusively by this License Agreement and that they are fully bound by its terms upon receipt or use;
+(e) Such sharing does not constitute, facilitate, or enable Commercial Use as defined in Section 1.5.
+
+3.2 Prohibited Acts. The following acts are expressly prohibited under the Non-Commercial license granted by Section 2 and require either a separate Commercial License Agreement or explicit prior written authorization from the Author:
+
+(a) Any public distribution of the Software or any Modification thereof, including but not limited to web hosting, public mirroring, publication to package registries or software repositories, inclusion in any publicly accessible archive, or making the Software available to an unspecified or general audience by any means;
+(b) Distribution of any Modification of the Software to any third party, whether private or public, without explicit prior written authorization from the Author;
+(c) Any use of the Software in connection with a for-profit entity, product, or service, whether directly or indirectly;
+(d) Any use of the Software that generates or is intended to generate monetary compensation or commercial advantage of any kind;
+(e) Sublicensing, selling, renting, leasing, or otherwise transferring rights in the Software to any third party;
+(f) Removing, altering, obscuring, or misrepresenting any copyright notices, license terms, attribution statements, or proprietary markings contained within the Software.
 
 
 4. COMMERCIAL USE
@@ -61,15 +70,15 @@ Commercial licenses are negotiated individually. The Author reserves the right t
 5. ATTRIBUTION
 5.1 All Non-Commercial use of the Software must include clear and prominent attribution to the Author.
 5.2 Academic and Research Publications. Any academic paper, thesis, dissertation, technical report, preprint, or other research publication that makes use of the Software or results obtained through the Software must include the following citation:
-Suresh, S. (2026). Lindblad: A High-Performance Classical Simulation Framework
-for Quantum Circuits (the version you used) [Software].
+Suresh, S. (2026). Lindblad: A High-Performance C++23 Quantum Computing Framework
+(the version you used) [Software].
 https://github.com/verycareful
 Contact: qpp.support@proton.me
 5.3 Software and Projects. Any software project, tool, or system that incorporates or builds upon the Software must include the following notice in its documentation, README, or equivalent:
 This software makes use of Lindblad (github.com/verycareful),
 developed by Sricharan Suresh.
 Copyright © 2026 Sricharan Suresh. All Rights Reserved.
-Used under the Lindblad Software License Agreement Version 1.0.
+Used under the Lindblad Software License Agreement Version 2.0.
 5.4 Attribution requirements under this Section apply to all Non-Commercial Licensees regardless of institutional affiliation.
 
 6. CONTRIBUTIONS AND COMMUNITY
@@ -88,7 +97,8 @@ All feedback is reviewed and considered by the Author. Response times and implem
 (c) They have not previously assigned, licensed, or encumbered the Contribution in any manner inconsistent with this Agreement.
 
 6.5 Discretion. The Author retains sole discretion over whether to accept, modify, reject, or incorporate any Contribution. Submission of a Contribution does not create any obligation on the part of the Author to include it in the Software.
-6.6 No Compensation. No monetary or other compensation shall be owed to any Contributor for any Contribution unless explicitly agreed to in a separate written agreement signed by the Author prior to the submission of the Contribution.
+6.6 Acknowledgment. The Author may, at their sole discretion, acknowledge Contributors by name in project documentation, release notes, changelogs, or other public-facing materials. Such acknowledgment is voluntary, non-binding, and does not constitute compensation, does not create any ongoing obligation on the part of the Author, and does not transfer or confer any rights in the Software or its intellectual property.
+6.7 No Monetary Compensation. No monetary compensation shall be owed to any Contributor for any Contribution unless explicitly agreed to in a separate written agreement signed by the Author prior to the submission of the Contribution. Non-monetary recognition as described in Section 6.6 does not constitute compensation under this Section.
 
 7. SUPPORT AND SERVICE LEVEL
 7.1 Nature of Support. The Software is developed and maintained solely by the Author as an individual. Accordingly, support is provided on a best-effort basis and is subject to the Author's availability and discretion.

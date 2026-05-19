@@ -35,12 +35,14 @@ changes_version.md
 edits_temp
 outputs/
 Audit docs/
+docs/plans
 Bug Fixes.txt
 docs/superpowers/
 .github/
 
 # Claude
 .claude/
+CLAUDE.md
 
 #Website - different repo
 /lindblad-page/

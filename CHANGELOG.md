@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.7.3] - 2026-05-19
+
+### Changed
+
+- **LICENSE**: Revised to Version 2.0. §3 rewritten: §3.1 permits private non-commercial redistribution of unmodified copies to individual peers and collaborators under same-license passthrough, no-charge, and attribution-preservation conditions; §3.2 enumerates prohibited acts (public distribution, modified distribution without authorization, commercial use, sublicensing). Description updated to "C++23 quantum computing framework" throughout. §6.6 added — Author may acknowledge contributors in documentation or release notes at their sole discretion; former §6.6 renumbered §6.7 (No Monetary Compensation), clarified to distinguish non-monetary acknowledgment from compensation.
+- **`CITATION.cff`**: `abstract` and `preferred-citation.title` updated to "C++23 Quantum Computing Framework"; `license` updated to `LicenseRef-Lindblad-2.0`.
+- **`lindblad-page/src/pages.tsx`**: Website synced to current project state. Capability matrix: QFT row added (Statevector native, DM/Clifford/MPS supported). Algorithm catalog: QFT entry added (standard · inverse · approximate · semi-classical feedforward variants; all four simulator backends; new `Transform` filter family); header corrected from "Eight families" to "Nine families"; lead paragraph updated to describe the `QuditBackend` surface (Statevector · DM · MPS · Clifford for prime d) used by the qudit algorithm suite. Architecture section: QFT and qudit generalizations (BV · DJ · Grover · QPE · Simon) added to ALGORITHMS row; qudit simulator variants added to SIMULATORS row. License page: lead text corrected to reflect v2.0 private redistribution permission; all SLA version references updated to v2.0.
+- **`lindblad-page/src/components/chrome.tsx`**: SLA version updated to v2.0 in footer.
+
 ## [R.1.7.2] - 2026-05-17
 
 ### Fixed
