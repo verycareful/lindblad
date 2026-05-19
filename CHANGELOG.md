@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.7.5] - 2026-05-19
+
+### Fixed
+
+- **`src/simulators/mps_sim.cpp`** (B3): `mps_apply_instruction` now intercepts `UNITARY` gates before the size-based dispatch; the 2-qubit path previously fell through to `gate4x4`'s identity default, silently dropping every custom unitary matrix. `mps_from_sv` now bit-reverses statevector indices on read, reconciling the MPS (qubit 0 = MSB of site index) and statevector (qubit 0 = LSB) conventions.
+- **`src/simulators/density_matrix_sim.cpp`** (B6): `apply_inst` lambda now applies `before_gate` Kraus channels before the gate unitary; they were previously silently ignored while `after_gate` channels were applied correctly.
+- **`src/primitives/estimator.cpp`** (B5): `run_single` routes through `DensityMatrixSimulator` when `options.noise_model` is non-ideal or `options.shots > 0`. The exact statevector path is retained for the ideal zero-shot case.
+- **`src/circuit.cpp`** (B7): `to_qasm2()` no longer emits `UNITARY` or `PARAM_*` gates as comments. 1-qubit `UNITARY` → ZYZ Euler decomposition to `u(θ,φ,λ)`; multi-qubit `UNITARY` → custom gate block definition + call; `PARAM_*` → standard gate name with symbolic parameter string.
+
+### Tests
+
+- **`tests/test_bug_regression.cpp`**: New file — 14 black-box regression tests covering all 8 open bugs from R.1.7.4 (B1 `from_qasm2`, B2 custom register names ×2, B3 MPS UNITARY, B4 DM RCCX ×3, B5 Estimator noisy path ×2, B6 `before_gate` noise ×3, B7 `to_qasm2` UNITARY/PARAM ×3, B8 SabreLayout ×2). 556 tests total across 67 suites — all passing.
+
 ## [R.1.7.4] - 2026-05-19
 
 ### Changed

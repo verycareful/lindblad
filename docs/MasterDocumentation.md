@@ -130,13 +130,13 @@ The recommended recovery order is:
 
 ## Current Priority
 
-The initial algorithm documentation pass (BV family, QAOA, MAQAOA, QPE, Grover, Deutsch-Jozsa, Simon, QFT including semi-classical variant) is complete. Remaining priorities:
+The initial algorithm documentation pass (BV family, QAOA, MAQAOA, QPE, Grover, Deutsch-Jozsa, Simon, QFT including semi-classical variant) is complete. Remaining priorities as of R.1.7.5:
 
-1. Write test suite for R.1.5.1: feedforward infrastructure + semi-classical QFT correctness.
-2. Ensure all algorithm pages meet the full required-section checklist above.
-3. Keep API deep-dive pages (`docs/api/*.md`) in sync with header changes.
-4. Expand `docs/Architecture.md` and `docs/APIOverview.md` as new subsystems are added.
-5. Add usage examples for noise model workflows and transpiler passes.
+1. Ensure all algorithm pages meet the full required-section checklist above.
+2. Keep API deep-dive pages (`docs/api/*.md`) in sync with header changes.
+3. Expand `docs/Architecture.md` and `docs/APIOverview.md` as new subsystems are added.
+4. Add a noise model workflow guide: `docs/api/noise.md` documents the API, but a dedicated tutorial page showing `NoiseModel` → `DensityMatrixSimulator` → `Estimator` (noisy VQE / QAOA) is absent.
+5. Add a transpiler pass cookbook page (`docs/api/transpiler.md` exists but covers the API, not recipes).
 
 ## Notes for Future Sessions
 

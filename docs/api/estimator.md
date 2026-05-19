@@ -10,16 +10,18 @@ This page documents the public `lindblad::Estimator` primitive.
 ## Class Overview
 
 `Estimator` computes expectation values of a `SparsePauliOp` against a circuit.
-The current implementation always evaluates with a statevector simulation and
-supports a cached transpilation path for repeated parameter sweeps.
+It supports two execution paths — exact statevector (default, ideal circuits) and
+density-matrix simulation (noisy circuits or shot-based sampling) — selected
+automatically from `Options`. It also supports a cached transpilation path for
+repeated parameter sweeps.
 
 ## `Options`
 
 Fields and defaults:
 
-- `shots = 0`: declared but not used in the current implementation
-- `seed = 0`: declared but not used in the current implementation
-- `noise_model`: declared but not used in the current implementation
+- `shots = 0`: when > 0, routes execution through `DensityMatrixSimulator` with this many shots
+- `seed = 0`: RNG seed forwarded to `DensityMatrixSimulator::run` when the noisy path is active
+- `noise_model`: when non-ideal (i.e. `!noise_model.is_ideal()`), routes execution through `DensityMatrixSimulator`; when ideal and `shots == 0`, the exact statevector path is used
 - `optimization_level = 0`: enables transpilation and caching when > 0
 
 ## `clear_cache`
@@ -66,8 +68,13 @@ Behavior (verified against the implementation):
 - Binds parameters by name using the transpiled circuit parameter names when
   available, otherwise the original circuit parameter names
 - Binds up to `min(parameters.size(), names.size())` parameters
-- Runs a statevector simulation and returns `observable.expectation_value(state)`
-- Throws `std::runtime_error` if simulation fails
+- **Noisy / shot-based path** (when `!options.noise_model.is_ideal()` or `options.shots > 0`):
+  routes through `DensityMatrixSimulator`; uses `options.shots` shots (defaults to 8192 if
+  `shots == 0` but noise model is non-ideal); returns
+  `dm_result.final_state.expectation_value_sparse(observable)`
+- **Exact path** (when noise model is ideal and `shots == 0`): runs `StatevectorSimulator`
+  and returns `observable.expectation_value(result.final_state)`
+- Throws `std::runtime_error` if simulation fails on either path
 
 Preconditions:
 

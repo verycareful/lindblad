@@ -575,8 +575,15 @@ static MPSState mps_from_sv(const Statevector& sv, int n, int max_bond_dim, doub
     int left_bond = 1;
     int right_cols = (int)dim;
     std::vector<Complex128> block(dim);
-    for (size_t i = 0; i < dim; ++i)
-        block[i] = {sv.real_parts[i], sv.imag_parts[i]};
+    // sv uses qubit q at bit q (LSB = qubit 0); the MPS sequential SVD expects
+    // qubit 0 at the MSB of each index (site 0 = MSB).  Bit-reverse each index
+    // so the two conventions are consistent — mirrors the reversal in to_statevector.
+    for (size_t i = 0; i < dim; ++i) {
+        size_t rev = 0;
+        for (int b = 0; b < n; ++b)
+            rev |= ((i >> b) & 1ULL) << (n - 1 - b);
+        block[i] = {sv.real_parts[rev], sv.imag_parts[rev]};
+    }
 
     for (int site = 0; site < n - 1; ++site) {
         int half_cols = right_cols / 2;
@@ -868,6 +875,16 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
         inst.type == GT::PARAM_RZ || inst.type == GT::PARAM_P ||
         inst.type == GT::PARAM_U)
         throw std::runtime_error("Unresolved parameterised gate in MPS simulation");
+
+    // UNITARY gates store the matrix directly in inst.matrix; use the SV
+    // fallback for all qubit counts rather than going through gate2x2/gate4x4
+    // (which have no UNITARY case and would silently apply identity).
+    if (inst.type == GT::UNITARY) {
+        auto sv = mps.to_statevector();
+        gates::apply_unitary(sv, inst.qubits, inst.matrix);
+        mps = mps_from_sv(sv, mps.n_qubits, mps.max_bond_dim, mps.cutoff);
+        return;
+    }
 
     if (inst.qubits.size() == 1) {
         auto U = gate2x2(inst);
