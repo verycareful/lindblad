@@ -28,6 +28,8 @@ set(LINDBLAD_TEST_SOURCES
     test_qudit_algorithms.cpp
     # R.1.7.1 test suite — qudit backend simulators (DM, MPS, Clifford, noise); fixes in R.1.7.2
     test_qudit_simulators.cpp
+    # Bug regression suite — black-box tests for the 8 open TODOs at R.1.7.4
+    test_bug_regression.cpp
 )
 
 # Create test executable

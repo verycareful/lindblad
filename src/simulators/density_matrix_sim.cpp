@@ -488,9 +488,16 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 throw std::runtime_error("Unresolved parameterised gate: call assign_parameters() first.");
             }
             auto gate_mat = gate_matrix_for_dm(inst);
-            dm.apply_gate(gate_mat, inst.qubits);
             if (!noise_model.is_ideal()) {
                 auto gate_errors = noise_model.errors_for_gate(inst.gate_name(), inst.qubits);
+                for (const auto& error : gate_errors) {
+                    if (!error.after_gate) {
+                        std::vector<int> noise_qubits =
+                            error.qubits.empty() ? inst.qubits : error.qubits;
+                        dm.apply_kraus(error.channel.operators, noise_qubits);
+                    }
+                }
+                dm.apply_gate(gate_mat, inst.qubits);
                 for (const auto& error : gate_errors) {
                     if (error.after_gate) {
                         std::vector<int> noise_qubits =
@@ -498,6 +505,8 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                         dm.apply_kraus(error.channel.operators, noise_qubits);
                     }
                 }
+            } else {
+                dm.apply_gate(gate_mat, inst.qubits);
             }
         };
 

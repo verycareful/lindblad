@@ -238,8 +238,9 @@ auto result = sim.run(circuit, noise_model, 1024);  // shots=1024
 **Execution Steps**:
 1. Initialize $\rho = |0\rangle\langle 0|$ (dim $\times$ dim)
 2. For each instruction in circuit:
+   - If noise is attached and any errors have `after_gate = false`: apply those Kraus channels **before** the unitary via `apply_kraus`
    - Apply gate via `apply_gate` (Hamiltonian evolution)
-   - If noise attached, apply Kraus operators via `apply_kraus`
+   - If noise is attached and any errors have `after_gate = true`: apply those Kraus channels **after** the unitary via `apply_kraus`
 3. Sample measurement outcomes via spectral decomposition of marginal density matrices
 4. Return counts and final state
 
@@ -437,6 +438,8 @@ class MPSState {
 
 **Non-adjacent gates**: Apply SWAPs to move gates adjacent, then apply gate, then SWAP back
 
+**Arbitrary `UNITARY` gates**: Handled via statevector fallback for all qubit counts. The MPS is converted to a full statevector via `to_statevector()`, `gates::apply_unitary` applies the matrix, and `mps_from_sv` reconstructs the MPS via sequential SVD. The bit-reversal between the MPS site-index convention (qubit 0 = MSB) and the statevector convention (qubit 0 = LSB) is handled automatically.
+
 ### Measurement
 
 **Sequential measurement** (physically realistic):
@@ -514,7 +517,7 @@ auto result = sim.run(large_circuit, 100);  // 100 shots
 
 ## Integration with Primitives
 
-- **Estimator** uses **StatevectorSimulator** by default for pure states
+- **Estimator** uses `StatevectorSimulator` for ideal zero-shot circuits; automatically routes to `DensityMatrixSimulator` when `options.noise_model` is non-ideal or `options.shots > 0`. See [Estimator API](estimator.md) for the routing rules.
 - **Sampler** routes to appropriate simulator based on `NoiseModel` (density matrix if noise present)
 - **MAQAOA** supports both statevector (direct evolution) and density matrix (noisy path)
 

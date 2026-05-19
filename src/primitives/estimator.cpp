@@ -1,5 +1,6 @@
 #include "lindblad/primitives.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/transpiler.hpp"
 
 #ifdef _OPENMP
@@ -100,9 +101,19 @@ double Estimator::run_single(
         to_simulate = to_simulate.assign_parameters(bindings);
     }
 
-    // Simulate — Estimator uses exact statevector simulation; options.shots
-    // has no effect here (the expectation value is computed analytically from
-    // the final state, not by sampling).
+    // When a noise model is set (or shots > 0 with noise), route through the
+    // DensityMatrixSimulator so that Kraus channels are actually applied and
+    // the expectation value is computed from the mixed state.
+    if (!options.noise_model.is_ideal() || options.shots > 0) {
+        DensityMatrixSimulator dm_sim;
+        const int dm_shots = (options.shots > 0) ? options.shots : 8192;
+        auto dm_result = dm_sim.run(to_simulate, options.noise_model, dm_shots, options.seed);
+        if (!dm_result.success) {
+            throw std::runtime_error("Simulation failed: " + dm_result.error_message);
+        }
+        return dm_result.final_state.expectation_value_sparse(observable);
+    }
+
     StatevectorSimulator sim;
     auto result = sim.run(to_simulate);
 
@@ -110,7 +121,6 @@ double Estimator::run_single(
         throw std::runtime_error("Simulation failed: " + result.error_message);
     }
 
-    // Compute expectation value
     return observable.expectation_value(result.final_state);
 }
 

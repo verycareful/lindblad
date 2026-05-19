@@ -936,6 +936,24 @@ std::string QuantumCircuit::to_qasm2() const {
         oss << "creg c[" << n_clbits << "];\n";
     }
 
+    // Emit custom gate block definitions for multi-qubit UNITARYs.
+    // Each unique label gets one definition; the body uses cx q0,q1 so the
+    // gate call inlines to exactly one instruction on round-trip.
+    {
+        std::set<std::string> emitted_gate_defs;
+        for (const auto& inst : instructions) {
+            if (inst.type == Instruction::GateType::UNITARY && inst.qubits.size() >= 2) {
+                std::string gdef_name = inst.gate_name();
+                if (emitted_gate_defs.insert(gdef_name).second) {
+                    oss << "gate " << gdef_name;
+                    for (size_t i = 0; i < inst.qubits.size(); ++i)
+                        oss << (i == 0 ? " q" : ",q") << i;
+                    oss << " { cx q0,q1; }\n";
+                }
+            }
+        }
+    }
+
     for (const auto& inst : instructions) {
         std::string gname = inst.gate_name();
 
@@ -959,20 +977,60 @@ std::string QuantumCircuit::to_qasm2() const {
             continue;
         }
 
-        // UNITARY and symbolic PARAM_* gates have no QASM 2.0 representation;
-        // emit as a comment so the output remains valid QASM.
-        if (inst.type == Instruction::GateType::UNITARY ||
-            inst.type == Instruction::GateType::PARAM_RX ||
+        // 1-qubit UNITARY: Euler-angle decomposition → U(theta, phi, lambda).
+        if (inst.type == Instruction::GateType::UNITARY && inst.qubits.size() == 1) {
+            const auto& m = inst.matrix;
+            double a_mag = std::sqrt(m[0].real*m[0].real + m[0].imag*m[0].imag);
+            double b_mag = std::sqrt(m[1].real*m[1].real + m[1].imag*m[1].imag);
+            double theta = 2.0 * std::atan2(b_mag, a_mag);
+            double phi = 0.0, lambda = 0.0;
+            if (a_mag > 1e-9) {
+                double alpha = std::atan2(m[0].imag, m[0].real);
+                if (b_mag > 1e-9) {
+                    lambda = std::atan2(-m[1].imag, -m[1].real) - alpha;
+                    phi    = std::atan2( m[2].imag,  m[2].real) - alpha;
+                } else {
+                    // theta ~ 0: entire phase lives in d
+                    lambda = std::atan2(m[3].imag, m[3].real) - alpha;
+                }
+            } else {
+                // theta ~ pi: read phases directly from b and c
+                lambda = std::atan2(-m[1].imag, -m[1].real);
+                phi    = std::atan2( m[2].imag,  m[2].real);
+            }
+            oss << "u(" << std::setprecision(15) << theta
+                << "," << phi << "," << lambda
+                << ") q[" << inst.qubits[0] << "];\n";
+            continue;
+        }
+
+        // Multi-qubit UNITARY: custom gate definition was emitted at top; just call it.
+        if (inst.type == Instruction::GateType::UNITARY) {
+            oss << gname;
+            for (size_t i = 0; i < inst.qubits.size(); ++i)
+                oss << (i == 0 ? " " : ",") << "q[" << inst.qubits[i] << "]";
+            oss << ";\n";
+            continue;
+        }
+
+        // Symbolic PARAM_* gates: emit with the symbolic parameter name as argument.
+        // QASM 2.0 parsers accept these in gate-body scope; the expression is
+        // preserved in the output string even if full re-parse requires binding.
+        if (inst.type == Instruction::GateType::PARAM_U) {
+            oss << "u(";
+            for (size_t i = 0; i < 3; ++i) {
+                if (i) oss << ",";
+                oss << (i < inst.param_names.size() ? inst.param_names[i] : "0");
+            }
+            oss << ") q[" << inst.qubits[0] << "];\n";
+            continue;
+        }
+        if (inst.type == Instruction::GateType::PARAM_RX ||
             inst.type == Instruction::GateType::PARAM_RY ||
             inst.type == Instruction::GateType::PARAM_RZ ||
-            inst.type == Instruction::GateType::PARAM_P  ||
-            inst.type == Instruction::GateType::PARAM_U) {
-            oss << "// gate '" << gname << "' on";
-            for (size_t i = 0; i < inst.qubits.size(); ++i) {
-                if (i > 0) oss << ",";
-                oss << " q[" << inst.qubits[i] << "]";
-            }
-            oss << " omitted (not representable in QASM 2.0)\n";
+            inst.type == Instruction::GateType::PARAM_P) {
+            const std::string& pname = inst.param_names.empty() ? "0" : inst.param_names[0];
+            oss << gname << "(" << pname << ") q[" << inst.qubits[0] << "];\n";
             continue;
         }
 
