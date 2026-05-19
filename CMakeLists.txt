@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.7.8 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.8.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.7.8")
+set(LINDBLAD_VERSION_LABEL "R.1.8.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -157,6 +157,7 @@ add_library(lindblad_core STATIC
     src/algorithms/qft.cpp
     src/algorithms/ising.cpp
     src/algorithms/dispatch.cpp
+    src/algorithms/shor.cpp
     src/qudit/qudit_statevector.cpp
     src/qudit/qudit_gates.cpp
     src/qudit/qudit_simulator.cpp
