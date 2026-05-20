@@ -9,6 +9,84 @@
 namespace lindblad {
 
 // =============================================================================
+// ParamExpr — deep copy + evaluation
+// =============================================================================
+// The copy constructor needs to deep-clone any owned subtrees so two
+// instructions never share the same `unique_ptr<ParamExpr>` payload.
+
+ParamExpr::ParamExpr(const ParamExpr& other)
+    : kind(other.kind), literal(other.literal), name(other.name), op(other.op),
+      lhs(other.lhs ? std::make_unique<ParamExpr>(*other.lhs) : nullptr),
+      rhs(other.rhs ? std::make_unique<ParamExpr>(*other.rhs) : nullptr) {}
+
+ParamExpr& ParamExpr::operator=(const ParamExpr& other) {
+    if (this == &other) return *this;
+    kind = other.kind;
+    literal = other.literal;
+    name = other.name;
+    op = other.op;
+    lhs = other.lhs ? std::make_unique<ParamExpr>(*other.lhs) : nullptr;
+    rhs = other.rhs ? std::make_unique<ParamExpr>(*other.rhs) : nullptr;
+    return *this;
+}
+
+ParamExpr ParamExpr::make_literal(double v) {
+    ParamExpr e;
+    e.kind = Kind::Literal;
+    e.literal = v;
+    return e;
+}
+
+ParamExpr ParamExpr::make_name(std::string n) {
+    ParamExpr e;
+    e.kind = Kind::Name;
+    e.name = std::move(n);
+    return e;
+}
+
+ParamExpr ParamExpr::make_binary(char op_char, ParamExpr l, ParamExpr r) {
+    ParamExpr e;
+    e.kind = Kind::BinaryOp;
+    e.op = op_char;
+    e.lhs = std::make_unique<ParamExpr>(std::move(l));
+    e.rhs = std::make_unique<ParamExpr>(std::move(r));
+    return e;
+}
+
+double ParamExpr::eval(const std::unordered_map<std::string, double>& bindings) const {
+    switch (kind) {
+        case Kind::Literal: return literal;
+        case Kind::Name: {
+            auto it = bindings.find(name);
+            if (it == bindings.end()) {
+                throw std::runtime_error(
+                    "ParamExpr::eval: no binding for parameter '" + name + "'");
+            }
+            return it->second;
+        }
+        case Kind::BinaryOp: {
+            const double l = lhs->eval(bindings);
+            const double r = rhs->eval(bindings);
+            switch (op) {
+                case '+': return l + r;
+                case '-': return l - r;
+                case '*': return l * r;
+                case '/':
+                    if (r == 0.0) {
+                        throw std::runtime_error(
+                            "ParamExpr::eval: division by zero");
+                    }
+                    return l / r;
+                default:
+                    throw std::runtime_error(
+                        std::string("ParamExpr::eval: unknown operator '") + op + "'");
+            }
+        }
+    }
+    return 0.0;
+}
+
+// =============================================================================
 // Instruction utilities
 // =============================================================================
 
@@ -522,6 +600,35 @@ QuantumCircuit QuantumCircuit::assign_parameters(
     result.parameter_names = remaining;
 
     return result;
+}
+
+// =============================================================================
+// bind_parameters — resolve ParamExpr trees emitted by from_qasm3()
+// =============================================================================
+// Walks every instruction. If `param_exprs` is non-empty we evaluate each
+// expression against `bindings` and write the result into `params`. The
+// expression vector is then cleared so the instruction is indistinguishable
+// from one constructed with literal angles. Numeric instructions are skipped
+// entirely (no copy, no allocation).
+//
+// We also merge the supplied bindings into `parameter_bindings` so subsequent
+// queries (`assign_parameters`, `num_parameters`) see the same view.
+
+void QuantumCircuit::bind_parameters(
+    const std::unordered_map<std::string, double>& bindings
+) {
+    parameter_bindings.insert(bindings.begin(), bindings.end());
+
+    for (auto& inst : instructions) {
+        if (inst.param_exprs.empty()) continue;
+
+        inst.params.clear();
+        inst.params.reserve(inst.param_exprs.size());
+        for (const auto& expr : inst.param_exprs) {
+            inst.params.push_back(expr.eval(parameter_bindings));
+        }
+        inst.param_exprs.clear();
+    }
 }
 
 // =============================================================================
@@ -1104,15 +1211,16 @@ std::string QuantumCircuit::to_qasm3() const {
     return oss.str();
 }
 
-// Forward declaration of the bridge function in qasm2_parser.cpp
+// Forward declarations of the bridge functions in qasm{2,3}_parser.cpp
 QuantumCircuit qasm2_parse_impl(const std::string& qasm);
+QuantumCircuit qasm3_parse_impl(const std::string& qasm);
 
 QuantumCircuit QuantumCircuit::from_qasm2(const std::string& qasm) {
     return qasm2_parse_impl(qasm);
 }
 
-QuantumCircuit QuantumCircuit::from_qasm3(const std::string& /*qasm*/) {
-    throw std::runtime_error("QASM3 parser not yet implemented — use QASM3Parser class");
+QuantumCircuit QuantumCircuit::from_qasm3(const std::string& qasm) {
+    return qasm3_parse_impl(qasm);
 }
 
 // =============================================================================

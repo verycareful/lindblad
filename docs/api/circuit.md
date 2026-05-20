@@ -19,6 +19,9 @@ Key fields:
 - `clbits`: classical bit indices (measure only)
 - `params`: numeric parameters for rotation and phase gates
 - `param_names`: symbolic parameter names for param gates
+- `param_exprs`: symbolic parameter expression trees (populated by `from_qasm3()`
+  when an angle references a named `input` parameter); resolved by
+  `QuantumCircuit::bind_parameters()` into `params`
 - `matrix`: custom unitary storage for `UNITARY`
 - `label`: custom label (used for unitary naming)
 - `condition_clbit` / `condition_value`: classical condition metadata (not enforced by the circuit)
@@ -85,6 +88,23 @@ Behavior:
   `param_names` are present in the bindings
 - Removes any bound parameter names from `parameter_names`
 
+```cpp
+void bind_parameters(
+    const std::unordered_map<std::string, double>& bindings
+);
+```
+
+Behavior:
+
+- Walks every instruction; for any with a non-empty `param_exprs`, evaluates
+  each `ParamExpr` against the bindings, populates `params`, and clears
+  `param_exprs`
+- Used after `QuantumCircuit::from_qasm3()` to resolve symbolic angles from
+  `input float` parameter declarations
+- Throws `std::runtime_error` if a referenced parameter has no binding
+- Merges `bindings` into `parameter_bindings` for subsequent queries
+- Numeric instructions are left untouched (no copy, no allocation)
+
 ### Composition and Transforms
 
 - `compose(other, qubits = {})` appends `other` to the circuit
@@ -119,7 +139,19 @@ Behavior:
   - `UNITARY` and `PARAM_*` gates have no QASM 2.0 representation; they are
     emitted as `// gate '...' omitted` comments so the output remains valid QASM
 - `from_qasm2()` uses the internal QASM2 parser
-- `from_qasm3()` throws (parser not yet implemented)
+- `from_qasm3()` uses the internal QASM3 parser (`QASM3Lexer` + `QASM3Parser`)
+  - Covers multi-register declarations, gate modifiers (`ctrl @`, `inv @`,
+    `pow(n) @`, chained), `stdgates.inc`, user-defined `gate` bodies, classical
+    `if`/`else` conditioning, `measure`/`reset`/`barrier`, and symbolic
+    `input float` parameters
+  - Symbolic parameters are stored as `Instruction::param_exprs` and resolved
+    by `QuantumCircuit::bind_parameters(bindings)`
+  - Modifier stacks that don't map to a named gate (e.g. `pow(2) @ s`) fall
+    back to explicit matrix composition and emit `UNITARY`
+  - Parse-time peephole cancels self-inverse pairs (`h; h`, `cx; cx`, …) and
+    drops `pow(0) @ <gate>`
+  - Unknown gates and unsupported constructs (`for`, `while`, `def`, `delay`,
+    `box`, `cal`) throw `std::runtime_error` naming the offending line
 
 ### JSON Serialization
 

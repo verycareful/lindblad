@@ -23,9 +23,10 @@ Key capabilities:
 - Add custom unitaries
 - Add measure/reset/barrier operations
 - Use symbolic parameters and later bind values with `assign_parameters`
-- Export/import QASM where implemented
+- Export/import OpenQASM 2.0 and OpenQASM 3.0; symbolic QASM 3 angles via
+  `ParamExpr` are resolved later with `bind_parameters`
 
-Deep dive: [docs/api/circuit.md](api/circuit.md)
+Deep dives: [docs/api/circuit.md](api/circuit.md), [docs/api/qasm.md](api/qasm.md)
 
 ### Minimal example
 
