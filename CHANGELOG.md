@@ -4,6 +4,57 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.9.0] - 2026-05-20
+
+### Added
+- `src/qasm/qasm3_parser.cpp` — full OpenQASM 3.0 parser replacing the previous stub.
+  `QASM3Lexer` is a single-pass, zero-copy tokenizer (tokens are `std::string_view` into
+  the source). `QASM3Parser` is a recursive-descent parser covering: multi-register qubit
+  and bit declarations (`qubit[N] name;` plus legacy `qreg name[N];` form), gate modifiers
+  `ctrl @ / inv @ / pow(n) @` with arbitrary chaining, the `stdgates.inc` library, user-
+  defined `gate` bodies with recursive inlining and parameter substitution, classical
+  `if (c[i] == V) { ... } else { ... }` conditioning, `measure`/`reset`/`barrier`, and
+  symbolic `input float[N] θ;` parameters. Unknown gates and timing/loop constructs throw
+  `std::runtime_error` with the offending token and line number (no silent skips).
+- `include/lindblad/circuit.hpp` — new `ParamExpr` struct (Literal / Name / BinaryOp tree)
+  for symbolic parameter expressions, with deep-copy semantics. `Instruction::param_exprs`
+  added alongside the existing numeric `params` so the parser can emit symbolic gates
+  without forcing eager evaluation.
+- `include/lindblad/circuit.hpp` — `QuantumCircuit::bind_parameters(bindings)` evaluates
+  every instruction's `ParamExpr` tree against the supplied bindings, populates `params`,
+  and clears `param_exprs`. Designed for VQE-style parameter sweeps over a single circuit.
+- `src/qasm/qasm3_parser.cpp` — modifier resolution prefers named fast paths
+  (`ctrl @ x → cx`, `ctrl @ ctrl @ x → ccx`, `ctrl @ z → cz`, `ctrl @ rx(θ) → crx(θ)`,
+  `inv @ s → sdg`, `inv @ rx(θ) → rx(-θ)`, `pow(n) @ rx(θ) → rx(n·θ)`). Combinations that
+  don't map to a named gate fall back to explicit matrix composition (1-qubit base
+  matrix → conjugate-transpose on `inv` → binary-exponentiation on `pow(n)` → block-
+  diagonal extension on each `ctrl`) and are emitted as `UNITARY`.
+- `src/qasm/qasm3_parser.cpp` — parse-time peephole window: tracks a per-qubit history
+  stack of live instruction indices and cancels self-inverse pairs (`h; h`, `cx; cx`,
+  etc.) on identical qubit lists. `pow(0) @ <gate>` is dropped during modifier
+  resolution. Cancellations are recorded in a parallel boolean vector and swept at the
+  end so mid-vector erases don't invalidate other indices.
+
+### Changed
+- `src/circuit.cpp` — `QuantumCircuit::from_qasm3()` now forwards to the new
+  `qasm3_parse_impl()` bridge function instead of throwing "not yet implemented".
+
+### Documentation
+- `docs/api/qasm.md` — new API deep-dive page covering both QASM 2 and QASM 3
+  parsers and serialisers: header/namespace, lexer + parser internals, supported
+  constructs, modifier-resolution table (named fast paths + matrix fallback),
+  parse-time peephole semantics, the `ParamExpr` + `bind_parameters()` symbolic
+  parameter workflow, the error catalogue for unsupported constructs, three
+  round-trip examples (Bell, VQE ansatz with `input float`, gate modifiers),
+  and a common-pitfalls section.
+- `README.md` — added `docs/api/qasm.md` row to the API Reference Pages table.
+- `docs/APIOverview.md` — Circuit Construction section now mentions both QASM
+  dialects and the `ParamExpr` / `bind_parameters()` workflow; added
+  `docs/api/qasm.md` to the deep-dive links.
+- `docs/api/circuit.md` — added `param_exprs` to the `Instruction` field list,
+  documented `QuantumCircuit::bind_parameters()` alongside `assign_parameters`,
+  and rewrote the `from_qasm3()` description with the full feature list.
+
 ## [R.1.8.2] - 2026-05-20
 
 ### Fixed

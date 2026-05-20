@@ -2,11 +2,52 @@
 
 #include "lindblad/types.hpp"
 
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace lindblad {
+
+// =============================================================================
+// ParamExpr — symbolic parameter expression tree used by the QASM 3 parser
+// =============================================================================
+// QASM 3 allows gate arguments to reference named parameters (`input float θ;`)
+// and to combine them with literals via `+`, `-`, `*`, `/`. Rather than forcing
+// every angle to a `double` at parse time, we keep an explicit expression tree
+// so the circuit can be re-bound later (VQE / parameter sweeps) without a full
+// re-parse.
+//
+// Kind = Literal   → `literal` holds the concrete value
+// Kind = Name      → `name` holds the parameter identifier
+// Kind = BinaryOp  → `op` is one of '+', '-', '*', '/' and `lhs`, `rhs` are subtrees
+//
+// `eval(bindings)` resolves the tree against a name→value map and throws if a
+// referenced name is missing.
+
+struct ParamExpr {
+    enum class Kind { Literal, Name, BinaryOp };
+    Kind kind = Kind::Literal;
+    double literal = 0.0;
+    std::string name;
+    char op = '+';
+    std::unique_ptr<ParamExpr> lhs;
+    std::unique_ptr<ParamExpr> rhs;
+
+    ParamExpr() = default;
+    ParamExpr(const ParamExpr& other);
+    ParamExpr& operator=(const ParamExpr& other);
+    ParamExpr(ParamExpr&&) noexcept = default;
+    ParamExpr& operator=(ParamExpr&&) noexcept = default;
+
+    static ParamExpr make_literal(double v);
+    static ParamExpr make_name(std::string n);
+    static ParamExpr make_binary(char op_char, ParamExpr l, ParamExpr r);
+
+    // Evaluate the tree against a name → value binding map. Throws
+    // std::runtime_error if a referenced name has no binding.
+    double eval(const std::unordered_map<std::string, double>& bindings) const;
+};
 
 // =============================================================================
 // Gate instruction — what gets stored in the circuit
@@ -40,6 +81,13 @@ struct Instruction {
 
     // For custom unitaries
     std::vector<Complex128> matrix;  // 2^k × 2^k unitary
+
+    // Symbolic parameter expressions — populated by the QASM 3 parser when a
+    // gate angle uses a named parameter. Empty for purely-numeric instructions
+    // (numeric callers continue to use `params` exclusively, no regression).
+    // When `param_exprs` is non-empty the corresponding `params` slot is left
+    // empty until `QuantumCircuit::bind_parameters()` resolves the tree.
+    std::vector<ParamExpr> param_exprs;
 
     // Metadata
     std::string label;
@@ -163,6 +211,16 @@ public:
     QuantumCircuit assign_parameters(
         const std::unordered_map<std::string, double>& bindings
     ) const;
+
+    // Bind symbolic parameter expressions emitted by `from_qasm3()`.
+    // For every instruction whose `param_exprs` is non-empty, evaluate each
+    // expression against `bindings`, populate `params` with the resulting
+    // values, and clear `param_exprs`. Instructions with purely-numeric
+    // parameters are left untouched. Throws std::runtime_error if any
+    // referenced name has no binding.
+    void bind_parameters(
+        const std::unordered_map<std::string, double>& bindings
+    );
 
     // =========================================================================
     // Circuit operations
