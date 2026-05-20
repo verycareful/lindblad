@@ -4,6 +4,130 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.9.1] - 2026-05-20
+
+### Note on release contents
+
+This is nominally a `.1` test-only release for the QASM 3 parser introduced
+in R.1.9.0. Four parser bugs were uncovered while running the new suite:
+one of them caused a SEGFAULT mid-execution, which prevented the rest of
+the suite from running. Shipping the tests without these fixes would leave
+the project in an unusable state, so the fixes are folded into this
+release alongside the tests rather than deferred to R.1.9.2. The fixes
+are narrow regression patches strictly required for the new tests to
+execute end-to-end. No new features.
+
+### Tests
+- `tests/test_qasm3_parser.cpp` (new file, 202 tests, 2 suites):
+  - **Register declarations** : `qubit[N]`, `bit[N]`, single-qubit/bit
+    without brackets, legacy `qreg`/`creg`, multiple registers, missing
+    qubit register throws.
+  - **Pragmas, comments, whitespace** : `OPENQASM`/`include` skipped,
+    `//` and `/* */` comments, tabs/CR tolerated.
+  - **Standard gates (1-qubit no-param)** : `h`, `x`, `y`, `z`, `s`,
+    `sdg`, `t`, `tdg`, `sx`, `sxdg`, `id` (dropped).
+  - **Standard gates (1-qubit parameterised)** : `rx`, `ry`, `rz`, `p`,
+    `phase`, `u1`, `u2`, `u3`, `u`, `U`.
+  - **Standard gates (2-qubit no-param)** : `cx`, `CX`, `cy`, `cz`,
+    `ch`, `swap`, `iswap`, `ecr`.
+  - **Standard gates (2-qubit parameterised)** : `crx`, `cry`, `crz`,
+    `cp`, `cphase`, `rxx`, `ryy`, `rzz`, `rzx`.
+  - **Standard gates (3-qubit)** : `ccx`, `toffoli`, `ccz`, `cswap`,
+    `fredkin`, `rccx`.
+  - **Measurements, reset, barrier** : both `c[i] = measure q;` and
+    `measure q -> c[i];` forms, error on missing classical target, bare
+    `reset`, explicit-qubit barrier, full-circuit barrier.
+  - **Modifier `ctrl @`** : maps `x`/`y`/`z`/`h`/`swap` to their
+    controlled named gates, double-`ctrl` maps `x`/`z` to `ccx`/`ccz`,
+    `ctrl @ rx`/`ry`/`rz`/`p`/`phase` to controlled rotations.
+  - **Modifier `inv @`** : self-inverse no-ops (H, X, CX, ...),
+    pair swaps (`s` ↔ `sdg`, `t` ↔ `tdg`, `sx` ↔ `sxdg`), angle
+    negation on `rx`/`ry`/`rz`, double-negation cancels.
+  - **Modifier `pow(n) @`** : `pow(0)` drop, `pow(even)` on
+    self-inverse drops, `pow(odd)` on self-inverse keeps, `pow(n)`
+    on rotations scales the angle, negative exponents supported.
+  - **Chained modifiers** : `inv @ pow(3) @ rx(θ)`, `ctrl @ inv @ rx(θ)`,
+    `ctrl @ pow(2) @ x` collapses to identity.
+  - **Matrix fallback path** : `pow(2) @ s` becomes UNITARY,
+    `inv @ iswap` throws (multi-qubit base unsupported), `pow(3) @ t`
+    builds a 2x2 UNITARY, `ctrl @ pow(2) @ s` extends to a 4x4 UNITARY.
+  - **Parameter expressions** : `pi`/`tau`/`euler` constants,
+    `pi/2`, `-pi`, operator precedence (mul/div over add/sub),
+    parenthesised expressions, subtraction, division, float exponent
+    literals, unary `+`, double-negation, complex nested expressions.
+  - **Custom gate definitions** : no-param, parametric, multi-qubit,
+    arithmetic in body, nested calls, param-count/qubit-count mismatch
+    throws, modifier on user-defined gate throws.
+  - **Classical conditioning** : single-statement `if`, block `if`,
+    `else` flips condition value, bare `if (c == V)` form for
+    single-bit registers, multi-bit `if (c == V)` throws, condition
+    state does not leak past the block.
+  - **Symbolic parameters** : `input float` registers a parameter
+    name; `param_exprs` populated for symbolic angles; `bind_parameters`
+    resolves to numeric `params`, throws on missing binding, skips
+    numeric instructions, merges into `parameter_bindings`.
+  - **ParamExpr factories and eval** : `make_literal`, `make_name`,
+    `make_binary` for `+`/`-`/`*`/`/`, nested expressions, missing
+    binding throws, division by zero throws, deep-copy semantics on
+    copy ctor and copy-assign, move-construct preserves value.
+  - **Peephole optimisation** : cancels `h;h`, `x;x`, `cx;cx`,
+    `ccx;ccx`, triple-H reduces to single, respects qubit ordering
+    (`cx q[0],q[1]` then `cx q[1],q[0]` does not cancel), does not
+    cancel different types or different qubits, skips conditioned
+    gates, skips parametric gates, cancels across unrelated qubit
+    activity.
+  - **Multi-register offset resolution** : two `qubit` registers
+    produce contiguous global indices, two `bit` registers produce
+    contiguous classical offsets, unknown qubit/classical register
+    throws.
+  - **Round-trips** : Bell state, GHZ, rotation chain, barrier, reset
+    all survive `to_qasm3() -> from_qasm3()`.
+  - **Error reporting** : unknown gate throws, `for`/`while`/`def`/
+    `delay`/`stretch`/`box`/`cal` constructs throw, missing required
+    args throw with descriptive message, extra qubit args throw,
+    unexpected lexer character throws, missing semicolon throws.
+  - **Lexer details** : empty input throws, comments-only throws,
+    header-only (no qubit) throws, INT/FLOAT/leading-dot/trailing-dot/
+    exponent literals all parse, multiple statements on one line.
+  - **Identity gate with modifiers** : `inv @ id`, `pow(n) @ id`, and
+    `ctrl @ id` all drop (identity is invariant under any modifier).
+  - **Larger integration tests** : 3-qubit GHZ with measurements,
+    parametric ansatz with `bind_parameters`, modifier-heavy circuit,
+    custom gate with symbolic call site, measurement inside `if` block
+    carries the condition, peephole interaction with barriers.
+  - **UTF-8 identifier names** : Greek letter `θ` as input parameter
+    name round-trips through bind correctly.
+
+### Fixed
+- `src/qasm/qasm3_parser.cpp` : classical-assignment dispatch in
+  `parse_statement` now recognises bracket-less `c = measure q;` for
+  single-bit registers in addition to the indexed `c[i] = measure q[j];`
+  form.
+- `src/qasm/qasm3_parser.cpp` : `pow(-n)` (negative integer exponent) is
+  now accepted by both `parse_gate_call` and `parse_body_call`. An
+  optional leading `-` or `+` is consumed before the `INT`, and the sign
+  is folded into `pow_exp`.
+- `src/qasm/qasm3_parser.cpp` : `input float` parameter names registered
+  during `first_pass()` were being discarded by the subsequent
+  `qc_ = QuantumCircuit(n_qubits_, n_clbits_)` reset in `run()`. They are
+  now saved and restored across the reconstruction so
+  `parameter_names` reflects the source.
+- `src/qasm/qasm3_parser.cpp` : `emit_matrix_fallback` now validates the
+  parameter arity against the gate's `BuiltinSpec` before calling
+  `build_1q_base`. Previously a missing-angle call such as `rx q[0];`
+  fell through to the fallback and dereferenced `params[0]` on an empty
+  vector, causing a SEGFAULT. The fallback now throws
+  `QASM3Parser: gate 'rx' expects 1 parameter(s), got 0`.
+- `src/qasm/qasm3_parser.cpp` : the `id` gate is now dropped for **any**
+  modifier stack (`id`, `inv @ id`, `pow(n) @ id`, `ctrl @ id`), since
+  identity is invariant under inversion, exponentiation, and control
+  extension. Previously `inv @ id` would slip past the early drop and
+  emit an H instruction by mistake (because the `id` table entry used
+  `GT::H` as a placeholder type).
+
+### Results
+- 834 tests from 74 test suites ran. All passed (Linux/WSL, 3.4s wall).
+
 ## [R.1.9.0] - 2026-05-20
 
 ### Added
