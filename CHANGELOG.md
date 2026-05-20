@@ -4,6 +4,90 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.10.0] - 2026-05-20
+
+### Added
+
+- `QuantumCircuit::draw(DrawMode, DrawOptions)` : new public API replacing the
+  primitive `to_ascii()` rendering with a layered, parameter-aware visualiser.
+  Four output backends behind a single layout pass:
+  - `DrawMode::ASCII` : monospaced UTF-8 grid with `ascii_safe` portable
+    fallback (`-|+*X[]`). Layered ASAP packing, multi-row tall boxes for
+    `UNITARY` and the `TallBox` interaction gates, conditional decoration on
+    the bundled c-wire.
+  - `DrawMode::SVG` : self-contained SVG with inline `<style>`, semantic
+    `.lb-*` class names, and `data-gate` / `data-col` / `data-qubits`
+    attributes on every `<g class="lb-glyph">` for downstream interactivity.
+    No external CSS, no external fonts.
+  - `DrawMode::LATEX` : a `quantikz` environment (no `\documentclass` shell).
+    Gate boxes via `\gate{}` / `\gate[N]{}`, controls via `\ctrl{offset}` /
+    `\octrl{offset}`, targets via `\targ{}`, swaps via `\swap{offset}` /
+    `\targX{}`, measurements via `\meter{}`, resets via `\push{\ket{0}}`,
+    barriers via `\barrier[\dashed]{N}`. Defensive `\text{...}` wrap for
+    labels with parens, commas, or non-ASCII glyphs.
+  - `DrawMode::HTML` : a standalone HTML page embedding the SVG with hover
+    styling (no JavaScript). Page-level CSS targets the SVG's existing
+    `data-*` attributes for `:hover` rules.
+- `DrawOptions` : per-call configuration covering `fold_width` (ASCII wrap
+  column; 0 disables), `show_clbits` (hide the bundled c-wire by default),
+  `show_params`, `ascii_safe`, `param_format` (`ParamFormat::Pretty` snaps
+  pi/2, pi/4, etc.; `ParamFormat::Raw` always uses `%.4f`), `cell_width_px`,
+  `cell_height_px`, `include_legend`.
+- `include/lindblad/visualisation.hpp` : lightweight public re-export header
+  for callers that only need the option types.
+- Three-tier gate catalogue under `src/visualisation/`:
+  - `gate_symbols.cpp` : Tier 1 declarative `GateSymbol` table for the 22
+    single-qubit box gates (Hadamard, Pauli, phase, sqrt(X), U-family, plus
+    the symbolic `PARAM_*` variants).
+  - `composite_catalogue.cpp` : Tier 2 declarative `CompositeGate` table for
+    `CX CY CZ CH SWAP ISWAP CRX CRY CRZ CP CU CCX CCZ CSWAP RCCX`, with a
+    new `TallBox` role for the symmetric two-qubit interaction gates
+    `RXX RYY RZZ RZX ECR`. CZ and CCZ use `CtrlBullet` on every involved
+    qubit (symmetric phase, no dedicated dot-target primitive).
+  - `gate_builders.cpp` : Tier 3 hand-written builders for `BARRIER`,
+    `MEASURE`, `RESET`, `UNITARY` (whose visuals do not fit either table).
+- Backend-agnostic intermediate model in `src/visualisation/document.hpp`:
+  closed 7-kind `GlyphPart` variant (`BoxPart`, `CtrlBulletPart`,
+  `XorTargetPart`, `SwapXPart`, `MeasurePart`, `ResetPart`, `BarrierPart`),
+  `Glyph`, `Layer`, `CircuitDocument`.
+- `format_params.cpp` : pi-snap table covering 0, +/- pi/8, pi/6, pi/4, pi/3,
+  pi/2, 2pi/3, 3pi/4, 5pi/6, pi, 3pi/2, 2pi, 3pi, 4pi within tolerance 1e-6;
+  `ParamExpr` recursive renderer with precedence-aware paren wrapping and
+  middle-dot multiplication.
+- `layout.cpp` : ASAP packing driver `build_document` with full-width barrier
+  column breaks, non-contiguous `UNITARY` row reservation, conditional gate
+  c-wire serialisation when `show_clbits` is on, and post-build c-wire strut
+  extension for measure / conditional glyphs.
+- Python bindings expose `lindblad.DrawMode`, `lindblad.ParamFormat`,
+  `lindblad.DrawOptions`, and `QuantumCircuit.draw(mode, opts)`.
+- `docs/api/visualisation.md` : new full reference covering DrawMode,
+  ParamFormat, DrawOptions, examples for all four backends, the three-tier
+  catalogue architecture, and known limitations.
+
+### Changed
+
+- `QuantumCircuit::to_ascii()` is now a thin compatibility wrapper around
+  `draw(DrawMode::ASCII, {})`. The original ad-hoc per-wire concatenation
+  with hard-coded gate dispatch has been deleted from `src/circuit.cpp`; new
+  code should call `draw()` directly.
+- `docs/api/circuit.md` : replaced the ASCII Visualization section with a
+  pointer to `docs/api/visualisation.md`.
+- `docs/APIOverview.md` : added `visualisation.md` to the Circuit
+  Construction & Manipulation deep-dive link list.
+
+### Deferred
+
+- Matplotlib (`mpl`) backend stays out of `DrawMode`. A `Figure` object can
+  only be constructed from Python, so MPL support belongs in a future
+  Python-bindings deliverable layered on top of the SVG renderer.
+- Multi-line ASCII gate boxes for long parameter labels. Single-line boxes
+  cover the current need; widening the column suffices for `U(0.7854, ...)`.
+- ASCII folding for very wide circuits. `DrawOptions::fold_width` is wired
+  through; the implementation lands when the ergonomic case is real.
+- R.1.10.1 test suite for the new visualiser per the project's release
+  cadence: this release adds only a `CircuitTest.DrawSmoke` smoke test
+  exercising all four `DrawMode` values on a measured Bell circuit.
+
 ## [R.1.9.1] - 2026-05-20
 
 ### Note on release contents

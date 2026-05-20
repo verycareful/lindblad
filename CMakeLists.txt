@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.9.1 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.10.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.9.1")
+set(LINDBLAD_VERSION_LABEL "R.1.10.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -168,6 +168,15 @@ add_library(lindblad_core STATIC
     src/qasm/qasm2_parser.cpp
     src/qasm/qasm3_parser.cpp
     src/backends/local_backend.cpp
+    src/visualisation/gate_symbols.cpp
+    src/visualisation/composite_catalogue.cpp
+    src/visualisation/gate_builders.cpp
+    src/visualisation/format_params.cpp
+    src/visualisation/layout.cpp
+    src/visualisation/render_ascii.cpp
+    src/visualisation/render_svg.cpp
+    src/visualisation/render_latex.cpp
+    src/visualisation/render_html.cpp
 )
 
 target_include_directories(lindblad_core PUBLIC

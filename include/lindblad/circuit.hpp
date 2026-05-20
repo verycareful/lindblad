@@ -111,6 +111,51 @@ struct Instruction {
 };
 
 // =============================================================================
+// DrawMode : output backend selector for QuantumCircuit::draw()
+// =============================================================================
+// One enum value per supported renderer. The default (ASCII) is suitable for
+// terminal output; SVG / LATEX / HTML target embedding in docs, papers, or
+// browsers respectively. The visualisation subsystem dispatches on this value
+// after building a single backend-agnostic CircuitDocument.
+
+enum class DrawMode {
+    ASCII,   // Plain text grid, monospaced
+    SVG,     // Self-contained SVG with semantic classes and data attributes
+    LATEX,   // Quantikz environment (no document shell)
+    HTML     // Standalone HTML page embedding the SVG with hover styling
+};
+
+// =============================================================================
+// ParamFormat : how numeric gate parameters are rendered inside labels
+// =============================================================================
+// Pretty mode snaps recognised rational multiples of pi to symbolic strings
+// (e.g. pi/2) before falling back to a 4-decimal fixed format. Raw mode always
+// emits the 4-decimal form regardless of value.
+
+enum class ParamFormat {
+    Pretty,  // pi-snap recognised multiples, then %.4f decimal
+    Raw      // Always %.4f decimal
+};
+
+// =============================================================================
+// DrawOptions : per-call visualisation configuration
+// =============================================================================
+// Holds every knob that influences layout or rendering. Defaults are tuned for
+// terminal ASCII output. SVG/HTML coordinate sizes are in CSS pixels and feed
+// the SVG viewBox. fold_width = 0 disables ASCII folding entirely.
+
+struct DrawOptions {
+    int fold_width = 120;                            // ASCII wrap column; 0 disables folding
+    bool show_clbits = false;                        // when false, the bundled c-wire is hidden
+    bool show_params = true;                         // when false, gate labels omit parameters
+    bool ascii_safe = false;                         // swap UTF-8 box-drawing for portable ASCII
+    ParamFormat param_format = ParamFormat::Pretty;  // numeric parameter formatting strategy
+    int cell_width_px = 48;                          // SVG/HTML horizontal grid pitch (px)
+    int cell_height_px = 48;                         // SVG/HTML vertical grid pitch (px)
+    bool include_legend = false;                     // LaTeX/HTML emit a small gate legend
+};
+
+// =============================================================================
 // QuantumCircuit
 // =============================================================================
 
@@ -258,6 +303,19 @@ public:
     // Visualisation
     // =========================================================================
 
+    // Layered, parameter-aware circuit renderer. Builds a single backend-
+    // agnostic CircuitDocument via ASAP packing and dispatches to one of four
+    // renderers selected by `mode`. The optional `opts` controls folding,
+    // c-wire visibility, parameter formatting, and SVG/HTML cell sizes; see
+    // DrawOptions for per-field semantics. Returns the rendered string.
+    // mode = output backend (ASCII / SVG / LATEX / HTML)
+    // opts = per-call visualisation configuration (defaults are terminal-friendly)
+    std::string draw(DrawMode mode = DrawMode::ASCII,
+                     const DrawOptions& opts = {}) const;
+
+    // Legacy primitive ASCII renderer. Retained during the R.1.10.0 visualiser
+    // rollout so existing callers continue to compile; scheduled for removal
+    // once tests, bindings, and docs migrate to draw(DrawMode::ASCII).
     std::string to_ascii() const;
 
 private:
