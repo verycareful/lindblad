@@ -34,6 +34,8 @@ set(LINDBLAD_TEST_SOURCES
     test_primitives.cpp
     test_dag.cpp
     test_qasm_parser.cpp
+    # R.1.8.1 test suite — Shor's factoring algorithm
+    test_shor.cpp
 )
 
 # Create test executable

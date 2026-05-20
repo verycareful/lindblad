@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.8.1] - 2026-05-20
+
+### Tests
+- `tests/test_shor.cpp` — New test suite for `algorithms::Shor` covering classical pre-screening paths (even N, perfect powers, trial GCDs), exception handling (N < 4, prime N), circuit structural validation (qubit counts, Hadamard initialization, target register |1⟩, UNITARY gate count, no measurements), direct order-finding verification (ord₁₅(2), ord₁₅(7)), backend parity (DM, MPS), seed reproducibility, and Options/Result field correctness.
+
+### Results
+- 624 tests from 72 test suites ran. All passed.
+
 ## [R.1.8.0] - 2026-05-20
 
 ### Added
