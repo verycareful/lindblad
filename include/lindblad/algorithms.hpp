@@ -861,6 +861,12 @@ public:
         backends::LocalBackend& backend,
         uint64_t seed = 0
     );
+
+    // Continued-fraction convergents of x in (0,1). Returns (numerator, denominator)
+    // pairs with denominator ≤ max_denom, ordered smallest-to-largest denominator.
+    // Exposed as public static for direct unit-testing of the phase→period step.
+    static std::vector<std::pair<uint64_t, uint64_t>>
+    cf_convergents(double x, uint64_t max_denom);
 };
 
 } // namespace algorithms

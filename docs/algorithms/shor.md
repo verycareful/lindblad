@@ -168,7 +168,7 @@ Failure modes that lead to retries (not exceptions):
 
 ## Testing Notes
 
-A dedicated test suite (`tests/test_shor.cpp`) is planned for R.1.8.1.
+A dedicated test suite (`tests/test_shor.cpp`) ships with R.1.8.1 (30 tests) and is extended in R.1.8.2 (8 additional tests covering `cf_convergents` directly, unitarity invariants, and stricter order-finding assertions).
 
 ## Related Source Files
 
