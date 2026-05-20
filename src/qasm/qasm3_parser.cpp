@@ -255,7 +255,10 @@ const std::unordered_map<std::string_view, BuiltinSpec>& builtin_table() {
         {"s",     {0, 1, GT::S}},   {"sdg",  {0, 1, GT::SDG}},
         {"t",     {0, 1, GT::T}},   {"tdg",  {0, 1, GT::TDG}},
         {"sx",    {0, 1, GT::SX}},  {"sxdg", {0, 1, GT::SXDG}},
-        {"id",    {0, 1, GT::H}},   // id has no GateType; we drop it (handled separately)
+        // 1-qubit identity (handled by an early drop in emit_gate before any
+        // dispatch happens; the table entry exists only so a stray `id` inside
+        // `try_emit_named` doesn't fall to the matrix fallback path)
+        {"id",    {0, 1, GT::H}},
         // 1-qubit, parameterised
         {"rx",    {1, 1, GT::RX}},  {"ry",   {1, 1, GT::RY}},
         {"rz",    {1, 1, GT::RZ}},  {"p",    {1, 1, GT::P}},
@@ -596,7 +599,12 @@ private:
             throw std::runtime_error(
                 "QASM3Parser: no qubit register declared");
         }
+        // First pass populated qc_.parameter_names from `input` declarations.
+        // Reconstructing qc_ with the now-known register sizes would discard
+        // that vector, so save it across the rebuild.
+        auto saved_param_names = std::move(qc_.parameter_names);
         qc_ = QuantumCircuit(n_qubits_, n_clbits_);
+        qc_.parameter_names = std::move(saved_param_names);
         qubit_stack_.assign(n_qubits_, {});
         cancelled_.clear();
 
@@ -754,22 +762,27 @@ private:
             }
         }
 
-        // `c[i] = measure q[j];` — classical assignment form
-        if (at(TT::IDENT) && peek(1).type == TT::LBRACKET) {
-            // Lookahead: IDENT [ INT ] EQUALS measure ...
-            // Or: IDENT [ INT ] EQUALS expr (not supported)
-            // We need to disambiguate from a gate call like `mygate[idx]` (not valid).
-            size_t look = pos_ + 4;
-            if (look < toks_.size() &&
-                toks_[pos_ + 2].type == TT::INT &&
-                toks_[pos_ + 3].type == TT::RBRACKET &&
-                toks_[pos_ + 4].type == TT::EQUALS) {
+        // `c[i] = measure q[j];` or bare `c = measure q;` : classical
+        // assignment. Disambiguated from a gate call by an EQUALS appearing
+        // either immediately after the IDENT (bare, single-bit register form)
+        // or after a `[INT]` bracket suffix.
+        if (at(TT::IDENT)) {
+            if (peek(1).type == TT::EQUALS) {
                 parse_classical_assign_measure();
                 return;
             }
+            if (peek(1).type == TT::LBRACKET) {
+                size_t look = pos_ + 4;
+                if (look < toks_.size() &&
+                    toks_[pos_ + 2].type == TT::INT &&
+                    toks_[pos_ + 3].type == TT::RBRACKET &&
+                    toks_[pos_ + 4].type == TT::EQUALS) {
+                    parse_classical_assign_measure();
+                    return;
+                }
+            }
         }
 
-        // Bare `c = measure q[j];` not supported — Qiskit always indexes.
         // Otherwise: a gate call (possibly modifier-prefixed).
         parse_gate_call();
 
@@ -825,8 +838,11 @@ private:
             if (accept_kw("inv"))       { expect(TT::AT, "'@'"); pc.inv = !pc.inv; continue; }
             if (accept_kw("pow")) {
                 expect(TT::LPAREN, "'('");
+                int sign = 1;
+                if (accept(TT::MINUS)) sign = -1;
+                else (void)accept(TT::PLUS);
                 auto& n = expect(TT::INT, "integer exponent");
-                pc.pow_exp *= std::stoi(std::string(n.text));
+                pc.pow_exp *= sign * std::stoi(std::string(n.text));
                 expect(TT::RPAREN, "')'");
                 expect(TT::AT, "'@'");
                 continue;
@@ -1145,8 +1161,11 @@ private:
             if (accept_kw("inv"))       { expect(TT::AT, "'@'"); inv = !inv; continue; }
             if (accept_kw("pow")) {
                 expect(TT::LPAREN, "'('");
+                int sign = 1;
+                if (accept(TT::MINUS)) sign = -1;
+                else (void)accept(TT::PLUS);
                 auto& n = expect(TT::INT, "integer exponent");
-                pow_exp *= std::stoi(std::string(n.text));
+                pow_exp *= sign * std::stoi(std::string(n.text));
                 expect(TT::RPAREN, "')'");
                 expect(TT::AT, "'@'");
                 continue;
@@ -1220,8 +1239,11 @@ private:
             return;
         }
 
-        // `id` is a 1-qubit identity — drop it.
-        if (name == "id" && n_ctrl == 0 && !inv && pow_exp == 1) return;
+        // `id` is the identity gate. Any modifier stack over it is still
+        // identity (inv @ id = id, pow(n) @ id = id, ctrl @ id = identity on
+        // k+1 qubits), so we drop unconditionally regardless of n_ctrl, inv,
+        // or pow_exp.
+        if (name == "id") return;
 
         // Try a fast path that maps the modifier stack to a named gate.
         if (try_emit_named(name, params, qubits, n_ctrl, inv, pow_exp)) return;
@@ -1474,6 +1496,15 @@ private:
                 "QASM3Parser: unknown gate '" + name + "' with modifier stack");
         }
         const BuiltinSpec& spec = it->second;
+        // Validate parameter arity before build_1q_base dereferences `p[0]`
+        // for rotation gates: catches user errors like `rx q[0]` (missing
+        // angle) with a descriptive throw instead of UB.
+        if (static_cast<int>(num_params.size()) != spec.n_params) {
+            throw std::runtime_error(
+                "QASM3Parser: gate '" + name + "' expects " +
+                std::to_string(spec.n_params) + " parameter(s), got " +
+                std::to_string(num_params.size()));
+        }
         if (spec.n_qubits != 1) {
             throw std::runtime_error(
                 "QASM3Parser: matrix fallback only handles 1-qubit base gates; "
