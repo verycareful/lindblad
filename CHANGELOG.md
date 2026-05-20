@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.8.2] - 2026-05-20
+
+### Fixed
+- `src/algorithms/shor.cpp` — `find_order`: two `int` bit-shift overflows corrected to `1ULL` (`m` promoted to `uint64_t`; phase divisor `1 << n_eval` → `1ULL << n_eval`). Overflows triggered silently for `n_eval > 30`, i.e. all `N` requiring more than 15 target qubits.
+
+### Tests
+- `tests/test_shor.cpp` — `FindOrderA2N15` / `FindOrderA7N15`: replaced single-shot lenient checks with 10-seed loops asserting at least one valid order is returned; removes the unconditional `r == 0` pass.
+- `tests/test_shor.cpp` — `CfConvergents*` (7 tests): direct tests of `Shor::cf_convergents` covering exact rational phases (1/4, 1/2, 1/3), irrational approximation (golden ratio, max-denom enforcement), and edge cases (`max_denom=1`, `x≈0`, `x≈1`).
+- `tests/test_shor.cpp` — `UnitaryGatesAreUnitary`: verifies that every `UNITARY` instruction in the period-finding circuit satisfies U†U = I to 1e-10.
+- `include/lindblad/algorithms.hpp` — `Shor::cf_convergents` promoted to `public static` method to enable direct testing.
+
+### Results
+- 632 tests from 72 test suites ran. All passed.
+
 ## [R.1.8.1] - 2026-05-20
 
 ### Tests

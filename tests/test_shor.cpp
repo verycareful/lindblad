@@ -247,7 +247,9 @@ TEST(ShorTest, CircuitInitTargetToOne) {
 // =============================================================================
 
 TEST(ShorTest, FindOrderA2N15) {
-    // ord_15(2) = 4: 2^1=2, 2^2=4, 2^3=8, 2^4=16≡1 mod 15
+    // ord_15(2) = 4. Loop over 10 seeded runs — at least one must return a valid
+    // order. A correct statevector QPE circuit cannot fail on every seed; if it
+    // does, the circuit or phase-extraction logic is wrong.
     int n_target = static_cast<int>(std::ceil(std::log2(16.0)));
     int n_eval = 2 * n_target + 1;
 
@@ -255,19 +257,21 @@ TEST(ShorTest, FindOrderA2N15) {
     cfg.simulator = backends::LocalBackend::SimType::STATEVECTOR;
     backends::LocalBackend backend(cfg);
 
-    uint64_t r = Shor::find_order(2, 15, n_eval, backend, 42);
-    // The order must divide the true order (4). Common valid results: 4, 2, 1.
-    // A valid r satisfies 2^r ≡ 1 (mod 15).
-    if (r > 0) {
-        uint64_t check = 1;
-        for (uint64_t i = 0; i < r; ++i) check = check * 2 % 15;
-        EXPECT_EQ(check, 1u) << "2^" << r << " mod 15 should be 1";
+    bool any_valid = false;
+    for (uint64_t seed = 1; seed <= 10; ++seed) {
+        uint64_t r = Shor::find_order(2, 15, n_eval, backend, seed);
+        if (r > 0) {
+            uint64_t check = 1;
+            for (uint64_t i = 0; i < r; ++i) check = check * 2 % 15;
+            EXPECT_EQ(check, 1u) << "Invalid order r=" << r << " for seed=" << seed;
+            any_valid = true;
+        }
     }
-    // r may be 0 on unlucky measurement — not a test failure per se
+    EXPECT_TRUE(any_valid) << "find_order(2, 15) returned no valid order across 10 seeds";
 }
 
 TEST(ShorTest, FindOrderA7N15) {
-    // ord_15(7) = 4: 7^1=7, 7^2=49≡4, 7^3=28≡13, 7^4=91≡1 mod 15
+    // ord_15(7) = 4. Same loop-based check for a=7.
     int n_target = static_cast<int>(std::ceil(std::log2(16.0)));
     int n_eval = 2 * n_target + 1;
 
@@ -275,12 +279,17 @@ TEST(ShorTest, FindOrderA7N15) {
     cfg.simulator = backends::LocalBackend::SimType::STATEVECTOR;
     backends::LocalBackend backend(cfg);
 
-    uint64_t r = Shor::find_order(7, 15, n_eval, backend, 123);
-    if (r > 0) {
-        uint64_t check = 1;
-        for (uint64_t i = 0; i < r; ++i) check = check * 7 % 15;
-        EXPECT_EQ(check, 1u) << "7^" << r << " mod 15 should be 1";
+    bool any_valid = false;
+    for (uint64_t seed = 1; seed <= 10; ++seed) {
+        uint64_t r = Shor::find_order(7, 15, n_eval, backend, seed);
+        if (r > 0) {
+            uint64_t check = 1;
+            for (uint64_t i = 0; i < r; ++i) check = check * 7 % 15;
+            EXPECT_EQ(check, 1u) << "Invalid order r=" << r << " for seed=" << seed;
+            any_valid = true;
+        }
     }
+    EXPECT_TRUE(any_valid) << "find_order(7, 15) returned no valid order across 10 seeds";
 }
 
 // =============================================================================
@@ -362,4 +371,100 @@ TEST(ShorTest, MethodStringPerfectPower) {
     EXPECT_EQ(r.method, "perfect_power");
     EXPECT_EQ(r.factor, 7u);
     EXPECT_EQ(r.cofactor, 7u);
+}
+
+// =============================================================================
+// cf_convergents — direct unit tests
+// =============================================================================
+
+TEST(ShorTest, CfConvergentsQuarterPhase) {
+    // 0.25 = 1/4; CF expansion gives convergents (0,1) then (1,4).
+    auto conv = Shor::cf_convergents(0.25, 100);
+    bool found = false;
+    for (const auto& [n, d] : conv)
+        if (n == 1 && d == 4) { found = true; break; }
+    EXPECT_TRUE(found) << "Expected convergent (1, 4) for x=0.25";
+}
+
+TEST(ShorTest, CfConvergentsHalfPhase) {
+    // 0.5 = 1/2 → convergent (1, 2).
+    auto conv = Shor::cf_convergents(0.5, 100);
+    bool found = false;
+    for (const auto& [n, d] : conv)
+        if (n == 1 && d == 2) { found = true; break; }
+    EXPECT_TRUE(found) << "Expected convergent (1, 2) for x=0.5";
+}
+
+TEST(ShorTest, CfConvergentsThirdPhase) {
+    // 1/3 → convergent (1, 3).
+    auto conv = Shor::cf_convergents(1.0 / 3.0, 100);
+    bool found = false;
+    for (const auto& [n, d] : conv)
+        if (n == 1 && d == 3) { found = true; break; }
+    EXPECT_TRUE(found) << "Expected convergent (1, 3) for x=1/3";
+}
+
+TEST(ShorTest, CfConvergentsMaxDenomEnforced) {
+    // All returned denominators must be ≤ max_denom.
+    auto conv = Shor::cf_convergents(0.618033988749895, 20);  // (√5-1)/2
+    for (const auto& [n, d] : conv)
+        EXPECT_LE(d, 20u) << "Denominator " << d << " exceeds max_denom=20";
+    EXPECT_FALSE(conv.empty());
+}
+
+TEST(ShorTest, CfConvergentsMaxDenomOne) {
+    // max_denom=1: only denominators of 0 or 1 may appear.
+    auto conv = Shor::cf_convergents(0.3, 1);
+    for (const auto& [n, d] : conv)
+        EXPECT_LE(d, 1u) << "Denominator " << d << " exceeds max_denom=1";
+}
+
+TEST(ShorTest, CfConvergentsNearZero) {
+    // x=0.0 terminates immediately after one convergent; all denominators ≤ max_denom.
+    auto conv = Shor::cf_convergents(0.0, 100);
+    for (const auto& [n, d] : conv)
+        EXPECT_LE(d, 100u);
+}
+
+TEST(ShorTest, CfConvergentsNearOne) {
+    // x≈1 should not overflow or loop; all denominators ≤ max_denom.
+    auto conv = Shor::cf_convergents(0.999, 100);
+    for (const auto& [n, d] : conv)
+        EXPECT_LE(d, 100u);
+}
+
+// =============================================================================
+// build_period_finding_circuit — UNITARY gate unitarity
+// =============================================================================
+
+TEST(ShorTest, UnitaryGatesAreUnitary) {
+    // Every UNITARY instruction's matrix U must satisfy U†U = I (to 1e-10).
+    // Unitarity is a required invariant — if violated, the simulation is wrong.
+    int n_target = 4;
+    int n_eval   = 9;
+    auto qc = Shor::build_period_finding_circuit(2, 15, n_eval, n_target);
+
+    const double tol = 1e-10;
+    for (const auto& inst : qc.instructions) {
+        if (inst.type != Instruction::GateType::UNITARY) continue;
+        const auto& U = inst.matrix;
+        const size_t dim = static_cast<size_t>(
+            std::round(std::sqrt(static_cast<double>(U.size()))));
+        ASSERT_EQ(dim * dim, U.size()) << "Matrix size is not a perfect square";
+
+        for (size_t r = 0; r < dim; ++r) {
+            for (size_t c = 0; c < dim; ++c) {
+                Complex128 sum(0.0, 0.0);
+                for (size_t k = 0; k < dim; ++k) {
+                    Complex128 conj_ki(U[k * dim + r].real, -U[k * dim + r].imag);
+                    sum += conj_ki * U[k * dim + c];
+                }
+                double expected_re = (r == c) ? 1.0 : 0.0;
+                EXPECT_NEAR(sum.real, expected_re, tol)
+                    << "U†U[" << r << "," << c << "].re out of tolerance";
+                EXPECT_NEAR(sum.imag, 0.0, tol)
+                    << "U†U[" << r << "," << c << "].im out of tolerance";
+            }
+        }
+    }
 }

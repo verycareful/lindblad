@@ -81,8 +81,8 @@ static bool is_perfect_power(uint64_t N, uint64_t& base_out) {
 
 // Continued-fraction convergents of x in (0,1). Returns (numerator, denominator)
 // pairs with denominator ≤ max_denom, ordered smallest-to-largest denominator.
-static std::vector<std::pair<uint64_t, uint64_t>>
-cf_convergents(double x, uint64_t max_denom) {
+std::vector<std::pair<uint64_t, uint64_t>>
+Shor::cf_convergents(double x, uint64_t max_denom) {
     std::vector<std::pair<uint64_t, uint64_t>> conv;
     uint64_t h0 = 1, h1 = 0, k0 = 0, k1 = 1;
     for (int iter = 0; iter < 64; ++iter) {
@@ -203,14 +203,16 @@ uint64_t Shor::find_order(
     if (best.empty()) return 0;
 
     // Convert eval-register bits to integer m (MSB-first, qubit 0 = MSB).
-    int m = 0;
+    // 1ULL prevents int overflow when n_eval > 30 (n_eval = 2*n_target+1 grows with N).
+    uint64_t m = 0;
     for (int i = 0; i < n_eval && i < static_cast<int>(best.size()); ++i)
-        if (best[i] == '1') m |= (1 << (n_eval - 1 - i));
+        if (best[i] == '1') m |= (1ULL << (n_eval - 1 - i));
     if (m == 0) return 0;
 
     // Phase = m / 2^n_eval ≈ s/r. Find r via continued fractions.
+    // 1ULL prevents int overflow when n_eval > 30.
     double phase = static_cast<double>(m) /
-                   static_cast<double>(1 << n_eval);
+                   static_cast<double>(1ULL << n_eval);
     auto convs = cf_convergents(phase, N);
     for (const auto& [s, r] : convs) {
         if (r == 0 || r >= N) continue;
