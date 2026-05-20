@@ -1,5 +1,11 @@
 #include "lindblad/circuit.hpp"
 
+#include "visualisation/document.hpp"
+#include "visualisation/render_ascii.hpp"
+#include "visualisation/render_svg.hpp"
+#include "visualisation/render_latex.hpp"
+#include "visualisation/render_html.hpp"
+
 #include <algorithm>
 #include <sstream>
 #include <stdexcept>
@@ -1567,91 +1573,31 @@ QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
 }
 
 // =============================================================================
-// ASCII visualisation
+// Visualisation : QuantumCircuit::draw()
 // =============================================================================
+// Dispatches a CircuitDocument (produced by lindblad::viz::build_document) to
+// one of four renderers based on DrawMode. The renderers live in
+// src/visualisation/render_*.cpp and share the CircuitDocument data model.
+//
+// to_ascii() is now a thin compatibility wrapper that calls draw(ASCII) and
+// is scheduled for removal once external callers migrate. The implementation
+// of the old primitive ASCII drawer (vector<string> wires) has been deleted;
+// the new path is layered, parameter-aware, and shares its layout pass with
+// every other backend.
+
+std::string QuantumCircuit::draw(DrawMode mode, const DrawOptions& opts) const {
+    const auto doc = lindblad::viz::build_document(*this, opts);
+    switch (mode) {
+        case DrawMode::ASCII: return lindblad::viz::render_ascii(doc, opts);
+        case DrawMode::SVG:   return lindblad::viz::render_svg  (doc, opts);
+        case DrawMode::LATEX: return lindblad::viz::render_latex(doc, opts);
+        case DrawMode::HTML:  return lindblad::viz::render_html (doc, opts);
+    }
+    return lindblad::viz::render_ascii(doc, opts); // unreachable; silences warnings
+}
 
 std::string QuantumCircuit::to_ascii() const {
-    // Build a simple text-based circuit diagram
-    std::vector<std::string> wires(n_qubits);
-    for (int i = 0; i < n_qubits; ++i) {
-        wires[i] = "q" + std::to_string(i) + ": ";
-    }
-
-    // Equalise initial lengths
-    size_t max_prefix = 0;
-    for (int i = 0; i < n_qubits; ++i) {
-        max_prefix = std::max(max_prefix, wires[i].size());
-    }
-    for (int i = 0; i < n_qubits; ++i) {
-        while (wires[i].size() < max_prefix) wires[i] += " ";
-        wires[i] += "─";
-    }
-
-    for (const auto& inst : instructions) {
-        std::string gname = inst.gate_name();
-
-        // Equalise wire lengths first
-        size_t max_len = 0;
-        for (int i = 0; i < n_qubits; ++i) {
-            max_len = std::max(max_len, wires[i].size());
-        }
-        for (int i = 0; i < n_qubits; ++i) {
-            while (wires[i].size() < max_len) wires[i] += "─";
-        }
-
-        if (inst.type == Instruction::GateType::BARRIER) {
-            for (int q : inst.qubits) {
-                wires[q] += "┊";
-            }
-            for (int i = 0; i < n_qubits; ++i) {
-                bool in_barrier = false;
-                for (int q : inst.qubits) {
-                    if (q == i) { in_barrier = true; break; }
-                }
-                if (!in_barrier) wires[i] += "─";
-            }
-        } else if (inst.type == Instruction::GateType::MEASURE) {
-            wires[inst.qubits[0]] += "┤M├";
-        } else if (inst.qubits.size() == 1) {
-            // Single-qubit gate box
-            std::string box = "┤" + gname + "├";
-            wires[inst.qubits[0]] += box;
-        } else if (inst.type == Instruction::GateType::CX) {
-            int ctrl = inst.qubits[0];
-            int tgt = inst.qubits[1];
-            wires[ctrl] += "─●─";
-            wires[tgt]  += "─⊕─";
-        } else if (inst.type == Instruction::GateType::CZ) {
-            int ctrl = inst.qubits[0];
-            int tgt = inst.qubits[1];
-            wires[ctrl] += "─●─";
-            wires[tgt]  += "─●─";
-        } else if (inst.type == Instruction::GateType::SWAP) {
-            wires[inst.qubits[0]] += "─✕─";
-            wires[inst.qubits[1]] += "─✕─";
-        } else {
-            // Multi-qubit gate: show name on first qubit
-            for (size_t qi = 0; qi < inst.qubits.size(); ++qi) {
-                if (qi == 0) {
-                    wires[inst.qubits[qi]] += "┤" + gname + "├";
-                } else {
-                    wires[inst.qubits[qi]] += "─┼─";
-                }
-            }
-        }
-
-        // Add trailing wire
-        for (int i = 0; i < n_qubits; ++i) {
-            wires[i] += "─";
-        }
-    }
-
-    // Combine
-    std::ostringstream oss;
-    for (int i = 0; i < n_qubits; ++i) {
-        oss << wires[i] << "\n";
-    }
-    return oss.str();
+    return draw(DrawMode::ASCII, {});
 }
 
 } // namespace lindblad

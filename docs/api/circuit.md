@@ -159,15 +159,21 @@ Behavior:
 - Gate strings are stored using `gate_name()`; custom unitaries include matrix
 - Conditioning metadata is serialized when present
 
-### ASCII Visualization
+### Visualisation
 
-`to_ascii()` returns a text diagram with special handling for:
+`draw(DrawMode, DrawOptions)` returns a circuit diagram in one of four backends:
 
-- `BARRIER` (drawn with vertical separators)
-- `MEASURE`
-- single-qubit gates
-- `CX`, `CZ`, and `SWAP`
-- other multi-qubit gates shown as a boxed name on the first qubit
+- `DrawMode::ASCII` : monospaced text grid (terminal-friendly)
+- `DrawMode::SVG` : self-contained SVG with class names and `data-` attributes
+- `DrawMode::LATEX` : a Quantikz environment for academic papers
+- `DrawMode::HTML` : standalone HTML page embedding the SVG with hover styling
+
+See [`visualisation.md`](visualisation.md) for the full reference, including
+`DrawOptions` knobs (`fold_width`, `show_clbits`, `param_format`, `ascii_safe`,
+`cell_width_px`, etc.).
+
+`to_ascii()` is retained as a thin compatibility wrapper that calls
+`draw(DrawMode::ASCII)`; new code should call `draw()` directly.
 
 ## Example
 

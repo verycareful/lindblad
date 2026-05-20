@@ -74,8 +74,17 @@ TEST(CircuitTest, ParameterBinding) {
 TEST(CircuitTest, ASCIIDiagram) {
     QuantumCircuit qc(2);
     qc.h(0).cx(0, 1);
-    std::string ascii = qc.to_ascii();
+    std::string ascii = qc.draw();
     EXPECT_FALSE(ascii.empty());
+}
+
+TEST(CircuitTest, DrawSmoke) {
+    QuantumCircuit qc(2, 2);
+    qc.h(0).cx(0, 1).measure(0, 0).measure(1, 1);
+    EXPECT_FALSE(qc.draw(DrawMode::ASCII).empty());
+    EXPECT_FALSE(qc.draw(DrawMode::SVG  ).empty());
+    EXPECT_FALSE(qc.draw(DrawMode::LATEX).empty());
+    EXPECT_FALSE(qc.draw(DrawMode::HTML ).empty());
 }
 
 TEST(CircuitTest, InvalidQubit) {

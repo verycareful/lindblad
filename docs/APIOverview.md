@@ -26,7 +26,7 @@ Key capabilities:
 - Export/import OpenQASM 2.0 and OpenQASM 3.0; symbolic QASM 3 angles via
   `ParamExpr` are resolved later with `bind_parameters`
 
-Deep dives: [docs/api/circuit.md](api/circuit.md), [docs/api/qasm.md](api/qasm.md)
+Deep dives: [docs/api/circuit.md](api/circuit.md), [docs/api/qasm.md](api/qasm.md), [docs/api/visualisation.md](api/visualisation.md)
 
 ### Minimal example
 

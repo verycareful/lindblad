@@ -59,6 +59,30 @@ PYBIND11_MODULE(lindblad_python, m) {
         .def_readonly("dim", &lindblad::Statevector::dim);
 
     // =========================================================================
+    // Visualisation : DrawMode, ParamFormat, DrawOptions
+    // =========================================================================
+    py::enum_<lindblad::DrawMode>(m, "DrawMode")
+        .value("ASCII", lindblad::DrawMode::ASCII)
+        .value("SVG",   lindblad::DrawMode::SVG)
+        .value("LATEX", lindblad::DrawMode::LATEX)
+        .value("HTML",  lindblad::DrawMode::HTML);
+
+    py::enum_<lindblad::ParamFormat>(m, "ParamFormat")
+        .value("Pretty", lindblad::ParamFormat::Pretty)
+        .value("Raw",    lindblad::ParamFormat::Raw);
+
+    py::class_<lindblad::DrawOptions>(m, "DrawOptions")
+        .def(py::init<>())
+        .def_readwrite("fold_width",     &lindblad::DrawOptions::fold_width)
+        .def_readwrite("show_clbits",    &lindblad::DrawOptions::show_clbits)
+        .def_readwrite("show_params",    &lindblad::DrawOptions::show_params)
+        .def_readwrite("ascii_safe",     &lindblad::DrawOptions::ascii_safe)
+        .def_readwrite("param_format",   &lindblad::DrawOptions::param_format)
+        .def_readwrite("cell_width_px",  &lindblad::DrawOptions::cell_width_px)
+        .def_readwrite("cell_height_px", &lindblad::DrawOptions::cell_height_px)
+        .def_readwrite("include_legend", &lindblad::DrawOptions::include_legend);
+
+    // =========================================================================
     // QuantumCircuit
     // =========================================================================
     py::class_<lindblad::QuantumCircuit>(m, "QuantumCircuit")
@@ -117,6 +141,9 @@ PYBIND11_MODULE(lindblad_python, m) {
         .def("to_json", &lindblad::QuantumCircuit::to_json)
         .def_static("from_json", &lindblad::QuantumCircuit::from_json)
         .def("to_ascii", &lindblad::QuantumCircuit::to_ascii)
+        .def("draw", &lindblad::QuantumCircuit::draw,
+             py::arg("mode") = lindblad::DrawMode::ASCII,
+             py::arg("opts") = lindblad::DrawOptions{})
         .def_readwrite("n_qubits", &lindblad::QuantumCircuit::n_qubits)
         .def_readwrite("n_clbits", &lindblad::QuantumCircuit::n_clbits)
         .def_readwrite("name", &lindblad::QuantumCircuit::name);
