@@ -1,0 +1,4 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \ctrl{1} & \ctrl{1} & \ctrl{1} & \ctrl{1} & \swap{1} & \gate{iSwap} & \gate[2]{ECR} \\
+\lstick{$q_{1}$} & \targ{} & \gate{Y} & \ctrl{-1} & \gate{H} & \targX{} & \gate{iSwap} & \qw 
+\end{quantikz}

@@ -1,0 +1,5 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \gate{RX} & \ctrl{2} \\
+\lstick{$q_{1}$} & \gate{RY} & \qw \\
+\lstick{$q_{2}$} & \qw & \gate{RX} 
+\end{quantikz}

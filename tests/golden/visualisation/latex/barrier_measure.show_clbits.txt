@@ -1,0 +1,5 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \gate{H} & \barrier[\dashed]{2} & \meter{} \\
+\lstick{$q_{1}$} & \gate{H} & \qw & \meter{} \\
+\lstick{$c$} \setwiretype{c} & \cw & \cw & \cw 
+\end{quantikz}

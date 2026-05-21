@@ -1,0 +1,3 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \gate{H} & \gate{X} & \gate{Y} & \gate{Z} & \gate{S} & \gate{\text{S†}} & \gate{T} & \gate{\text{T†}} & \gate{SX} & \gate{\text{SX†}} 
+\end{quantikz}

@@ -1,0 +1,6 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \gate[4]{U} \\
+\lstick{$q_{1}$} & \qw \\
+\lstick{$q_{2}$} & \qw \\
+\lstick{$q_{3}$} & \qw 
+\end{quantikz}

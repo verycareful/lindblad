@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lindblad circuit</title>
+<style>
+body { font-family: -apple-system, system-ui, sans-serif;
+       margin: 2rem; background: #fafafa; }
+.lb-circuit { display: inline-block; padding: 1rem;
+              background: white; border: 1px solid #ddd;
+              border-radius: 6px; }
+.lb-meta { font-size: 13px; color: #666; margin-bottom: 0.5rem; }
+.lb-glyph { cursor: default; }
+.lb-glyph:hover .lb-gate { stroke-width: 2.5; }
+.lb-legend { margin-top: 1rem; font-size: 13px; color: #444; }
+</style>
+</head>
+<body>
+<div class="lb-circuit">
+<div class="lb-meta">2 qubits, 2 layers, 1 clbits</div>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 162 160">
+<style>
+.lb-wire    { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-cwire   { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-strut   { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-gate    { stroke-width: 1.5; }
+.lb-ctrl    { fill: #444; }
+.lb-label   { font-family: monospace; font-size: 14px;
+              text-anchor: middle; dominant-baseline: central;
+              fill: #111; }
+.lb-rowlabel{ font-family: monospace; font-size: 13px;
+              dominant-baseline: central; fill: #444; }
+.lb-barrier { stroke: #888; stroke-dasharray: 2 3; }
+</style>
+<g class="lb-wires">
+<line class="lb-wire" x1="46" y1="32" x2="150" y2="32"/>
+<line class="lb-wire" x1="46" y1="80" x2="150" y2="80"/>
+<line class="lb-cwire" x1="46" y1="126.5" x2="150" y2="126.5"/>
+<line class="lb-cwire" x1="46" y1="129.5" x2="150" y2="129.5"/>
+</g>
+<g class="lb-rowlabels">
+<text class="lb-rowlabel" x="42" y="32" text-anchor="end">q[0]</text>
+<text class="lb-rowlabel" x="42" y="80" text-anchor="end">q[1]</text>
+<text class="lb-rowlabel" x="42" y="128" text-anchor="end">c</text>
+</g>
+<g class="lb-glyphs">
+<g class="lb-glyph" data-gate="h" data-col="0" data-qubits="0"><rect class="lb-gate" x="54" y="12" width="40" height="40" rx="3" ry="3" fill="#e8eef9" stroke="#2a4a8f"/><text class="lb-label" x="74" y="32">H</text></g>
+<g class="lb-glyph" data-gate="p" data-col="0" data-qubits="1"><line class="lb-strut" x1="74" y1="80" x2="74" y2="128"/><line class="lb-strut" x1="74" y1="80" x2="74" y2="128"/><text class="lb-rowlabel" x="80" y="128">c[0]=1</text><rect class="lb-gate" x="54" y="60" width="40" height="40" rx="3" ry="3" fill="#e0f0e0" stroke="#2a6e2a"/><text class="lb-label" x="74" y="80">P(π)</text></g>
+<g class="lb-glyph" data-gate="measure" data-col="1" data-qubits="0"><line class="lb-strut" x1="122" y1="32" x2="122" y2="128"/><rect class="lb-gate" x="102" y="12" width="40" height="40" rx="3" ry="3" fill="#fff" stroke="#444" stroke-width="1.5"/><path class="lb-gate" d="M108,36 A14,14 0 0 1 136,36" fill="none" stroke="#444" stroke-width="1.5"/><line class="lb-gate" x1="122" y1="36" x2="131.8" y2="23.4" stroke="#444" stroke-width="1.5"/></g>
+</g>
+</svg>
+</div>
+</body>
+</html>

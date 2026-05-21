@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 210 160">
+<style>
+.lb-wire    { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-cwire   { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-strut   { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-gate    { stroke-width: 1.5; }
+.lb-ctrl    { fill: #444; }
+.lb-label   { font-family: monospace; font-size: 14px;
+              text-anchor: middle; dominant-baseline: central;
+              fill: #111; }
+.lb-rowlabel{ font-family: monospace; font-size: 13px;
+              dominant-baseline: central; fill: #444; }
+.lb-barrier { stroke: #888; stroke-dasharray: 2 3; }
+</style>
+<g class="lb-wires">
+<line class="lb-wire" x1="46" y1="32" x2="198" y2="32"/>
+<line class="lb-wire" x1="46" y1="80" x2="198" y2="80"/>
+<line class="lb-wire" x1="46" y1="128" x2="198" y2="128"/>
+</g>
+<g class="lb-rowlabels">
+<text class="lb-rowlabel" x="42" y="32" text-anchor="end">q[0]</text>
+<text class="lb-rowlabel" x="42" y="80" text-anchor="end">q[1]</text>
+<text class="lb-rowlabel" x="42" y="128" text-anchor="end">q[2]</text>
+</g>
+<g class="lb-glyphs">
+<g class="lb-glyph" data-gate="h" data-col="0" data-qubits="0"><rect class="lb-gate" x="54" y="12" width="40" height="40" rx="3" ry="3" fill="#e8eef9" stroke="#2a4a8f"/><text class="lb-label" x="74" y="32">H</text></g>
+<g class="lb-glyph" data-gate="cx" data-col="1" data-qubits="0,1"><line class="lb-strut" x1="122" y1="32" x2="122" y2="80"/><circle class="lb-ctrl" cx="122" cy="32" r="5" fill="#444"/><circle class="lb-gate" cx="122" cy="80" r="11" fill="white" stroke="#444" stroke-width="1.5"/><line class="lb-gate" x1="111" y1="80" x2="133" y2="80" stroke="#444" stroke-width="1.5"/><line class="lb-gate" x1="122" y1="69" x2="122" y2="91" stroke="#444" stroke-width="1.5"/></g>
+<g class="lb-glyph" data-gate="cx" data-col="2" data-qubits="1,2"><line class="lb-strut" x1="170" y1="80" x2="170" y2="128"/><circle class="lb-ctrl" cx="170" cy="80" r="5" fill="#444"/><circle class="lb-gate" cx="170" cy="128" r="11" fill="white" stroke="#444" stroke-width="1.5"/><line class="lb-gate" x1="159" y1="128" x2="181" y2="128" stroke="#444" stroke-width="1.5"/><line class="lb-gate" x1="170" y1="117" x2="170" y2="139" stroke="#444" stroke-width="1.5"/></g>
+</g>
+</svg>

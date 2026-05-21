@@ -38,6 +38,16 @@ set(LINDBLAD_TEST_SOURCES
     test_shor.cpp
     # R.1.9.1 test suite — QASM3 Parser tests
     test_qasm3_parser.cpp
+    # R.1.10.1 test suite — Circuit visualiser
+    test_visualiser_layout.cpp
+    test_visualiser_catalogue.cpp
+    test_visualiser_format.cpp
+    test_visualiser_palette.cpp
+    test_visualiser_folding.cpp
+    test_visualiser_ascii_fixtures.cpp
+    test_visualiser_svg_fixtures.cpp
+    test_visualiser_latex_fixtures.cpp
+    test_visualiser_html_fixtures.cpp
 )
 
 # Create test executable
@@ -53,6 +63,14 @@ target_link_libraries(lindblad_tests
 target_include_directories(lindblad_tests
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# R.1.10.1 : path to the visualiser golden-file tree (absolute, set at
+# configure time so the test binary finds the files regardless of cwd).
+target_compile_definitions(lindblad_tests
+    PRIVATE
+        LINDBLAD_TEST_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
 )
 
 # Register tests with CTest
@@ -63,3 +81,18 @@ gtest_discover_tests(lindblad_tests PROPERTIES LABELS "lindblad")
 add_executable(diagnose diagnose.cpp)
 target_link_libraries(diagnose PRIVATE lindblad_core)
 target_include_directories(diagnose PRIVATE ${PROJECT_SOURCE_DIR}/include)
+
+# R.1.10.1 : standalone golden-file regeneration tool for the visualiser
+# tests. Not wired into ctest; run by hand when the rendering format
+# changes intentionally.
+add_executable(lindblad_visualiser_regen visualiser_regen.cpp)
+target_link_libraries(lindblad_visualiser_regen PRIVATE lindblad_core)
+target_include_directories(lindblad_visualiser_regen
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_definitions(lindblad_visualiser_regen
+    PRIVATE
+        LINDBLAD_TEST_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
+)

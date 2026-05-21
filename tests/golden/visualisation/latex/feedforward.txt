@@ -1,0 +1,4 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \gate{H} & \meter{} \\
+\lstick{$q_{1}$} & \gate{\text{P(π)}} & \qw 
+\end{quantikz}

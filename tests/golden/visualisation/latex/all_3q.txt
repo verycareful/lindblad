@@ -1,0 +1,5 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \ctrl{1} & \ctrl{1} & \ctrl{1} & \ctrl{1} \\
+\lstick{$q_{1}$} & \ctrl{-1} & \ctrl{-1} & \swap{-1} & \ctrl{-1} \\
+\lstick{$q_{2}$} & \targ{} & \ctrl{-1} & \targX{} & \targ{} 
+\end{quantikz}

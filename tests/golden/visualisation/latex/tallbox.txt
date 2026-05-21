@@ -1,0 +1,4 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \gate[2]{\text{RXX(π/4)}} & \gate[2]{\text{RYY(π/6)}} & \gate[2]{ECR} \\
+\lstick{$q_{1}$} & \qw & \qw & \qw 
+\end{quantikz}

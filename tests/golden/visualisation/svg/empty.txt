@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 66 112">
+<style>
+.lb-wire    { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-cwire   { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-strut   { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-gate    { stroke-width: 1.5; }
+.lb-ctrl    { fill: #444; }
+.lb-label   { font-family: monospace; font-size: 14px;
+              text-anchor: middle; dominant-baseline: central;
+              fill: #111; }
+.lb-rowlabel{ font-family: monospace; font-size: 13px;
+              dominant-baseline: central; fill: #444; }
+.lb-barrier { stroke: #888; stroke-dasharray: 2 3; }
+</style>
+<g class="lb-wires">
+<line class="lb-wire" x1="46" y1="32" x2="54" y2="32"/>
+<line class="lb-wire" x1="46" y1="80" x2="54" y2="80"/>
+</g>
+<g class="lb-rowlabels">
+<text class="lb-rowlabel" x="42" y="32" text-anchor="end">q[0]</text>
+<text class="lb-rowlabel" x="42" y="80" text-anchor="end">q[1]</text>
+</g>
+<g class="lb-glyphs">
+</g>
+</svg>

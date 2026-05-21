@@ -1,0 +1,5 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \gate{H} & \ctrl{1} & \meter{} \\
+\lstick{$q_{1}$} & \qw & \targ{} & \meter{} 
+\end{quantikz}
+% legend: filled circle = control, open circle = anti-control, X = CNOT target, x = SWAP arm, dashed line = barrier

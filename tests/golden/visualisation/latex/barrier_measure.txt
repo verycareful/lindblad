@@ -1,0 +1,4 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \gate{H} & \barrier[\dashed]{2} & \meter{} \\
+\lstick{$q_{1}$} & \gate{H} & \qw & \meter{} 
+\end{quantikz}

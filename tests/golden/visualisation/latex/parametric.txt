@@ -1,0 +1,5 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \gate{\text{RX(π/2)}} & \ctrl{2} \\
+\lstick{$q_{1}$} & \gate{\text{RY(π/4)}} & \qw \\
+\lstick{$q_{2}$} & \qw & \gate{\text{RX(π/3)}} 
+\end{quantikz}
