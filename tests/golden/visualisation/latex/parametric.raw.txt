@@ -1,0 +1,5 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \gate{\text{RX(1.5708)}} & \ctrl{2} \\
+\lstick{$q_{1}$} & \gate{\text{RY(0.7854)}} & \qw \\
+\lstick{$q_{2}$} & \qw & \gate{\text{RX(1.0472)}} 
+\end{quantikz}

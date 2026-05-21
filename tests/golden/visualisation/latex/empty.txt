@@ -1,0 +1,4 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \qw \\
+\lstick{$q_{1}$} & \qw 
+\end{quantikz}

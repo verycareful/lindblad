@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 258 160">
+<style>
+.lb-wire    { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-cwire   { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-strut   { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-gate    { stroke-width: 1.5; }
+.lb-ctrl    { fill: #444; }
+.lb-label   { font-family: monospace; font-size: 14px;
+              text-anchor: middle; dominant-baseline: central;
+              fill: #111; }
+.lb-rowlabel{ font-family: monospace; font-size: 13px;
+              dominant-baseline: central; fill: #444; }
+.lb-barrier { stroke: #888; stroke-dasharray: 2 3; }
+</style>
+<g class="lb-wires">
+<line class="lb-wire" x1="46" y1="32" x2="246" y2="32"/>
+<line class="lb-wire" x1="46" y1="80" x2="246" y2="80"/>
+<line class="lb-wire" x1="46" y1="128" x2="246" y2="128"/>
+</g>
+<g class="lb-rowlabels">
+<text class="lb-rowlabel" x="42" y="32" text-anchor="end">q[0]</text>
+<text class="lb-rowlabel" x="42" y="80" text-anchor="end">q[1]</text>
+<text class="lb-rowlabel" x="42" y="128" text-anchor="end">q[2]</text>
+</g>
+<g class="lb-glyphs">
+<g class="lb-glyph" data-gate="ccx" data-col="0" data-qubits="0,1,2"><line class="lb-strut" x1="74" y1="32" x2="74" y2="128"/><circle class="lb-ctrl" cx="74" cy="32" r="5" fill="#444"/><circle class="lb-ctrl" cx="74" cy="80" r="5" fill="#444"/><circle class="lb-gate" cx="74" cy="128" r="11" fill="white" stroke="#444" stroke-width="1.5"/><line class="lb-gate" x1="63" y1="128" x2="85" y2="128" stroke="#444" stroke-width="1.5"/><line class="lb-gate" x1="74" y1="117" x2="74" y2="139" stroke="#444" stroke-width="1.5"/></g>
+<g class="lb-glyph" data-gate="ccz" data-col="1" data-qubits="0,1,2"><line class="lb-strut" x1="122" y1="32" x2="122" y2="128"/><circle class="lb-ctrl" cx="122" cy="32" r="5" fill="#444"/><circle class="lb-ctrl" cx="122" cy="80" r="5" fill="#444"/><circle class="lb-ctrl" cx="122" cy="128" r="5" fill="#444"/></g>
+<g class="lb-glyph" data-gate="cswap" data-col="2" data-qubits="0,1,2"><line class="lb-strut" x1="170" y1="32" x2="170" y2="128"/><circle class="lb-ctrl" cx="170" cy="32" r="5" fill="#444"/><line class="lb-gate" x1="163" y1="73" x2="177" y2="87" stroke="#444" stroke-width="2"/><line class="lb-gate" x1="163" y1="87" x2="177" y2="73" stroke="#444" stroke-width="2"/><line class="lb-gate" x1="163" y1="121" x2="177" y2="135" stroke="#444" stroke-width="2"/><line class="lb-gate" x1="163" y1="135" x2="177" y2="121" stroke="#444" stroke-width="2"/></g>
+<g class="lb-glyph" data-gate="rccx" data-col="3" data-qubits="0,1,2"><line class="lb-strut" x1="218" y1="32" x2="218" y2="128"/><circle class="lb-ctrl" cx="218" cy="32" r="5" fill="#444"/><circle class="lb-ctrl" cx="218" cy="80" r="5" fill="#444"/><circle class="lb-gate" cx="218" cy="128" r="11" fill="white" stroke="#444" stroke-width="1.5"/><line class="lb-gate" x1="207" y1="128" x2="229" y2="128" stroke="#444" stroke-width="1.5"/><line class="lb-gate" x1="218" y1="117" x2="218" y2="139" stroke="#444" stroke-width="1.5"/></g>
+</g>
+</svg>

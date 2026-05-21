@@ -1,0 +1,4 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \gate{H} & \ctrl{1} & \meter{} \\
+\lstick{$q_{1}$} & \qw & \targ{} & \meter{} 
+\end{quantikz}

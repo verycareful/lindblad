@@ -4,6 +4,189 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.10.1] - 2026-05-20
+
+### Note on release contents
+
+This is the test-only release for the circuit visualiser introduced in
+R.1.10.0. Per the project's `.0` / `.1` / `.2+` release cadence the `.1`
+slot is for tests only. Five tests are shipping in a failing state and
+will be resolved in R.1.10.2. They are documented under "Known failures"
+below so anyone running the suite can see which ones are expected to
+fail and why. The remaining 1024 tests pass under Linux/WSL clang 18.
+
+### Tests
+
+- `tests/test_visualiser_layout.cpp` (new file, 33 tests, `DocumentLayoutTest`):
+  - **ASAP packing**: single gate at column 0; disjoint gates share a
+    column; overlapping gates serialise; glyph column matches layer
+    column; multiple glyphs per layer keep insertion order.
+  - **Multi-qubit packing**: CX between adjacent qubits has a strut
+    spanning rows; CX between distant qubits blocks the middle rows for
+    other gates; CCX strut spans min to max; serialised CX gates that
+    share a qubit produce two layers.
+  - **Barriers**: BARRIER forces a full-width column break; empty
+    barrier still blocks all rows; barrier with explicit qubits still
+    forces a full break.
+  - **UNITARY**: non-contiguous UNITARY reserves intermediate rows;
+    contiguous UNITARY does not inflate the column count.
+  - **Conditional gates**: with `show_clbits = false` two conditional
+    gates on different qubits share a column; with `show_clbits = true`
+    they serialise via the c-wire; condition_clbit / condition_value
+    are recorded on the glyph; non-conditional gates carry the sentinel
+    values.
+  - **c-wire strut**: MEASURE with `show_clbits = true` extends the
+    strut to the c-wire row; MEASURE with `show_clbits = false` omits
+    it; conditional gate with `show_clbits = true` extends the strut.
+  - **Labels**: qubit labels follow Qiskit's `q[i]` convention;
+    clbit_labels stay empty unless `show_clbits = true`; 10-qubit case
+    renders `q[9]`.
+  - **Metadata**: data_gate matches `Instruction::gate_name()`;
+    DrawOptions are captured on the document; MeasurePart / ResetPart
+    / BarrierPart counts match the instruction list; layer count
+    equals depth for serial chains.
+- `tests/test_visualiser_catalogue.cpp` (new file, 38 tests, `GateCatalogueTest`):
+  - **Tier 1 (`gate_symbols.cpp`)**: catalogue is non-empty; every
+    single-qubit box gate has an entry (H, X, Y, Z, S, SDG, T, TDG, SX,
+    SXDG, RX, RY, RZ, P, U, U1, U2, U3 plus the PARAM_* variants);
+    Hadamard label is "H" with `show_params = false`; rotation gates
+    have `show_params = true`; Pauli gates share a colour palette;
+    dagger labels contain the Unicode dagger character; PARAM_*
+    variants reuse the numeric-sibling label; `latex_macro` is filled
+    only where the default macro is wrong.
+  - **Tier 2 (`composite_catalogue.cpp`)**: catalogue is non-empty;
+    every controlled / multi-bullet gate has an entry; CX is
+    `CtrlBullet + XorTarget`; CZ is two `CtrlBullet`s (no
+    DotTargetPart in the variant); CCZ is three `CtrlBullet`s; CCX is
+    two CtrlBullets plus XorTarget; CY / CH route the box label
+    correctly; SWAP / CSWAP use SwapX arms; CRX includes the param in
+    the box label and respects opts.show_params = false; iSWAP gives
+    both slots the same label.
+  - **TallBox (Tier 2 special role)**: RXX produces a single BoxPart
+    with `rowspan = 2` and no strut; RYY / RZZ / RZX share this
+    structure; ECR uses TallBox without params; RXX label includes
+    the parameter.
+  - **Tier 3 (`gate_builders.cpp`)**: BARRIER emits one BarrierPart
+    per touched qubit (empty list yields empty parts); MEASURE
+    records the clbit field on the part (sentinel -1 when absent);
+    RESET emits a ResetPart on the target; UNITARY uses the provided
+    label or "U" fallback; rowspan covers non-contiguous ranges; an
+    empty qubit list returns an empty glyph.
+  - **Dispatch**: build_glyph routes MEASURE through Tier 3, CX
+    through Tier 2, H through Tier 1; data_gate stamping matches
+    `gate_name()`.
+- `tests/test_visualiser_format.cpp` (new file, 41 tests, `FormatParamsTest`):
+  - **Numeric pi-snap**: every positive entry in the table (pi, 2pi,
+    3pi, 4pi, 3pi/2, pi/2, 2pi/3, pi/3, 3pi/4, pi/4, 5pi/6, pi/6,
+    pi/8) and the negative counterparts (-pi, -pi/2, -3pi/4, -pi/8).
+  - **Edge cases**: zero formats as bare "0" (both positive and
+    negative zero); misses fall back to "%.4f"; raw mode never
+    pi-snaps; raw mode zero formats as "0.0000".
+  - **ParamExpr**: Literal nodes format via the double overload;
+    Name nodes pass through unchanged; Add / Sub / Mul / Div render
+    with their operator (multiplication uses the UTF-8 middle dot);
+    lower-precedence children of `*` get parens; equal-precedence
+    chains skip parens; higher-precedence children of `+` skip
+    parens; right-child of `*` also gets parens for lower-precedence
+    children.
+  - **format_gate_label**: Hadamard label is bare "H"; RX label
+    appends "(pi/2)" with show_params on; U label includes three
+    pi-formatted params; opts.show_params = false strips the parens;
+    symbolic param_exprs take precedence over numeric params; raw
+    param_format propagates into the label; an RX with no params at
+    all produces the bare "RX" label.
+- `tests/test_visualiser_palette.cpp` (new file, 24 tests, `PaletteTest`):
+  - **ASCII Unicode default**: U+2500 wire, U+2524 / U+251c box
+    borders, U+25cf control bullet, U+2295 XOR target, U+2502 strut
+    pipe, U+2715 SWAP arm, U+250a barrier all appear in the
+    appropriate fixtures.
+  - **ASCII safe**: output contains no byte >= 0x80; wire becomes
+    "-"; box borders become "[" / "]"; control bullet becomes "*".
+  - **SVG**: every `.lb-*` class is present in the inline style
+    block; glyphs carry `data-gate` attributes; Hadamard family uses
+    #e8eef9 fill; Pauli family uses #fce8e8 fill; barrier uses
+    dashed stroke.
+  - **LaTeX (Quantikz)**: plain Hadamard emits `\gate{H}`; CX emits
+    `\ctrl{1}` and `\targ{}`; SWAP emits `\swap{1}` and `\targX{}`;
+    MEASURE emits `\meter{}`; RESET emits `\push{\ket{0}}`; BARRIER
+    emits `\barrier[\dashed]`; TallBox emits `\gate[2]`.
+- `tests/test_visualiser_folding.cpp` (new file, 5 tests, `FoldingTest`):
+  pins the current pre-folding ASCII behaviour. `fold_width = 0`
+  sentinel matches the default opts; small fold_width does not crash;
+  no "... fold ..." marker yet; long lines tolerated. Tests will
+  invert when folding is implemented in a future patch.
+- `tests/test_visualiser_ascii_fixtures.cpp` (new file, 16 tests,
+  `AsciiFixtureTest`): 13 golden-file fixtures plus three structural
+  invariants (no UTF-8 under ascii_safe, output ends with newline,
+  empty circuit produces non-empty output).
+- `tests/test_visualiser_svg_fixtures.cpp` (new file, 12 tests,
+  `SvgFixtureTest`): 6 golden-file fixtures plus six structural
+  invariants (XML prolog, UTF-8 encoding declaration, inline style
+  block, data-* attribute presence, </svg> closer, one wire line per
+  qubit).
+- `tests/test_visualiser_latex_fixtures.cpp` (new file, 14 tests,
+  `LatexFixtureTest`): 7 golden-file fixtures plus seven structural
+  invariants (\begin{quantikz} envelope, math-mode row prefixes, \qw
+  defaults, c-wire \setwiretype{c} appears under show_clbits, no
+  \documentclass shell, legend comment when include_legend = true).
+- `tests/test_visualiser_html_fixtures.cpp` (new file, 11 tests,
+  `HtmlFixtureTest`): 3 golden-file fixtures plus eight structural
+  invariants (DOCTYPE, charset meta, <html>/<head>/<body> shell,
+  embedded <svg>, lb-meta caption, .lb-glyph:hover rule, lb-legend
+  toggle).
+
+### Tooling
+
+- `tests/visualiser_fixtures.hpp` : shared fixture circuit factories
+  used by both the test binaries and the regen tool.
+- `tests/golden_helpers.hpp` : `load_golden(rel_path)` helper that
+  resolves paths via the `LINDBLAD_TEST_GOLDEN_DIR` compile definition.
+- `tests/visualiser_regen.cpp` : standalone `lindblad_visualiser_regen`
+  binary that walks every fixture x backend x variant combination and
+  writes ~60 golden files to `tests/golden/visualisation/<backend>/`.
+  Not wired into ctest; run manually when intentionally regenerating.
+- `tests/golden/visualisation/{ascii,svg,latex,html}/` : new committed
+  golden file tree.
+
+### Known failures (deferred to R.1.10.2)
+
+Five tests fail in this release. They are documented here so anyone
+running the suite knows which ones are expected to fail:
+
+- `DocumentLayoutTest.NonContiguousUnitaryReservesIntermediateRows` :
+  test-side issue. The fixture's `gate_name()` for UNITARY does not
+  match the `"x"` lookup; the assertion shape needs reworking.
+- `FormatParamsTest.ArbitraryDecimalFormatsWithFourDecimals` :
+  test-side issue. The chosen test value `0.31415` is on a
+  floating-point rounding boundary so `%.4f` produces either
+  `"0.3141"` or `"0.3142"` depending on bit pattern. Pick a less
+  ambiguous value.
+- `PaletteTest.LatexDaggerEmitsTexBackslashDagger` : implementation
+  gap. `src/visualisation/render_latex.cpp` does not consult the
+  `GateSymbol::latex_macro` field, so `S^{\dagger}` overrides for
+  daggered gates are not emitted. Wire the catalogue lookup into the
+  LaTeX renderer.
+- `PaletteTest.LatexRotationUsesSubscript` : same root cause as the
+  dagger gap above. `R_X` / `R_Y` / `R_Z` macros are unused.
+- `HtmlFixtureTest.LegendAbsentByDefault` : test-side issue. The
+  `.lb-legend` CSS class is always declared in the page's `<style>`
+  block; the test should look for `<div class="lb-legend">`
+  specifically.
+
+Two cosmetic gaps were noticed while reviewing the golden files and
+also belong in R.1.10.2:
+
+- Conditional gate decoration omits the `c[k]=v` tag near the c-wire
+  in ASCII output. The strut drops correctly but the value annotation
+  is missing.
+- TallBox padding leaves a trailing space inside the label box on the
+  anchor row and an over-wide empty box on the bottom row.
+
+### Results
+
+- 1029 tests across 83 suites; 1024 passing, 5 known failures (Linux/
+  WSL, clang 18, Release).
+
 ## [R.1.10.0] - 2026-05-20
 
 ### Added

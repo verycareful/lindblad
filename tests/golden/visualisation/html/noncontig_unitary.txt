@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lindblad circuit</title>
+<style>
+body { font-family: -apple-system, system-ui, sans-serif;
+       margin: 2rem; background: #fafafa; }
+.lb-circuit { display: inline-block; padding: 1rem;
+              background: white; border: 1px solid #ddd;
+              border-radius: 6px; }
+.lb-meta { font-size: 13px; color: #666; margin-bottom: 0.5rem; }
+.lb-glyph { cursor: default; }
+.lb-glyph:hover .lb-gate { stroke-width: 2.5; }
+.lb-legend { margin-top: 1rem; font-size: 13px; color: #444; }
+</style>
+</head>
+<body>
+<div class="lb-circuit">
+<div class="lb-meta">4 qubits, 1 layers</div>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 114 208">
+<style>
+.lb-wire    { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-cwire   { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-strut   { stroke: #444; stroke-width: 1.5; fill: none; }
+.lb-gate    { stroke-width: 1.5; }
+.lb-ctrl    { fill: #444; }
+.lb-label   { font-family: monospace; font-size: 14px;
+              text-anchor: middle; dominant-baseline: central;
+              fill: #111; }
+.lb-rowlabel{ font-family: monospace; font-size: 13px;
+              dominant-baseline: central; fill: #444; }
+.lb-barrier { stroke: #888; stroke-dasharray: 2 3; }
+</style>
+<g class="lb-wires">
+<line class="lb-wire" x1="46" y1="32" x2="102" y2="32"/>
+<line class="lb-wire" x1="46" y1="80" x2="102" y2="80"/>
+<line class="lb-wire" x1="46" y1="128" x2="102" y2="128"/>
+<line class="lb-wire" x1="46" y1="176" x2="102" y2="176"/>
+</g>
+<g class="lb-rowlabels">
+<text class="lb-rowlabel" x="42" y="32" text-anchor="end">q[0]</text>
+<text class="lb-rowlabel" x="42" y="80" text-anchor="end">q[1]</text>
+<text class="lb-rowlabel" x="42" y="128" text-anchor="end">q[2]</text>
+<text class="lb-rowlabel" x="42" y="176" text-anchor="end">q[3]</text>
+</g>
+<g class="lb-glyphs">
+<g class="lb-glyph" data-gate="U" data-col="0" data-qubits="0"><rect class="lb-gate" x="54" y="12" width="40" height="184" rx="3" ry="3" fill="#f5f5f5" stroke="#444"/><text class="lb-label" x="74" y="104">U</text></g>
+</g>
+</svg>
+</div>
+</body>
+</html>

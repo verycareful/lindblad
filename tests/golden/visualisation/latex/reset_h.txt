@@ -1,0 +1,3 @@
+\begin{quantikz}
+\lstick{$q_{0}$} & \push{\ket{0}} & \gate{H} 
+\end{quantikz}
