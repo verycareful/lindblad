@@ -20,6 +20,7 @@
 // call QuantumCircuit::draw() / draw_to_file() directly from C++ rather
 // than spawning this binary in a loop.
 
+#include "lindblad/algorithms.hpp"
 #include "lindblad/circuit.hpp"
 
 #include <algorithm>
@@ -36,6 +37,16 @@ using lindblad::DrawMode;
 using lindblad::DrawOptions;
 using lindblad::ParamFormat;
 using lindblad::QuantumCircuit;
+
+// Algorithm classes live in the nested lindblad::algorithms namespace; pull
+// the ones used by the demo factories into scope so the call sites read
+// naturally.
+using lindblad::algorithms::BernsteinVazirani;
+using lindblad::algorithms::DeutschJozsa;
+using lindblad::algorithms::Grover;
+using lindblad::algorithms::QFT;
+using lindblad::algorithms::QPE;
+using lindblad::algorithms::Simon;
 
 namespace {
 
@@ -79,27 +90,134 @@ QuantumCircuit demo_tallbox() {
     return qc;
 }
 
-// A four-qubit inverse QFT-style demo built from gates the visualiser
-// already covers; not a faithful QFT, but a rich-looking circuit for
-// quick rendering checks.
+// Real QFT subcircuit on 4 qubits via lindblad::QFT::build_circuit.
+// Demonstrates that the visualiser handles the genuine algorithm output,
+// not a hand-crafted approximation. The QFT subcircuit excludes input
+// preparation and measurement.
 QuantumCircuit demo_qft() {
+    return QFT::build_circuit(4);
+}
+
+// Inverse QFT subcircuit on 4 qubits. Useful for confirming the visualiser
+// renders the swap-and-controlled-phase pattern in reverse order.
+QuantumCircuit demo_iqft() {
+    return QFT::build_inverse_circuit(4);
+}
+
+// =============================================================================
+// Algorithm demos : exercise the existing build_circuit() factories
+// =============================================================================
+// Each algorithm demo constructs a minimal oracle (or unitary) and delegates
+// to the algorithm class's static build_circuit method. The CLI renders the
+// returned QuantumCircuit, so the visualiser is exercised on output from
+// real project code rather than hand-crafted gate sequences.
+
+// Bernstein-Vazirani with hidden string 101 (n=3). The oracle applies a
+// CNOT from every input qubit whose secret bit is 1 to a shared ancilla,
+// implementing f(x) = s . x mod 2 in the standard phase-kickback form.
+QuantumCircuit demo_bv() {
+    const std::string secret = "101";
+    const int n = static_cast<int>(secret.size());
+    QuantumCircuit oracle(n + 1, 0, "bv_oracle");
+    for (int i = 0; i < n; ++i) {
+        if (secret[i] == '1') {
+            oracle.cx(i, n); // ancilla is q_n
+        }
+    }
+    return BernsteinVazirani::build_circuit(oracle, n);
+}
+
+// Deutsch-Jozsa on n=3 with a balanced oracle (XOR of every input bit).
+// The oracle satisfies f(x) = x_0 XOR x_1 XOR x_2, which is balanced.
+QuantumCircuit demo_dj() {
+    const int n = 3;
+    QuantumCircuit oracle(n + 1, 0, "dj_oracle");
+    for (int i = 0; i < n; ++i) {
+        oracle.cx(i, n);
+    }
+    return DeutschJozsa::build_circuit(oracle, n);
+}
+
+// Grover search on 3 qubits with 1 iteration, marking the state |011> (q0=1,
+// q1=1, q2=0 in little-endian). Standard X-conjugation pattern around CCZ.
+QuantumCircuit demo_grover() {
+    QuantumCircuit oracle(3, 0, "grover_oracle");
+    oracle.x(2);             // flip q2 so CCZ phase-marks |011>
+    oracle.ccz(0, 1, 2);
+    oracle.x(2);
+    // 1 iteration explicitly to keep the rendered output compact; auto
+    // selection (-1) would use pi/4 * sqrt(N) which is also 1 for N=8.
+    return Grover::build_circuit(oracle, 1);
+}
+
+// Phase estimation with 3 evaluation qubits applied to a T-gate target.
+// The T gate is P(pi/4), whose eigenvalue on |1> has phase 1/8.
+QuantumCircuit demo_qpe() {
     constexpr double kPi = 3.141592653589793;
-    QuantumCircuit qc(4, 0, "qft_like");
-    qc.h(0).cp(kPi / 2.0, 1, 0).cp(kPi / 4.0, 2, 0).cp(kPi / 8.0, 3, 0)
-      .h(1).cp(kPi / 2.0, 2, 1).cp(kPi / 4.0, 3, 1)
-      .h(2).cp(kPi / 2.0, 3, 2)
-      .h(3)
-      .swap(0, 3).swap(1, 2);
+    QuantumCircuit unitary(1, 0, "T_gate");
+    unitary.p(kPi / 4.0, 0);
+    return QPE::build_circuit(unitary, 3);
+}
+
+// Simon's algorithm with n=2 and a simple oracle. Period not solved by the
+// visualiser; the demo only shows the circuit structure.
+QuantumCircuit demo_simon() {
+    const int n = 2;
+    QuantumCircuit oracle(2 * n, 0, "simon_oracle");
+    // Copy input to output qubits: CX from each q_i to q_{n+i}.
+    for (int i = 0; i < n; ++i) {
+        oracle.cx(i, n + i);
+    }
+    return Simon::build_circuit(oracle, n);
+}
+
+// Hardware-efficient VQE ansatz: alternating RY layers separated by a
+// linear CNOT entangler. Three qubits, two parameter layers. Hand-built
+// because VQE itself is an optimiser rather than a circuit factory.
+QuantumCircuit demo_vqe() {
+    constexpr double kPi = 3.141592653589793;
+    QuantumCircuit qc(3, 0, "vqe_ansatz");
+    qc.ry(kPi / 4.0, 0).ry(kPi / 3.0, 1).ry(kPi / 6.0, 2);
+    qc.cx(0, 1).cx(1, 2);
+    qc.ry(kPi / 5.0, 0).ry(kPi / 7.0, 1).ry(kPi / 8.0, 2);
+    return qc;
+}
+
+// One-layer QAOA on a 3-node triangle MaxCut graph. Initial superposition
+// via H, cost via RZZ on each of the three edges, mixer via RX on each
+// qubit. Hand-built because QAOA::build_circuit takes SparsePauliOp inputs
+// the CLI does not currently expose on the command line.
+QuantumCircuit demo_qaoa() {
+    constexpr double kPi = 3.141592653589793;
+    QuantumCircuit qc(3, 0, "qaoa_triangle");
+    qc.h(0).h(1).h(2);
+    // Cost layer: RZZ(gamma) on every edge of the triangle (3 edges)
+    qc.rzz(kPi / 4.0, 0, 1)
+      .rzz(kPi / 4.0, 1, 2)
+      .rzz(kPi / 4.0, 0, 2);
+    // Mixer layer: RX(beta) on every qubit
+    qc.rx(kPi / 3.0, 0).rx(kPi / 3.0, 1).rx(kPi / 3.0, 2);
     return qc;
 }
 
 const std::vector<DemoEntry>& demos() {
     static const std::vector<DemoEntry> table = {
-        { "bell",       "two-qubit Bell pair with measurements",            &demo_bell },
-        { "ghz",        "three-qubit GHZ preparation",                      &demo_ghz },
+        // Visualiser-feature showcases
+        { "bell",       "two-qubit Bell pair with measurements",            &demo_bell       },
+        { "ghz",        "three-qubit GHZ preparation",                      &demo_ghz        },
         { "parametric", "RX + RY + CRX showing the pi-snap parameter form", &demo_parametric },
-        { "tallbox",    "RXX + RYY + ECR exercising the TallBox role",      &demo_tallbox },
-        { "qft",        "four-qubit QFT-style circuit (rich rendering)",    &demo_qft },
+        { "tallbox",    "RXX + RYY + ECR exercising the TallBox role",      &demo_tallbox    },
+
+        // Real algorithm circuits via the library's build_circuit factories
+        { "qft",        "four-qubit QFT subcircuit via QFT::build_circuit", &demo_qft        },
+        { "iqft",       "four-qubit inverse QFT via QFT::build_inverse",    &demo_iqft       },
+        { "bv",         "Bernstein-Vazirani n=3 with hidden string 101",    &demo_bv         },
+        { "dj",         "Deutsch-Jozsa n=3 with balanced XOR oracle",       &demo_dj         },
+        { "grover",     "Grover 3-qubit, 1 iteration, marks |011>",         &demo_grover     },
+        { "qpe",        "phase estimation, 3 eval qubits, T-gate unitary",  &demo_qpe        },
+        { "simon",      "Simon n=2 with a minimal period oracle",           &demo_simon      },
+        { "vqe",        "hardware-efficient VQE ansatz, two RY layers",     &demo_vqe        },
+        { "qaoa",       "one-layer QAOA on a triangle MaxCut graph",        &demo_qaoa       },
     };
     return table;
 }

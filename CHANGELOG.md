@@ -4,6 +4,90 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.10.4] - 2026-05-20
+
+### Added
+
+- `lindblad_draw` demo catalogue expanded from 5 entries to 13. The new
+  algorithm demos exercise the library's own `build_circuit()` factories
+  so the visualiser is showcased on output from real project code rather
+  than hand-crafted gate sequences:
+  - `--demo bv` : Bernstein-Vazirani n=3 with hidden string `101`,
+    via `BernsteinVazirani::build_circuit`.
+  - `--demo dj` : Deutsch-Jozsa n=3 with a balanced XOR oracle,
+    via `DeutschJozsa::build_circuit`.
+  - `--demo grover` : 3-qubit Grover, 1 iteration, marks `|011>`,
+    via `Grover::build_circuit` with an X-conjugated CCZ oracle.
+  - `--demo qpe` : phase estimation with 3 evaluation qubits and a
+    T-gate (P(pi/4)) target, via `QPE::build_circuit`.
+  - `--demo simon` : Simon's algorithm n=2 with a minimal period
+    oracle, via `Simon::build_circuit`.
+  - `--demo vqe` : two-layer hardware-efficient VQE ansatz on 3
+    qubits (RY -> CX chain -> RY). Hand-built because VQE is an
+    optimiser rather than a circuit factory.
+  - `--demo qaoa` : one-layer QAOA on a 3-node triangle MaxCut
+    (H init, RZZ on each edge, RX mixer). Hand-built; the
+    SparsePauliOp-driven `QAOA::build_circuit` is not exposed on the
+    CLI yet.
+  - `--demo iqft` : 4-qubit inverse QFT subcircuit via
+    `QFT::build_inverse_circuit`.
+- The existing `--demo qft` now uses `QFT::build_circuit(4)` instead of
+  a hand-crafted approximation, so the demo reflects the actual library
+  output.
+
+### Changed
+
+- `README.md` no longer carries a `## Release` table. The section was a
+  compressed duplicate of `CHANGELOG.md` and grew unbounded on every
+  release. The Contents list entry pointing to it is removed; the
+  version badge at the top still links to `CHANGELOG.md`, which is the
+  single source of release notes.
+
+### Fixed
+
+Both of the layout bugs in this release were caught by visually
+inspecting the new `lindblad_draw --demo qaoa` and `--demo qft`
+outputs added in the same release. The QASM3 / catalogue / fixture
+tests from R.1.10.0 through R.1.10.3 all passed against the buggy
+layout because none of them rendered a non-adjacent multi-qubit gate
+with another gate competing for an intermediate wire. Once the demos
+exercised real algorithm circuits the visual ambiguity became
+obvious, so the demos paid for themselves on day one.
+
+- `src/visualisation/layout.cpp` now reserves every wire row in
+  `[min(qubits)..max(qubits)]` whenever a glyph visually owns
+  intermediate wires. Two trigger paths:
+  - a `BoxPart` with `rowspan > 1` (TallBox composites
+    RXX/RYY/RZZ/RZX/ECR, plus UNITARY); previously only UNITARY hit
+    this rule. The QAOA demo's `RZZ(0, 2)` exposed the gap when
+    `RX(1)` packed into the same column and overlapped on q1's wire.
+  - a vertical strut spanning at least two qubit indices (non-adjacent
+    `CX` / `CP` / `CZ` / `SWAP` and the controlled rotations). The QFT
+    demo's `CP(theta, 3, 0)` etc. exposed this when the H boxes on
+    intermediate qubits packed into the same column as the strut
+    crossings.
+  Adjacent struts (strut span 1, e.g. `CX(0, 1)`) keep the original
+  tight packing behaviour. The trade-off is wider diagrams in exchange
+  for unambiguous visual structure on non-adjacent multi-qubit gates.
+- `tests/test_visualiser_layout.cpp` :
+  - `CxBetweenDistantQubitsBlocksMiddleRows` was previously written
+    under the OLD (buggy) semantics where `CX(0, 3)` left intermediate
+    rows free. The test name was aspirational; the body now matches
+    the new (correct) behaviour.
+  - new `NonAdjacentTallBoxReservesIntermediateRows`: `RZZ(0, 2)` +
+    `X(1)` serialise into two layers.
+  - new `NonAdjacentControlledStrutReservesIntermediateRows`:
+    `CX(0, 2)` + `H(1)` serialise into two layers.
+  - new `AdjacentControlledGateStillPacksTightly`: `CX(0, 1)` +
+    `H(2)` stay in a single layer (regression guard).
+
+### Results
+
+- 1045 tests across 84 suites; all passing (Linux/WSL, clang 18,
+  Release). +3 tests over R.1.10.3 (three new layout tests pinning
+  the intermediate-row reservation rule and its adjacent-strut
+  exception).
+
 ## [R.1.10.3] - 2026-05-20
 
 ### Added
