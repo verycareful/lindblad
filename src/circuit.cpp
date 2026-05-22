@@ -7,6 +7,7 @@
 #include "visualisation/render_html.hpp"
 
 #include <algorithm>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <iomanip>
@@ -1598,6 +1599,28 @@ std::string QuantumCircuit::draw(DrawMode mode, const DrawOptions& opts) const {
 
 std::string QuantumCircuit::to_ascii() const {
     return draw(DrawMode::ASCII, {});
+}
+
+// =============================================================================
+// QuantumCircuit::draw_to_file : R.1.10.3 file-output convenience
+// =============================================================================
+// Renders via draw(mode, opts) and writes the resulting string verbatim to
+// `path` in binary mode (so LF line endings survive on Windows / WSL hosts).
+// A failed open surfaces as std::runtime_error with the path in the message
+// rather than the silent truncation that std::ofstream would otherwise
+// produce when the destination directory is missing or the path is
+// unwritable.
+
+void QuantumCircuit::draw_to_file(const std::string& path,
+                                  DrawMode mode,
+                                  const DrawOptions& opts) const {
+    std::ofstream out(path, std::ios::binary);
+    if (!out.is_open()) {
+        throw std::runtime_error(
+            "QuantumCircuit::draw_to_file: could not open '" + path +
+            "' for writing");
+    }
+    out << draw(mode, opts);
 }
 
 } // namespace lindblad

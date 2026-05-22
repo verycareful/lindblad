@@ -144,6 +144,13 @@ PYBIND11_MODULE(lindblad_python, m) {
         .def("draw", &lindblad::QuantumCircuit::draw,
              py::arg("mode") = lindblad::DrawMode::ASCII,
              py::arg("opts") = lindblad::DrawOptions{})
+        // Ergonomic file-output wrapper. The C++ method is preferred for
+        // performance-sensitive workflows; this binding is for one-shot
+        // export use cases ("qc.draw_to_file('bell.svg', DrawMode.SVG)").
+        .def("draw_to_file", &lindblad::QuantumCircuit::draw_to_file,
+             py::arg("path"),
+             py::arg("mode") = lindblad::DrawMode::ASCII,
+             py::arg("opts") = lindblad::DrawOptions{})
         .def_readwrite("n_qubits", &lindblad::QuantumCircuit::n_qubits)
         .def_readwrite("n_clbits", &lindblad::QuantumCircuit::n_clbits)
         .def_readwrite("name", &lindblad::QuantumCircuit::name);

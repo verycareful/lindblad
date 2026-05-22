@@ -313,6 +313,26 @@ public:
     std::string draw(DrawMode mode = DrawMode::ASCII,
                      const DrawOptions& opts = {}) const;
 
+    // R.1.10.3 : convenience wrapper that writes the chosen renderer's
+    // output directly to a file at `path`. Equivalent to opening an
+    // std::ofstream and streaming draw(mode, opts) into it, but raises
+    // std::runtime_error on a failed open instead of silently dropping
+    // the output, and keeps rendering and file I/O at a single call site.
+    //
+    // Also exposed through the Python bindings as
+    //   qc.draw_to_file("bell.svg", DrawMode.SVG)
+    // for ergonomics. Direct C++ remains the recommended path for any
+    // performance-sensitive workflow: the Python wrapper unavoidably
+    // crosses the binding boundary and serialises through the GIL.
+    //
+    // path = filesystem destination; missing parent directories are NOT
+    //        created (caller is responsible)
+    // mode = output backend (ASCII / SVG / LATEX / HTML)
+    // opts = per-call visualisation configuration
+    void draw_to_file(const std::string& path,
+                      DrawMode mode = DrawMode::ASCII,
+                      const DrawOptions& opts = {}) const;
+
     // Legacy primitive ASCII renderer. Retained during the R.1.10.0 visualiser
     // rollout so existing callers continue to compile; scheduled for removal
     // once tests, bindings, and docs migrate to draw(DrawMode::ASCII).

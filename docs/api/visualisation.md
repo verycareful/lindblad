@@ -79,6 +79,86 @@ write it to a file or to stdout.
 `to_ascii()` is retained as a thin wrapper around `draw(DrawMode::ASCII, {})`
 for backwards compatibility. New code should call `draw()` directly.
 
+## QuantumCircuit::draw_to_file
+
+```cpp
+void draw_to_file(const std::string& path,
+                  DrawMode mode = DrawMode::ASCII,
+                  const DrawOptions& opts = {}) const;
+```
+
+Convenience wrapper that opens `path` in binary mode and streams
+`draw(mode, opts)` into it. Throws `std::runtime_error` with the offending
+path embedded in the message when the open fails. Saves the
+`#include <fstream>` + `std::ofstream` dance at every call site:
+
+```cpp
+qc.draw_to_file("bell.svg", DrawMode::SVG);
+```
+
+Missing parent directories are NOT created automatically. The caller is
+responsible for `mkdir -p` if needed.
+
+## CLI : lindblad_draw
+
+Built when `LINDBLAD_BUILD_APPS=ON` (the default for top-level builds).
+Lives at `apps/lindblad_draw.cpp`; produced as `lindblad_draw` in the
+build's executable directory.
+
+```text
+lindblad_draw [options] <circuit.qasm>
+lindblad_draw [options] --stdin
+lindblad_draw [options] --demo <name>
+```
+
+Examples:
+
+```bash
+lindblad_draw bell.qasm
+lindblad_draw --mode svg bell.qasm > bell.svg
+lindblad_draw --mode latex --demo ghz
+cat bell.qasm | lindblad_draw --stdin
+lindblad_draw --demo bell --output bell.txt
+```
+
+Backend selection:
+
+- `--mode ascii|svg|latex|html` (default: ascii)
+
+Output destination:
+
+- `--output <path>` writes via `draw_to_file()` instead of stdout
+
+Visualisation options (mirror `DrawOptions` fields):
+
+- `--ascii-safe` ASCII portable palette
+- `--show-clbits` render the bundled c-wire
+- `--no-show-params` strip parameters from gate labels
+- `--param-format pretty|raw` numeric formatting
+- `--fold N` ASCII fold width (0 disables)
+- `--cell-px N` SVG/HTML cell pitch
+- `--legend` LaTeX/HTML legend block
+
+Input sources:
+
+- positional `<circuit.qasm>` reads from a file
+- `--stdin` reads QASM from standard input
+- `--demo <name>` picks a built-in circuit; `--list-demos` prints the list
+- `--qasm3` parses the input as QASM 3 (default: QASM 2)
+
+The CLI is a convenience front-end for one-shot rendering. For any
+performance-sensitive or scripted workflow, call `QuantumCircuit::draw()` /
+`draw_to_file()` from C++ directly instead of spawning the binary.
+
+## Python bindings
+
+The Python bindings expose `DrawMode`, `ParamFormat`, `DrawOptions`,
+`QuantumCircuit.draw()`, and `QuantumCircuit.draw_to_file()` so the
+visualiser is reachable from `import lindblad as lb`. The bindings stay in
+sync with the C++ API as a convenience, but direct C++ is the recommended
+path for any performance-sensitive or batch workflow: the Python wrapper
+unavoidably crosses the binding boundary and serialises through the GIL.
+
 ## Examples
 
 ```cpp

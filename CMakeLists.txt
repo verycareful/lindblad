@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.10.2 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.10.3 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.10.2")
+set(LINDBLAD_VERSION_LABEL "R.1.10.3")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -95,6 +95,7 @@ set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
 option(LINDBLAD_BUILD_TESTS      "Build test suite (ON when building Lindblad directly, OFF when consumed as a dependency)" ${PROJECT_IS_TOP_LEVEL})
 option(LINDBLAD_BUILD_BENCHMARKS "Build benchmarks (ON when building Lindblad directly, OFF when consumed as a dependency)" ${PROJECT_IS_TOP_LEVEL})
 option(LINDBLAD_BUILD_PYTHON     "Build Python bindings" OFF)
+option(LINDBLAD_BUILD_APPS       "Build user-facing CLI apps (lindblad_draw, ...)" ${PROJECT_IS_TOP_LEVEL})
 
 FetchContent_MakeAvailable(nlopt eigen)
 
@@ -224,4 +225,11 @@ endif()
 # ==============================================================================
 if(LINDBLAD_BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)
+endif()
+
+# ==============================================================================
+# CLI apps (R.1.10.3: lindblad_draw)
+# ==============================================================================
+if(LINDBLAD_BUILD_APPS)
+    add_subdirectory(apps)
 endif()
