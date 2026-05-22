@@ -315,10 +315,51 @@ CircuitDocument build_document(const QuantumCircuit& qc, const DrawOptions& opts
 
     for (const Instruction& inst : qc.instructions) {
         // --------------------------------------------------------------------
-        // Phase 1: compute the touched-row set per instruction type.
+        // Phase 1a: build the glyph up front so we can inspect its visual
+        // footprint when computing the touched-row set. Any glyph that emits
+        // a tall BoxPart (rowspan > 1) visually owns every wire row in the
+        // span; the layout pass must reserve those rows even when the
+        // underlying instruction lists only the endpoints. UNITARY and Tier 2
+        // TallBox composites (RXX, RYY, RZZ, RZX, ECR) both hit this case;
+        // RZZ(0, 2) was the first non-adjacent TallBox in the demo set and
+        // exposed the original bug where RX(1) packed into the same column
+        // as the tall RZZ box and overlapped on q1's wire row.
+        // --------------------------------------------------------------------
+        Glyph g = build_glyph(inst, opts);
+
+        // --------------------------------------------------------------------
+        // Phase 1b: compute the touched-row set per instruction type.
         // --------------------------------------------------------------------
         std::vector<int> touched;
         bool full_width_break = false;
+
+        // A glyph "owns intermediate rows" when its visual footprint covers
+        // wire rows the underlying instruction does not list explicitly.
+        // Two cases trigger this:
+        //   - a tall BoxPart (rowspan > 1) drawn THROUGH the intermediate
+        //     wires (TallBox composites RXX/RYY/RZZ/RZX/ECR, plus UNITARY)
+        //   - a vertical strut spanning at least one intermediate qubit row
+        //     (non-adjacent CX/CP/CZ/SWAP and the controlled rotations
+        //     when the listed qubits skip a wire; the strut crosses those
+        //     intermediate wires and reads as ambiguous when a single-qubit
+        //     gate also packs into the same column)
+        // Both cases must reserve every row in [min(qubits)..max(qubits)]
+        // so no later gate packs underneath the box or strut crossing.
+        // Empirically this matches what the human eye expects from QFT and
+        // QAOA renderings; the trade-off is wider diagrams in exchange for
+        // unambiguous structure.
+        bool glyph_owns_span = false;
+        for (const auto& kv : g.parts) {
+            if (auto* box = std::get_if<BoxPart>(&kv.second)) {
+                if (box->rowspan > 1) { glyph_owns_span = true; break; }
+            }
+        }
+        if (g.has_strut && (g.strut_bot - g.strut_top) >= 2) {
+            // Strut span of 2 or more qubit indices crosses at least one
+            // intermediate wire. Adjacent struts (CX(0,1) etc.) keep the
+            // default two-row touched set.
+            glyph_owns_span = true;
+        }
 
         if (inst.type == Instruction::GateType::BARRIER) {
             // BARRIER (with or without an explicit qubit list) forces a full-
@@ -330,10 +371,12 @@ CircuitDocument build_document(const QuantumCircuit& qc, const DrawOptions& opts
             for (int r = 0; r < cursor_rows; ++r) {
                 touched.push_back(r);
             }
-        } else if (inst.type == Instruction::GateType::UNITARY) {
-            // Non-contiguous UNITARY: reserve [min..max] so intermediate rows
-            // are locked under the tall box. A contiguous unitary collapses
-            // to the same range trivially.
+        } else if (glyph_owns_span) {
+            // Tall BoxPart: reserve every wire row in [min..max] of the
+            // listed qubits so intermediate rows are locked under the box.
+            // Catches non-adjacent TallBox composites (RZZ(0, 2)), UNITARY,
+            // and any future glyph type that produces a multi-row BoxPart.
+            // Contiguous spans collapse to the same range trivially.
             if (!inst.qubits.empty()) {
                 int qmin = *std::min_element(inst.qubits.begin(), inst.qubits.end());
                 int qmax = *std::max_element(inst.qubits.begin(), inst.qubits.end());
@@ -387,11 +430,11 @@ CircuitDocument build_document(const QuantumCircuit& qc, const DrawOptions& opts
         }
 
         // --------------------------------------------------------------------
-        // Phase 3: build the glyph and patch in document-level metadata that
-        // the per-gate builders cannot know (column index, conditional info,
-        // c-wire strut extension).
+        // Phase 3: patch document-level metadata onto the glyph already
+        // built above (column index, conditional info, c-wire strut
+        // extension). The glyph itself was constructed in Phase 1a so the
+        // touched-row computation could inspect its visual footprint.
         // --------------------------------------------------------------------
-        Glyph g = build_glyph(inst, opts);
         g.column = col;
 
         // Preserve conditional metadata on every glyph so renderers can emit

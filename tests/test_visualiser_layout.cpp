@@ -138,15 +138,21 @@ TEST(DocumentLayoutTest, CxBetweenAdjacentQubitsHasStrut) {
 }
 
 TEST(DocumentLayoutTest, CxBetweenDistantQubitsBlocksMiddleRows) {
-    // CX(0, 3) on a 4-qubit circuit. Spec section 5.2: only the explicitly
-    // touched qubits (0 and 3) are reserved; intermediate qubits (1, 2)
-    // remain free for other gates to pack into the same column.
+    // R.1.10.4: CX(0, 3) has a strut spanning two intermediate qubit rows
+    // (q1 and q2). The layout reserves those rows under the strut so
+    // single-qubit gates on q1 and q2 serialise into a later column rather
+    // than overlapping with the strut crossing on their wires. Before
+    // R.1.10.4 the strut crossings were over-painted by the intermediate
+    // gates' boxes, producing ambiguous output -- the same QFT/QAOA bug
+    // that motivated the layout fix.
     QuantumCircuit qc(4);
     qc.cx(0, 3).x(1).x(2);
     auto doc = build_default(qc);
-    ASSERT_EQ(doc.layers.size(), 1u);
-    // Three glyphs share column 0: the CX (rows 0+3) plus the two X gates.
-    EXPECT_EQ(doc.layers[0].glyphs.size(), 3u);
+    // Layer 0 is CX(0, 3) alone; X(1) and X(2) pack together into layer 1
+    // because their qubits are disjoint from each other.
+    ASSERT_EQ(doc.layers.size(), 2u);
+    EXPECT_EQ(doc.layers[0].glyphs.size(), 1u);
+    EXPECT_EQ(doc.layers[1].glyphs.size(), 2u);
     const Glyph* cx = find_glyph(doc, "cx");
     ASSERT_NE(cx, nullptr);
     EXPECT_EQ(cx->strut_top, 0);
@@ -234,6 +240,53 @@ TEST(DocumentLayoutTest, NonContiguousUnitaryReservesIntermediateRows) {
     const Glyph* x1 = find_glyph(doc, "x");
     ASSERT_NE(x1, nullptr);
     EXPECT_GE(x1->column, 1);
+}
+
+TEST(DocumentLayoutTest, NonAdjacentControlledStrutReservesIntermediateRows) {
+    // R.1.10.4 fix: a strut spanning >= 2 qubit indices crosses at least one
+    // intermediate wire row. The QFT demo (CP(theta, 3, 0) etc.) packed
+    // single-qubit gates on the intermediate rows into the same column as
+    // the strut, overpainting the cross glyph. The layout now reserves
+    // [min(qubits)..max(qubits)] whenever a non-adjacent strut is present.
+    QuantumCircuit qc(3);
+    qc.cx(0, 2).h(1);
+    auto doc = build_default(qc);
+    const Glyph* cx = find_glyph(doc, "cx");
+    ASSERT_NE(cx, nullptr);
+    const Glyph* h = find_glyph(doc, "h");
+    ASSERT_NE(h, nullptr);
+    EXPECT_GE(h->column, cx->column + 1)
+        << "H(1) must serialise after CX(0,2) because the strut crosses q1";
+}
+
+TEST(DocumentLayoutTest, AdjacentControlledGateStillPacksTightly) {
+    // Adjacent struts (strut span = 1 qubit index) do NOT trigger the
+    // intermediate-row reservation rule. CX(0, 1) and any gate on q2 should
+    // still pack into the same column.
+    QuantumCircuit qc(3);
+    qc.cx(0, 1).h(2);
+    auto doc = build_default(qc);
+    ASSERT_EQ(doc.layers.size(), 1u);
+    EXPECT_EQ(doc.layers[0].glyphs.size(), 2u);
+}
+
+TEST(DocumentLayoutTest, NonAdjacentTallBoxReservesIntermediateRows) {
+    // R.1.10.4 fix: a Tier 2 TallBox composite gate on non-adjacent qubits
+    // (e.g. RZZ on {0, 2}) reserves every wire row in [min..max] because the
+    // visual tall box spans through the intermediate row. The original layout
+    // pass only special-cased UNITARY for this; RZZ(0, 2) was the first
+    // non-adjacent TallBox in the demo set and exposed the gap when X(1)
+    // packed into the same column and overlapped on q1's wire.
+    QuantumCircuit qc(3);
+    qc.rzz(1.5708, 0, 2).x(1);
+    auto doc = build_default(qc);
+    const Glyph* rzz = find_glyph(doc, "rzz");
+    ASSERT_NE(rzz, nullptr);
+    const Glyph* x = find_glyph(doc, "x");
+    ASSERT_NE(x, nullptr);
+    EXPECT_GE(x->column, rzz->column + 1)
+        << "X(1) must serialise after RZZ(0,2) because the tall box "
+           "visually spans row 1";
 }
 
 TEST(DocumentLayoutTest, ContiguousUnitaryDoesNotInflate) {

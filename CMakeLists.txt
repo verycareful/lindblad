@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.10.3 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.10.4 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.10.3")
+set(LINDBLAD_VERSION_LABEL "R.1.10.4")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
