@@ -4,6 +4,66 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.10.2] - 2026-05-20
+
+### Fixed
+
+- `src/visualisation/render_latex.cpp` now respects the
+  `GateSymbol::latex_macro` override from the Tier 1 catalogue. Daggered
+  gates (SDG, TDG, SXDG) emit `\gate{S^{\dagger}}` style output instead
+  of `\gate{\text{S†}}`; axis-subscripted rotations (RX, RY, RZ, U1,
+  U2, U3 and their `PARAM_*` variants) emit `\gate{R_X\text{(π/2)}}`
+  instead of `\gate{\text{RX(π/2)}}`. The catalogue now stores the
+  math-mode gate symbol only (e.g. `"R_X"`, `"S^{\\dagger}"`) and the
+  renderer composes the `\gate{...}` wrapper at emission time, splitting
+  the `BoxPart` label at the first `(` so the parameter suffix is still
+  routed through `\text{...}` when it carries non-ASCII bytes.
+- `src/visualisation/render_ascii.cpp` annotates conditional-gate
+  c-wire crossings with the match value. Under `show_clbits = true`,
+  every conditional now writes `=v` immediately after the c-wire cross
+  glyph (`═╪=1═` for a `c[k] == 1` gate), so two conditionals with
+  different match values are visually distinguishable.
+- `src/visualisation/render_ascii.cpp` no longer forces odd column
+  width when the layer contains no glyph that needs a centre cell.
+  Pure box-only layers (TallBox interaction gates, UNITARY, single-
+  qubit Tier 1 boxes) keep even widths so even-length labels fit
+  without trailing padding. The visible effect: `RXX(π/4)` renders as
+  `┤RXX(π/4)├` (10 cells) instead of `┤RXX(π/4) ├` (11 cells with one
+  stray space inside the right border).
+
+### Tests
+
+- `tests/test_visualiser_layout.cpp`
+  `DocumentLayoutTest.NonContiguousUnitaryReservesIntermediateRows`
+  now looks up the UNITARY glyph by its actual `data_gate` value
+  (`"U"` from the fixture's `inst.label`) rather than the fallback
+  `"unitary"` used only when no label is provided.
+- `tests/test_visualiser_format.cpp`
+  `FormatParamsTest.ArbitraryDecimalFormatsWithFourDecimals` uses 0.5
+  (exactly representable) instead of 0.31415 (which lands on a `%.4f`
+  rounding boundary and rounded differently depending on the compiler
+  build).
+- `tests/test_visualiser_html_fixtures.cpp`
+  `HtmlFixtureTest.LegendAbsentByDefault` looks for
+  `<div class="lb-legend">` specifically. The `.lb-legend` CSS rule is
+  declared in the page's `<style>` block on every render so user CSS
+  overrides have a stable selector; only the legend `<div>` itself is
+  gated on `opts.include_legend`.
+
+### Goldens
+
+- LaTeX golden files regenerated to reflect the new `latex_macro`
+  emission for daggered and rotation gates.
+- ASCII golden files regenerated for `tallbox` (no trailing padding
+  on even-length labels) and `feedforward.show_clbits` (new `=v`
+  annotation on the c-wire crossing).
+
+### Results
+
+- 1029 tests across 83 suites; all passing (Linux/WSL, clang 18,
+  Release). The five R.1.10.1 known failures are resolved; no new
+  failures introduced.
+
 ## [R.1.10.1] - 2026-05-20
 
 ### Note on release contents

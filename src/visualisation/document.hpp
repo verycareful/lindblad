@@ -42,6 +42,15 @@ struct BoxPart {
     std::string svg_fill;    // ignored by ASCII / LaTeX backends
     std::string svg_stroke;  // ignored by ASCII / LaTeX backends
     int         rowspan = 1; // multi-qubit boxes span consecutive rows
+
+    // R.1.10.2: LaTeX gate-symbol override. When non-empty, the LaTeX
+    // renderer substitutes this string for the gate-name stem of `label`
+    // (the substring up to the first '(' if present, or the whole label
+    // otherwise) so daggered gates and subscripted rotations render in
+    // math mode (e.g. "S^{\dagger}", "R_X") instead of literal Unicode.
+    // Empty for composite Box parts and Tier 3 builders that have no
+    // catalogue-driven LaTeX style.
+    std::string latex_macro;
 };
 
 // CtrlBulletPart : a control marker. anti = false renders as a filled disc;

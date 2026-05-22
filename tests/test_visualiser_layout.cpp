@@ -224,8 +224,11 @@ TEST(DocumentLayoutTest, NonContiguousUnitaryReservesIntermediateRows) {
     qc.unitary(mat, {0, 3}, "U").x(1).x(2);
     auto doc = build_default(qc);
     // UNITARY on {0, 3} reserves rows 0..3, so X(1) and X(2) must serialise
-    // after it.
-    const Glyph* u = find_glyph(doc, "unitary");
+    // after it. Locate the UNITARY by its data_gate: Instruction::gate_name()
+    // returns the gate's `label` field when non-empty (so "U" here), and
+    // falls back to "unitary" only when the label is absent. The fixture
+    // passes "U" so the lookup uses that.
+    const Glyph* u = find_glyph(doc, "U");
     ASSERT_NE(u, nullptr);
     EXPECT_EQ(u->column, 0);
     const Glyph* x1 = find_glyph(doc, "x");

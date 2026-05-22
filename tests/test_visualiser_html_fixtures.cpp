@@ -93,8 +93,12 @@ TEST(HtmlFixtureTest, HoverRulePresent) {
 }
 
 TEST(HtmlFixtureTest, LegendAbsentByDefault) {
+    // The .lb-legend CSS rule is declared in the page's <style> block on
+    // every render so user CSS overrides have a stable selector. Only the
+    // legend <div> itself is gated on opts.include_legend, so this test
+    // looks for that element specifically rather than the bare class name.
     const std::string out = bell_with_measures().draw(DrawMode::HTML, {});
-    EXPECT_EQ(out.find("lb-legend"), std::string::npos);
+    EXPECT_EQ(out.find("<div class=\"lb-legend\">"), std::string::npos);
 }
 
 TEST(HtmlFixtureTest, LegendPresentWhenIncludeLegend) {

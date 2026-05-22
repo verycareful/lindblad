@@ -62,6 +62,16 @@ bool label_needs_text_wrap(const std::string& s) {
 
 // Render one BoxPart cell as a Quantikz token. The `rowspan` knob selects
 // between \gate{} and \gate[N]{} (Quantikz multi-wire syntax).
+//
+// R.1.10.2: when the BoxPart carries a `latex_macro` override from the
+// Tier 1 catalogue, the gate-name stem of `label` (the substring before the
+// first '(' if present, or the whole label otherwise) is replaced with the
+// override. This lets the LaTeX backend emit `R_X`, `S^{\dagger}`,
+// `\sqrt{X}` etc. as math-mode tokens while still appending the parameter
+// suffix verbatim. The suffix (everything from the first '(' onwards) is
+// rendered through \text{...} when it carries non-ASCII bytes (UTF-8 pi
+// from the pretty parameter formatter) so Quantikz does not interpret the
+// codepoint as a control sequence.
 std::string box_token(const BoxPart& p) {
     std::ostringstream out;
     if (p.rowspan > 1) {
@@ -69,11 +79,39 @@ std::string box_token(const BoxPart& p) {
     } else {
         out << "\\gate{";
     }
-    if (label_needs_text_wrap(p.label)) {
-        out << "\\text{" << p.label << "}";
+
+    // Split label at the first '(' so the gate-name stem and parameter
+    // suffix can be emitted independently.
+    const auto paren = p.label.find('(');
+    const std::string stem   = (paren == std::string::npos)
+                                 ? p.label
+                                 : p.label.substr(0, paren);
+    const std::string suffix = (paren == std::string::npos)
+                                 ? std::string{}
+                                 : p.label.substr(paren);
+
+    // Stem: catalogue override wins, else label-as-math when safe, else
+    // \text{...} wrap. The override is always math-mode safe by
+    // construction (catalogue authors keep it that way).
+    if (!p.latex_macro.empty()) {
+        out << p.latex_macro;
+    } else if (label_needs_text_wrap(stem)) {
+        out << "\\text{" << stem << "}";
     } else {
-        out << p.label;
+        out << stem;
     }
+
+    // Param suffix: render through \text{...} when non-ASCII bytes are
+    // present (UTF-8 pi); pass through otherwise. Empty for gates without
+    // parameters.
+    if (!suffix.empty()) {
+        if (label_needs_text_wrap(suffix)) {
+            out << "\\text{" << suffix << "}";
+        } else {
+            out << suffix;
+        }
+    }
+
     out << "}";
     return out.str();
 }
