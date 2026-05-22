@@ -48,6 +48,8 @@ set(LINDBLAD_TEST_SOURCES
     test_visualiser_svg_fixtures.cpp
     test_visualiser_latex_fixtures.cpp
     test_visualiser_html_fixtures.cpp
+    # R.1.10.3 additions
+    test_visualiser_file_io.cpp
 )
 
 # Create test executable

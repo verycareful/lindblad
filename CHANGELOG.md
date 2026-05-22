@@ -4,6 +4,58 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.10.3] - 2026-05-20
+
+### Added
+
+- `QuantumCircuit::draw_to_file(path, mode, opts)` : convenience wrapper
+  around `draw()` that opens an `std::ofstream` in binary mode and
+  streams the rendered output to `path`. Raises `std::runtime_error`
+  with the offending path embedded in the message when the open
+  fails, rather than silently dropping the output. Default mode is
+  `DrawMode::ASCII`. The Python bindings expose this as
+  `qc.draw_to_file("bell.svg", DrawMode.SVG)` for consistency, though
+  direct C++ is the recommended path for performance-sensitive
+  workflows (the Python wrapper crosses the binding boundary and
+  serialises through the GIL).
+- `lindblad_draw` : command-line frontend to the visualiser. Reads
+  QASM2 (default) or QASM3 (`--qasm3`) from a file or `--stdin`, or
+  picks a built-in demo via `--demo <name>` (bell, ghz, parametric,
+  tallbox, qft). Output to stdout or `--output <path>`. Backend
+  selected by `--mode ascii|svg|latex|html`. Options propagated:
+  `--ascii-safe`, `--show-clbits`, `--no-show-params`,
+  `--param-format pretty|raw`, `--fold N`, `--cell-px N`, `--legend`.
+  `--list-demos` prints the built-in catalogue; `--help` shows usage.
+  Built when `LINDBLAD_BUILD_APPS=ON` (default for top-level builds,
+  OFF when consumed as a dependency).
+- `apps/` directory and matching `LINDBLAD_BUILD_APPS` option for
+  shipping user-facing executables alongside `lindblad_core`.
+
+### Tests
+
+- `tests/test_visualiser_file_io.cpp` (new file, 13 tests,
+  `DrawToFileTest`): round-trip against ASCII / SVG / LaTeX / HTML
+  (each rendered file matches the direct `draw()` output verbatim);
+  options round-trip for `ascii_safe` and `show_clbits`; default
+  mode is ASCII when none is supplied; file content starts with the
+  expected prologue per backend (`<?xml`, `<!DOCTYPE html>`,
+  `\begin{quantikz}`); error path on an unwritable destination
+  throws `std::runtime_error` with the path embedded in the
+  message; overwriting an existing file truncates seeded content
+  rather than appending.
+
+### Changed
+
+- `tests/CMakeLists.txt` registers the new `test_visualiser_file_io.cpp`
+  source under an `R.1.10.3 additions` comment.
+- `CMakeLists.txt` adds the `LINDBLAD_BUILD_APPS` option and
+  conditionally builds `apps/` when set.
+
+### Results
+
+- 1042 tests across 84 suites; all passing (Linux/WSL, clang 18,
+  Release). +13 tests over R.1.10.2.
+
 ## [R.1.10.2] - 2026-05-20
 
 ### Fixed
