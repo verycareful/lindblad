@@ -16,9 +16,12 @@
 //                      U,  U1, U2, U3,
 //                      PARAM_*)
 //
-// latex_macro is filled in only when the default "\gate{label}" assembly would
-// look wrong (dagger gates, axis-subscripted rotations, multi-symbol labels).
-// An empty latex_macro signals the renderer to fall back to "\gate{label}".
+// latex_macro is filled in only when the default "\gate{<label>}" emission
+// would render the gate symbol incorrectly (dagger gates, axis-subscripted
+// rotations, sqrt-X family). The renderer substitutes latex_macro for the
+// gate-name stem of `label` (the portion before the first '(' if params
+// are present, or the whole label otherwise). Empty latex_macro signals
+// "use the BoxPart label verbatim", with \text{...} wrapping when needed.
 
 #include "gate_symbols.hpp"
 
@@ -39,35 +42,35 @@ const std::unordered_map<Instruction::GateType, GateSymbol>& symbol_catalogue() 
         { GT::Z,    { "Z",    false, "#fce8e8", "#8f2a2a", ""                       } },
 
         // Phase / clock family (S, T, and their daggers)
-        { GT::S,    { "S",    false, "#fff4d8", "#8f6e2a", ""                       } },
-        { GT::SDG,  { "S†", false, "#fff4d8", "#8f6e2a", "\\gate{S^{\\dagger}}" } },
-        { GT::T,    { "T",    false, "#fff4d8", "#8f6e2a", ""                       } },
-        { GT::TDG,  { "T†", false, "#fff4d8", "#8f6e2a", "\\gate{T^{\\dagger}}" } },
+        { GT::S,    { "S",    false, "#fff4d8", "#8f6e2a", ""                  } },
+        { GT::SDG,  { "S\xe2\x80\xa0", false, "#fff4d8", "#8f6e2a", "S^{\\dagger}" } },
+        { GT::T,    { "T",    false, "#fff4d8", "#8f6e2a", ""                  } },
+        { GT::TDG,  { "T\xe2\x80\xa0", false, "#fff4d8", "#8f6e2a", "T^{\\dagger}" } },
 
         // sqrt(X) family
-        { GT::SX,   { "SX",   false, "#f1e8fc", "#6e2a8f", "\\gate{\\sqrt{X}}"      } },
-        { GT::SXDG, { "SX†", false, "#f1e8fc", "#6e2a8f", "\\gate{\\sqrt{X}^{\\dagger}}" } },
+        { GT::SX,   { "SX",   false, "#f1e8fc", "#6e2a8f", "\\sqrt{X}"             } },
+        { GT::SXDG, { "SX\xe2\x80\xa0", false, "#f1e8fc", "#6e2a8f", "\\sqrt{X}^{\\dagger}" } },
 
         // Numeric rotations and phase / U family. show_params = true so the
         // label assembler appends "(theta)" / "(theta, phi, lambda)" when the
         // caller has not disabled show_params via DrawOptions.
-        { GT::RX,   { "RX",   true,  "#e0f0e0", "#2a6e2a", "\\gate{R_X}"            } },
-        { GT::RY,   { "RY",   true,  "#e0f0e0", "#2a6e2a", "\\gate{R_Y}"            } },
-        { GT::RZ,   { "RZ",   true,  "#e0f0e0", "#2a6e2a", "\\gate{R_Z}"            } },
-        { GT::P,    { "P",    true,  "#e0f0e0", "#2a6e2a", ""                       } },
-        { GT::U,    { "U",    true,  "#e0f0e0", "#2a6e2a", ""                       } },
-        { GT::U1,   { "U1",   true,  "#e0f0e0", "#2a6e2a", "\\gate{U_1}"            } },
-        { GT::U2,   { "U2",   true,  "#e0f0e0", "#2a6e2a", "\\gate{U_2}"            } },
-        { GT::U3,   { "U3",   true,  "#e0f0e0", "#2a6e2a", "\\gate{U_3}"            } },
+        { GT::RX,   { "RX",   true,  "#e0f0e0", "#2a6e2a", "R_X"                   } },
+        { GT::RY,   { "RY",   true,  "#e0f0e0", "#2a6e2a", "R_Y"                   } },
+        { GT::RZ,   { "RZ",   true,  "#e0f0e0", "#2a6e2a", "R_Z"                   } },
+        { GT::P,    { "P",    true,  "#e0f0e0", "#2a6e2a", ""                      } },
+        { GT::U,    { "U",    true,  "#e0f0e0", "#2a6e2a", ""                      } },
+        { GT::U1,   { "U1",   true,  "#e0f0e0", "#2a6e2a", "U_1"                   } },
+        { GT::U2,   { "U2",   true,  "#e0f0e0", "#2a6e2a", "U_2"                   } },
+        { GT::U3,   { "U3",   true,  "#e0f0e0", "#2a6e2a", "U_3"                   } },
 
         // Symbolic (QASM 3 named-parameter) variants. Same colour and label
         // family as their numeric siblings; the formatter renders any embedded
         // ParamExpr in place of the numeric value.
-        { GT::PARAM_RX, { "RX", true, "#e0f0e0", "#2a6e2a", "\\gate{R_X}" } },
-        { GT::PARAM_RY, { "RY", true, "#e0f0e0", "#2a6e2a", "\\gate{R_Y}" } },
-        { GT::PARAM_RZ, { "RZ", true, "#e0f0e0", "#2a6e2a", "\\gate{R_Z}" } },
-        { GT::PARAM_P,  { "P",  true, "#e0f0e0", "#2a6e2a", ""             } },
-        { GT::PARAM_U,  { "U",  true, "#e0f0e0", "#2a6e2a", ""             } },
+        { GT::PARAM_RX, { "RX", true, "#e0f0e0", "#2a6e2a", "R_X" } },
+        { GT::PARAM_RY, { "RY", true, "#e0f0e0", "#2a6e2a", "R_Y" } },
+        { GT::PARAM_RZ, { "RZ", true, "#e0f0e0", "#2a6e2a", "R_Z" } },
+        { GT::PARAM_P,  { "P",  true, "#e0f0e0", "#2a6e2a", ""    } },
+        { GT::PARAM_U,  { "U",  true, "#e0f0e0", "#2a6e2a", ""    } },
     };
     return table;
 }

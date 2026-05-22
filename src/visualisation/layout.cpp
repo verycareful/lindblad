@@ -60,10 +60,15 @@ Glyph build_box_glyph(const Instruction& inst,
                       const DrawOptions& opts) {
     Glyph g;
     BoxPart part;
-    part.label      = format_gate_label(inst, sym, opts);
-    part.svg_fill   = sym.svg_fill;
-    part.svg_stroke = sym.svg_stroke;
-    part.rowspan    = 1;
+    part.label       = format_gate_label(inst, sym, opts);
+    part.svg_fill    = sym.svg_fill;
+    part.svg_stroke  = sym.svg_stroke;
+    part.rowspan     = 1;
+    // R.1.10.2: thread the LaTeX gate-symbol override through to the
+    // renderer so subscripted rotations and daggered gates render in math
+    // mode. Empty when the catalogue accepts the default \gate{<label>}
+    // emission.
+    part.latex_macro = sym.latex_macro;
     // Tier 1 is single-qubit by construction; the catalogue never targets a
     // box gate with more than one qubit slot. Reading qubits[0] is always
     // safe for the gate types listed in symbol_catalogue().

@@ -1,3 +1,3 @@
 \begin{quantikz}
-\lstick{$q_{0}$} & \gate{H} & \gate{X} & \gate{Y} & \gate{Z} & \gate{S} & \gate{\text{S†}} & \gate{T} & \gate{\text{T†}} & \gate{SX} & \gate{\text{SX†}} 
+\lstick{$q_{0}$} & \gate{H} & \gate{X} & \gate{Y} & \gate{Z} & \gate{S} & \gate{S^{\dagger}} & \gate{T} & \gate{T^{\dagger}} & \gate{\sqrt{X}} & \gate{\sqrt{X}^{\dagger}} 
 \end{quantikz}

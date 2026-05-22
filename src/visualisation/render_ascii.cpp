@@ -336,6 +336,23 @@ void paint_glyph(Grid& grid, const Glyph& g, int x0, int col_width,
         }
         // Mark the c-wire row with a cross glyph for the conditional.
         grid.put(cwire_row_index, x_centre, palette.strut_cwire);
+
+        // R.1.10.2: annotate the c-wire crossing with the comparison value
+        // so two conditional gates with different match values are
+        // distinguishable. We write "=v" immediately to the right of the
+        // crossing, overwriting the bundled c-wire fill characters. The
+        // annotation stays within the current column's footprint for
+        // single-digit values (which is every condition_value the public
+        // API currently produces). Multi-digit values may bleed into the
+        // next column's c-wire fill; this is documented in
+        // docs/api/visualisation.md as a known limitation.
+        std::string vstr = "=" + std::to_string(g.condition_value);
+        for (std::size_t i = 0; i < vstr.size(); ++i) {
+            int x = x_centre + 1 + static_cast<int>(i);
+            if (x < grid.n_cols) {
+                grid.put(cwire_row_index, x, std::string(1, vstr[i]));
+            }
+        }
     }
 
     // 3. Per-part marks.
@@ -462,8 +479,28 @@ std::string render_ascii(const CircuitDocument& doc, const DrawOptions& opts) {
             int nw = glyph_natural_width(g);
             if (nw > w) { w = nw; }
         }
-        // Ensure odd width so a centre cell exists for bullets / targets.
-        if (w % 2 == 0) { ++w; }
+        // R.1.10.2: only force odd column width when the layer actually
+        // contains a glyph that needs a centre cell (control bullets, XOR
+        // targets, SWAP arms, barrier ticks). Pure box-only layers (TallBox
+        // gates, UNITARY, single-qubit Tier 1 boxes) keep even widths so
+        // labels with even length fit without trailing padding. Without
+        // this guard, "RXX(pi/4)" got bumped to a 11-wide column with one
+        // stray trailing space inside the right border.
+        bool layer_needs_centre = false;
+        for (const Glyph& g : L.glyphs) {
+            for (const auto& kv : g.parts) {
+                const GlyphPart& part = kv.second;
+                if (std::holds_alternative<CtrlBulletPart>(part) ||
+                    std::holds_alternative<XorTargetPart >(part) ||
+                    std::holds_alternative<SwapXPart     >(part) ||
+                    std::holds_alternative<BarrierPart   >(part)) {
+                    layer_needs_centre = true;
+                    break;
+                }
+            }
+            if (layer_needs_centre) { break; }
+        }
+        if (layer_needs_centre && w % 2 == 0) { ++w; }
         layer_widths.push_back(w);
     }
 

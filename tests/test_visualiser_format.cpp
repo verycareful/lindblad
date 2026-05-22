@@ -127,7 +127,12 @@ TEST(FormatParamsTest, MissesFallBackToFourDecimal) {
 }
 
 TEST(FormatParamsTest, ArbitraryDecimalFormatsWithFourDecimals) {
-    EXPECT_EQ(format_param(0.31415, ParamFormat::Pretty), "0.3142");
+    // 0.5 is exactly representable as a double and falls outside the pi-snap
+    // table, so it always falls through to the %.4f fallback. Earlier the
+    // test used 0.31415, which lands on a floating-point rounding boundary
+    // and produced "0.3141" or "0.3142" depending on the compiler's
+    // rounding mode.
+    EXPECT_EQ(format_param(0.5, ParamFormat::Pretty), "0.5000");
 }
 
 TEST(FormatParamsTest, RawModeNeverPiSnaps) {
