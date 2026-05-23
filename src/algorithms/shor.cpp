@@ -202,11 +202,23 @@ uint64_t Shor::find_order(
     }
     if (best.empty()) return 0;
 
-    // Convert eval-register bits to integer m (MSB-first, qubit 0 = MSB).
+    // Convert eval-register bits to integer m.
+    //
+    // measure_all() maps qubit q -> clbit q for all n_eval + n_target qubits.
+    // StatevectorSimulator builds the bitstring such that clbit 0 is the
+    // RIGHTMOST character (LSB) and the highest clbit is the LEFTMOST
+    // character (MSB). Therefore best[total - 1 - q] is the measurement
+    // outcome of qubit q.
+    //
+    // The eval register occupies qubits [0, n_eval), so eval qubit q maps
+    // to bit q of the QPE integer m.
+    //
     // 1ULL prevents int overflow when n_eval > 30 (n_eval = 2*n_target+1 grows with N).
+    const int total = static_cast<int>(best.size());
     uint64_t m = 0;
-    for (int i = 0; i < n_eval && i < static_cast<int>(best.size()); ++i)
-        if (best[i] == '1') m |= (1ULL << (n_eval - 1 - i));
+    for (int q = 0; q < n_eval && q < total; ++q) {
+        if (best[total - 1 - q] == '1') m |= (1ULL << q);
+    }
     if (m == 0) return 0;
 
     // Phase = m / 2^n_eval ≈ s/r. Find r via continued fractions.

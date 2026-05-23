@@ -292,6 +292,69 @@ TEST(ShorTest, FindOrderA7N15) {
     EXPECT_TRUE(any_valid) << "find_order(7, 15) returned no valid order across 10 seeds";
 }
 
+// Stricter QPE regression: a correct bit-extraction in find_order must recover
+// a valid order on the MAJORITY of seeds, not just one in ten.
+//
+// Background: the previous bit-extraction read best[0..n_eval) and treated
+// best[0] as qubit 0 (MSB). That sliced the TOP n_eval qubits of the bitstring
+// (full target register + partial eval) with reversed endianness, producing a
+// pseudo-random m. The old "at least one valid in ten seeds" test could pass
+// by lottery because cf(m/2^n_eval) occasionally lands on a denominator that
+// is a multiple of the true order. Requiring a high success rate forces the
+// QPE phase to actually be extracted from the eval register.
+TEST(ShorTest, FindOrderA2N15HighSuccessRate) {
+    int n_target = static_cast<int>(std::ceil(std::log2(16.0)));
+    int n_eval = 2 * n_target + 1;
+
+    backends::LocalBackend::Config cfg;
+    cfg.simulator = backends::LocalBackend::SimType::STATEVECTOR;
+    backends::LocalBackend backend(cfg);
+
+    int valid_count = 0;
+    const int n_seeds = 20;
+    for (uint64_t seed = 1; seed <= static_cast<uint64_t>(n_seeds); ++seed) {
+        uint64_t r = Shor::find_order(2, 15, n_eval, backend, seed);
+        if (r > 0) {
+            uint64_t check = 1;
+            for (uint64_t i = 0; i < r; ++i) check = check * 2 % 15;
+            if (check == 1) ++valid_count;
+        }
+    }
+    // With correct bit-extraction, QPE succeeds on the large majority of seeds.
+    // 12/20 = 60% is a conservative threshold; the buggy path averages well below this.
+    EXPECT_GE(valid_count, 12)
+        << "find_order(2, 15) only returned a valid order on "
+        << valid_count << "/" << n_seeds
+        << " seeds; suggests bit-extraction or phase logic is wrong.";
+}
+
+TEST(ShorTest, FindOrderA2N21HighSuccessRate) {
+    // ord_21(2) = 6. r=6 is not a power of two, so the buggy bit-extraction
+    // (which biases m towards values with power-of-two denominators in their
+    // continued-fraction convergents) cannot pass this case by coincidence.
+    int n_target = static_cast<int>(std::ceil(std::log2(22.0)));
+    int n_eval = 2 * n_target + 1;
+
+    backends::LocalBackend::Config cfg;
+    cfg.simulator = backends::LocalBackend::SimType::STATEVECTOR;
+    backends::LocalBackend backend(cfg);
+
+    int valid_count = 0;
+    const int n_seeds = 20;
+    for (uint64_t seed = 1; seed <= static_cast<uint64_t>(n_seeds); ++seed) {
+        uint64_t r = Shor::find_order(2, 21, n_eval, backend, seed);
+        if (r > 0) {
+            uint64_t check = 1;
+            for (uint64_t i = 0; i < r; ++i) check = check * 2 % 21;
+            if (check == 1) ++valid_count;
+        }
+    }
+    EXPECT_GE(valid_count, 10)
+        << "find_order(2, 21) only returned a valid order on "
+        << valid_count << "/" << n_seeds
+        << " seeds; suggests bit-extraction or phase logic is wrong.";
+}
+
 // =============================================================================
 // Backend parity — DM and MPS produce valid factors matching SV
 // =============================================================================
