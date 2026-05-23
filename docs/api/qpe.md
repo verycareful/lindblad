@@ -56,8 +56,10 @@ Behavior:
 - Builds the QPE circuit
 - Measures all qubits
 - Selects the most frequent measurement bitstring
-- Interprets the first `num_eval_qubits` bits as a binary fraction in MSB-first order
-- Returns $\frac{measured}{2^{num\_eval\_qubits}}$
+- Reads the rightmost `num_eval_qubits` characters of the bitstring as the eval register in LSB-at-qubit-0 convention (eval qubit q contributes bit q to the QPE integer m)
+- Returns $\frac{m}{2^{num\_eval\_qubits}}$
+
+The most-frequent-bitstring strategy is correct when the target register holds a single eigenstate of `unitary` — the QPE Fourier state then has a single peak. Callers that pass a superposition of eigenstates (Shor-style `|1⟩ = (1/√r) Σ |u_s⟩`) should iterate `result.counts` in descending frequency instead, as `Shor::find_order` does. Single-eigenstate inputs are the standard QPE assumption.
 
 ## Example
 

@@ -27,7 +27,7 @@ struct Options {
 };
 ```
 
-- `do_swaps`: If true, appends `⌊n/2⌋` `SWAP` gates at the end of the transform to reverse the bit order (MSB vs LSB correction).
+- `do_swaps`: If true (default), the circuit is a uniformly little-endian QFT/IQFT in the project's LSB-at-qubit-0 convention (see [Architecture.md](../Architecture.md)). SWAPs are placed on the input side of the forward QFT and the output side of the inverse QFT to compensate for the textbook H+CP sequence's qubit-0=MSB internal convention. If false, the raw H+CP sequence is emitted with no SWAPs (qubit-0=MSB input on forward, qubit-0=MSB output on inverse) — use only when composing with a register that's already in the qubit-0=MSB convention.
 - `approximation_degree`: The Kitaev approximation degree `m`. If `m=0`, exact QFT. If `m>0`, all `CP(θ)` gates with `|θ| < π/2^m` are dropped.
 - `inverse`: If true, builds the Inverse QFT (IQFT). Reverses the topological order of all gates and negates all CP angles.
 

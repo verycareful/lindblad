@@ -86,9 +86,11 @@ static uint64_t find_order(
 );
 ```
 
-Builds the period-finding circuit, runs it on `backend` with 128 shots, and recovers the multiplicative order r = ord_N(a) via continued-fraction expansion of the most-frequent measured phase.
+Builds the period-finding circuit, runs it on `backend` with 128 shots, and recovers the multiplicative order r = ord_N(a). The recovery iterates the observed bitstring distribution in descending frequency, extracts the eval-register value `m` from each in the project LSB-at-qubit-0 convention (eval qubit q contributes bit q of m), runs continued-fraction expansion on `m / 2^n_eval`, and returns the first convergent denominator that satisfies `a^r ≡ 1 (mod N)`.
 
-Returns r on success, 0 on failure (zero measurement, no valid convergent, or a^r ≢ 1 mod N for all candidates).
+Iterating across the count distribution (rather than relying on the single most-frequent bitstring) is required because for orders that do not divide `2^n_eval` (e.g. r=6 for N=21), the exact-m peaks at `s=0` and `s=r/2` absorb most of their probability into single bitstrings but are useless for cf recovery, while the useful spread peaks dilute across multiple bitstrings.
+
+Returns r on success, 0 on failure (no measurement produced a valid convergent, or `a^r ≢ 1 (mod N)` for all candidates across all observed bitstrings).
 
 ## Example
 

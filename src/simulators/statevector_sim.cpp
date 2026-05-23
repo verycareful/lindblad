@@ -7,6 +7,10 @@
 #include <random>
 #include <stdexcept>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace lindblad {
 
 // Thread-local RNG for mid-circuit measurement collapse.
@@ -202,7 +206,25 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         } else {
             sv_work->initialize();
         }
-        sv_sim_rng.seed(seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed);
+        // Derive a per-thread seed so parallel batches (e.g. Estimator::run_batch)
+        // produce statistically independent RNG streams rather than every thread
+        // reseeding to the same Mersenne Twister state. The single-threaded path
+        // is unaffected: outside a parallel region omp_get_thread_num() returns 0
+        // and the same `seed` always produces the same RNG stream.
+        const uint64_t base_seed = (seed == 0)
+            ? static_cast<uint64_t>(std::random_device{}())
+            : seed;
+#ifdef _OPENMP
+        const uint32_t tid = static_cast<uint32_t>(omp_get_thread_num());
+#else
+        const uint32_t tid = 0;
+#endif
+        std::seed_seq seq{
+            static_cast<uint32_t>(base_seed),
+            static_cast<uint32_t>(base_seed >> 32),
+            tid
+        };
+        sv_sim_rng.seed(seq);
 
         // Determine whether the circuit contains any mid-circuit MEASURE gates.
         // If so, each shot must re-run the full circuit from |0...0⟩ so that the

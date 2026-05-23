@@ -278,23 +278,21 @@ TEST(BugRegression, B5_EstimatorHonorsShotsSampling) {
 }
 
 // =============================================================================
-// B6 — DensityMatrixSimulator only applies after_gate noise; before_gate ignored
-// TODO: before_gate entries in NoiseModel are silently ignored in the gate loop.
-// Test: inject a 100% bit-flip BEFORE an X gate; the net operation on |0⟩ becomes
-//       bit_flip ∘ X = X ∘ X = I → final state |0⟩.  If before_gate is ignored,
-//       X is applied without the preceding flip → final state |1⟩.
+// B6 — NoiseModel::add_quantum_error must honour before_gate ordering
+// Pre-R.1.10.5 the public API silently overwrote ge.after_gate = true,
+// blocking before-gate semantics even though the DensityMatrixSimulator
+// already supported both orderings. R.1.10.5 added an after_gate parameter
+// (defaulting to true) to add_quantum_error and add_all_qubit_quantum_error.
+// These tests now drive through the public API to confirm both orderings
+// reach the simulator.
 // =============================================================================
 
 TEST(BugRegression, B6_BeforeGateNoiseApplied) {
-    // 100% bit-flip before X:  |0⟩ → |1⟩ (flip) → |0⟩ (X) = |0⟩.
-    // If before_gate is ignored: X|0⟩ = |1⟩.
+    // 100% bit-flip before X on |0⟩:  |0⟩ → |1⟩ (flip) → |0⟩ (X). Final |0⟩.
+    // If before_gate were dropped: X|0⟩ = |1⟩, so count_0 would be 0.
     NoiseModel nm;
-    NoiseModel::GateError ge;
-    ge.channel    = NoiseChannels::bit_flip(1.0);
-    ge.qubits     = {};
-    ge.after_gate = false;   // BEFORE the gate
-    nm.basis_gate_errors["x"].push_back(ge);
-    nm.noisy_gates.push_back("x");
+    nm.add_quantum_error(NoiseChannels::bit_flip(1.0), "x", /*qubits=*/{},
+                         /*after_gate=*/false);
 
     QuantumCircuit qc(1);
     qc.x(0);
@@ -304,42 +302,55 @@ TEST(BugRegression, B6_BeforeGateNoiseApplied) {
     auto res = dm_sim.run(qc, nm, 1024, 23);
     ASSERT_TRUE(res.success);
 
-    // With before_gate noise: net result = |0⟩, so P("0") = 1.
     int count_0 = res.counts.count("0") ? res.counts.at("0") : 0;
     EXPECT_EQ(count_0, 1024)
-        << "before_gate noise ignored (bug B6 open): "
-           "expected all shots in |0⟩ but got count_0=" << count_0;
+        << "before_gate noise dropped at API boundary: expected all shots in "
+           "|0⟩ but got count_0=" << count_0;
 }
 
 TEST(BugRegression, B6_BeforeGateNoiseAffectsDensityMatrix) {
-    // Same setup, check density matrix directly without measurement.
-    // 100% bit-flip before H on |0⟩:
-    //   before: |0⟩ → |1⟩,  then H: |1⟩ → |−⟩ = (|0⟩−|1⟩)/√2.
-    // If before_gate is ignored: H|0⟩ = |+⟩ = (|0⟩+|1⟩)/√2.
-    // |+⟩ density matrix: rho(0,0)=0.5, rho(1,1)=0.5, rho(0,1)=rho(1,0)=0.5.
-    // |−⟩ density matrix: rho(0,0)=0.5, rho(1,1)=0.5, rho(0,1)=rho(1,0)=-0.5.
-    // The off-diagonal sign distinguishes the two states.
+    // 100% bit-flip before H on |0⟩:  |0⟩ → |1⟩ → H|1⟩ = |−⟩.
+    // If before_gate were dropped:    H|0⟩ = |+⟩.
+    // |−⟩⟨−|: rho(0,1).real = -0.5; |+⟩⟨+|: rho(0,1).real = +0.5.
     NoiseModel nm;
-    NoiseModel::GateError ge;
-    ge.channel    = NoiseChannels::bit_flip(1.0);
-    ge.qubits     = {};
-    ge.after_gate = false;
-    nm.basis_gate_errors["h"].push_back(ge);
-    nm.noisy_gates.push_back("h");
+    nm.add_quantum_error(NoiseChannels::bit_flip(1.0), "h", /*qubits=*/{},
+                         /*after_gate=*/false);
 
     QuantumCircuit qc(1);
-    qc.h(0);   // no measurement — inspect final density matrix
+    qc.h(0);
 
     DensityMatrixSimulator dm_sim;
     auto res = dm_sim.run(qc, nm, 0, 0);
     ASSERT_TRUE(res.success);
 
     const auto& dm = res.final_state;
-    // |−⟩⟨−|: rho(0,1).real = -0.5 (if before_gate applied)
-    // |+⟩⟨+|: rho(0,1).real = +0.5 (if before_gate ignored)
     EXPECT_NEAR(dm(0, 1).real, -0.5, kTol)
-        << "before_gate noise ignored (bug B6 open): expected |−⟩ state but got |+⟩; "
-           "rho(0,1).real=" << dm(0, 1).real;
+        << "before_gate noise dropped at API boundary: expected |−⟩ state "
+           "(rho(0,1).real = -0.5) but got rho(0,1).real=" << dm(0, 1).real;
+}
+
+TEST(BugRegression, B6_AfterGateRemainsDefault) {
+    // Sanity: default after_gate=true must still produce after-gate ordering.
+    // 100% bit-flip AFTER X on |0⟩: X|0⟩ = |1⟩ → flip → |0⟩. Final |0⟩.
+    // If the default flipped to before_gate: flip|0⟩=|1⟩ → X|1⟩=|0⟩, also |0⟩
+    // — same final state. Use a non-symmetric case: amplitude damping after X.
+    // amplitude_damping(γ=1.0) sends |1⟩→|0⟩. After-gate: X|0⟩=|1⟩→AD→|0⟩.
+    // Before-gate: AD|0⟩=|0⟩→X|0⟩=|1⟩. Result count_0 distinguishes the two.
+    NoiseModel nm;
+    nm.add_quantum_error(NoiseChannels::amplitude_damping(1.0), "x");
+
+    QuantumCircuit qc(1);
+    qc.x(0);
+    qc.measure_all();
+
+    DensityMatrixSimulator dm_sim;
+    auto res = dm_sim.run(qc, nm, 1024, 23);
+    ASSERT_TRUE(res.success);
+
+    int count_0 = res.counts.count("0") ? res.counts.at("0") : 0;
+    EXPECT_EQ(count_0, 1024)
+        << "default after_gate=true regressed: expected after-gate ordering "
+           "(X then AD on |0⟩ → |0⟩) but got count_0=" << count_0;
 }
 
 // =============================================================================
@@ -570,6 +581,71 @@ TEST(BugRegression, B6_BeforeGateNoiseMultiQubitCircuit) {
     EXPECT_NEAR(dm(0, 1).real, -0.25, kTol)
         << "before_gate noise not applied to H (bug B6 open): "
            "expected |−⟩⊗|−⟩ but got |+⟩⊗|+⟩; rho(0,1).real=" << dm(0, 1).real;
+}
+
+// =============================================================================
+// B9 — StatevectorSimulator thread_local RNG must not reseed identically across
+// parallel run() invocations. Pre-R.1.10.5 the RNG was reseeded with the raw
+// `seed` value on every call, so parallel batches (Estimator::run_batch and any
+// other OpenMP-dispatched workload) produced bit-for-bit identical per-thread
+// sequences, defeating shot independence.
+// R.1.10.5 derives the RNG state from std::seed_seq{seed, seed>>32, tid}.
+// =============================================================================
+
+#ifdef _OPENMP
+#include <omp.h>
+
+TEST(BugRegression, B9_StatevectorRngParallelIndependence) {
+    // Three-qubit circuit with mid-circuit measurement — forces the path that
+    // actually consults sv_sim_rng for collapse outcomes.
+    QuantumCircuit qc(3);
+    qc.h(0).h(1).h(2);
+    qc.measure_all();
+
+    constexpr int n_runs = 2;
+    constexpr int shots = 256;
+    constexpr uint64_t seed = 12345;
+    std::vector<std::unordered_map<std::string, int>> results(n_runs);
+
+    int observed_threads = 1;
+    #pragma omp parallel num_threads(n_runs)
+    {
+        #pragma omp single
+        observed_threads = omp_get_num_threads();
+        #pragma omp for schedule(static, 1)
+        for (int i = 0; i < n_runs; ++i) {
+            StatevectorSimulator sim;
+            auto res = sim.run(qc, shots, seed);
+            results[i] = res.counts;
+        }
+    }
+    if (observed_threads < 2) {
+        GTEST_SKIP() << "OpenMP runtime granted only 1 thread; cannot exercise "
+                        "per-thread RNG independence.";
+    }
+
+    EXPECT_NE(results[0], results[1])
+        << "Parallel run() invocations with the same seed produced identical "
+           "shot distributions across threads — thread_local RNG is reseeded "
+           "with the same state.";
+}
+#endif
+
+TEST(BugRegression, B9_StatevectorRngSingleThreadedReproducible) {
+    // Single-threaded reproducibility must not regress: same seed in two
+    // sequential calls (both on the main thread, both with tid=0) must yield
+    // the same shot distribution. Guards against an over-aggressive fix that
+    // mixes wall-clock or random_device into every call.
+    QuantumCircuit qc(3);
+    qc.h(0).h(1).h(2);
+    qc.measure_all();
+
+    StatevectorSimulator sim;
+    auto a = sim.run(qc, 256, 42);
+    auto b = sim.run(qc, 256, 42);
+    EXPECT_EQ(a.counts, b.counts)
+        << "Sequential run() calls with the same seed gave different shot "
+           "distributions — reproducibility regressed.";
 }
 
 // =============================================================================

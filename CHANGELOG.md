@@ -4,6 +4,72 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.10.5] - 2026-05-24
+
+### Fixed
+
+- **`QFT::build_circuit` (`do_swaps=true`) now uses the project-wide LSB-at-qubit-0
+  convention end-to-end.** The pre-fix gate sequence was textbook QFT (qubit-0=MSB
+  internal); `do_swaps=true` placed the bit-reversal SWAPs on the wrong side, exposing
+  a uniformly-MSB QFT/IQFT to callers. The SWAPs are now applied on the input side of
+  the forward QFT and on the output side of the inverse QFT, delivering a
+  uniformly-LSB QFT∘IQFT pair that matches Qiskit. `do_swaps=false` preserved
+  unchanged as the raw H+CP sequence escape hatch.
+- **`Shor::find_order` recovers the correct order on non-power-of-2 orders.** Two
+  underlying bugs: (1) post-PR-#7 the bit-extraction was reading the correct slice
+  but the QFT convention mismatch garbled the recovered `m`; the QFT fix above
+  resolves that. (2) `find_order` was picking the single most-frequent measured
+  bitstring, which is biased toward the exact-`m` peaks at `s=0` and `s=r/2` —
+  useless under continued fractions whenever `r` doesn't divide `2^n_eval` (e.g.
+  N=21, r=6). `find_order` now iterates observed bitstrings in descending frequency
+  and returns the first valid `r`, recovering ~100% success rate. No change to
+  shots count or circuit. (Initial slice-fix and N=15/N=21 regression tests
+  contributed by @zParik in #7.)
+- **`QPE::estimate_phase` bit-extraction fixed.** Pre-fix the routine read the
+  leftmost `num_eval_qubits` characters of the measurement bitstring (the target
+  register and upper eval qubits) with MSB-first endianness, masked because all
+  shipped QPE tests used phase=0 eigenstates. It now reads the rightmost
+  `num_eval_qubits` characters in LSB convention, consistent with the fixed IQFT.
+  Added a comment directing multi-eigenstate callers (Shor-style) to iterate
+  `result.counts` rather than rely on the single-most-frequent strategy.
+- **`NoiseModel::add_quantum_error` honours `before_gate` ordering.** The public
+  API silently overwrote `ge.after_gate = true`, dropping a `DensityMatrixSimulator`
+  capability that has existed for several releases. Both `add_quantum_error` and
+  `add_all_qubit_quantum_error` now take an `after_gate` parameter (default
+  `true`); the stale "before_gate not yet implemented" comment was removed.
+  (Reported by @zParik in #1.)
+- **StatevectorSimulator thread-local RNG independence under parallel batches.**
+  The RNG was reseeded with the raw caller `seed` on every `run()`, so OpenMP-
+  dispatched batches (`Estimator::run_batch` and similar) had every thread reseeded
+  to the same Mersenne Twister state, defeating shot independence. The seed is now
+  mixed with `omp_get_thread_num()` via `std::seed_seq`; single-threaded
+  reproducibility is preserved (tid is 0 outside any parallel region).
+  (Reported by @zParik in #3.)
+
+### Added
+
+- `tests/test_qft_convention.cpp` — new regression suite pinning down the LSB
+  convention end-to-end: QFT∘IQFT roundtrip, IQFT on uniform superposition,
+  forward QFT against standard `QFT|x⟩` amplitudes for n=2/n=3, IQFT against
+  expected `|m⟩` peaks for exact phases at n=4/n=5/n=11, IQFT spread test at
+  n=11 for non-exact φ=1/6, end-to-end QPE on S gate with non-zero phase, and a
+  Shor N=21 m-extraction diagnostic.
+- `tests/test_bug_regression.cpp` — B6 tests rewritten to drive through the
+  public `NoiseModel` API (the prior tests bypassed it and missed the bug);
+  added `B6_AfterGateRemainsDefault`, `B9_StatevectorRngParallelIndependence`
+  (OpenMP-gated), `B9_StatevectorRngSingleThreadedReproducible`.
+- `CLAUDE.md` "Project Conventions" section and `docs/Architecture.md` "Qubit
+  Ordering Convention" section formally declaring LSB-at-qubit-0 as the
+  project-wide convention with worked example and the requirement that new
+  algorithms include a non-symmetric end-to-end test.
+
+### Changed
+
+- `tests/test_shor.cpp` — `FindOrderA2N15HighSuccessRate` and
+  `FindOrderA2N21HighSuccessRate` thresholds set to 18/20 (90%) with full
+  theoretical derivation in test comments. The iterate-counts strategy now
+  saturates these regimes near 100%.
+
 ## [R.1.10.4] - 2026-05-20
 
 ### Added

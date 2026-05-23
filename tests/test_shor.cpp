@@ -292,16 +292,24 @@ TEST(ShorTest, FindOrderA7N15) {
     EXPECT_TRUE(any_valid) << "find_order(7, 15) returned no valid order across 10 seeds";
 }
 
-// Stricter QPE regression: a correct bit-extraction in find_order must recover
-// a valid order on the MAJORITY of seeds, not just one in ten.
+// Stricter QPE regression: under the LSB-at-qubit-0 convention and the
+// iterate-counts strategy in find_order (both introduced in R.1.10.5),
+// find_order should recover a valid order on nearly every seed.
 //
-// Background: the previous bit-extraction read best[0..n_eval) and treated
-// best[0] as qubit 0 (MSB). That sliced the TOP n_eval qubits of the bitstring
-// (full target register + partial eval) with reversed endianness, producing a
-// pseudo-random m. The old "at least one valid in ten seeds" test could pass
-// by lottery because cf(m/2^n_eval) occasionally lands on a denominator that
-// is a multiple of the true order. Requiring a high success rate forces the
-// QPE phase to actually be extracted from the eval register.
+// Background: pre-R.1.10.5, find_order's bit-extraction read best[0..n_eval)
+// (the target register + upper eval qubits, with reversed endianness),
+// producing a pseudo-random m. The "at least one valid in ten seeds" lottery
+// test passed because cf(m/2^n_eval) for random m occasionally lands on a
+// denominator that is a multiple of the true order. R.1.10.5 fixed the QFT
+// convention, the eval-register slice, the bit-ordering, AND the strategy
+// (iterate observed bitstrings in descending frequency rather than relying on
+// the single most-frequent shot, which is biased toward exact-m useless peaks
+// like m=0 and m=N/2 for non-power-of-2 orders).
+//
+// With these fixes, per-shot P(useful m) ≈ 0.5 for r=4 / N=15; over 128 shots
+// the count distribution always contains a usable bitstring, so the expected
+// per-seed success rate is ~100%. Threshold 18/20 = 90% allows for rare
+// adversarial seeds without masking a real regression.
 TEST(ShorTest, FindOrderA2N15HighSuccessRate) {
     int n_target = static_cast<int>(std::ceil(std::log2(16.0)));
     int n_eval = 2 * n_target + 1;
@@ -320,18 +328,26 @@ TEST(ShorTest, FindOrderA2N15HighSuccessRate) {
             if (check == 1) ++valid_count;
         }
     }
-    // With correct bit-extraction, QPE succeeds on the large majority of seeds.
-    // 12/20 = 60% is a conservative threshold; the buggy path averages well below this.
-    EXPECT_GE(valid_count, 12)
+    EXPECT_GE(valid_count, 18)
         << "find_order(2, 15) only returned a valid order on "
         << valid_count << "/" << n_seeds
-        << " seeds; suggests bit-extraction or phase logic is wrong.";
+        << " seeds; iterate-counts strategy should saturate near 100%.";
 }
 
+// a=2, N=21 (order r=6, n_eval=11). r=6 doesn't divide 2^11=2048, so QPE
+// peaks at s/r for s ∈ {0..5} include two exact-m peaks (s=0 → m=0; s=3 →
+// m=1024) and four sinc-spread peaks. Useful s (gcd(s,6)=1) are s ∈ {1, 5},
+// both spread.
+//
+// Pre-R.1.10.5 the single-most-frequent-bitstring strategy in find_order was
+// dominated by the exact peaks (~21 shots concentrated on s=0 or s=3, vs
+// ~2-3 per bitstring for the spread useful peaks), so only ~5% of seeds
+// returned a valid r. The R.1.10.5 iterate-counts strategy walks all observed
+// bitstrings in descending frequency, so it finds m ≈ 341 or m ≈ 1707
+// (useful) virtually every seed. Per-shot P(useful m) ≈ 0.28; over 128 shots
+// the probability of at least one usable shot in the count distribution is
+// effectively 1. Threshold 18/20 = 90% matches the N=15 case.
 TEST(ShorTest, FindOrderA2N21HighSuccessRate) {
-    // ord_21(2) = 6. r=6 is not a power of two, so the buggy bit-extraction
-    // (which biases m towards values with power-of-two denominators in their
-    // continued-fraction convergents) cannot pass this case by coincidence.
     int n_target = static_cast<int>(std::ceil(std::log2(22.0)));
     int n_eval = 2 * n_target + 1;
 
@@ -349,10 +365,10 @@ TEST(ShorTest, FindOrderA2N21HighSuccessRate) {
             if (check == 1) ++valid_count;
         }
     }
-    EXPECT_GE(valid_count, 10)
+    EXPECT_GE(valid_count, 18)
         << "find_order(2, 21) only returned a valid order on "
         << valid_count << "/" << n_seeds
-        << " seeds; suggests bit-extraction or phase logic is wrong.";
+        << " seeds; iterate-counts strategy should saturate near 100%.";
 }
 
 // =============================================================================

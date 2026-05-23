@@ -66,10 +66,14 @@ public:
         bool after_gate = true;
     };
 
+    // Attach a Kraus channel to a gate. after_gate=true (default) applies the
+    // channel after the gate; pass false to apply it before. Both orderings are
+    // honoured by the DensityMatrixSimulator.
     void add_quantum_error(
         const KrausChannel& error,
         const std::string& gate_name,
-        const std::vector<int>& qubits = {}
+        const std::vector<int>& qubits = {},
+        bool after_gate = true
     );
 
     void add_readout_error(
@@ -79,7 +83,8 @@ public:
 
     void add_all_qubit_quantum_error(
         const KrausChannel& error,
-        const std::string& gate_name
+        const std::string& gate_name,
+        bool after_gate = true
     );
 
     std::vector<GateError> errors_for_gate(

@@ -36,6 +36,8 @@ set(LINDBLAD_TEST_SOURCES
     test_qasm_parser.cpp
     # R.1.8.1 test suite — Shor's factoring algorithm
     test_shor.cpp
+    # Diagnostic suite — pins down gate-based QFT/IQFT convention (R.1.10.5 WIP)
+    test_qft_convention.cpp
     # R.1.9.1 test suite — QASM3 Parser tests
     test_qasm3_parser.cpp
     # R.1.10.1 test suite — Circuit visualiser

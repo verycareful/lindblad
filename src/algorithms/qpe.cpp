@@ -80,8 +80,11 @@ QuantumCircuit QPE::build_circuit(
     }
 
     // Inverse QFT on the evaluation register.
-    // Delegated to QFT::build_inverse_circuit — canonical IQFT implementation.
-    // do_swaps=true: output bit-reversal included so estimate_phase reads MSB-first.
+    // Delegated to QFT::build_inverse_circuit — canonical LSB-LSB IQFT.
+    // do_swaps=true is required: the controlled-U^(2^k) sequence above prepares
+    // the eval register in qubit-0=LSB Fourier convention (qubit k carries the
+    // 2^k weight of the phase), which the LSB-LSB IQFT inverts cleanly. See
+    // CLAUDE.md "Project Conventions".
     auto iqft = QFT::build_inverse_circuit(num_eval_qubits, /*do_swaps=*/true);
     for (const auto& inst : iqft.instructions)
         qc.instructions.push_back(inst);
@@ -101,6 +104,13 @@ double QPE::estimate_phase(
     StatevectorSimulator sim;
     auto result = sim.run(circuit, shots, seed);
 
+    // Standard QPE assumes the target register holds a single eigenstate of
+    // the unitary, so the QPE Fourier state has a single peak and the most-
+    // frequent bitstring is the best estimate of m. Callers passing a
+    // superposition of eigenstates (such as Shor's |1⟩ = (1/√r) Σ |u_s⟩) get
+    // a distribution over s that biases the most-frequent bitstring toward
+    // exact-m peaks — those callers should iterate over result.counts in
+    // descending frequency, as Shor::find_order does.
     std::string best_bits;
     int max_count = 0;
     for (const auto& [bits, count] : result.counts) {
@@ -110,14 +120,22 @@ double QPE::estimate_phase(
         }
     }
 
-    int measured = 0;
-    for (int i = 0; i < num_eval_qubits; ++i) {
-        if (best_bits[i] == '1') {
-            measured |= (1 << (num_eval_qubits - 1 - i));
-        }
+    // Extract m from eval register in project LSB-at-qubit-0 convention.
+    //
+    // measure_all() maps qubit q → clbit q for all (num_eval_qubits +
+    // unitary.n_qubits) qubits. The statevector simulator builds the bitstring
+    // with clbit 0 at the rightmost character, so qubit q lives at position
+    // (total - 1 - q). The eval register occupies qubits [0, num_eval_qubits),
+    // i.e. the rightmost num_eval_qubits characters of best_bits. After the
+    // LSB-LSB IQFT, eval qubit q carries bit q of the QPE integer m.
+    const int total = static_cast<int>(best_bits.size());
+    uint64_t measured = 0;
+    for (int q = 0; q < num_eval_qubits && q < total; ++q) {
+        if (best_bits[total - 1 - q] == '1') measured |= (1ULL << q);
     }
 
-    return static_cast<double>(measured) / (1 << num_eval_qubits);
+    return static_cast<double>(measured) /
+           static_cast<double>(1ULL << num_eval_qubits);
 }
 
 // =============================================================================

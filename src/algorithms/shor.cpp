@@ -190,45 +190,51 @@ uint64_t Shor::find_order(
     circuit.measure_all();
 
     auto br = backend.run(circuit, 128, seed);
+    if (br.counts.empty()) return 0;
 
-    // Find the most-frequent bitstring in the eval register (first n_eval bits).
-    std::string best;
-    int best_count = 0;
-    for (const auto& [bits, count] : br.counts) {
-        if (count > best_count) {
-            best_count = count;
-            best = bits;
+    // Iterate observed bitstrings in descending frequency. Return on the first
+    // shot that yields a valid r (mod_pow(a, r, N) == 1 for some convergent
+    // denominator).
+    //
+    // Why not pick a single most-frequent bitstring: when r divides 2^n_eval
+    // (e.g. r=4 for N=15) every QPE peak lands on an exact m and the most-
+    // frequent bitstring is a uniform pick across the r peaks, half of which
+    // yield valid orders. When r does NOT divide 2^n_eval (e.g. r=6 for N=21),
+    // the s=0 and s=r/2 peaks land on exact m (m=0, m=2^n_eval/2) and absorb
+    // their whole ~shots/r probability mass into a single (m, target)
+    // bitstring, while the spread-distributed useful peaks (s with gcd(s,r)=1)
+    // dilute across many bitstrings. The "single most-frequent" strategy then
+    // almost always picks an exact-but-useless peak. Iterating across counts
+    // recovers ~100% success — the useful peaks are well represented in the
+    // distribution, just not as the top bin.
+    //
+    // measure_all() maps qubit q → clbit q for all n_eval + n_target qubits.
+    // The statevector simulator builds the bitstring with clbit 0 at the
+    // rightmost character, so bits[total - 1 - q] is qubit q's outcome. The
+    // eval register occupies qubits [0, n_eval); under the project LSB-at-
+    // qubit-0 convention (see CLAUDE.md), eval qubit q contributes bit q of
+    // the QPE integer m.
+    std::vector<std::pair<std::string, int>> sorted_counts(
+        br.counts.begin(), br.counts.end());
+    std::sort(sorted_counts.begin(), sorted_counts.end(),
+        [](const auto& a, const auto& b) { return a.second > b.second; });
+
+    for (const auto& [bits, count] : sorted_counts) {
+        const int total = static_cast<int>(bits.size());
+        // 1ULL prevents int overflow when n_eval > 30.
+        uint64_t m = 0;
+        for (int q = 0; q < n_eval && q < total; ++q) {
+            if (bits[total - 1 - q] == '1') m |= (1ULL << q);
         }
-    }
-    if (best.empty()) return 0;
+        if (m == 0) continue;
 
-    // Convert eval-register bits to integer m.
-    //
-    // measure_all() maps qubit q -> clbit q for all n_eval + n_target qubits.
-    // StatevectorSimulator builds the bitstring such that clbit 0 is the
-    // RIGHTMOST character (LSB) and the highest clbit is the LEFTMOST
-    // character (MSB). Therefore best[total - 1 - q] is the measurement
-    // outcome of qubit q.
-    //
-    // The eval register occupies qubits [0, n_eval), so eval qubit q maps
-    // to bit q of the QPE integer m.
-    //
-    // 1ULL prevents int overflow when n_eval > 30 (n_eval = 2*n_target+1 grows with N).
-    const int total = static_cast<int>(best.size());
-    uint64_t m = 0;
-    for (int q = 0; q < n_eval && q < total; ++q) {
-        if (best[total - 1 - q] == '1') m |= (1ULL << q);
-    }
-    if (m == 0) return 0;
-
-    // Phase = m / 2^n_eval ≈ s/r. Find r via continued fractions.
-    // 1ULL prevents int overflow when n_eval > 30.
-    double phase = static_cast<double>(m) /
-                   static_cast<double>(1ULL << n_eval);
-    auto convs = cf_convergents(phase, N);
-    for (const auto& [s, r] : convs) {
-        if (r == 0 || r >= N) continue;
-        if (mod_pow(a, r, N) == 1) return r;
+        const double phase = static_cast<double>(m) /
+                             static_cast<double>(1ULL << n_eval);
+        auto convs = cf_convergents(phase, N);
+        for (const auto& [s, r] : convs) {
+            if (r == 0 || r >= N) continue;
+            if (mod_pow(a, r, N) == 1) return r;
+        }
     }
     return 0;
 }

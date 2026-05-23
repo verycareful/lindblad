@@ -24,14 +24,13 @@ std::array<std::array<double, 2>, 2> ReadoutError::assignment_matrix() const {
 void NoiseModel::add_quantum_error(
     const KrausChannel& error,
     const std::string& gate_name,
-    const std::vector<int>& qubits
+    const std::vector<int>& qubits,
+    bool after_gate
 ) {
     GateError ge;
     ge.channel = error;
     ge.qubits = qubits;
-    // before_gate application is not yet implemented in DensityMatrixSimulator;
-    // all errors are applied after the gate.
-    ge.after_gate = true;
+    ge.after_gate = after_gate;
     basis_gate_errors[gate_name].push_back(ge);
 
     if (std::find(noisy_gates.begin(), noisy_gates.end(), gate_name) == noisy_gates.end()) {
@@ -45,9 +44,10 @@ void NoiseModel::add_readout_error(const ReadoutError& error, int qubit) {
 
 void NoiseModel::add_all_qubit_quantum_error(
     const KrausChannel& error,
-    const std::string& gate_name
+    const std::string& gate_name,
+    bool after_gate
 ) {
-    add_quantum_error(error, gate_name, {});
+    add_quantum_error(error, gate_name, {}, after_gate);
 }
 
 std::vector<NoiseModel::GateError> NoiseModel::errors_for_gate(

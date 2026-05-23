@@ -23,18 +23,25 @@ static bool is_clifford_compatible(int n, const QFT::Options& opts) {
 // -----------------------------------------------------------------------------
 // build_circuit — core circuit builder.
 //
-// Forward QFT gate sequence (no_swaps convention: qubit 0 = MSB after transform):
-//   for j = 0 to n-1:
-//     H(j)
-//     for k = j+1 to n-1:
-//       angle = π / 2^(k-j)
-//       if approximation_degree == 0 or angle >= π/2^m:
-//         CP(angle, k, j)
-//   if do_swaps:
-//     SWAP(0, n-1), SWAP(1, n-2), ...
+// Implements the QFT in the project-wide LSB-at-qubit-0 (little-endian)
+// convention (see CLAUDE.md "Project Conventions"):
+//   |x⟩ at amp[x] → (1/√N) Σ_y exp(2πi xy/N) |y⟩ at amp[y]
 //
-// Inverse QFT:
-//   Bit-reversal SWAPs first, then reverse the H+CP sequence with negated angles.
+// Implementation detail. The textbook H+CP gate sequence (qc.h(j),
+// qc.cp(π/2^(k-j), k, j) for k>j) implements a QFT that takes input in
+// qubit-0=MSB convention and produces output in qubit-0=LSB convention. To
+// expose a uniformly little-endian interface, do_swaps=true wraps the H+CP
+// sequence with bit-reversal SWAPs that translate at the input side of the
+// forward QFT (and the output side of the inverse QFT):
+//
+//   Forward QFT-with-swaps: SWAPs → H+CP        (LSB input → MSB internal → LSB output)
+//   Inverse QFT-with-swaps: reverse-H+CP → SWAPs (LSB input → MSB internal → LSB output)
+//
+// do_swaps=false exposes the raw H+CP sequence and is provided for users who
+// need to compose with a pre-bit-reversed register. Algorithms that prepare
+// QPE-style Fourier states (controlled-U^(2^k) on qubit k, which naturally
+// yields amp[K] = exp(2πi K φ)/√N with K in LSB convention) MUST use
+// do_swaps=true so the IQFT operates in matching LSB convention.
 // -----------------------------------------------------------------------------
 QuantumCircuit QFT::build_circuit(int n, const Options& opts) {
     if (n <= 0)
@@ -53,6 +60,12 @@ QuantumCircuit QFT::build_circuit(int n, const Options& opts) {
 
     if (!opts.inverse) {
         // ---- Forward QFT ----
+        // LSB convention: pre-swap converts qubit-0=LSB input → qubit-0=MSB
+        // internal representation expected by the textbook H+CP sequence.
+        if (opts.do_swaps) {
+            for (int i = 0; i < n / 2; ++i)
+                qc.swap(i, n - 1 - i);
+        }
         for (int j = 0; j < n; ++j) {
             qc.h(j);
             for (int k = j + 1; k < n; ++k) {
@@ -61,17 +74,11 @@ QuantumCircuit QFT::build_circuit(int n, const Options& opts) {
                     qc.cp(angle, k, j);
             }
         }
-        if (opts.do_swaps) {
-            for (int i = 0; i < n / 2; ++i)
-                qc.swap(i, n - 1 - i);
-        }
     } else {
         // ---- Inverse QFT ----
-        // Mirror of forward QFT: SWAPs first, then reverse H+CP sequence.
-        if (opts.do_swaps) {
-            for (int i = 0; i < n / 2; ++i)
-                qc.swap(i, n - 1 - i);
-        }
+        // Reverse-H+CP sequence first, then post-swap converts the
+        // qubit-0=MSB internal output → qubit-0=LSB output, maintaining the
+        // LSB convention end-to-end.
         for (int j = n - 1; j >= 0; --j) {
             for (int k = n - 1; k > j; --k) {
                 double angle = -pi / static_cast<double>(1 << (k - j));
@@ -79,6 +86,10 @@ QuantumCircuit QFT::build_circuit(int n, const Options& opts) {
                     qc.cp(angle, k, j);
             }
             qc.h(j);
+        }
+        if (opts.do_swaps) {
+            for (int i = 0; i < n / 2; ++i)
+                qc.swap(i, n - 1 - i);
         }
     }
 

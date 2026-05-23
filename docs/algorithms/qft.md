@@ -12,11 +12,17 @@ In Lindblad, `QFT` is provided as a standalone class capable of generating exact
 
 The standard $n$-qubit exact QFT is constructed from Hadamard (`H`) and controlled-phase (`CP`) gates.
 
-1. For each qubit $j$ from $0$ to $n-1$:
+Lindblad's QFT exposes the project-wide LSB-at-qubit-0 (little-endian) convention end-to-end: with `do_swaps=true` (the default), `amp[x] = 1` input is mapped to `amp[y] = exp(2πi xy/N)/√N` output, where both x and y are encoded as integers with bit i in the state of qubit i. See [Architecture.md "Qubit Ordering Convention"](../Architecture.md) for the project convention.
+
+Gate sequence:
+
+1. With `do_swaps=true`: pre-apply bit-reversal SWAPs `SWAP(0, n-1), SWAP(1, n-2), ...` to convert the LSB input into the qubit-0=MSB form the textbook H+CP sequence expects internally.
+2. For each qubit $j$ from $0$ to $n-1$:
    - Apply $H(j)$
    - For each qubit $k > j$:
      - Apply $CP(\pi / 2^{k-j})$ controlled by $k$ targeting $j$
-2. Optional: apply $\lfloor n/2 \rfloor$ SWAP gates to reverse the final bit ordering.
+
+The inverse circuit applies the reverse H+CP sequence (with negated CP angles) first, then post-SWAPs to restore the LSB output convention.
 
 ```text
        ┌───┐ ┌──────────┐ ┌──────────┐
@@ -231,7 +237,7 @@ The `QFT::apply()` and `QFT::run()` methods propagate any exception thrown by `b
 
 ## Common Pitfalls
 
-- **Bit reversal (do_swaps)**: The standard QFT algorithm naturally outputs qubits in reversed order (MSB vs LSB). The framework appends SWAP gates by default to fix this. If you are handling wire-reversal manually (e.g. as a subroutine caller), set `Options::do_swaps = false`.
+- **Bit reversal (do_swaps)**: The textbook H+CP sequence takes qubit-0=MSB input and produces qubit-0=LSB output. To expose a uniformly little-endian QFT/IQFT (matching the project convention and Qiskit), `do_swaps=true` adds bit-reversal SWAPs at the input side of the forward QFT and the output side of the inverse QFT. Set `Options::do_swaps = false` only if you are composing with a register that is already in the qubit-0=MSB convention.
 - **Backend Selection**: Don't use the Clifford backend for $n \ge 3$ exact QFT. The `QFT::Result` struct contains a `clifford_compatible` boolean you can check before dispatching to custom backends.
 - **shots = 0 vs shots > 0**: With `shots = 0`, no `measure_all()` is appended; the backend operates on the state without sampling. This is the correct mode for statevector inspection and for composing QFT as a subroutine in a larger measurement workflow.
 
