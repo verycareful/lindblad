@@ -4,6 +4,66 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.10.7] - 2026-05-24
+
+### Fixed
+
+- **`Estimator::run_single` now performs real Pauli-basis shot sampling.** Pre-fix,
+  `options.shots > 0` only toggled the simulator backend from SV to DM — the
+  returned expectation was still read off the final state analytically with
+  zero variance. VQE/QAOA users relying on finite-shot noise to model real
+  hardware silently got exact estimates. `run_single` now decomposes the
+  observable into Pauli terms, rotates each non-identity term into the Z
+  measurement basis, samples `shots` measurements, and accumulates a
+  parity-weighted estimate. Three modes: `shots == 0` (exact, ideal or DM),
+  `shots > 0` ideal (SV sampling), `shots > 0` with noise (DM sampling).
+  Variance scales as `1/√shots` per Pauli term. (Reported by [@zParik](https://github.com/zParik) in #2.)
+- **`QuantumCircuit::to_qasm2()` documents 1-qubit UNITARY global phase loss;
+  `to_qasm3()` preserves it via `gphase`.** OpenQASM 2.0 has no representation
+  for global phase, so the ZYZ lowering at `circuit.cpp:1095` had been
+  silently dropping the `alpha = arg(U[0,0])` factor — invisible for the
+  gate in isolation, but a real bug when the unitary is later wrapped under
+  a control. `to_qasm2()` now emits an explicit `// global phase: <alpha>`
+  comment when alpha is non-zero so the loss is documented and discoverable.
+  `to_qasm3()` gains a proper 1-qubit-UNITARY path that emits `gphase(alpha)`
+  before `u(theta, phi, lambda)` — gphase commutes through QASM 3 `ctrl @`
+  modifiers, so the round-trip is lossless on the emission side. (Parser-side
+  `gphase` support in `from_qasm3()` deferred; current emission produces
+  spec-correct output.) (Reported by [@zParik](https://github.com/zParik) in #4.)
+- **`MPSSimulator` applies 1q and 2q UNITARYs via direct tensor contraction.**
+  Pre-fix every UNITARY routed through `to_statevector()` regardless of size,
+  which threw `"Too many qubits for full statevector conversion"` from a site
+  far from the offending instruction whenever `n_qubits > MPS_SV_MAX_QUBITS`
+  (25). Wide MPS circuits with any user-supplied unitary were unusable.
+  `mps_apply_instruction` now dispatches 1-qubit UNITARYs to
+  `MPSState::apply_single_qubit_gate` (contracts the 2x2 matrix into one
+  site tensor, no SVD) and 2-qubit UNITARYs to `apply_two_qubit_gate`
+  (contracts into two-site tensor + truncated SVD; non-adjacent qubit pairs
+  handled via the existing swap network). 3+ qubit UNITARYs keep the
+  full-statevector fallback bounded by `MPS_SV_MAX_QUBITS = 25`; beyond
+  that, a clear error names the UNITARY instruction and qubit count.
+  The 2q dispatch transposes bit 0 ↔ bit 1 of the matrix row/column
+  indices to bridge `apply_unitary`'s LSB-at-first-arg convention with
+  `apply_two_qubit_gate`'s MSB-at-first-arg convention (matching the
+  existing internal MPS 2q-gate convention). (Reported by [@zParik](https://github.com/zParik) in #5.)
+- **`QuantumCircuit::from_qasm2()` throws on unknown gates instead of silently
+  skipping.** A legacy "skip on miss" concession for older Qiskit exports was
+  eating any gate name the parser didn't recognise (no built-in match, no
+  user `gate` definition in scope), producing silently truncated circuits
+  whose round-trip mismatches were getting attributed to other components.
+  Violates project golden rule #1 (no silent failures). Now throws
+  `std::runtime_error("QASM2Parser: unknown gate '<name>' …")` with the
+  offending name in the message.
+
+### Added
+
+- `tests/test_bug_regression.cpp` — twelve new regression tests covering all
+  four R.1.10.7 fixes: B10 (global-phase comment + gphase), B11 (QASM2
+  unknown-gate throws and custom-gate-def still works), B12 (MPS UNITARY at
+  n=28: 1q, 2q adjacent, 2q non-adjacent, 3q clearer error), B13 (Estimator
+  shot noise: variance across seeds, shots=0 stays exact, convergence to
+  exact at high shot count).
+
 ## [R.1.10.6] - 2026-05-24
 
 ### Added
@@ -12,7 +72,7 @@ The format is based on Keep a Changelog and this project uses semantic versionin
   PR process (issue-first for new features, direct PRs for bug fixes), C++23 style
   conventions, bug report template, and a required AI-verification notice (the codebase
   is ~40,000 lines; AI-generated contributions must be fully verified before submission).
-- **`CONTRIBUTORS`** -- contributor acknowledgment file. Parikshieth Harish (@zParik)
+- **`CONTRIBUTORS`** -- contributor acknowledgment file. Parikshieth Harish ([@zParik](https://github.com/zParik))
   acknowledged for the `find_order` bit-extraction fix (PR #7, landed in R.1.10.5).
 
 ### Changed
@@ -45,7 +105,7 @@ The format is based on Keep a Changelog and this project uses semantic versionin
   N=21, r=6). `find_order` now iterates observed bitstrings in descending frequency
   and returns the first valid `r`, recovering ~100% success rate. No change to
   shots count or circuit. (Initial slice-fix and N=15/N=21 regression tests
-  contributed by @zParik in #7.)
+  contributed by [@zParik](https://github.com/zParik) in #7.)
 - **`QPE::estimate_phase` bit-extraction fixed.** Pre-fix the routine read the
   leftmost `num_eval_qubits` characters of the measurement bitstring (the target
   register and upper eval qubits) with MSB-first endianness, masked because all
@@ -58,14 +118,14 @@ The format is based on Keep a Changelog and this project uses semantic versionin
   capability that has existed for several releases. Both `add_quantum_error` and
   `add_all_qubit_quantum_error` now take an `after_gate` parameter (default
   `true`); the stale "before_gate not yet implemented" comment was removed.
-  (Reported by @zParik in #1.)
+  (Reported by [@zParik](https://github.com/zParik) in #1.)
 - **StatevectorSimulator thread-local RNG independence under parallel batches.**
   The RNG was reseeded with the raw caller `seed` on every `run()`, so OpenMP-
   dispatched batches (`Estimator::run_batch` and similar) had every thread reseeded
   to the same Mersenne Twister state, defeating shot independence. The seed is now
   mixed with `omp_get_thread_num()` via `std::seed_seq`; single-threaded
   reproducibility is preserved (tid is 0 outside any parallel region).
-  (Reported by @zParik in #3.)
+  (Reported by [@zParik](https://github.com/zParik) in #3.)
 
 ### Added
 

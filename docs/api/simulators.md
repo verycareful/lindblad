@@ -442,7 +442,25 @@ class MPSState {
 
 **Non-adjacent gates**: Apply SWAPs to move gates adjacent, then apply gate, then SWAP back
 
-**Arbitrary `UNITARY` gates**: Handled via statevector fallback for all qubit counts. The MPS is converted to a full statevector via `to_statevector()`, `gates::apply_unitary` applies the matrix, and `mps_from_sv` reconstructs the MPS via sequential SVD. The bit-reversal between the MPS site-index convention (qubit 0 = MSB) and the statevector convention (qubit 0 = LSB) is handled automatically.
+**Arbitrary `UNITARY` gates** (R.1.10.7 — direct tensor dispatch for 1q and 2q):
+
+- **1-qubit UNITARY**: contracts the 2x2 matrix directly into one site tensor
+  via `MPSState::apply_single_qubit_gate`. No SVD, no full statevector
+  conversion. Memory cost is bounded by the bond dimension and independent
+  of `n_qubits`.
+- **2-qubit UNITARY**: contracts the 4x4 matrix into the two-site tensor via
+  `apply_two_qubit_gate`, followed by a truncated SVD bounded by `max_bond_dim`
+  and `cutoff`. Non-adjacent qubit pairs are handled by the existing swap
+  network. The dispatch swaps bits 0 and 1 of the matrix row/column indices to
+  bridge `apply_unitary`'s LSB-at-first-arg convention with
+  `apply_two_qubit_gate`'s MSB-at-first-arg convention.
+- **3+ qubit UNITARY**: falls back to the statevector path —
+  `to_statevector()` → `gates::apply_unitary` → `mps_from_sv`. The fallback
+  is bounded by `MPS_SV_MAX_QUBITS` (= 25); beyond that the simulator throws
+  with a clear error naming the offending UNITARY and qubit count, rather
+  than the generic "Too many qubits for full statevector conversion" surfaced
+  from inside `to_statevector()`. Decompose >2q unitaries into 1q/2q factors
+  for wider registers.
 
 ### Measurement
 

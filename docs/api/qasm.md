@@ -47,8 +47,11 @@ static QuantumCircuit from_qasm3(const std::string& qasm);
   multi-qubit set supported by the circuit (`ccx`, `cswap`, `rxx`, `ryy`,
   `rzz`, `iswap`, etc.)
 - Throws `std::runtime_error` when no `qreg` is found
-- Silently skips unknown gates (a legacy concession kept for compatibility
-  with older Qiskit exports)
+- Throws `std::runtime_error("QASM2Parser: unknown gate '<name>' …")` on any
+  gate call whose name is not a built-in and not defined by an in-scope
+  `gate` block. (R.1.10.7 removed a legacy "silently skip on miss" concession
+  — silent drops produced round-trip mismatches attributed to other
+  components. Custom `gate` definitions are still respected.)
 
 ## QASM 3.0 Round-Trip
 
@@ -280,8 +283,9 @@ QuantumCircuit qc = QuantumCircuit::from_qasm3(qasm);
   `barrier`. If you intend to compare circuits after a round trip, expect
   any peephole-cancelled pairs (e.g. `h; h`) to be absent in the parsed
   circuit
-- QASM 2 silently skips unknown gates; QASM 3 throws. This is intentional —
-  the QASM 2 behavior is a backward-compatibility concession
+- Both QASM 2 and QASM 3 parsers throw `std::runtime_error` on unknown gate
+  calls (no built-in match and no in-scope `gate` definition). The legacy
+  QASM 2 silent-skip behaviour was removed in R.1.10.7.
 
 ## Related Source Files
 

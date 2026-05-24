@@ -64,13 +64,16 @@ Attaches noise channels to gate names and qubit patterns.
 
 ### Gate errors
 
-- `add_quantum_error(error, gate_name, qubits)`
+- `add_quantum_error(error, gate_name, qubits = {}, after_gate = true)`
   - Adds a `GateError` for the gate name
   - `qubits` empty means all-qubit application
-  - `GateError.after_gate` defaults to `true`; set it to `false` on the returned/stored
-    `GateError` to inject the Kraus channel **before** the gate unitary instead.
-    Both orderings are applied correctly by `DensityMatrixSimulator`.
-- `add_all_qubit_quantum_error(error, gate_name)` is a convenience wrapper
+  - `after_gate` defaults to `true` (Kraus channel applied **after** the gate
+    unitary). Pass `false` to apply it **before**. Both orderings are honoured
+    by `DensityMatrixSimulator`. (R.1.10.7 fixed a silent override that forced
+    `after_gate = true` regardless of caller intent.)
+- `add_all_qubit_quantum_error(error, gate_name, after_gate = true)` is a
+  convenience wrapper forwarding to `add_quantum_error` with an empty qubit
+  list. Same `after_gate` semantics.
 - `errors_for_gate(gate_name, qubits)`
   - Returns errors with empty `qubits` or an exact qubit list match
   - The qubit list match is order-sensitive

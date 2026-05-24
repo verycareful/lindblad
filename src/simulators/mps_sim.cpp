@@ -876,10 +876,65 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
         inst.type == GT::PARAM_U)
         throw std::runtime_error("Unresolved parameterised gate in MPS simulation");
 
-    // UNITARY gates store the matrix directly in inst.matrix; use the SV
-    // fallback for all qubit counts rather than going through gate2x2/gate4x4
-    // (which have no UNITARY case and would silently apply identity).
+    // UNITARY gates store the matrix directly in inst.matrix.
+    //
+    // 1-qubit and 2-qubit UNITARYs route to MPSState's direct
+    // apply_single_qubit_gate / apply_two_qubit_gate, which contract the
+    // matrix into the affected site tensors (with truncated SVD for the
+    // 2-qubit case, and a SWAP network for non-adjacent qubit pairs). Memory
+    // cost stays bounded by the bond dimension and is independent of
+    // n_qubits — so MPS circuits with arbitrary register widths can now
+    // contain user-supplied 1q/2q unitaries.
+    //
+    // 3+ qubit UNITARYs fall back to the full statevector path. That path
+    // is bounded by MPS_SV_MAX_QUBITS (= 25) inside to_statevector(); for
+    // wider circuits with a multi-qubit UNITARY we raise a clearer error
+    // naming the gate and qubit count rather than letting the generic
+    // "Too many qubits for full statevector conversion" message surface
+    // from a call site far from the offending instruction.
     if (inst.type == GT::UNITARY) {
+        if (inst.qubits.size() == 1) {
+            if (inst.matrix.size() != 4)
+                throw std::runtime_error("MPS UNITARY: 1-qubit matrix must have 4 entries");
+            std::array<Complex128, 4> U{
+                inst.matrix[0], inst.matrix[1],
+                inst.matrix[2], inst.matrix[3]
+            };
+            mps.apply_single_qubit_gate(U, inst.qubits[0]);
+            return;
+        }
+        if (inst.qubits.size() == 2) {
+            if (inst.matrix.size() != 16)
+                throw std::runtime_error("MPS UNITARY: 2-qubit matrix must have 16 entries");
+            // Convention bridge. apply_unitary indexes its matrix with
+            // bit 0 (LSB) = targets[0] state, bit 1 = targets[1] state.
+            // MPSState::apply_two_qubit_gate indexes its 4x4 with
+            // bit 1 (MSB) = first qubit arg, bit 0 = second qubit arg
+            // (matching the SV/DM 2q-gate convention used elsewhere in MPS).
+            // Swap bits 0 and 1 of both row and column to translate.
+            auto swap01 = [](int idx) {
+                return ((idx & 1) << 1) | ((idx >> 1) & 1);
+            };
+            std::array<Complex128, 16> U{};
+            for (int r = 0; r < 4; ++r) {
+                for (int c = 0; c < 4; ++c) {
+                    U[r * 4 + c] = inst.matrix[swap01(r) * 4 + swap01(c)];
+                }
+            }
+            mps.apply_two_qubit_gate(U, inst.qubits[0], inst.qubits[1]);
+            return;
+        }
+        if (mps.n_qubits > MPS_SV_MAX_QUBITS) {
+            throw std::runtime_error(
+                "MPS UNITARY: cannot apply a " +
+                std::to_string(inst.qubits.size()) +
+                "-qubit UNITARY on an MPS state with n_qubits=" +
+                std::to_string(mps.n_qubits) + " (limit " +
+                std::to_string(MPS_SV_MAX_QUBITS) +
+                " for the full-statevector fallback path). Decompose the "
+                "unitary into 1- and 2-qubit factors and apply them via the "
+                "direct MPS tensor-contraction path.");
+        }
         auto sv = mps.to_statevector();
         gates::apply_unitary(sv, inst.qubits, inst.matrix);
         mps = mps_from_sv(sv, mps.n_qubits, mps.max_bond_dim, mps.cutoff);

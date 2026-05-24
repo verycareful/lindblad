@@ -10,19 +10,29 @@ This page documents the public `lindblad::Estimator` primitive.
 ## Class Overview
 
 `Estimator` computes expectation values of a `SparsePauliOp` against a circuit.
-It supports two execution paths — exact statevector (default, ideal circuits) and
-density-matrix simulation (noisy circuits or shot-based sampling) — selected
-automatically from `Options`. It also supports a cached transpilation path for
-repeated parameter sweeps.
+It supports three execution modes — exact statevector, exact density-matrix
+(for noisy circuits), and per-Pauli-term shot sampling — selected automatically
+from `Options`. It also supports a cached transpilation path for repeated
+parameter sweeps.
 
 ## `Options`
 
 Fields and defaults:
 
-- `shots = 0`: when > 0, routes execution through `DensityMatrixSimulator` with this many shots
-- `seed = 0`: RNG seed forwarded to `DensityMatrixSimulator::run` when the noisy path is active
-- `noise_model`: when non-ideal (i.e. `!noise_model.is_ideal()`), routes execution through `DensityMatrixSimulator`; when ideal and `shots == 0`, the exact statevector path is used
-- `optimization_level = 0`: enables transpilation and caching when > 0
+- `shots = 0`: shot budget **per non-identity Pauli term** in the observable.
+  - `shots == 0`: exact analytic expectation (zero variance, reproducible).
+  - `shots  > 0`: real shot-noise sampling — each non-identity term is rotated
+    into the Z measurement basis and measured `shots` times. Variance scales
+    as `1/√shots` per term.
+  - **Changed in R.1.10.7:** `shots > 0` now performs real sampling. Prior
+    releases used `shots` as a hidden DM-backend toggle and returned exact
+    values with zero variance regardless of `shots`.
+- `seed = 0`: RNG seed forwarded to the simulator. Each Pauli term gets a
+  decorrelated derived seed so the shot streams across terms are independent.
+- `noise_model`: when non-ideal (`!is_ideal()`), the sampling/exact path uses
+  `DensityMatrixSimulator` so Kraus channels are applied. Otherwise
+  `StatevectorSimulator` is used.
+- `optimization_level = 0`: enables transpilation and caching when > 0.
 
 ## `clear_cache`
 
@@ -68,12 +78,21 @@ Behavior (verified against the implementation):
 - Binds parameters by name using the transpiled circuit parameter names when
   available, otherwise the original circuit parameter names
 - Binds up to `min(parameters.size(), names.size())` parameters
-- **Noisy / shot-based path** (when `!options.noise_model.is_ideal()` or `options.shots > 0`):
-  routes through `DensityMatrixSimulator`; uses `options.shots` shots (defaults to 8192 if
-  `shots == 0` but noise model is non-ideal); returns
-  `dm_result.final_state.expectation_value_sparse(observable)`
-- **Exact path** (when noise model is ideal and `shots == 0`): runs `StatevectorSimulator::eval_expectation(circuit, observable)` which evaluates the observable in-place, avoiding a $O(2^n)$ allocation for the final state vector.
-- Throws `std::runtime_error` if simulation fails on either path
+- Three execution modes, selected from `Options`:
+  - **`shots > 0` — real sampling**: decomposes the observable into Pauli terms;
+    for each non-identity term, rotates the prepared circuit into that term's
+    Z measurement basis (H for X, S†H for Y, identity for Z), runs `options.shots`
+    measurements through `StatevectorSimulator` (or `DensityMatrixSimulator` when
+    the noise model is non-ideal), and accumulates a parity-weighted estimate.
+    Identity terms contribute their coefficient analytically (no sampling).
+    Variance scales as `1/√shots` per term.
+  - **`shots == 0`, noise non-ideal**: runs `DensityMatrixSimulator` with zero
+    shots and reads the exact expectation off the final mixed state via
+    `expectation_value_sparse(observable)`.
+  - **`shots == 0`, ideal**: runs `StatevectorSimulator::eval_expectation(circuit, observable)`
+    which evaluates the observable in-place, avoiding a $O(2^n)$ allocation for
+    the final state vector.
+- Throws `std::runtime_error` if simulation fails on any path
 
 Preconditions:
 

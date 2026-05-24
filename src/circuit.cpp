@@ -1092,14 +1092,27 @@ std::string QuantumCircuit::to_qasm2() const {
         }
 
         // 1-qubit UNITARY: Euler-angle decomposition → U(theta, phi, lambda).
+        //
+        // OpenQASM 2.0 has no representation for a global phase (no `gphase`
+        // instruction). The `u(theta, phi, lambda)` gate covers only SU(2),
+        // so any U(2) input with a non-trivial `alpha = arg(U[0,0]) -
+        // arg(det(U))/2` is lowered lossily. The dropped phase is unobservable
+        // when this gate is used standalone, but becomes a relative phase
+        // between control branches if the result is later wrapped under a
+        // control (e.g. via re-parsing and constructing a controlled-U).
+        //
+        // When alpha is non-zero we emit a `// global phase: <alpha>` comment
+        // so the loss is documented and discoverable by readers / round-trip
+        // diff tools. For lossless round-tripping use `to_qasm3()`, which
+        // emits `gphase(alpha)` (preserved through QASM 3 `ctrl @` modifiers).
         if (inst.type == Instruction::GateType::UNITARY && inst.qubits.size() == 1) {
             const auto& m = inst.matrix;
             double a_mag = std::sqrt(m[0].real*m[0].real + m[0].imag*m[0].imag);
             double b_mag = std::sqrt(m[1].real*m[1].real + m[1].imag*m[1].imag);
             double theta = 2.0 * std::atan2(b_mag, a_mag);
-            double phi = 0.0, lambda = 0.0;
+            double phi = 0.0, lambda = 0.0, alpha = 0.0;
             if (a_mag > 1e-9) {
-                double alpha = std::atan2(m[0].imag, m[0].real);
+                alpha = std::atan2(m[0].imag, m[0].real);
                 if (b_mag > 1e-9) {
                     lambda = std::atan2(-m[1].imag, -m[1].real) - alpha;
                     phi    = std::atan2( m[2].imag,  m[2].real) - alpha;
@@ -1108,9 +1121,15 @@ std::string QuantumCircuit::to_qasm2() const {
                     lambda = std::atan2(m[3].imag, m[3].real) - alpha;
                 }
             } else {
-                // theta ~ pi: read phases directly from b and c
+                // theta ~ pi: read phases directly from b and c; alpha undefined,
+                // pick a canonical SU(2) representative.
                 lambda = std::atan2(-m[1].imag, -m[1].real);
                 phi    = std::atan2( m[2].imag,  m[2].real);
+            }
+            if (std::abs(alpha) > 1e-9) {
+                oss << "// global phase: " << std::setprecision(15) << alpha
+                    << " (dropped — OpenQASM 2.0 cannot represent global phase; "
+                    << "use to_qasm3() for lossless round-trip)\n";
             }
             oss << "u(" << std::setprecision(15) << theta
                 << "," << phi << "," << lambda
@@ -1196,6 +1215,37 @@ std::string QuantumCircuit::to_qasm3() const {
 
         if (inst.type == Instruction::GateType::RESET) {
             oss << "reset q[" << inst.qubits[0] << "];\n";
+            continue;
+        }
+
+        // 1-qubit UNITARY: Euler-angle decomposition + lossless global phase
+        // via gphase. Unlike QASM 2.0, QASM 3 has a first-class `gphase` that
+        // commutes with everything and is promoted to a relative phase under
+        // `ctrl @` modifiers, so the round-trip is exact.
+        if (inst.type == Instruction::GateType::UNITARY && inst.qubits.size() == 1) {
+            const auto& m = inst.matrix;
+            double a_mag = std::sqrt(m[0].real*m[0].real + m[0].imag*m[0].imag);
+            double b_mag = std::sqrt(m[1].real*m[1].real + m[1].imag*m[1].imag);
+            double theta = 2.0 * std::atan2(b_mag, a_mag);
+            double phi = 0.0, lambda = 0.0, alpha = 0.0;
+            if (a_mag > 1e-9) {
+                alpha = std::atan2(m[0].imag, m[0].real);
+                if (b_mag > 1e-9) {
+                    lambda = std::atan2(-m[1].imag, -m[1].real) - alpha;
+                    phi    = std::atan2( m[2].imag,  m[2].real) - alpha;
+                } else {
+                    lambda = std::atan2(m[3].imag, m[3].real) - alpha;
+                }
+            } else {
+                lambda = std::atan2(-m[1].imag, -m[1].real);
+                phi    = std::atan2( m[2].imag,  m[2].real);
+            }
+            if (std::abs(alpha) > 1e-9) {
+                oss << "gphase(" << std::setprecision(15) << alpha << ");\n";
+            }
+            oss << "u(" << std::setprecision(15) << theta
+                << ", " << phi << ", " << lambda
+                << ") q[" << inst.qubits[0] << "];\n";
             continue;
         }
 

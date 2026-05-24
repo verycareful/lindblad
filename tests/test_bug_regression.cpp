@@ -278,6 +278,84 @@ TEST(BugRegression, B5_EstimatorHonorsShotsSampling) {
 }
 
 // =============================================================================
+// B13 — Estimator::run_single with shots > 0 must produce real shot noise
+// (not the exact analytic value labelled as a finite-shot estimate).
+//
+// Pre-R.1.10.7 the shots > 0 path routed through DensityMatrixSimulator but
+// then read the expectation off the full final mixed state analytically, so
+// the returned scalar had zero variance regardless of the shot count.
+// Variational algorithms relying on finite shot noise (parameter-shift
+// gradient with stochastic estimates, SPSA, etc.) silently got exact values.
+// =============================================================================
+
+TEST(BugRegression, B13_EstimatorShotsProduceVariance) {
+    // |+⟩, observable Z. Exact ⟨Z⟩ = 0. With 256 shots, the std dev of the
+    // sample mean is sqrt((1-0^2)/256) ≈ 0.0625. Two independent seeds should
+    // give results differing by at least a few standard deviations apart with
+    // high probability. We use a loose bound (|diff| > 0.02) to be robust to
+    // RNG state but still catch the zero-variance bug.
+    QuantumCircuit qc(1);
+    qc.h(0);
+    SparsePauliOp Z_op = SparsePauliOp::from_list({{"Z", Complex128(1.0, 0.0)}});
+
+    Estimator est_a;
+    est_a.options.shots = 256;
+    est_a.options.seed  = 42;
+    double a = est_a.run_single(qc, Z_op);
+
+    Estimator est_b;
+    est_b.options.shots = 256;
+    est_b.options.seed  = 1337;
+    double b = est_b.run_single(qc, Z_op);
+
+    EXPECT_NEAR(a, 0.0, 0.25) << "Sampled ⟨Z⟩ for |+⟩ should be near 0";
+    EXPECT_NEAR(b, 0.0, 0.25) << "Sampled ⟨Z⟩ for |+⟩ should be near 0";
+    EXPECT_GT(std::abs(a - b), 0.02)
+        << "Two independent seeded shot-runs returned (almost) identical values "
+           "(a=" << a << ", b=" << b << ") — Estimator is not actually sampling, "
+           "options.shots is being ignored.";
+}
+
+TEST(BugRegression, B13_EstimatorShotsZeroStaysExact) {
+    // Regression guard: shots == 0 must still produce the analytic exact value
+    // (zero variance, reproducible bit-for-bit across calls).
+    QuantumCircuit qc(2);
+    qc.h(0).cx(0, 1);   // Bell state
+    // ⟨ZZ⟩ on Bell state = +1 exactly.
+    SparsePauliOp ZZ_op = SparsePauliOp::from_list({{"ZZ", Complex128(1.0, 0.0)}});
+
+    Estimator est;
+    est.options.shots = 0;
+    double a = est.run_single(qc, ZZ_op);
+    double b = est.run_single(qc, ZZ_op);
+
+    EXPECT_NEAR(a, 1.0, 1e-9)
+        << "shots=0 path returned non-exact ⟨ZZ⟩=" << a << " for Bell state";
+    EXPECT_EQ(a, b)
+        << "shots=0 path returned different values on two calls — should be "
+           "exact (bit-for-bit reproducible).";
+}
+
+TEST(BugRegression, B13_EstimatorShotsConvergeToExact) {
+    // Per the law of large numbers, the sampled estimate must converge toward
+    // the exact value as shots → large. A non-trivial observable on a
+    // non-trivial state: ⟨X⟩ on |+⟩ = +1 exactly.
+    QuantumCircuit qc(1);
+    qc.h(0);
+    SparsePauliOp X_op = SparsePauliOp::from_list({{"X", Complex128(1.0, 0.0)}});
+
+    Estimator est;
+    est.options.shots = 8192;
+    est.options.seed  = 7;
+    double sampled = est.run_single(qc, X_op);
+
+    // 8192 shots → std dev ≈ 1/sqrt(8192) ≈ 0.011. ±0.05 is ~4σ.
+    EXPECT_NEAR(sampled, 1.0, 0.05)
+        << "Sampled ⟨X⟩ for |+⟩ did not converge to exact value (1.0); got "
+        << sampled;
+}
+
+// =============================================================================
 // B6 — NoiseModel::add_quantum_error must honour before_gate ordering
 // Pre-R.1.10.5 the public API silently overwrote ge.after_gate = true,
 // blocking before-gate semantics even though the DensityMatrixSimulator
@@ -690,4 +768,237 @@ TEST(BugRegression, B8_SabreLayoutNocrashOnDenseCircuit) {
     auto res = sim.run(transpiled, 512, 41);
     ASSERT_TRUE(res.success)
         << "Transpiled circuit simulation failed after SabreLayout (B8)";
+}
+
+// =============================================================================
+// B10 — to_qasm2() / to_qasm3() must document/preserve 1q UNITARY global phase.
+//
+// Pre-R.1.10.7 the 1q UNITARY → u(theta, phi, lambda) lowering computed the
+// global-phase `alpha = arg(U[0,0])` and subtracted it from phi/lambda to
+// recover an SU(2) representative, but never emitted alpha. The dropped phase
+// is unobservable for the gate in isolation but becomes a relative phase
+// between control branches when the gate is later wrapped under a control.
+//
+// OpenQASM 2.0 has no representation for global phase: emit a clear
+// `// global phase: <alpha>` comment so the loss is explicit and discoverable.
+// OpenQASM 3 has first-class `gphase(α)`: emit it for lossless round-trip
+// (parser support for gphase pending in a future release).
+// =============================================================================
+
+TEST(BugRegression, B10_ToQasm2EmitsGlobalPhaseCommentForNonSU2) {
+    // e^{iπ/3} · I — pure global phase, no SU(2) content.
+    const double alpha = M_PI / 3.0;
+    const Complex128 c{std::cos(alpha), std::sin(alpha)};
+    const std::vector<Complex128> mat = {c, {0,0}, {0,0}, c};
+
+    QuantumCircuit qc(1);
+    qc.unitary(mat, {0}, "phased_id");
+
+    const std::string qasm = qc.to_qasm2();
+    EXPECT_NE(qasm.find("// global phase:"), std::string::npos)
+        << "to_qasm2() dropped global phase silently (B10).\nQASM output:\n" << qasm;
+}
+
+TEST(BugRegression, B10_ToQasm2NoCommentForSU2Gate) {
+    // Pauli-X is SU(2) (det = -1 has phase π; but |det| = 1 with the standard
+    // representation U[0,0]=0, U[0,1]=1 making alpha undefined → fallback path
+    // emits 0). Use Hadamard's matrix directly which has alpha=0 in the
+    // standard representation.
+    const double s = 1.0 / std::sqrt(2.0);
+    const std::vector<Complex128> H_mat = {
+        {s,0}, {s,0},
+        {s,0}, {-s,0}
+    };
+
+    QuantumCircuit qc(1);
+    qc.unitary(H_mat, {0}, "h_as_unitary");
+
+    const std::string qasm = qc.to_qasm2();
+    EXPECT_EQ(qasm.find("// global phase:"), std::string::npos)
+        << "to_qasm2() emitted a spurious global-phase comment for an SU(2) "
+           "matrix (B10).\nQASM output:\n" << qasm;
+}
+
+TEST(BugRegression, B10_ToQasm3EmitsGphaseForNonSU2) {
+    const double alpha = M_PI / 3.0;
+    const Complex128 c{std::cos(alpha), std::sin(alpha)};
+    const std::vector<Complex128> mat = {c, {0,0}, {0,0}, c};
+
+    QuantumCircuit qc(1);
+    qc.unitary(mat, {0}, "phased_id");
+
+    const std::string qasm = qc.to_qasm3();
+    EXPECT_NE(qasm.find("gphase("), std::string::npos)
+        << "to_qasm3() did not emit gphase for a unitary with non-trivial "
+           "global phase (B10).\nQASM output:\n" << qasm;
+}
+
+// =============================================================================
+// B11 — QASM2 parser must throw on unknown gates, not silently skip.
+// Pre-R.1.10.7 the parser caught unknown gate names and dropped them on the
+// floor as a legacy concession for older Qiskit exports. Silent drops cause
+// round-trip mismatches that get attributed to other components and violate
+// the golden rule "no silent failures".
+// =============================================================================
+
+TEST(BugRegression, B11_Qasm2UnknownGateThrows) {
+    const std::string qasm =
+        "OPENQASM 2.0;\n"
+        "include \"qelib1.inc\";\n"
+        "qreg q[2];\n"
+        "h q[0];\n"
+        "fictional_gate(1.5) q[0];\n"   // <-- not a known gate, no `gate` def
+        "cx q[0],q[1];\n";
+
+    EXPECT_THROW({
+        (void)QuantumCircuit::from_qasm2(qasm);
+    }, std::runtime_error)
+        << "QASM2 parser silently accepted an unknown gate (B11). "
+           "Unknown gates must throw, not skip.";
+}
+
+// =============================================================================
+// B12 — MPS simulator must apply 1q and 2q UNITARYs via direct tensor
+// contraction without going through to_statevector(), so circuits with
+// n_qubits > MPS_SV_MAX_QUBITS (= 25) that contain user-supplied UNITARYs
+// no longer throw "Too many qubits for full statevector conversion" at a
+// site far from the offending instruction.
+// =============================================================================
+
+TEST(BugRegression, B12_MpsUnitary1QubitWideRegister) {
+    // 28-qubit circuit with a 1-qubit UNITARY (H matrix). Pre-fix this
+    // routed through to_statevector() and threw on n=28 > MPS_SV_MAX_QUBITS.
+    // Post-fix it contracts the 2x2 matrix directly into one site tensor.
+    const int n = 28;
+    const double s = 1.0 / std::sqrt(2.0);
+    const std::vector<Complex128> H_mat = {
+        {s,0}, {s,0},
+        {s,0}, {-s,0}
+    };
+
+    QuantumCircuit qc(n);
+    qc.h(3);
+    qc.unitary(H_mat, {3}, "h_as_unitary");  // H·H = I, so effective op = I
+    qc.measure_all();
+
+    MPSSimulator sim;
+    auto res = MPSSimulator::Result(n);
+    ASSERT_NO_THROW({
+        res = sim.run(qc, /*bond=*/16, /*shots=*/512, /*seed=*/42);
+    }) << "MPS 1-qubit UNITARY at n=" << n
+       << " threw — direct apply_single_qubit_gate path not wired up";
+
+    // H followed by H-as-UNITARY = identity → qubit 3 stays |0⟩.
+    // Bitstring layout: rightmost = qubit 0; qubit 3 at position (n - 1 - 3).
+    for (const auto& [bits, count] : res.counts) {
+        EXPECT_EQ(bits[n - 1 - 3], '0')
+            << "Qubit 3 measured non-zero after H·H_as_UNITARY: " << bits;
+    }
+}
+
+TEST(BugRegression, B12_MpsUnitary2QubitAdjacentWideRegister) {
+    // 28-qubit circuit with a 2-qubit UNITARY (CX matrix) on adjacent qubits.
+    const int n = 28;
+    const std::vector<Complex128> CX_mat = {
+        {1,0}, {0,0}, {0,0}, {0,0},
+        {0,0}, {0,0}, {0,0}, {1,0},
+        {0,0}, {0,0}, {1,0}, {0,0},
+        {0,0}, {1,0}, {0,0}, {0,0}
+    };
+
+    QuantumCircuit qc(n);
+    qc.h(5);
+    qc.unitary(CX_mat, {5, 6}, "cx_as_unitary");
+    qc.measure_all();
+
+    MPSSimulator sim;
+    auto res = MPSSimulator::Result(n);
+    ASSERT_NO_THROW({
+        res = sim.run(qc, 16, 512, 42);
+    }) << "MPS 2-qubit adjacent UNITARY at n=" << n << " threw";
+
+    // H on q5 then CX(5,6) entangles → q5 and q6 are perfectly correlated.
+    // Bitstring layout: rightmost = qubit 0. q5 at pos (n-1-5), q6 at (n-1-6).
+    for (const auto& [bits, count] : res.counts) {
+        EXPECT_EQ(bits[n - 1 - 5], bits[n - 1 - 6])
+            << "q5 and q6 not correlated after CX entangler: " << bits;
+    }
+}
+
+TEST(BugRegression, B12_MpsUnitary2QubitNonAdjacentWideRegister) {
+    // Non-adjacent 2-qubit UNITARY — MPS swap network kicks in.
+    const int n = 28;
+    const std::vector<Complex128> CX_mat = {
+        {1,0}, {0,0}, {0,0}, {0,0},
+        {0,0}, {0,0}, {0,0}, {1,0},
+        {0,0}, {0,0}, {1,0}, {0,0},
+        {0,0}, {1,0}, {0,0}, {0,0}
+    };
+
+    QuantumCircuit qc(n);
+    qc.h(2);
+    qc.unitary(CX_mat, {2, 10}, "cx_as_unitary");  // non-adjacent ctrl/tgt
+    qc.measure_all();
+
+    MPSSimulator sim;
+    auto res = MPSSimulator::Result(n);
+    ASSERT_NO_THROW({
+        res = sim.run(qc, 16, 512, 42);
+    }) << "MPS 2-qubit non-adjacent UNITARY at n=" << n
+       << " threw — swap-network dispatch failed";
+
+    // bitstring positions: qubit q at position (n - 1 - q). Qubit 2 → pos 25,
+    // qubit 10 → pos 17. Entanglement: those two positions agree (both 0 or
+    // both 1).
+    for (const auto& [bits, count] : res.counts) {
+        char b2  = bits[n - 1 - 2];
+        char b10 = bits[n - 1 - 10];
+        EXPECT_EQ(b2, b10)
+            << "Non-adjacent CX did not entangle q2,q10 in bitstring " << bits;
+    }
+}
+
+TEST(BugRegression, B12_MpsUnitary3QubitWideRegisterThrowsClearly) {
+    // 3+ qubit UNITARYs cannot use the direct tensor path; they fall back
+    // to to_statevector(). On a wide register that exceeds MPS_SV_MAX_QUBITS,
+    // the simulator must throw with a clear message naming the gate size and
+    // qubit count, not the generic "Too many qubits for full statevector
+    // conversion" surfaced from inside to_statevector().
+    const int n = 28;
+    // 3-qubit identity matrix (8x8). Body shape doesn't matter for the throw.
+    std::vector<Complex128> I3(64, {0, 0});
+    for (int i = 0; i < 8; ++i) I3[i * 8 + i] = {1, 0};
+
+    QuantumCircuit qc(n);
+    qc.unitary(I3, {3, 4, 5}, "id3_as_unitary");
+
+    MPSSimulator sim;
+    try {
+        (void)sim.run(qc, 16, 64, 42);
+        ADD_FAILURE() << "MPS 3-qubit UNITARY at n=" << n
+                      << " did not throw; expected clear error.";
+    } catch (const std::runtime_error& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("UNITARY"), std::string::npos)
+            << "Error message did not name the UNITARY instruction: " << msg;
+    }
+}
+
+TEST(BugRegression, B11_Qasm2CustomGateDefStillWorks) {
+    // Regression guard: throwing on unknown gates must not break user-defined
+    // `gate` blocks. A custom gate followed by a call to it must parse cleanly.
+    const std::string qasm =
+        "OPENQASM 2.0;\n"
+        "include \"qelib1.inc\";\n"
+        "gate my_h q { h q; }\n"
+        "qreg q[1];\n"
+        "my_h q[0];\n";
+
+    QuantumCircuit qc;
+    ASSERT_NO_THROW({
+        qc = QuantumCircuit::from_qasm2(qasm);
+    });
+    EXPECT_EQ(qc.n_qubits, 1);
+    EXPECT_GE(qc.instructions.size(), 1u)
+        << "Custom gate body was not inlined after parser tightening (B11).";
 }

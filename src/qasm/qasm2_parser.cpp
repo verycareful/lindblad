@@ -157,13 +157,21 @@ public:
                 }
             }
 
-            // Try built-in gates first, then custom definitions
+            // Try built-in gates first, then custom definitions. Unknown gates
+            // must surface to the caller — silently skipping them masks parser
+            // bugs and gate-set mismatches and was responsible for round-trip
+            // mismatches that were attributed to other components. (See R.1.10.7
+            // CHANGELOG; this changed in 2026-05 from the legacy "skip on miss"
+            // behavior that targeted compatibility with older Qiskit exports.)
             if (!try_apply_builtin(qc, gate_name, params, qubits)) {
                 auto it = gate_defs.find(gate_name);
                 if (it != gate_defs.end()) {
                     inline_custom_gate(qc, it->second, params, qubits, gate_defs);
+                } else {
+                    throw std::runtime_error(
+                        "QASM2Parser: unknown gate '" + gate_name +
+                        "' (no built-in match and no `gate` definition in scope)");
                 }
-                // Silently skip unknown gates (consistent with prior behavior)
             }
         }
 
