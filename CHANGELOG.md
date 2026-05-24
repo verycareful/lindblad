@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.10.6] - 2026-05-24
+
+### Added
+
+- **`CONTRIBUTING.md`** -- contribution guide covering accepted contribution types, the
+  PR process (issue-first for new features, direct PRs for bug fixes), C++23 style
+  conventions, bug report template, and a required AI-verification notice (the codebase
+  is ~40,000 lines; AI-generated contributions must be fully verified before submission).
+- **`CONTRIBUTORS`** -- contributor acknowledgment file. Parikshieth Harish (@zParik)
+  acknowledged for the `find_order` bit-extraction fix (PR #7, landed in R.1.10.5).
+
+### Changed
+
+- **`LICENSE`** -- updated to Version 2.2.
+  - §6.3 (Contributor License Grant): changed from irrevocable copyright assignment to a
+    perpetual, irrevocable, non-exclusive license grant. Contributors now retain copyright
+    ownership of their contributions while the author retains full commercial freedom.
+  - §6.6 (Acknowledgment): changed from discretionary ("may acknowledge") to a firm
+    commitment -- the author will acknowledge contributors in `CONTRIBUTORS` and in the
+    release notes for the release in which their contribution first appears.
+
 ## [R.1.10.5] - 2026-05-24
 
 ### Fixed
