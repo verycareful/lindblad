@@ -27,7 +27,7 @@ void print_lindblad_banner_once() {
 
         std::cout
             << "\n"
-            << "    Welcome to Lindblad Quantum Toolkit R.1.10.7 | CLI startup\n"
+            << "    Welcome to Lindblad Quantum Toolkit R.1.10.8 | CLI startup\n"
             << "__________________________________________________________________________________________________________________________________________________\n\n"
             << "              _     <─. (`─')_  _(`─')   <─.(`─')           (`─')  _ _(`─')             \n"
             << "      <─.    (_)       ╲( OO) )( (OO ).─> __( OO)    <─.    (OO ).─╱( (OO ).─>          \n"
@@ -40,7 +40,7 @@ void print_lindblad_banner_once() {
             << "__________________________________________________________________________________________________________________________________________________\n\n"
             << "    Made with no love (jk lol) and too much coffee (Or are those monster energy drinks?) by Sricharan (verycareful)!\n"
             << "\n"
-            << "    License Notice: This software is proprietary and source-available (Lindblad SLA v2.2).\n"
+            << "    License Notice: This software is proprietary and source-available (Lindblad SLA v2.3).\n"
             << "    Free for non-commercial and academic use only. Commercial use requires a separate written license agreement.\n"
             << "    Private non-commercial redistribution of unmodified copies to peers/collaborators is permitted\n"
             << "    under the same license terms (see LICENSE §3.1). Public redistribution in any form — including\n"
@@ -48,7 +48,7 @@ void print_lindblad_banner_once() {
             << "    Public GitHub forks are not licensed under this agreement for any purpose other than PR review.\n"
             << "    By submitting any contribution you grant the author a perpetual irrevocable license to use\n"
             << "    and commercialize it while retaining your copyright — see LICENSE §6.3.\n"
-            << "    Full terms: LICENSE | Inquiries: qpp.support@proton.me\n"
+            << "    Full terms: LICENSE | Inquiries: lindblad.software@proton.me\n"
             << "\n"
             << "    Ready to run tests and simulations.\n\n";
     });
@@ -59,7 +59,7 @@ void print_lindblad_exit_banner() {
     std::cout
         << "\n"
 
-        << "    Thank you for using Lindblad Quantum Toolkit R.1.10.7\n"
+        << "    Thank you for using Lindblad Quantum Toolkit R.1.10.8\n"
         << "__________________________________________________________________________________________________________________________________________________\n\n"
         << "              _     <─. (`─')_  _(`─')   <─.(`─')           (`─')  _ _(`─')             \n"
         << "      <─.    (_)       ╲( OO) )( (OO ).─> __( OO)    <─.    (OO ).─╱( (OO ).─>          \n"
@@ -70,7 +70,7 @@ void print_lindblad_exit_banner() {
         << "    │     │' │  │'─>│  │ ╲   │  │  '─'  ╱│ '──'  ╱ │     │' │  │ │  ││  '─'  ╱          \n"
         << "    `─────'  `──'   `──'  `──'  `──────' `──────'  `─────'  `──' `──'`──────'           \n"
         << "__________________________________________________________________________________________________________________________________________________\n\n"
-        << "    License Notice: This software is proprietary and source-available (Lindblad SLA v2.2).\n"
+        << "    License Notice: This software is proprietary and source-available (Lindblad SLA v2.3).\n"
         << "    Free for non-commercial and academic use only. Commercial use requires a separate written license agreement.\n"
         << "    Private non-commercial redistribution of unmodified copies to peers/collaborators is permitted\n"
         << "    under the same license terms (see LICENSE §3.1). Public redistribution in any form — including\n"
@@ -78,7 +78,7 @@ void print_lindblad_exit_banner() {
         << "    Public GitHub forks are not licensed under this agreement for any purpose other than PR review.\n"
         << "    By submitting any contribution you grant the author a perpetual irrevocable license to use\n"
         << "    and commercialize it while retaining your copyright — see LICENSE §6.3.\n"
-        << "    Full terms: LICENSE | Inquiries: qpp.support@proton.me\n"
+        << "    Full terms: LICENSE | Inquiries: lindblad.software@proton.me\n"
         << "\n"
         << "__________________________________________________________________________________________________________________________________________________\n\n"
         << "    Lindblad simulation finished. May your qubits stay coherent!\n"

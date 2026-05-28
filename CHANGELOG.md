@@ -4,6 +4,38 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.10.8] - 2026-05-28
+
+### Changed
+
+- **`LICENSE`** -- bumped to Version 2.3. Substantive structural changes over v2.2:
+  - **§1.2** -- "sole creator" corrected to "original author, primary copyright holder"
+    to reflect that PR #7 introduced contributor code.
+  - **Preamble** -- added an explicit declaration that the Agreement governs all
+    versions of the Software in the repository, including all prior commits and
+    historical revisions, regardless of license text that may appear in earlier
+    revisions. This closes the prior-license-text-in-git-history gap at the document
+    level.
+  - **§3.2** (new) -- Permitted Private Redistribution of Modifications. Modified
+    copies may be shared privately with specific, identified individuals for
+    Non-Commercial purposes, mirroring the §3.1 conditions for unmodified copies.
+    Public redistribution of modifications remains prohibited.
+  - **§3.3** (new) -- Community Notification (Advisory). Strongly encourages, but
+    does not require, contributors to inform the Author of meaningful modifications
+    via GitHub Issues or email. Explicit no-breach-for-non-disclosure language.
+  - **§3.4** -- prior §3.2 (Prohibited Acts) renumbered. Clause (b) updated to
+    reference §3.2 as the carve-out for permitted private modification sharing.
+  - **§10.3** -- survival clause expanded to include §6.6 (acknowledgment) and
+    §6.7 (no monetary compensation), so a contributor whose user license is
+    terminated cannot retroactively claim compensation and the Author's
+    acknowledgment commitment survives termination.
+- **Contact email** -- migrated from `qpp.support@proton.me` to
+  `lindblad.software@proton.me` across all live files (`LICENSE`, `README.md`,
+  `CITATION.cff`, `NOTICE`, `src/banner.cpp`, `lindblad-page/src/pages.tsx`,
+  `lindblad-page/src/components/chrome.tsx`). Historical CHANGELOG entries
+  intentionally retain the old email as a record of what shipped at those releases.
+- **`NOTICE`** -- caught up to Version 2.3 (was still labelled 2.1).
+
 ## [R.1.10.7] - 2026-05-24
 
 ### Fixed

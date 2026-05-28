@@ -8,12 +8,12 @@ authors:
     given-names: Sricharan
     alias: verycareful
     orcid: https://orcid.org/0009-0004-6873-5692
-version: R.1.10.7
-date-released: 2026-05-24
-license: "LicenseRef-Lindblad-2.2"
+version: R.1.10.8
+date-released: 2026-05-28
+license: "LicenseRef-Lindblad-2.3"
 repository-code: https://github.com/verycareful
 contact:
-  - email: qpp.support@proton.me
+  - email: lindblad.software@proton.me
 preferred-citation:
   type: software
   title: "Lindblad: A High-Performance C++23 Quantum Computing Framework"
@@ -21,6 +21,6 @@ preferred-citation:
     - family-names: Suresh
       given-names: Sricharan
       orcid: https://orcid.org/0009-0004-6873-5692
-  version: R.1.10.7
+  version: R.1.10.8
   year: 2026
   url: https://github.com/verycareful
