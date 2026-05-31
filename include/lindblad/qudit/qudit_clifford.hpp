@@ -54,8 +54,10 @@ public:
     void apply_H(int q);
 
     // Phase gate P on qudit q.
-    //   d = 2: S gate, S X S^dag = i X Z = Y, S Z S^dag = Z.
-    //   d > 2: throws std::runtime_error (general qudit phase gate not implemented).
+    //   d = 2:     S gate,  S X S^dag = i X Z = Y,  S Z S^dag = Z.
+    //   odd prime: canonical qudit phase gate P = sum_k omega^{2^{-1} k(k-1)} |k><k|
+    //              (Howard & Vala 2012);  P X P^dag = X Z,  P Z P^dag = Z.
+    //              Heisenberg update: z_q -> z_q + x_q,  phase += x_q(x_q-1) mod 2d.
     void apply_P(int q);
 
     // CSUM(c, t):   |x_c>|x_t>  ->  |x_c>|(x_c + x_t) mod d>

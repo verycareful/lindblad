@@ -117,23 +117,45 @@ void QuditCliffordSimulator::apply_H(int q) {
 }
 
 void QuditCliffordSimulator::apply_P(int q) {
-    if (d != 2) {
-        throw std::runtime_error(
-            "QuditCliffordSimulator::apply_P: not implemented for d > 2");
-    }
-    // d = 2: S gate.  S X S^dag = i X Z = Y,  S Z S^dag = Z.
-    // Tableau update per row:
-    //   (x, z, phi)  ->  (x, x XOR z, phi + x)   in Z_2 / Z_4 conventions.
-    // Derivation: S (X^x Z^z) S^dag = (S X S^dag)^x (S Z S^dag)^z
-    //   = (iXZ)^x Z^z = i^x X^x Z^x Z^z = i^x X^x Z^{x+z}.
-    // tau = i for d=2, so the extra phase i^x is tau^x  =>  phase += x.
     const int rows = 2 * n_qudits;
-    const int two_d = 2 * d;  // = 4
+    const int two_d = 2 * d;
+
+    if (d == 2) {
+        // d = 2: S gate.  S X S^dag = i X Z = Y,  S Z S^dag = Z.
+        // Tableau update per row:
+        //   (x, z, phi)  ->  (x, x XOR z, phi + x)   in Z_2 / Z_4 conventions.
+        // Derivation: S (X^x Z^z) S^dag = (S X S^dag)^x (S Z S^dag)^z
+        //   = (iXZ)^x Z^z = i^x X^x Z^x Z^z = i^x X^x Z^{x+z}.
+        // tau = i for d=2, so the extra phase i^x is tau^x  =>  phase += x.
+        // d=2 needs its own branch because 2 is not invertible mod 2, so the
+        // odd-d formula below (which uses k(k-1)/2) does not apply.
+        for (int r = 0; r < rows; ++r) {
+            const int old_x = xbits[r][q];
+            const int old_z = zbits[r][q];
+            zbits[r][q] = mod(old_z + old_x, d);
+            phase[r] = mod(phase[r] + old_x, two_d);  // two_d = 4
+        }
+        return;
+    }
+
+    // Odd prime d: canonical qudit phase gate (Howard & Vala 2012)
+    //   P = sum_k omega^{(2^{-1} mod d) * k(k-1)} |k><k|,   omega = tau^2.
+    // The 2^{-1} factor makes the exponent integer-valued for odd d. Conjugation:
+    //   P Z P^dag = Z                         (both diagonal -> Z unchanged)
+    //   P X P^dag = X Z                        (slope-1 phase ramp; no extra tau)
+    // Hence on a Weyl term, using (XZ)^x = omega^{x(x-1)/2} X^x Z^x and tau^2 = omega:
+    //   P (X^x Z^z) P^dag = (XZ)^x Z^z = omega^{x(x-1)/2} X^x Z^{x+z}
+    //                     = tau^{x(x-1)} X^x Z^{x+z}.
+    // Tableau update per row at qudit q:
+    //   z_q  ->  (z_q + x_q) mod d
+    //   phase += x_q (x_q - 1)  (mod 2d)        [x(x-1) is even for any integer x]
+    // Note: the 2^{-1} appears only in the gate's matrix definition; the
+    // Heisenberg update result tau^{x(x-1)} is inverse-free.
     for (int r = 0; r < rows; ++r) {
         const int old_x = xbits[r][q];
         const int old_z = zbits[r][q];
         zbits[r][q] = mod(old_z + old_x, d);
-        phase[r] = mod(phase[r] + old_x, two_d);
+        phase[r] = mod(phase[r] + old_x * (old_x - 1), two_d);
     }
 }
 

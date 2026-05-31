@@ -36,10 +36,10 @@ The four backends are:
 | Algorithm | STATEVECTOR | DENSITY_MATRIX | MPS | CLIFFORD |
 |---|---|---|---|---|
 | `QuditBernsteinVazirani` | ✓ | ✓ | ✓ | ✓ (prime d) |
-| `QuditDeutschJozsa` | ✓ | ✓ | ✓ | ✓ (falls back to SV) |
+| `QuditDeutschJozsa` | ✓ | ✓ | ✓ | ✓ affine oracle, prime d (opaque `f` throws) |
 | `QuditGrover` | ✓ | ✓ | ✓ | ✗ throws |
 | `QuditPhaseEstimation` | ✓ | ✓ | ✓ | ✗ throws |
-| `QuditSimon` | ✓ | ✓ | ✓ | ✗ throws |
+| `QuditSimon` | ✓ | ✓ | ✓ | ✓ affine oracle, prime d (opaque `f` throws) |
 
 Noise (`QuditNoiseModel*`) is applied only when `backend == DENSITY_MATRIX`.
 Passing a noise pointer with any other backend has no effect.
@@ -334,7 +334,7 @@ All gates update the tableau in-place (Heisenberg picture).
 | `apply_X(q, m=1)` | X^m | phase -= 2m·z_q |
 | `apply_Z(q, m=1)` | Z^m | phase += 2m·x_q |
 | `apply_H(q)` | QFT | x_q ← −z_q mod d; z_q ← x_q; phase −= 2·old_x_q·old_z_q |
-| `apply_P(q)` | Phase (d=2 only) | d>2 throws |
+| `apply_P(q)` | Phase | d=2: z_q += x_q; phase += x_q.  odd prime d: z_q += x_q; phase += x_q(x_q−1) |
 | `apply_CSUM(c, t)` | SUM gate | x_t += x_c; z_c -= z_t; phase -= 2·x_c·z_t (before update) |
 | `apply_CSUM_dag(c, t)` | SUM† | x_t -= x_c; z_c += z_t; phase += 2·x_c·z_t (before update) |
 
@@ -376,10 +376,13 @@ the `CLIFFORD` backend:
 
 - **`QuditBernsteinVazirani`**: fully Clifford for prime d. Each CADD(s_i) is
   implemented as `apply_CSUM` repeated s_i times.
-- **`QuditDeutschJozsa`**: CLIFFORD silently falls back to STATEVECTOR because
-  a general black-box function oracle is not necessarily Clifford-decomposable.
-- **`QuditGrover`**, **`QuditPhaseEstimation`**, **`QuditSimon`**: throw
-  `std::invalid_argument` when called with `QuditBackend::CLIFFORD`.
+- **`QuditDeutschJozsa`** and **`QuditSimon`**: support `CLIFFORD` (prime d) only
+  through the structured `QuditAffineOracle` overload, which lowers `f(x) = A·x + b`
+  to `X^b` + `apply_CSUM` powers on the tableau. The opaque `std::function` overload
+  throws `std::invalid_argument` for `CLIFFORD` (a black-box function has no Clifford
+  decomposition), rather than silently substituting another backend.
+- **`QuditGrover`**, **`QuditPhaseEstimation`**: throw `std::invalid_argument`
+  when called with `QuditBackend::CLIFFORD`.
 
 ### Noise is ignored outside DENSITY_MATRIX
 

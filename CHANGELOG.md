@@ -4,6 +4,45 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.11.0] - 2026-05-31
+
+### Added
+
+- **`QuditCliffordSimulator::apply_P()` now supports odd prime d.** Implements the
+  canonical qudit phase gate `P = Σ_k ω^{2⁻¹·k(k−1)} |k⟩⟨k|` (Howard & Vala 2012).
+  The Heisenberg-picture tableau update is `z_q → z_q + x_q`, `phase += x_q(x_q−1)
+  (mod 2d)`; the inverse-of-2 factor lives only in the gate's matrix definition, so
+  the conjugation result is inverse-free. The d=2 S-gate keeps its own branch (2 is
+  not invertible mod 2). Previously threw `std::runtime_error` for d > 2.
+- **`QuditAffineOracle`** — a structured, Clifford-decomposable oracle `f(x) = A·x + b
+  (mod d)`. The reversible function-oracle gadget lowers to `X^{b_j}` plus
+  `apply_CSUM` powers on the stabilizer tableau, so affine oracles run on the CLIFFORD
+  backend where black-box `std::function` oracles cannot.
+- **`QuditDeutschJozsa::solve(const QuditAffineOracle&, ...)`** — affine-oracle overload
+  supporting all four backends, including CLIFFORD (prime d). An affine `f` is constant
+  iff `a = 0` and balanced iff `a ≠ 0`.
+- **`QuditSimon::solve(const QuditAffineOracle&, ...)`** — affine-oracle overload that
+  extends the CLIFFORD backend (prime d) to Simon; other backends materialise `f`.
+- **Composite-d support for `QuditSimon`.** The hidden subgroup is now recovered over
+  the ring `Z_d` via the integer Smith Normal Form of the measurement matrix (uniform
+  across all moduli, reproducing the field result for prime d), with candidate
+  generators verified against the oracle before being returned. Previously composite d
+  threw `std::invalid_argument`.
+
+### Changed
+
+- **`QuditDeutschJozsa` and `QuditSimon` opaque-oracle CLIFFORD path now throws instead
+  of silently substituting another backend.** The black-box `std::function` overloads
+  reject `QuditBackend::CLIFFORD` with a message directing callers to the
+  `QuditAffineOracle` overload (DJ previously fell back silently to STATEVECTOR; Simon's
+  message is clarified). Aligns with golden rule #1 (no silent failures).
+- **Version label is now sourced from a single compile-time definition.** The CLI
+  welcome/goodbye banner (`src/banner.cpp`) and the `lindblad_draw` usage banner
+  (`apps/lindblad_draw.cpp`) read the `LINDBLAD_VERSION_LABEL` macro instead of
+  hardcoding the string; the definition is exported by `lindblad_core` and now also
+  attached to the `lindblad_banner_obj` object library. No behaviour change, but the
+  on-screen version can no longer drift from `CMakeLists.txt`.
+
 ## [R.1.10.8] - 2026-05-28
 
 ### Changed

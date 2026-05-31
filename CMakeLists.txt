@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.10.8 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.11.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.10.8")
+set(LINDBLAD_VERSION_LABEL "R.1.11.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -112,6 +112,12 @@ endif()
 # Runtime CLI banner object (linked into executables explicitly)
 add_library(lindblad_banner_obj OBJECT
     src/banner.cpp
+)
+# banner.cpp prints LINDBLAD_VERSION_LABEL directly. It is an OBJECT lib that does
+# not link lindblad_core, so it does not inherit that target's PUBLIC definition —
+# give it the same compile definition here so the banner never drifts.
+target_compile_definitions(lindblad_banner_obj PRIVATE
+    LINDBLAD_VERSION_LABEL="${LINDBLAD_VERSION_LABEL}"
 )
 
 # ==============================================================================

@@ -46,3 +46,6 @@ CLAUDE.md
 
 #Website - different repo
 /lindblad-page/
+
+# Maintainer-local tooling (version bump script, etc.)
+/tools/

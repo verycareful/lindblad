@@ -190,9 +190,12 @@ struct Result {
 };
 ```
 
+**Structured (affine) oracle overload:** `QuditDeutschJozsa::solve(const QuditAffineOracle& oracle, int d, ...)` accepts `f(x) = a·x + b (mod d)` (single output row). Affine maps are Clifford-decomposable, so this overload additionally supports the `CLIFFORD` backend on prime d. An affine `f` is constant iff `a = 0` and balanced iff `a ≠ 0` (for prime d every nonzero `a` is exactly balanced).
+
 **Exceptions:**
 - `std::invalid_argument` if `d < 2` or `n < 1`
 - `std::invalid_argument` if `f` returns a value outside `[0, d)`
+- `std::invalid_argument` if `backend == QuditBackend::CLIFFORD` for the opaque `f` overload (use the affine-oracle overload instead)
 
 **Backend:**
 
@@ -201,7 +204,7 @@ struct Result {
 | `STATEVECTOR` | ✓ | Default. Exact dense statevector, O(d^{n+1}) amplitudes. |
 | `DENSITY_MATRIX` | ✓ | Full mixed-state; applies `noise` model if provided. |
 | `MPS` | ✓ | Tensor-network. |
-| `CLIFFORD` | ✓ (fallback) | The function oracle is not Clifford-simulable in general; CLIFFORD silently falls back to `STATEVECTOR`. |
+| `CLIFFORD` | affine only | A black-box `f` has no Clifford decomposition, so the opaque overload throws (no silent fallback). The affine-oracle overload runs on the stabilizer tableau for prime d. |
 
 The `noise` argument is applied only in the `DENSITY_MATRIX` path. See [docs/api/qudit-simulators.md](../api/qudit-simulators.md) for the full backend API reference.
 

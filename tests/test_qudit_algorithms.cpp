@@ -429,13 +429,20 @@ TEST_F(QuditSimonTest, ThrowsWhenD_LessThan2) {
     auto f = [](const std::vector<int>& x) -> std::vector<int> { return x; };
     EXPECT_THROW(QuditSimon::solve(1, 1, f), std::invalid_argument);
 }
-TEST_F(QuditSimonTest, ThrowsWhenD_NotPrime_d4) {
-    auto f = [](const std::vector<int>& x) -> std::vector<int> { return x; };
-    EXPECT_THROW(QuditSimon::solve(1, 4, f), std::invalid_argument);
+// Composite d is now supported (R.1.11.0): the kernel is computed over the ring
+// Z_d via integer Smith Normal Form, replacing the former prime-only restriction.
+// Comprehensive composite-d coverage lands in the R.1.11.1 test suite.
+TEST_F(QuditSimonTest, CompositeD_RecoversPeriod_d4_n2) {
+    std::vector<int> s = {2, 0};
+    auto r = QuditSimon::solve(2, 4, make_simon_f(s, 2, 4), 6, 42);
+    EXPECT_TRUE(is_simon_period(r.period, s, 4));
+    EXPECT_FALSE(r.is_trivial);
 }
-TEST_F(QuditSimonTest, ThrowsWhenD_NotPrime_d6) {
-    auto f = [](const std::vector<int>& x) -> std::vector<int> { return x; };
-    EXPECT_THROW(QuditSimon::solve(1, 6, f), std::invalid_argument);
+TEST_F(QuditSimonTest, CompositeD_RecoversPeriod_d6_n2) {
+    std::vector<int> s = {1, 0};
+    auto r = QuditSimon::solve(2, 6, make_simon_f(s, 2, 6), 6, 42);
+    EXPECT_TRUE(is_simon_period(r.period, s, 6));
+    EXPECT_FALSE(r.is_trivial);
 }
 TEST_F(QuditSimonTest, ThrowsWhenN_LessThan1) {
     auto f = [](const std::vector<int>& x) -> std::vector<int> { return x; };

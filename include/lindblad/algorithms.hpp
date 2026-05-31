@@ -438,6 +438,38 @@ public:
 };
 
 // =============================================================================
+// QuditAffineOracle — structured, Clifford-decomposable oracle over Z_d
+//
+// Represents an affine map f(x) = A·x + b (mod d), x ∈ Z_d^n.
+//   A: row-major [out][in], `out` rows, `in = n` columns, entries in Z_d
+//   b: `out` entries in Z_d (constant term; b = 0 gives a linear oracle)
+//
+// Why this type exists: the reversible function-oracle gadget
+//     U_f : |x⟩|y⟩ → |x⟩|(y + f(x)) mod d⟩
+// lowers to Clifford generators when f is affine — X^{b_j} on each output qudit j,
+// then CSUM(query_i → output_j) applied A[j][i] times (the qudit CADD). A black-box
+// std::function oracle has no such decomposition and therefore cannot run on the
+// CLIFFORD backend; the affine form is the structured interface that can.
+//
+// For QuditDeutschJozsa, out = 1 (single output digit). For QuditSimon, out = n
+// and the hidden subgroup is ker_{Z_d}(A) (b is irrelevant to the period since
+// f(x) − f(y) = A(x − y)).
+// =============================================================================
+
+struct QuditAffineOracle {
+    std::vector<std::vector<int>> A;  // [out][in], entries in Z_d
+    std::vector<int> b;               // [out], entries in Z_d
+
+    int num_outputs() const { return static_cast<int>(A.size()); }
+    int num_inputs()  const { return A.empty() ? 0 : static_cast<int>(A.front().size()); }
+
+    // Evaluate f(x) = (A·x + b) mod d for materialising onto non-Clifford backends.
+    // Throws std::invalid_argument if x.size() != num_inputs(), or if any entry of
+    // A, b, or x is outside [0, d).
+    std::vector<int> eval(const std::vector<int>& x, int d) const;
+};
+
+// =============================================================================
 // QuditDeutschJozsa — determine constant vs balanced f: Z_d^n → Z_d in 1 query
 //
 // Generalises Deutsch-Jozsa from binary to d-dimensional quantum systems.
@@ -467,11 +499,32 @@ public:
         int n;
     };
 
+    // Black-box (opaque function) oracle.
     // f: accepts n query digits each in Z_d, returns single digit in Z_d.
-    // Throws std::invalid_argument if d < 2, n < 1, or f returns value outside [0, d).
+    // Runs on STATEVECTOR, DENSITY_MATRIX, or MPS. The CLIFFORD backend is NOT
+    // supported here: a black-box function has no Clifford decomposition, so rather
+    // than silently substituting another backend this overload throws
+    // std::invalid_argument for backend == CLIFFORD and directs the caller to the
+    // QuditAffineOracle overload below.
+    // Throws std::invalid_argument if d < 2, n < 1, f returns a value outside [0, d),
+    // or backend == CLIFFORD.
     static Result solve(
         int n, int d,
         const std::function<int(const std::vector<int>&)>& f,
+        uint64_t seed = 0,
+        QuditBackend backend = QuditBackend::STATEVECTOR,
+        const QuditNoiseModel* noise = nullptr
+    );
+
+    // Structured (affine) oracle: f(x) = a·x + b (mod d), a single output row.
+    // This form is Clifford-decomposable, so it supports all four backends including
+    // CLIFFORD (which requires prime d). An affine f is constant iff a = 0 and
+    // balanced iff a ≠ 0 (for prime d every nonzero a gives an exactly balanced map).
+    // Throws std::invalid_argument if d < 2, oracle.num_outputs() != 1,
+    // num_inputs() < 1, any coefficient is outside [0, d), or
+    // backend == CLIFFORD with composite d.
+    static Result solve(
+        const QuditAffineOracle& oracle, int d,
         uint64_t seed = 0,
         QuditBackend backend = QuditBackend::STATEVECTOR,
         const QuditNoiseModel* noise = nullptr
@@ -577,21 +630,30 @@ public:
 // =============================================================================
 // QuditSimon — find hidden period s ∈ Z_d^n from f(x+s)=f(x) in O(n) queries
 //
-// Generalises Simon's algorithm from binary to d-dimensional quantum systems.
-// Requires d to be prime for exact Gaussian elimination over GF(d).
+// Generalises Simon's algorithm from binary to d-dimensional quantum systems
+// for any d ≥ 2 (prime or composite).
 //
-// Promise: f: Z_d^n → Z_d^n satisfies f(x) = f(y) ⟺ x − y ≡ 0 or s (mod d).
+// Promise: f: Z_d^n → Z_d^n is constant on cosets of a hidden subgroup H ≤ Z_d^n,
+//   i.e. f(x) = f(y) ⟺ x − y ∈ H. The reported period s is a nonzero generator
+//   of H (or the zero vector when f is injective, H = {0}).
 //
 // Circuit per query (2n qudits: n query + n output):
 //   1. F_d on each query qudit
 //   2. Oracle U_f: |x⟩|0⟩ → |x⟩|f(x)⟩  (apply_function_oracle)
 //   3. F_d† on each query qudit
-//   4. Measure query register → y satisfying s·y ≡ 0 (mod d)
+//   4. Measure query register → y satisfying s·y ≡ 0 (mod d) for all s ∈ H
 //
-// Classical post-processing: Gaussian elimination over GF(d) on ~n+extra samples.
+// Classical post-processing — recover H = {s : y·s ≡ 0 (mod d) ∀ measured y}:
+//   - prime d:     Gaussian elimination over the field GF(d) (null_space_gf).
+//   - composite d: Z_d is only a ring, so Gaussian elimination breaks. We instead
+//     compute the kernel via the integer Smith Normal Form of the equation matrix
+//     (null_space_ring): for U·E·V = D diagonal, s = V·t solves E·s ≡ 0 (mod d)
+//     iff each pivot t_i is a multiple of d/gcd(D_ii, d) and free t_i range over
+//     Z_d. This is uniform across all moduli (it also reproduces the field result
+//     for prime d) and needs no separate CRT recombination. Candidate generators
+//     are then verified against the oracle (f(x) = f(x+s)) to select a true period.
+//
 // Quantum advantage: O(n) queries vs exponential classical.
-//
-// Restriction: d must be prime. Composite d requires CRT (not implemented).
 // =============================================================================
 
 class QuditSimon {
@@ -604,13 +666,32 @@ public:
         int quantum_queries;       // number of quantum circuit executions
     };
 
+    // Black-box (opaque function) oracle.
     // f: Z_d^n → Z_d^n — the periodic function satisfying the Simon promise.
-    // d must be prime. extra_samples: additional queries beyond the minimum n-1.
-    // Throws std::invalid_argument if d < 2, d is not prime, n < 1,
-    //   or f returns a vector of wrong size.
+    // Runs on STATEVECTOR, DENSITY_MATRIX, or MPS for any d ≥ 2. The CLIFFORD
+    // backend is NOT supported here (a black-box function has no Clifford
+    // decomposition): rather than silently substituting another backend it throws
+    // and directs the caller to the QuditAffineOracle overload.
+    // extra_samples: additional queries beyond the minimum n-1.
+    // Throws std::invalid_argument if d < 2, n < 1, f returns a vector of wrong
+    // size or an out-of-range digit, or backend == CLIFFORD.
     static Result solve(
         int n, int d,
         const std::function<std::vector<int>(const std::vector<int>&)>& f,
+        int extra_samples = 3,
+        uint64_t seed = 0,
+        QuditBackend backend = QuditBackend::STATEVECTOR,
+        const QuditNoiseModel* noise = nullptr
+    );
+
+    // Structured (affine) oracle: f(x) = A·x + b (mod d), A is n×n (out = in = n).
+    // Affine maps are Clifford-decomposable, so this overload supports the CLIFFORD
+    // backend (prime d) in addition to SV / DM / MPS (any d). The hidden subgroup
+    // is ker_{Z_d}(A); b does not affect the period. Throws std::invalid_argument
+    // if d < 2, num_inputs() != num_outputs(), n < 1, a coefficient is out of
+    // [0, d), or backend == CLIFFORD with composite d.
+    static Result solve(
+        const QuditAffineOracle& oracle, int d,
         int extra_samples = 3,
         uint64_t seed = 0,
         QuditBackend backend = QuditBackend::STATEVECTOR,
@@ -622,6 +703,15 @@ private:
     static int  mod_inv(int a, int p);   // modular inverse, p prime, a != 0
     static std::vector<std::vector<int>> null_space_gf(
         std::vector<std::vector<int>> M, int n, int d);
+    // Kernel over the ring Z_d (composite d) via integer Smith Normal Form.
+    static std::vector<std::vector<int>> null_space_ring(
+        const std::vector<std::vector<int>>& M, int n, int d);
+    // Shared post-processing: equations → Result. is_period(s) must return true
+    // iff s is a nonzero valid period of the oracle (verified against f).
+    static Result post_process(
+        const std::vector<std::vector<int>>& equations,
+        int n, int d, int queries,
+        const std::function<bool(const std::vector<int>&)>& is_period);
 };
 
 // =============================================================================

@@ -710,11 +710,19 @@ TEST(QuditDJ_Backend, MPS_Balanced_d3) {
     EXPECT_EQ(r.verdict, QuditDeutschJozsa::Verdict::BALANCED);
 }
 
-TEST(QuditDJ_Backend, Clifford_FallsBackToSV_Constant_d2) {
+TEST(QuditDJ_Backend, Clifford_OpaqueThrows_AffineWorks_d2) {
+    // R.1.11.0: an opaque std::function oracle has no Clifford decomposition,
+    // so the CLIFFORD backend now throws instead of silently falling back to SV.
     auto f = [](const std::vector<int>&) -> int { return 0; };
-    // CLIFFORD path falls back to SV — should not throw, should return CONSTANT
-    auto r = QuditDeutschJozsa::solve(2, 2, f, 42, QuditBackend::CLIFFORD);
-    EXPECT_EQ(r.verdict, QuditDeutschJozsa::Verdict::CONSTANT);
+    EXPECT_THROW(QuditDeutschJozsa::solve(2, 2, f, 42, QuditBackend::CLIFFORD),
+                 std::invalid_argument);
+    // The structured affine oracle IS Clifford-decomposable and runs on the tableau.
+    QuditAffineOracle constant{ {{0, 0}}, {0} };   // f(x) = 0  → CONSTANT
+    EXPECT_EQ(QuditDeutschJozsa::solve(constant, 2, 42, QuditBackend::CLIFFORD).verdict,
+              QuditDeutschJozsa::Verdict::CONSTANT);
+    QuditAffineOracle balanced{ {{1, 0}}, {0} };   // f(x) = x_0 → BALANCED
+    EXPECT_EQ(QuditDeutschJozsa::solve(balanced, 2, 42, QuditBackend::CLIFFORD).verdict,
+              QuditDeutschJozsa::Verdict::BALANCED);
 }
 
 TEST(QuditDJ_Backend, AllBackends_AgreeOn_Constant_d2) {
@@ -875,10 +883,14 @@ TEST(QuditSimon_Backend, SV_vs_DM_BothFindPeriod_d2) {
     EXPECT_TRUE(is_simon_period(dm.period, s, 2));
 }
 
-TEST(QuditSimon_Backend, NonPrime_d_Throws) {
-    const std::vector<int> s{1, 0};
+TEST(QuditSimon_Backend, CompositeD_FindsPeriod_d4) {
+    // R.1.11.0: composite d is supported via the integer-SNF ring kernel
+    // (formerly threw std::invalid_argument).
+    const std::vector<int> s{2, 0};
     auto f = make_simon_oracle(s, 2, 4);
-    EXPECT_THROW(QuditSimon::solve(2, 4, f), std::invalid_argument);
+    auto r = QuditSimon::solve(2, 4, f, 6, 42);
+    EXPECT_FALSE(r.is_trivial);
+    EXPECT_TRUE(is_simon_period(r.period, s, 4));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

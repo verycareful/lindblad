@@ -6,8 +6,12 @@
 #include "lindblad/qudit/qudit_clifford.hpp"
 #include "lindblad/qudit/qudit_noise_model.hpp"
 
+#include <algorithm>
+#include <cstdlib>
+#include <numeric>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace lindblad {
@@ -184,16 +188,14 @@ QuditSimon::Result QuditSimon::solve(
 {
     if (d < 2)
         throw std::invalid_argument("QuditSimon::solve: d must be >= 2");
-    if (!is_prime(d))
-        throw std::invalid_argument(
-            "QuditSimon::solve: d must be prime for GF(d) post-processing");
     if (n < 1)
         throw std::invalid_argument("QuditSimon::solve: n must be >= 1");
 
     if (backend == QuditBackend::CLIFFORD)
         throw std::invalid_argument(
-            "QuditSimon::solve: CLIFFORD backend is not supported "
-            "(Simon's oracle is a general function oracle, not a Clifford circuit)");
+            "QuditSimon::solve: CLIFFORD backend does not support a black-box "
+            "std::function oracle (no Clifford decomposition exists). Use the "
+            "QuditAffineOracle overload for a Clifford-decomposable oracle.");
 
     const auto F  = qudit_gates::qft_matrix(d);
     const auto Fd = qudit_gates::iqft_matrix(d);
@@ -293,14 +295,309 @@ QuditSimon::Result QuditSimon::solve(
         }
     }
 
-    const std::vector<std::vector<int>> null_vecs = null_space_gf(equations, n, d);
-    if (null_vecs.empty())
-        return Result{std::vector<int>(static_cast<size_t>(n), 0), true, d, n, queries};
+    // Period verifier (used only for composite d): a nonzero s is a true period
+    // iff f(x) = f((x + s) mod d) for all x. Sample x = 0 plus a few random points.
+    auto is_period = [&](const std::vector<int>& s) -> bool {
+        bool nonzero = false;
+        for (int v : s) if (v != 0) { nonzero = true; break; }
+        if (!nonzero) return false;
 
-    const std::vector<int>& period = null_vecs[0];
-    bool trivial = true;
-    for (int v : period) if (v != 0) { trivial = false; break; }
-    return Result{period, trivial, d, n, queries};
+        std::mt19937_64 vrng(seed ^ 0x9e3779b97f4a7c15ULL);
+        std::uniform_int_distribution<int> dist(0, d - 1);
+        auto agrees = [&](const std::vector<int>& x) -> bool {
+            std::vector<int> xs(static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i)
+                xs[static_cast<size_t>(i)] = (x[static_cast<size_t>(i)] + s[static_cast<size_t>(i)]) % d;
+            return validated_f(x) == validated_f(xs);
+        };
+        std::vector<int> x(static_cast<size_t>(n), 0);
+        if (!agrees(x)) return false;               // x = 0
+        for (int trial = 0; trial < 8; ++trial) {
+            for (int i = 0; i < n; ++i) x[static_cast<size_t>(i)] = dist(vrng);
+            if (!agrees(x)) return false;
+        }
+        return true;
+    };
+
+    return post_process(equations, n, d, queries, is_period);
+}
+
+// =============================================================================
+// QuditSimon — kernel over the ring Z_d via integer Smith Normal Form
+//
+// Diagonalises the integer equation matrix M (rows × n) as U·M·V = D with U, V
+// unimodular and D diagonal, then reads the kernel mod d off the diagonal.
+// We only need a diagonal form (not the full invariant-factor divisibility
+// chain), so the routine performs the row/column gcd elimination without the
+// extra divisibility-correction step. V is tracked (column operations only);
+// U is never needed because it is unimodular and therefore invertible mod d:
+//   M·s ≡ 0 (mod d)  ⟺  D·t ≡ 0 (mod d)   where  s = V·t.
+// For each pivot column i (i < rank): D_ii·t_i ≡ 0 (mod d) ⟺ t_i is a multiple
+// of d/gcd(D_ii, d); each free column (i ≥ rank) contributes a free t_i ∈ Z_d.
+// Returns one generating vector per nontrivial kernel direction (reduced mod d).
+// =============================================================================
+
+std::vector<std::vector<int>> QuditSimon::null_space_ring(
+    const std::vector<std::vector<int>>& M_in, int n, int d)
+{
+    const int rows = static_cast<int>(M_in.size());
+    const int cols = n;
+
+    // Work in 64-bit to absorb intermediate growth during elimination.
+    std::vector<std::vector<long long>> D(static_cast<size_t>(rows),
+                                          std::vector<long long>(static_cast<size_t>(cols), 0));
+    for (int i = 0; i < rows; ++i)
+        for (int j = 0; j < cols; ++j)
+            D[static_cast<size_t>(i)][static_cast<size_t>(j)] = M_in[static_cast<size_t>(i)][static_cast<size_t>(j)];
+
+    // V (cols × cols) accumulates the column operations; starts as identity.
+    std::vector<std::vector<long long>> V(static_cast<size_t>(cols),
+                                          std::vector<long long>(static_cast<size_t>(cols), 0));
+    for (int i = 0; i < cols; ++i) V[static_cast<size_t>(i)][static_cast<size_t>(i)] = 1;
+
+    auto swap_cols = [&](int a, int b) {
+        if (a == b) return;
+        for (int i = 0; i < rows; ++i) std::swap(D[static_cast<size_t>(i)][static_cast<size_t>(a)], D[static_cast<size_t>(i)][static_cast<size_t>(b)]);
+        for (int i = 0; i < cols; ++i) std::swap(V[static_cast<size_t>(i)][static_cast<size_t>(a)], V[static_cast<size_t>(i)][static_cast<size_t>(b)]);
+    };
+    auto col_axpy = [&](int a, int b, long long q) {     // col_a -= q * col_b
+        for (int i = 0; i < rows; ++i) D[static_cast<size_t>(i)][static_cast<size_t>(a)] -= q * D[static_cast<size_t>(i)][static_cast<size_t>(b)];
+        for (int i = 0; i < cols; ++i) V[static_cast<size_t>(i)][static_cast<size_t>(a)] -= q * V[static_cast<size_t>(i)][static_cast<size_t>(b)];
+    };
+    auto row_axpy = [&](int a, int b, long long q) {     // row_a -= q * row_b
+        for (int j = 0; j < cols; ++j) D[static_cast<size_t>(a)][static_cast<size_t>(j)] -= q * D[static_cast<size_t>(b)][static_cast<size_t>(j)];
+    };
+
+    const int lim = std::min(rows, cols);
+    int rank = 0;
+    for (int t = 0; t < lim; ++t) {
+        bool pivot_found = false;
+        while (true) {
+            // Pick the nonzero entry of smallest magnitude in the submatrix [t:, t:].
+            int pi = -1, pj = -1;
+            long long best = 0;
+            for (int i = t; i < rows; ++i)
+                for (int j = t; j < cols; ++j) {
+                    const long long v = D[static_cast<size_t>(i)][static_cast<size_t>(j)];
+                    if (v != 0 && (pi < 0 || std::llabs(v) < best)) { best = std::llabs(v); pi = i; pj = j; }
+                }
+            if (pi < 0) break;            // submatrix all zero → no more pivots
+            pivot_found = true;
+            if (pi != t) std::swap(D[static_cast<size_t>(pi)], D[static_cast<size_t>(t)]);
+            swap_cols(pj, t);
+
+            const long long piv = D[static_cast<size_t>(t)][static_cast<size_t>(t)];
+            bool reduced = false;
+            for (int i = t + 1; i < rows; ++i)
+                if (D[static_cast<size_t>(i)][static_cast<size_t>(t)] != 0) {
+                    row_axpy(i, t, D[static_cast<size_t>(i)][static_cast<size_t>(t)] / piv);
+                    if (D[static_cast<size_t>(i)][static_cast<size_t>(t)] != 0) reduced = true;
+                }
+            for (int j = t + 1; j < cols; ++j)
+                if (D[static_cast<size_t>(t)][static_cast<size_t>(j)] != 0) {
+                    col_axpy(j, t, D[static_cast<size_t>(t)][static_cast<size_t>(j)] / piv);
+                    if (D[static_cast<size_t>(t)][static_cast<size_t>(j)] != 0) reduced = true;
+                }
+            if (reduced) continue;        // remainder left → re-pivot (gcd loop)
+            break;                        // row t and col t now zero off the diagonal
+        }
+        if (!pivot_found) break;
+        rank = t + 1;
+    }
+
+    // Build one kernel generator per nontrivial direction.
+    auto column_mod_d = [&](int col, long long mult) -> std::vector<int> {
+        std::vector<int> s(static_cast<size_t>(n));
+        bool nonzero = false;
+        for (int i = 0; i < n; ++i) {
+            long long e = ((V[static_cast<size_t>(i)][static_cast<size_t>(col)] * mult) % d + d) % d;
+            s[static_cast<size_t>(i)] = static_cast<int>(e);
+            if (e != 0) nonzero = true;
+        }
+        return nonzero ? s : std::vector<int>();
+    };
+
+    std::vector<std::vector<int>> basis;
+    for (int i = 0; i < cols; ++i) {
+        if (i < rank) {
+            const long long di = std::llabs(D[static_cast<size_t>(i)][static_cast<size_t>(i)]);
+            const long long g  = std::gcd(di, static_cast<long long>(d));
+            const long long mi = static_cast<long long>(d) / g;   // smallest nonzero t_i with di*t_i ≡ 0
+            if (mi < d) {                                         // g > 1 → nontrivial direction
+                auto s = column_mod_d(i, mi);
+                if (!s.empty()) basis.push_back(std::move(s));
+            }
+        } else {
+            auto s = column_mod_d(i, 1);                          // free column
+            if (!s.empty()) basis.push_back(std::move(s));
+        }
+    }
+    return basis;
+}
+
+// =============================================================================
+// QuditSimon — shared post-processing (equations → Result)
+//
+// prime d:     field Gaussian elimination (null_space_gf); the first kernel
+//              vector is the period generator (unchanged historical behaviour).
+// composite d: ring kernel via null_space_ring, then the candidate generators
+//              are screened with is_period(s) — checking each basis vector, its
+//              scalar multiples, then pairwise sums — to return a verified true
+//              period. Falls back to the first nonzero basis vector if none
+//              verifies (e.g. too few samples).
+// =============================================================================
+
+QuditSimon::Result QuditSimon::post_process(
+    const std::vector<std::vector<int>>& equations,
+    int n, int d, int queries,
+    const std::function<bool(const std::vector<int>&)>& is_period)
+{
+    const std::vector<int> zero(static_cast<size_t>(n), 0);
+
+    if (is_prime(d)) {
+        const std::vector<std::vector<int>> null_vecs = null_space_gf(equations, n, d);
+        if (null_vecs.empty())
+            return Result{zero, true, d, n, queries};
+        const std::vector<int>& period = null_vecs[0];
+        bool trivial = true;
+        for (int v : period) if (v != 0) { trivial = false; break; }
+        return Result{period, trivial, d, n, queries};
+    }
+
+    // ── composite d ──────────────────────────────────────────────────────────
+    const std::vector<std::vector<int>> basis = null_space_ring(equations, n, d);
+    if (basis.empty())
+        return Result{zero, true, d, n, queries};
+
+    // Candidate periods in priority order: basis vectors, scalar multiples, sums.
+    std::vector<std::vector<int>> candidates = basis;
+    for (const auto& v : basis)
+        for (int k = 2; k < d; ++k) {
+            std::vector<int> w(static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i)
+                w[static_cast<size_t>(i)] = (v[static_cast<size_t>(i)] * k) % d;
+            candidates.push_back(std::move(w));
+        }
+    for (size_t a = 0; a < basis.size(); ++a)
+        for (size_t b = a + 1; b < basis.size(); ++b) {
+            std::vector<int> w(static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i)
+                w[static_cast<size_t>(i)] = (basis[a][static_cast<size_t>(i)] + basis[b][static_cast<size_t>(i)]) % d;
+            candidates.push_back(std::move(w));
+        }
+
+    for (const auto& c : candidates)
+        if (is_period(c))
+            return Result{c, false, d, n, queries};
+
+    // Best-effort fallback: first nonzero basis vector (could not be verified).
+    for (const auto& v : basis) {
+        for (int e : v) if (e != 0) return Result{v, false, d, n, queries};
+    }
+    return Result{zero, true, d, n, queries};
+}
+
+// =============================================================================
+// QuditSimon — structured (affine) oracle overload
+//
+// f(x) = A·x + b (mod d), A square n×n. Hidden subgroup H = ker_{Z_d}(A); b is
+// irrelevant to the period. The CLIFFORD backend (prime d) simulates the linear
+// oracle directly on the stabilizer tableau (CSUM powers + X^b per output); all
+// other backends materialise f and delegate to the function-oracle overload.
+// =============================================================================
+
+QuditSimon::Result QuditSimon::solve(
+    const QuditAffineOracle& oracle, int d,
+    int extra_samples, uint64_t seed,
+    QuditBackend backend, const QuditNoiseModel* noise)
+{
+    if (d < 2)
+        throw std::invalid_argument("QuditSimon::solve: d must be >= 2");
+    const int n = oracle.num_inputs();
+    if (oracle.num_outputs() != n)
+        throw std::invalid_argument(
+            "QuditSimon::solve: affine oracle must be square (num_outputs == num_inputs)");
+    if (n < 1)
+        throw std::invalid_argument("QuditSimon::solve: n must be >= 1");
+    if (static_cast<int>(oracle.b.size()) != n)
+        throw std::invalid_argument("QuditSimon::solve: affine oracle b must have n entries");
+    for (const auto& row : oracle.A) {
+        if (static_cast<int>(row.size()) != n)
+            throw std::invalid_argument("QuditSimon::solve: affine oracle A must be n x n");
+        for (int v : row)
+            if (v < 0 || v >= d)
+                throw std::invalid_argument("QuditSimon::solve: affine coefficient out of [0, d)");
+    }
+    for (int v : oracle.b)
+        if (v < 0 || v >= d)
+            throw std::invalid_argument("QuditSimon::solve: affine constant out of [0, d)");
+
+    // Period verifier (exact for affine f): s is a period iff A·s ≡ 0 (mod d).
+    auto is_period = [&](const std::vector<int>& s) -> bool {
+        bool nonzero = false;
+        for (int v : s) if (v != 0) { nonzero = true; break; }
+        if (!nonzero) return false;
+        for (int j = 0; j < n; ++j) {
+            long long acc = 0;
+            for (int i = 0; i < n; ++i)
+                acc += static_cast<long long>(oracle.A[static_cast<size_t>(j)][static_cast<size_t>(i)])
+                     * s[static_cast<size_t>(i)];
+            if (acc % d != 0) return false;
+        }
+        return true;
+    };
+
+    if (backend == QuditBackend::CLIFFORD) {
+        if (!is_prime(d))
+            throw std::invalid_argument(
+                "QuditSimon::solve: CLIFFORD backend requires prime d");
+
+        std::mt19937_64 rng(seed == 0
+            ? static_cast<uint64_t>(std::random_device{}())
+            : seed);
+        const int target_samples = n - 1 + extra_samples;
+        const int max_attempts   = (n + extra_samples) * 6;
+
+        std::vector<std::vector<int>> equations;
+        int queries = 0;
+        for (int attempt = 0;
+             attempt < max_attempts && static_cast<int>(equations.size()) < target_samples;
+             ++attempt)
+        {
+            QuditCliffordSimulator c(2 * n, d);
+            for (int i = 0; i < n; ++i) c.apply_H(i);              // F_d on query register
+            // U_f: output_j += A[j][i]·x_i (+ b_j); CADD(k) = CSUM applied k times.
+            for (int j = 0; j < n; ++j) {
+                if (oracle.b[static_cast<size_t>(j)] != 0)
+                    c.apply_X(n + j, oracle.b[static_cast<size_t>(j)]);
+                for (int i = 0; i < n; ++i)
+                    for (int rep = 0; rep < oracle.A[static_cast<size_t>(j)][static_cast<size_t>(i)]; ++rep)
+                        c.apply_CSUM(i, n + j);
+            }
+            for (int i = 0; i < n; ++i) { c.apply_H(i); c.apply_H(i); c.apply_H(i); }  // F_d†
+
+            // Joint measurement of the query register (sequential collapse is correct).
+            const uint64_t s0 = rng();
+            std::vector<int> y(static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i)
+                y[static_cast<size_t>(i)] = c.measure_qudit(i, s0 + static_cast<uint64_t>(i));
+            ++queries;
+
+            bool is_zero = true;
+            for (int v : y) if (v != 0) { is_zero = false; break; }
+            if (is_zero) continue;
+            bool dup = false;
+            for (const auto& eq : equations) if (eq == y) { dup = true; break; }
+            if (!dup) equations.push_back(std::move(y));
+        }
+        return post_process(equations, n, d, queries, is_period);
+    }
+
+    // Non-Clifford backends (any d): materialise f and delegate.
+    auto affine_f = [&oracle, d](const std::vector<int>& x) -> std::vector<int> {
+        return oracle.eval(x, d);
+    };
+    return solve(n, d, affine_f, extra_samples, seed, backend, noise);
 }
 
 } // namespace algorithms

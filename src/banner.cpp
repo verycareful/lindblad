@@ -27,7 +27,7 @@ void print_lindblad_banner_once() {
 
         std::cout
             << "\n"
-            << "    Welcome to Lindblad Quantum Toolkit R.1.10.8 | CLI startup\n"
+            << "    Welcome to Lindblad Quantum Toolkit " LINDBLAD_VERSION_LABEL " | CLI startup\n"
             << "__________________________________________________________________________________________________________________________________________________\n\n"
             << "              _     <─. (`─')_  _(`─')   <─.(`─')           (`─')  _ _(`─')             \n"
             << "      <─.    (_)       ╲( OO) )( (OO ).─> __( OO)    <─.    (OO ).─╱( (OO ).─>          \n"
@@ -59,7 +59,7 @@ void print_lindblad_exit_banner() {
     std::cout
         << "\n"
 
-        << "    Thank you for using Lindblad Quantum Toolkit R.1.10.8\n"
+        << "    Thank you for using Lindblad Quantum Toolkit " LINDBLAD_VERSION_LABEL "\n"
         << "__________________________________________________________________________________________________________________________________________________\n\n"
         << "              _     <─. (`─')_  _(`─')   <─.(`─')           (`─')  _ _(`─')             \n"
         << "      <─.    (_)       ╲( OO) )( (OO ).─> __( OO)    <─.    (OO ).─╱( (OO ).─>          \n"

@@ -147,18 +147,20 @@ Relevant tests live in:
 | 3 | F_d† | each query qudit | decode |
 | 4 | Measure | query register | y with s·y ≡ 0 (mod d) |
 
-**Classical post-processing:** Gaussian elimination over GF(d) on ~n+extra_samples nonzero measurement vectors y. The null space of the measurement matrix (mod d) is spanned by s.
+**Classical post-processing:** recover the hidden subgroup `H = {s : y·s ≡ 0 (mod d) for every measured y}` from ~n+extra_samples nonzero measurement vectors y, then report a nonzero generator.
+- **prime d** — Gaussian elimination over the field GF(d); the null space of the measurement matrix (mod d) is spanned by s.
+- **composite d** — Z_d is only a ring, so field elimination breaks. The kernel mod d is computed via the integer Smith Normal Form of the measurement matrix: for `U·E·V = D` diagonal, `s = V·t` solves `E·s ≡ 0 (mod d)` iff each pivot `t_i` is a multiple of `d/gcd(D_ii, d)` and free `t_i` range over Z_d. This is uniform across all moduli (it reproduces the field result for prime d) and needs no separate CRT recombination. Candidate generators are then verified against the oracle (`f(x) = f(x+s)`) to select a true period.
 
 **Quantum advantage:** O(n) quantum queries vs exponential classical queries.
 
-**d-prime restriction:** Gaussian elimination over GF(d) requires d to be prime. For composite d, Chinese Remainder Theorem decomposition is needed (not yet implemented).
-
 **Required Inputs:**
 - `n` — number of qudits (≥ 1)
-- `d` — qudit dimension; must be prime
+- `d` — qudit dimension; any d ≥ 2 (prime or composite)
 - `f` — `std::function<std::vector<int>(const std::vector<int>&)>` mapping n digits to n digits
-- `backend` (optional): `QuditBackend` — simulator to use (default `STATEVECTOR`); `CLIFFORD` throws
+- `backend` (optional): `QuditBackend` — simulator to use (default `STATEVECTOR`). The opaque `f` overload does not support `CLIFFORD` (a black-box function has no Clifford decomposition); use the affine-oracle overload for the `CLIFFORD` backend.
 - `noise` (optional): `const QuditNoiseModel*` — noise model; only applied with `DENSITY_MATRIX` (default `nullptr`)
+
+**Structured (affine) oracle overload:** `QuditSimon::solve(const QuditAffineOracle& oracle, int d, ...)` accepts `f(x) = A·x + b (mod d)` (square `A`). Affine maps are Clifford-decomposable, so this overload additionally supports the `CLIFFORD` backend on prime d; all other backends run for any d. The hidden subgroup is `ker_{Z_d}(A)`; `b` does not affect the period.
 
 **How to Invoke:**
 ```cpp
@@ -181,7 +183,7 @@ auto r = QuditSimon::solve(/*n=*/2, /*d=*/3, f, /*extra_samples=*/3, /*seed=*/42
 // r.period == {1, 2},  r.is_trivial == false
 ```
 
-**Supported d:** Any prime d ≥ 2. For composite d, throws `std::invalid_argument`.
+**Supported d:** Any d ≥ 2 (prime or composite).
 
 **Result:**
 ```cpp
@@ -195,24 +197,24 @@ struct Result {
 ```
 
 **Exceptions:**
-- `std::invalid_argument` if `d < 2`, `d` is not prime, `n < 1`
+- `std::invalid_argument` if `d < 2` or `n < 1`
 - `std::invalid_argument` if `f` returns a vector of wrong size or with digits outside `[0, d)`
-- `std::invalid_argument` if `backend == QuditBackend::CLIFFORD`
+- `std::invalid_argument` if `backend == QuditBackend::CLIFFORD` for the opaque `f` overload (use the affine-oracle overload instead), or `CLIFFORD` with composite d for the affine overload
 
 **Backend:**
 
 | Backend | Supported | Notes |
 |---|---|---|
-| `STATEVECTOR` | ✓ | Default. Exact dense statevector; each query creates a fresh 2n-qudit state vector. |
-| `DENSITY_MATRIX` | ✓ | Full mixed-state; applies `noise` model if provided. |
-| `MPS` | ✓ | Tensor-network. |
-| `CLIFFORD` | ✗ | Throws `std::invalid_argument`. Simon's function oracle is not Clifford in general. |
+| `STATEVECTOR` | ✓ | Default. Exact dense statevector; each query creates a fresh 2n-qudit state vector. Any d. |
+| `DENSITY_MATRIX` | ✓ | Full mixed-state; applies `noise` model if provided. Any d. |
+| `MPS` | ✓ | Tensor-network. Any d. |
+| `CLIFFORD` | affine only | Opaque `f` overload throws (no Clifford decomposition of a black box). The affine-oracle overload runs on the stabilizer tableau for prime d. |
 
 The `noise` argument is applied only in the `DENSITY_MATRIX` path. See [docs/api/qudit-simulators.md](../api/qudit-simulators.md) for the full backend API reference.
 
 **Common pitfalls:**
-- `d` must be prime. Passing d=4, 6, 8, etc. throws.
-- The function `f` must satisfy the Simon promise (both 2-to-1 for s≠0 and injective for s=0). If the promise is violated, the classical post-processing may return an incorrect period.
+- Composite d (4, 6, 8, 9, ...) is supported via the integer-SNF ring kernel. For composite d the hidden subgroup may be larger than `{0, s}`; the returned period is one nonzero generator and may need more `extra_samples` to pin down.
+- The function `f` must satisfy the Simon promise (constant on cosets of the hidden subgroup `H`, distinct across cosets). If the promise is violated, the classical post-processing may return an incorrect period.
 - For small n, extra_samples=3 is sufficient. For n ≥ 5, increase extra_samples if the algorithm fails.
 
 ## Related Source Files

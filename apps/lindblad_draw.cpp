@@ -244,7 +244,7 @@ struct CliArgs {
 
 void print_usage(std::ostream& out) {
     out <<
-        "lindblad_draw : circuit visualiser CLI (R.1.10.3)\n"
+        "lindblad_draw : circuit visualiser CLI (" LINDBLAD_VERSION_LABEL ")\n"
         "\n"
         "USAGE\n"
         "  lindblad_draw [options] <circuit.qasm>\n"
