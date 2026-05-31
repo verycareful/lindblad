@@ -52,6 +52,8 @@ set(LINDBLAD_TEST_SOURCES
     test_visualiser_html_fixtures.cpp
     # R.1.10.3 additions
     test_visualiser_file_io.cpp
+    # R.1.11.1 test suite — qudit completeness (apply_P odd-d, affine oracles, composite-d Simon)
+    test_qudit_r1111.cpp
 )
 
 # Create test executable

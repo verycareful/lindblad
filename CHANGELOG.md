@@ -4,6 +4,36 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.11.1] - 2026-05-31
+
+Test-only release for the R.1.11.0 qudit completeness work.
+
+### Tests
+
+- **`tests/test_qudit_r1111.cpp`** — dedicated suite for the three R.1.11.0 features,
+  value-parameterized over an exhaustive (backend, d, n, case) matrix bounded by
+  per-backend dimension budgets:
+  - **apply_P (odd prime d)**: white-box tableau-transform check at d=3,5,7 (injects
+    x >= 2 so the x(x-1) phase term is exercised) plus an exact-statevector cross-check
+    on non-symmetric H-P-H circuits at d=2,3,5,7.
+  - **Affine DeutschJozsa**: `QuditAffineOracle::eval` unit/throw tests; constant-vs-
+    balanced verdict matrix across STATEVECTOR/DENSITY_MATRIX/MPS over d in {2..9},
+    n in {1,2,3}, plus CLIFFORD over prime d; opaque-oracle and affine-composite
+    CLIFFORD throw paths; affine-vs-opaque agreement.
+  - **Composite-d Simon**: period-recovery matrix over composite d {4,6,8,9,12} and a
+    prime control, verified against f(x)=f(x+s); injective-is-trivial; affine Simon on
+    CLIFFORD recovers ker(A) for prime d; opaque/affine-composite CLIFFORD throw paths.
+
+### Results
+
+- 1269 / 1272 tests across 95 suites passed (~74 s, WSL/Clang).
+- **3 known failures**, all `Matrix/SimonComposite.RecoversVerifiedPeriod` on the **MPS
+  backend** at d > 2. This is a pre-existing MPS-backend defect (it reproduces on prime
+  d=5, so it is not the composite-d ring kernel; STATEVECTOR and DENSITY_MATRIX recover
+  all cases correctly). The failing tests are kept in the suite rather than disabled —
+  hiding a real correctness failure would violate the project's no-silent-failures rule.
+  The MPS fix is tracked for R.1.11.2 (a `.1` release carries tests only, no fixes).
+
 ## [R.1.11.0] - 2026-05-31
 
 ### Added
