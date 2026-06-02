@@ -440,11 +440,11 @@ std::vector<std::vector<int>> QuditSimon::null_space_ring(
 //
 // prime d:     field Gaussian elimination (null_space_gf); the first kernel
 //              vector is the period generator (unchanged historical behaviour).
-// composite d: ring kernel via null_space_ring, then the candidate generators
-//              are screened with is_period(s) — checking each basis vector, its
-//              scalar multiples, then pairwise sums — to return a verified true
-//              period. Falls back to the first nonzero basis vector if none
-//              verifies (e.g. too few samples).
+// composite d: direct search over Z_d^n for a vector that annihilates every
+//              measured y (mod d) and is a verified period of the oracle. Correct
+//              for the ring Z_d and always feasible (d^n << the d^{2n} the sim
+//              already paid for). Returns the zero vector (trivial) when f is
+//              injective.
 // =============================================================================
 
 QuditSimon::Result QuditSimon::post_process(
@@ -465,36 +465,41 @@ QuditSimon::Result QuditSimon::post_process(
     }
 
     // ── composite d ──────────────────────────────────────────────────────────
-    const std::vector<std::vector<int>> basis = null_space_ring(equations, n, d);
-    if (basis.empty())
-        return Result{zero, true, d, n, queries};
-
-    // Candidate periods in priority order: basis vectors, scalar multiples, sums.
-    std::vector<std::vector<int>> candidates = basis;
-    for (const auto& v : basis)
-        for (int k = 2; k < d; ++k) {
-            std::vector<int> w(static_cast<size_t>(n));
-            for (int i = 0; i < n; ++i)
-                w[static_cast<size_t>(i)] = (v[static_cast<size_t>(i)] * k) % d;
-            candidates.push_back(std::move(w));
-        }
-    for (size_t a = 0; a < basis.size(); ++a)
-        for (size_t b = a + 1; b < basis.size(); ++b) {
-            std::vector<int> w(static_cast<size_t>(n));
-            for (int i = 0; i < n; ++i)
-                w[static_cast<size_t>(i)] = (basis[a][static_cast<size_t>(i)] + basis[b][static_cast<size_t>(i)]) % d;
-            candidates.push_back(std::move(w));
-        }
-
-    for (const auto& c : candidates)
-        if (is_period(c))
-            return Result{c, false, d, n, queries};
-
-    // Best-effort fallback: first nonzero basis vector (could not be verified).
-    for (const auto& v : basis) {
-        for (int e : v) if (e != 0) return Result{v, false, d, n, queries};
+    // Z_d is a ring, so field Gaussian elimination does not apply. Find a nonzero
+    // period by a direct search over Z_d^n: s must satisfy y·s ≡ 0 (mod d) for every
+    // measured y AND be a true period of the oracle (is_period). This is provably
+    // correct and always feasible — the quantum simulation already materialised
+    // d^{2n} amplitudes, so enumerating the d^n candidates is cheap by comparison.
+    // (Reading the kernel off an integer Smith Normal Form, as an earlier revision
+    // did, could emit spurious non-kernel vectors for composite d.)
+    long long total = 1;
+    for (int i = 0; i < n; ++i) {
+        total *= d;
+        if (total > (1LL << 30))   // d^n this large implies an unrunnable d^{2n} sim
+            throw std::runtime_error(
+                "QuditSimon::post_process: composite-d period search space too large");
     }
-    return Result{zero, true, d, n, queries};
+
+    auto annihilates_all = [&](const std::vector<int>& s) {
+        for (const auto& y : equations) {
+            long long dot = 0;
+            for (int i = 0; i < n; ++i)
+                dot += static_cast<long long>(y[static_cast<size_t>(i)]) * s[static_cast<size_t>(i)];
+            if (dot % d != 0) return false;
+        }
+        return true;
+    };
+
+    // Odometer over Z_d^n (little-endian), skipping s = 0. Return the first vector
+    // that annihilates every measured y and is a verified period of the oracle.
+    std::vector<int> s(static_cast<size_t>(n), 0);
+    for (long long code = 1; code < total; ++code) {
+        long long c = code;
+        for (int i = 0; i < n; ++i) { s[static_cast<size_t>(i)] = static_cast<int>(c % d); c /= d; }
+        if (annihilates_all(s) && is_period(s))
+            return Result{s, false, d, n, queries};
+    }
+    return Result{zero, true, d, n, queries};   // injective f: no nonzero period
 }
 
 // =============================================================================

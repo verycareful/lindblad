@@ -4,6 +4,46 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.11.2] - 2026-06-02
+
+### Fixed
+
+- **`QuditMPS` dense-statevector reconstruction was wrong for d > 2**, producing
+  trivial or incorrect qudit Simon results on the MPS backend. Two independent root
+  causes: (1) the dense `QuditMPS(statevector, ...)` constructor decoded interior-site
+  SVD `U` rows with a physical-major index (`sigma*chi_L + aL`) while the residual matrix
+  was built (and the final site read) with a left-bond-major index (`aL*d + sigma`),
+  transposing the physical and bond indices on any interior site with a nontrivial bond
+  (chi_L > 1); the extraction now uses `aL*d + sigma` to match. With chi_L = 1 the old and
+  new formulas coincide, so only previously-corrupted states change. (2) `Eigen::BDCSVD`
+  returned an inaccurate decomposition for a degenerate, rank-deficient complex matrix
+  arising at an interior site (the reconstruction `U·S·V†` did not match the input and the
+  squared singular values did not sum to 1), giving a non-negligible reconstruction error;
+  all four SVD sites (dense constructor, two-qudit gate split, left and right
+  canonicalization) now use `Eigen::JacobiSVD`, which is machine-precision accurate for
+  these matrices. Reported in [#8](https://github.com/verycareful/lindblad/issues/8); its
+  three reproducing cases (`/21`, `/24`, `/29` in `tests/test_qudit_r1111.cpp`) now pass
+  (`/21` also needed the composite-recovery fix below).
+- **`QuditSimon` composite-d period recovery could return a non-period vector.** The
+  hidden subgroup was read off an integer Smith-Normal-Form kernel of the measurement
+  matrix, which for composite d could emit a vector that does not annihilate every measured
+  outcome (for example returning a candidate outside the true kernel). Recovery now performs
+  a direct, oracle-verified search over Z_d^n, returning the first nonzero vector that
+  annihilates every measured outcome (mod d) and is a confirmed oracle period. This was a
+  latent correctness bug on all backends (statevector, density matrix, MPS), not MPS-only.
+
+### Changed
+
+- **CLI banner, README, and project website license copy clarified** to cite both
+  LICENSE v2.3 §3.1 (private sharing of unmodified copies) and §3.2 (private sharing of
+  modifications) for non-commercial use. No license change: the text already permitted this
+  since v2.3; the public-facing wording previously described only §3.1. Public
+  redistribution (forks, mirrors, registries, public derivatives) remains prohibited.
+
+### Results
+
+- 1296 tests across 102 suites, all passed (~72 s, WSL/Clang).
+
 ## [R.1.11.1] - 2026-05-31
 
 Test-only release for the R.1.11.0 qudit completeness work.

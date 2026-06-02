@@ -165,7 +165,7 @@ QuditMPS::QuditMPS(const QuditStatevector& sv,
                                      static_cast<size_t>(d)]);
 
     for (int q = 0; q < n_qudits - 1; ++q) {
-        Eigen::BDCSVD<Eigen::MatrixXcd> svd(
+        Eigen::JacobiSVD<Eigen::MatrixXcd> svd(
             M, Eigen::ComputeThinU | Eigen::ComputeThinV);
         const auto& S = svd.singularValues();
         const auto& U = svd.matrixU();
@@ -183,12 +183,20 @@ QuditMPS::QuditMPS(const QuditStatevector& sv,
         if (chi == 0) chi = 1;
 
         // Left tensor: shape (d, chi_L, chi) from leftmost chi columns of U.
+        // The residual matrix M is built with rows ordered (left-bond major):
+        //   row = aL * d + sigma   (see the M_next reshape below and the initial
+        //   reshape where chi_L = 1). U inherits that row order, so the physical
+        //   index sigma is the LOW digit and the left bond aL is the HIGH digit.
+        // Decode with the SAME ordering (this also matches the final-site read
+        // `M(aL * d + sigma, 0)`). Using `sigma * chi_L + aL` here transposed the
+        // physical/bond indices on intermediate sites (chi_L > 1), corrupting any
+        // state needing >= 3 sites with a nontrivial interior bond (R.1.11.2 fix).
         MPSSiteTensor Tq(d, chi_L, chi);
         for (int sigma = 0; sigma < d; ++sigma)
             for (int aL = 0; aL < chi_L; ++aL)
                 for (int alpha = 0; alpha < chi; ++alpha)
                     Tq.at(sigma, aL, alpha) =
-                        from_std(U(sigma * chi_L + aL, alpha));
+                        from_std(U(aL * d + sigma, alpha));
         tensors.push_back(std::move(Tq));
 
         // Build residual M' = diag(S_truncated) * V^dagger_truncated
@@ -418,7 +426,7 @@ void QuditMPS::split_two_sites(int q, const Eigen::MatrixXcd& Theta) {
         Theta.cols() != static_cast<Eigen::Index>(d) * chi_R)
         throw std::runtime_error("split_two_sites: shape mismatch");
 
-    Eigen::BDCSVD<Eigen::MatrixXcd> svd(
+    Eigen::JacobiSVD<Eigen::MatrixXcd> svd(
         Theta, Eigen::ComputeThinU | Eigen::ComputeThinV);
     const auto& S = svd.singularValues();
     const auto& U = svd.matrixU();
@@ -644,7 +652,7 @@ void QuditMPS::left_canonicalize() {
         // M = as_left_matrix has shape (d * chi_L, chi_R).
         Eigen::MatrixXcd M = Tq.as_left_matrix();
 
-        Eigen::BDCSVD<Eigen::MatrixXcd> svd(
+        Eigen::JacobiSVD<Eigen::MatrixXcd> svd(
             M, Eigen::ComputeThinU | Eigen::ComputeThinV);
         const auto& S = svd.singularValues();
         const auto& U = svd.matrixU();
@@ -709,7 +717,7 @@ void QuditMPS::right_canonicalize() {
         // M = as_right_matrix has shape (chi_L, d * chi_R).
         Eigen::MatrixXcd M = Tq.as_right_matrix();
 
-        Eigen::BDCSVD<Eigen::MatrixXcd> svd(
+        Eigen::JacobiSVD<Eigen::MatrixXcd> svd(
             M, Eigen::ComputeThinU | Eigen::ComputeThinV);
         const auto& S = svd.singularValues();
         const auto& U = svd.matrixU();

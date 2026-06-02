@@ -18,11 +18,13 @@
 #include "lindblad/qudit/qudit_backend.hpp"
 #include "lindblad/qudit/qudit_statevector.hpp"
 #include "lindblad/qudit/qudit_clifford.hpp"
+#include "lindblad/qudit/qudit_mps.hpp"
 #include "lindblad/qudit/qudit_gates.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <utility>
 #include <vector>
 
 using namespace lindblad;
@@ -354,13 +356,10 @@ TEST_P(SimonComposite, RecoversVerifiedPeriod) {
 
 INSTANTIATE_TEST_SUITE_P(Matrix, SimonComposite, ::testing::ValuesIn(simon_params()));
 
-// KNOWN BUG — deferred to R.1.11.2 (test-only release cannot carry the fix).
-// MPS Simon recovery is wrong for certain d > 2 period structures: the query
-// register collapses to zero (is_trivial) or a wrong period is returned. It
-// reproduces on prime d=5 (s={1,4}), so it is an MPS-backend defect, not the
-// R.1.11.0 composite-d kernel. SV and DM recover these correctly. Remove the
-// DISABLED_ prefix once the MPS backend is fixed. See docs/plans/TODO.md.
-TEST(SimonMpsKnownBug, DISABLED_MpsSimonDGt2) {
+// Regression for the MPS Simon d>2 defect fixed in R.1.11.2 (the dense-ctor
+// BDCSVD accuracy bug + the index-transposition + composite recovery). Earlier
+// the MPS query register collapsed to zero or returned a wrong period here.
+TEST(SimonMpsDGt2, RecoversOnMps_d5) {
     auto f = make_simon_f({1, 4}, 2, 5);
     const auto r = QuditSimon::solve(2, 5, f, 8, 4321u, QuditBackend::MPS);
     EXPECT_FALSE(r.is_trivial);
@@ -420,3 +419,235 @@ TEST(SimonAffineEdge, CompositeCliffordThrows) {
     EXPECT_THROW(QuditSimon::solve(oracle, 4, 6, 0, QuditBackend::CLIFFORD),
                  std::invalid_argument);
 }
+
+// =============================================================================
+// R.1.11.2 regression — QuditMPS dense round-trip
+//
+// dense -> MPS -> dense must be the identity for fully-entangled multi-qudit
+// states. The dense constructor previously transposed the physical and left-bond
+// indices on intermediate sites (chi_L > 1), corrupting any state needing >= 3
+// sites with a nontrivial interior bond. That was the root cause of the MPS Simon
+// d>2 failures (DeutschJozsa's verdict survived the permutation; Simon's exact
+// y-structure did not). With chi_L = 1 the old and new index formulas coincide, so
+// only previously-corrupted states change.
+// =============================================================================
+
+class MpsDenseRoundTrip : public ::testing::TestWithParam<std::pair<int, int>> {};
+
+TEST_P(MpsDenseRoundTrip, GenericEntangledStateIsPreserved) {
+    const int d = GetParam().first;
+    const int n = GetParam().second;
+
+    QuditStatevector sv(n, d);
+    double nrm = 0.0;
+    for (size_t i = 0; i < sv.dim; ++i) {
+        // Distinct, non-symmetric amplitudes so any index permutation is visible;
+        // a generic dense vector forces full (chi_L > 1) interior bonds.
+        Complex128 a(static_cast<double>(i + 1),
+                     static_cast<double>(static_cast<int>(i % 7) - 3));
+        sv.amplitudes[i] = a;
+        nrm += a.norm_sq();
+    }
+    nrm = std::sqrt(nrm);
+    for (size_t i = 0; i < sv.dim; ++i) sv.amplitudes[i] = sv.amplitudes[i] / nrm;
+
+    QuditMPS mps(sv, /*max_bond_dim=*/256);
+    const auto rt = mps.to_statevector();
+    ASSERT_EQ(rt.amplitudes.size(), sv.amplitudes.size());
+    for (size_t i = 0; i < sv.dim; ++i) {
+        EXPECT_NEAR(rt.amplitudes[i].real, sv.amplitudes[i].real, 1e-9) << "i=" << i;
+        EXPECT_NEAR(rt.amplitudes[i].imag, sv.amplitudes[i].imag, 1e-9) << "i=" << i;
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(Generic, MpsDenseRoundTrip, ::testing::Values(
+    std::make_pair(2, 4),   // d=2, 4 sites (interior bonds > 1; was corrupted pre-fix)
+    std::make_pair(3, 3),   // d=3, 3 sites
+    std::make_pair(4, 3),   // d=4, 3 sites
+    std::make_pair(5, 2),   // d=5, 2 sites
+    std::make_pair(6, 4),   // d=6, 4 sites (matches Simon /24 register size)
+    std::make_pair(4, 6)    // d=4, 6 sites (matches Simon /21 register size)
+));
+
+// Diagnostic + regression: the MPS Simon pre-measurement state must match the
+// statevector backend exactly for the two cases that still fail (/24, /21). This
+// isolates "MPS state wrong" (dense ctor / apply_1qudit) from "state correct, the
+// composite post-processing under-samples on the MPS RNG draw".
+class MpsSimonState : public ::testing::TestWithParam<SimonParam> {};
+
+TEST_P(MpsSimonState, PreMeasurementMatchesStatevector) {
+    const auto p = GetParam();
+    const int n = p.n, d = p.d;
+    auto f = make_simon_f(p.s, n, d);
+    const auto F  = qudit_gates::qft_matrix(d);
+    const auto Fd = qudit_gates::iqft_matrix(d);
+
+    QuditStatevector sv(2 * n, d);
+    for (int i = 0; i < n; ++i) sv.apply_1qudit(i, F);
+    sv.apply_function_oracle(n, n, f);
+    for (int i = 0; i < n; ++i) sv.apply_1qudit(i, Fd);
+
+    QuditMPS mps(2 * n, d);
+    for (int i = 0; i < n; ++i) mps.apply_1qudit(i, F);
+    mps.apply_function_oracle(n, n, [&](int xf) -> int {
+        auto dg = QuditStatevector::index_to_digits(static_cast<size_t>(xf), d, n);
+        return static_cast<int>(QuditStatevector::digits_to_index(f(dg), d));
+    });
+    for (int i = 0; i < n; ++i) mps.apply_1qudit(i, Fd);
+    const auto msv = mps.to_statevector();
+
+    ASSERT_EQ(msv.amplitudes.size(), sv.amplitudes.size());
+    double max_abs_diff = 0.0;
+    for (size_t i = 0; i < sv.dim; ++i) {
+        max_abs_diff = std::max(max_abs_diff,
+            std::abs(msv.amplitudes[i].real - sv.amplitudes[i].real));
+        max_abs_diff = std::max(max_abs_diff,
+            std::abs(msv.amplitudes[i].imag - sv.amplitudes[i].imag));
+    }
+    EXPECT_LT(max_abs_diff, 1e-9)
+        << "MPS Simon state diverges from statevector: d=" << d << " n=" << n
+        << " max|diff|=" << max_abs_diff;
+}
+
+INSTANTIATE_TEST_SUITE_P(FailingCases, MpsSimonState, ::testing::Values(
+    SimonParam{QuditBackend::MPS, 6, 2, {2, 4}},      // /24
+    SimonParam{QuditBackend::MPS, 4, 3, {2, 0, 2}}    // /21
+));
+
+// Localizer for /24 (d=6 state diverges): is the divergence introduced at the
+// oracle/reconstruction stage (dense ctor on the degenerate Simon spectrum) or at
+// the F_d^dagger stage (apply_1qudit on the reconstructed high-bond MPS)?
+TEST(MpsSimonStage, D6_LocalizeDivergence) {
+    const int n = 2, d = 6;
+    const std::vector<int> s = {2, 4};
+    auto f = make_simon_f(s, n, d);
+    const auto F  = qudit_gates::qft_matrix(d);
+    const auto Fd = qudit_gates::iqft_matrix(d);
+
+    QuditStatevector svA(2 * n, d);
+    for (int i = 0; i < n; ++i) svA.apply_1qudit(i, F);
+    svA.apply_function_oracle(n, n, f);                       // stage A: post-oracle
+    QuditStatevector svB = svA;
+    for (int i = 0; i < n; ++i) svB.apply_1qudit(i, Fd);      // stage B: post-Fd
+
+    QuditMPS mps(2 * n, d);
+    for (int i = 0; i < n; ++i) mps.apply_1qudit(i, F);
+    mps.apply_function_oracle(n, n, [&](int xf) -> int {
+        auto dg = QuditStatevector::index_to_digits(static_cast<size_t>(xf), d, n);
+        return static_cast<int>(QuditStatevector::digits_to_index(f(dg), d));
+    });
+    const auto mpsA = mps.to_statevector();
+    for (int i = 0; i < n; ++i) mps.apply_1qudit(i, Fd);
+    const auto mpsB = mps.to_statevector();
+
+    auto maxdiff = [](const QuditStatevector& a, const QuditStatevector& b) {
+        double m = 0.0;
+        for (size_t i = 0; i < a.dim; ++i) {
+            m = std::max(m, std::abs(a.amplitudes[i].real - b.amplitudes[i].real));
+            m = std::max(m, std::abs(a.amplitudes[i].imag - b.amplitudes[i].imag));
+        }
+        return m;
+    };
+    EXPECT_LT(maxdiff(mpsA, svA), 1e-9) << "STAGE A (post-oracle reconstruction) diverges";
+    EXPECT_LT(maxdiff(mpsB, svB), 1e-9) << "STAGE B (after Fd / apply_1qudit) diverges";
+}
+
+// Localizer for /21 (d=4 n=3 state is correct, recovery fails): is it just the
+// composite post-processing under-sampling on the MPS RNG draw? If a much larger
+// sample budget recovers, it is sampling robustness, not an MPS or kernel bug.
+TEST(SimonCompositeRobustness, D4N3_LargeSampleBudget_MPS) {
+    const std::vector<int> s = {2, 0, 2};
+    auto f = make_simon_f(s, 3, 4);
+    const auto r = QuditSimon::solve(3, 4, f, /*extra_samples=*/40, 4321u, QuditBackend::MPS);
+    EXPECT_TRUE(verified_period(f, r.period, 3, 4))
+        << "returned period=" << ::testing::PrintToString(r.period)
+        << " is_trivial=" << r.is_trivial;
+}
+
+// Bisection for the degenerate-spectrum ctor bug (/24). GHZ states have maximally
+// degenerate Schmidt spectra (all singular values equal). n=2 exercises only the
+// first + final site; n=3 adds one intermediate site (the fixed-region). A direct
+// round-trip of the exact Simon post-oracle state confirms it is the ctor, not the
+// oracle/gates.
+namespace {
+QuditStatevector ghz_state(int n, int d) {
+    QuditStatevector sv(n, d);
+    for (auto& a : sv.amplitudes) a = Complex128(0.0, 0.0);
+    const double c = 1.0 / std::sqrt(static_cast<double>(d));
+    for (int k = 0; k < d; ++k) {
+        std::vector<int> dg(static_cast<size_t>(n), k);
+        sv.amplitudes[QuditStatevector::digits_to_index(dg, d)] = Complex128(c, 0.0);
+    }
+    return sv;
+}
+double max_amp_diff(const QuditStatevector& a, const QuditStatevector& b) {
+    double m = 0.0;
+    for (size_t i = 0; i < a.dim; ++i) {
+        m = std::max(m, std::abs(a.amplitudes[i].real - b.amplitudes[i].real));
+        m = std::max(m, std::abs(a.amplitudes[i].imag - b.amplitudes[i].imag));
+    }
+    return m;
+}
+}  // namespace
+
+TEST(MpsCtorDegenerate, GHZ_d6_n2) {
+    auto sv = ghz_state(2, 6);
+    QuditMPS mps(sv, 64);
+    EXPECT_LT(max_amp_diff(mps.to_statevector(), sv), 1e-9);
+}
+TEST(MpsCtorDegenerate, GHZ_d6_n3) {
+    auto sv = ghz_state(3, 6);
+    QuditMPS mps(sv, 64);
+    EXPECT_LT(max_amp_diff(mps.to_statevector(), sv), 1e-9);
+}
+TEST(MpsCtorDegenerate, GHZ_d4_n4) {
+    auto sv = ghz_state(4, 4);
+    QuditMPS mps(sv, 64);
+    EXPECT_LT(max_amp_diff(mps.to_statevector(), sv), 1e-9);
+}
+TEST(MpsCtorDegenerate, SimonState_d6_DirectRoundTrip) {
+    const int n = 2, d = 6;
+    auto f = make_simon_f({2, 4}, n, d);
+    const auto F = qudit_gates::qft_matrix(d);
+    QuditStatevector sv(2 * n, d);
+    for (int i = 0; i < n; ++i) sv.apply_1qudit(i, F);
+    sv.apply_function_oracle(n, n, f);
+    QuditMPS mps(sv, 64);
+    EXPECT_LT(max_amp_diff(mps.to_statevector(), sv), 1e-9);
+}
+
+// Pattern-finder for #2: directly round-trip the Simon post-oracle state (dense
+// ctor + to_statevector, no gates/measure) across many (d, n, s). The pass/fail
+// pattern reveals which structure triggers the dense-ctor bug. Controls (d=4, the
+// prime d=5, d=4 n=3) are expected to pass; d=6 {2,4} is the known failure.
+class MpsSimonStateRoundTrip : public ::testing::TestWithParam<SimonParam> {};
+
+TEST_P(MpsSimonStateRoundTrip, CtorRoundTrip) {
+    const auto p = GetParam();
+    auto f = make_simon_f(p.s, p.n, p.d);
+    const auto F = qudit_gates::qft_matrix(p.d);
+    QuditStatevector sv(2 * p.n, p.d);
+    for (int i = 0; i < p.n; ++i) sv.apply_1qudit(i, F);
+    sv.apply_function_oracle(p.n, p.n, f);
+    QuditMPS mps(sv, 64);
+    EXPECT_LT(max_amp_diff(mps.to_statevector(), sv), 1e-9)
+        << "d=" << p.d << " n=" << p.n << " s=" << ::testing::PrintToString(p.s);
+}
+
+INSTANTIATE_TEST_SUITE_P(SimonStates, MpsSimonStateRoundTrip, ::testing::Values(
+    SimonParam{QuditBackend::MPS, 4, 2, {2, 0}},     // control (MPS Simon d=4 passes)
+    SimonParam{QuditBackend::MPS, 4, 2, {1, 1}},
+    SimonParam{QuditBackend::MPS, 5, 2, {1, 4}},     // prime; /29 now passes
+    SimonParam{QuditBackend::MPS, 6, 2, {1, 0}},     // d=6, |H|=6, bond 6
+    SimonParam{QuditBackend::MPS, 6, 2, {3, 0}},     // d=6, |H|=2, bond 18
+    SimonParam{QuditBackend::MPS, 6, 2, {2, 4}},     // d=6, |H|=3, bond 12  (/24 fails)
+    SimonParam{QuditBackend::MPS, 8, 2, {4, 0}},     // d=8
+    SimonParam{QuditBackend::MPS, 9, 2, {3, 0}},     // d=9
+    SimonParam{QuditBackend::MPS, 4, 3, {2, 0, 2}}   // /21 state (round-trip expected OK)
+));
+
+// Note: the dense-ctor defect that produced the d=6 {2,4} divergence was traced to
+// Eigen::BDCSVD returning an inaccurate decomposition for that degenerate complex
+// matrix (Σσ² ≠ ‖M‖²_F); the fix is JacobiSVD in src/qudit/qudit_mps.cpp. The
+// MpsCtorDegenerate / MpsSimonStateRoundTrip / MpsSimonState cases above are the
+// permanent regressions for it.
