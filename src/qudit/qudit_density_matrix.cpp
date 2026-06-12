@@ -219,6 +219,8 @@ void QuditDensityMatrix::apply_1qudit(int q, const std::vector<Complex128>& U)
 // apply_to_ket_2q — apply d²×d² gate U to ket indices for (q0, q1)
 //
 // Mirrors QuditStatevector::apply_2qudit but operates on rho's ket dimension.
+// Matrix index convention (project LSB-first): the FIRST argument is the
+// LEAST significant digit, sub-index = x1 * d + x0.
 // For each base index (where both qudit q0 and q1 = 0 in the ket):
 //   - For each bra column j, extract d² amplitudes, multiply by U, write back.
 // =============================================================================
@@ -245,7 +247,7 @@ void QuditDensityMatrix::apply_to_ket_2q(int q0, int q1,
             // Extract d² ket values
             for (int x0 = 0; x0 < d; ++x0)
                 for (int x1 = 0; x1 < d; ++x1)
-                    old_amp[static_cast<size_t>(x0 * d + x1)] =
+                    old_amp[static_cast<size_t>(x1 * d + x0)] =
                         rho[(idx + static_cast<size_t>(x0) * stride0
                                  + static_cast<size_t>(x1) * stride1) * dim + j];
 
@@ -263,13 +265,15 @@ void QuditDensityMatrix::apply_to_ket_2q(int q0, int q1,
                 for (int x1 = 0; x1 < d; ++x1)
                     rho[(idx + static_cast<size_t>(x0) * stride0
                               + static_cast<size_t>(x1) * stride1) * dim + j] =
-                        new_amp[static_cast<size_t>(x0 * d + x1)];
+                        new_amp[static_cast<size_t>(x1 * d + x0)];
         }
     }
 }
 
 // =============================================================================
 // apply_to_bra_2q — apply U† to bra indices for (q0, q1)
+// Matrix index convention as apply_to_ket_2q: sub-index = x1 * d + x0
+// (first argument = least significant digit).
 // =============================================================================
 
 void QuditDensityMatrix::apply_to_bra_2q(int q0, int q1,
@@ -294,7 +298,7 @@ void QuditDensityMatrix::apply_to_bra_2q(int q0, int q1,
             // Extract d² bra values
             for (int x0 = 0; x0 < d; ++x0)
                 for (int x1 = 0; x1 < d; ++x1)
-                    old_amp[static_cast<size_t>(x0 * d + x1)] =
+                    old_amp[static_cast<size_t>(x1 * d + x0)] =
                         rho[i * dim + (idx + static_cast<size_t>(x0) * stride0
                                            + static_cast<size_t>(x1) * stride1)];
 
@@ -312,7 +316,7 @@ void QuditDensityMatrix::apply_to_bra_2q(int q0, int q1,
                 for (int x1 = 0; x1 < d; ++x1)
                     rho[i * dim + (idx + static_cast<size_t>(x0) * stride0
                                        + static_cast<size_t>(x1) * stride1)] =
-                        new_amp[static_cast<size_t>(x0 * d + x1)];
+                        new_amp[static_cast<size_t>(x1 * d + x0)];
         }
     }
 }

@@ -52,6 +52,17 @@ static QuantumCircuit from_qasm3(const std::string& qasm);
   `gate` block. (R.1.10.7 removed a legacy "silently skip on miss" concession
   — silent drops produced round-trip mismatches attributed to other
   components. Custom `gate` definitions are still respected.)
+- Supports both measurement forms (R.1.12): indexed `measure q[i] -> c[j];`
+  and whole-register `measure q -> c;`, which expands to one measurement per
+  bit (register sizes must match or the parser throws). `reset q;` expands the
+  same way. Unresolvable measure/reset operands throw instead of being
+  silently dropped (pre-R.1.12 behaviour lost all measurements of
+  register-form files)
+- `barrier` honours its operand list (`barrier q[0], r;` mixes indexed bits
+  and whole registers); a bare `barrier;` covers the full register
+- `if (creg == n) ...` conditionals are NOT supported and surface as an
+  unknown-gate error; import feedforward circuits through QASM 3, whose
+  parser supports single-bit `if` conditions
 
 ## QASM 3.0 Round-Trip
 

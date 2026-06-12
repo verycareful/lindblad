@@ -56,6 +56,82 @@ where both x and y are encoded in LSB-at-qubit-0. Specifically, `amp[x] = 1` inp
 
 When you introduce or modify any algorithm that maps qubit states to integer values, add an end-to-end test with a non-symmetric input — a non-zero phase, a non-uniform input, an oracle that selects a non-palindromic marked state. Symmetric tests (phase = 0, uniform inputs, palindromic outputs) cannot distinguish LSB from MSB conventions and will mask convention bugs.
 
+## Conventions
+
+Frozen as of R.1.12 and binding for all code, docs, and tests. Every entry
+extends the LSB-at-qubit-0 rule above; where lindblad deviates from Qiskit it
+does so deliberately and the deviation is stated.
+
+### Pauli strings (LSB-first)
+
+`PauliString::pauli[q]` acts on qubit q: `pauli[0]` is qubit 0 (least
+significant), `pauli[n-1]` is qubit n-1. `"XIZ"` means X on qubit 0, I on
+qubit 1, Z on qubit 2.
+
+- DELIBERATE DEVIATION from Qiskit, whose labels put qubit n-1 first.
+- Footgun: Pauli strings read in the OPPOSITE direction from measurement bitstrings (whose rightmost character is qubit 0). `"XI"` (X on qubit 0) marks the basis state counted under the key `"01"`.
+- `SparsePauliOp::tensor(other)`: `this` occupies the LOW qubits of the result, `other` the HIGH qubits.
+- Consumers bound to this rule: `SparsePauliOp::expectation_value` / `to_matrix` / batch, `DensityMatrix::expectation_value_sparse`, `StabilizerState::expectation_pauli`, `IsingHamiltonian::to_sparse_pauli_op`, the Estimator sampling path, QAOA/MAQAOA term readers.
+
+### Multi-qubit matrices (qubits[0] = LSB of the matrix index)
+
+Every externally supplied matrix follows `gates::apply_unitary`: bit i of the
+row/column index is the state of `qubits[i]`, so `qubits[0]` is the least
+significant bit. This binds `QuantumCircuit::unitary()`, `Instruction::matrix`,
+`KrausChannel::operators` (for multi-qubit channels), and `control()`'s
+generated matrices. Backends whose internal sub-block addressing is MSB-first
+(DensityMatrix, the MPS 2-qubit path) bridge by bit-reversal internally; named
+built-in gate matrices inside the simulators are an internal detail and stay
+in their builders' frame.
+
+### Controlled-gate operands and the interleaved control layout
+
+Controls come first in the argument list (`cx(control, target)`); in a
+generated controlled matrix the controls occupy the LOW index bits, so the
+gate block lives on the index slice whose control bits are all 1:
+`M[(2^nc - 1) | (r << nc), (2^nc - 1) | (c << nc)] = U[r][c]`. This is the
+structure used by `control()`, Shor, and QPE.
+
+### ECR argument order
+
+`ecr(a, b)` binds the FIRST argument to the high bit of the documented ECR
+matrix. DELIBERATE DEVIATION from Qiskit: `lindblad ecr(a, b)` equals
+`Qiskit ecr(b, a)` (equivalently SWAP * ECR_qiskit * SWAP). All three
+simulators implement the same convention.
+
+### Qudit layer (digits LSB-first, mirroring the qubit layer)
+
+Basis index `K = Σ digit_q · d^q` (qudit 0 is the least significant digit).
+Subspace matrices follow the qubit rule at general d: in
+`apply_2qudit(q0, q1, U)` the FIRST argument is the LEAST significant digit
+(`row = x1*d + x0`); `apply_kqudit` generalises with `qudits[i]` at digit
+weight `d^i`. `qudit_gates::cadd_matrix` and `controlled_power_matrix` are
+built in this convention.
+
+### Coupling maps
+
+A `CouplingMap`'s edge list is literal: an edgeless `CouplingMap(n)` declares
+n qubits where NO pair may interact, and routing 2-qubit gates against it
+throws. "Unconstrained" is expressed by the absence of a map:
+`CouplingMap()` (n = 0), which routing passes skip. Matches Qiskit/tket
+semantics.
+
+### Exact execution (shots == 0) and feedforward
+
+`run(qc, shots = 0)` on any simulator returns ONE seeded trajectory:
+classical conditions are honoured and MEASURE outcomes are drawn from the
+seed and recorded. `eval_expectation` and `Estimator` with `shots == 0`
+THROW for circuits containing measurement or classically-conditioned
+instructions, because a single trajectory's "exact" expectation would be
+statistically misleading. Circuits whose measurements are all terminal are
+sampled from a single forward pass (counts keyed by the qubit-to-clbit map).
+
+### Noise channel parameters
+
+`depolarizing(p, n)` distributes total error probability p uniformly over the
+4^n - 1 non-identity Paulis. `thermal_relaxation` decays coherences by
+exactly `exp(-t/T2)`.
+
 ## Layered View
 
 ```text

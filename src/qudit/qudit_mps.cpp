@@ -484,10 +484,13 @@ void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U) {
     const int chi_L = tensors[static_cast<size_t>(q)].chi_L;
     const int chi_R = tensors[static_cast<size_t>(q + 1)].chi_R;
 
-    // Theta_new[out_q*chi_L + aL, out_{q+1}*chi_R + aR]
-    //   = sum_{in_q, in_{q+1}}
-    //         U[(out_q*d + out_{q+1}), (in_q*d + in_{q+1})] *
-    //         Theta[in_q*chi_L + aL, in_{q+1}*chi_R + aR]
+    // Matrix index convention (project LSB-first, docs/Architecture.md
+    // "Conventions"): the FIRST site of the pair is the LEAST significant
+    // digit of the U index:
+    //   Theta_new[out_q*chi_L + aL, out_{q+1}*chi_R + aR]
+    //     = sum_{in_q, in_{q+1}}
+    //           U[(out_{q+1}*d + out_q), (in_{q+1}*d + in_q)] *
+    //           Theta[in_q*chi_L + aL, in_{q+1}*chi_R + aR]
     Eigen::MatrixXcd Theta_new(static_cast<Eigen::Index>(d) * chi_L,
                                static_cast<Eigen::Index>(d) * chi_R);
     Theta_new.setZero();
@@ -497,14 +500,14 @@ void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U) {
             for (int so0 = 0; so0 < d; ++so0) {
                 for (int so1 = 0; so1 < d; ++so1) {
                     std::complex<double> acc(0.0, 0.0);
-                    const size_t u_row = static_cast<size_t>(so0) *
+                    const size_t u_row = static_cast<size_t>(so1) *
                                              static_cast<size_t>(d) +
-                                         static_cast<size_t>(so1);
+                                         static_cast<size_t>(so0);
                     for (int si0 = 0; si0 < d; ++si0) {
                         for (int si1 = 0; si1 < d; ++si1) {
-                            const size_t u_col = static_cast<size_t>(si0) *
+                            const size_t u_col = static_cast<size_t>(si1) *
                                                      static_cast<size_t>(d) +
-                                                 static_cast<size_t>(si1);
+                                                 static_cast<size_t>(si0);
                             const Complex128& u_el =
                                 U[u_row * d2 + u_col];
                             acc += to_std(u_el) *
@@ -527,7 +530,10 @@ void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U) {
 void QuditMPS::apply_swap(int q) {
     const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
     std::vector<Complex128> swap_mat(d2 * d2, Complex128(0.0, 0.0));
-    // swap[(out_q*d + out_{q+1})*d^2 + (in_q*d + in_{q+1})] = delta(out_q, in_{q+1}) * delta(out_{q+1}, in_q)
+    // swap[(out_{q+1}*d + out_q)*d^2 + (in_{q+1}*d + in_q)]
+    //   = delta(out_q, in_{q+1}) * delta(out_{q+1}, in_q)
+    // (the SWAP matrix is invariant under exchanging the digit roles, so the
+    // construction below is valid in the LSB-first convention as well)
     for (int i = 0; i < d; ++i) {
         for (int j = 0; j < d; ++j) {
             const size_t row = static_cast<size_t>(j) * static_cast<size_t>(d) +
@@ -554,10 +560,12 @@ void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U) {
     if (U.size() != d2 * d2)
         throw std::invalid_argument("apply_2qudit: U must have d^2 * d^2 entries");
 
-    // Normalise so q0 < q1, transposing U if necessary.
+    // Normalise so q0 < q1, exchanging the two digit roles of U if necessary
+    // (valid in any fixed digit convention: it relabels which operand owns
+    // which digit, here the LSB-first encoding of docs/Architecture.md).
     if (q0 > q1) {
         std::swap(q0, q1);
-        // U'[(out_q0*d + out_q1), (in_q0*d + in_q1)] = U[(out_q1*d + out_q0), (in_q1*d + in_q0)]
+        // U'[(out_b*d + out_a), (in_b*d + in_a)] = U[(out_a*d + out_b), (in_a*d + in_b)]
         std::vector<Complex128> U_swapped(d2 * d2, Complex128(0.0, 0.0));
         for (int o0 = 0; o0 < d; ++o0)
             for (int o1 = 0; o1 < d; ++o1)

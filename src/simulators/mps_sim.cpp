@@ -449,7 +449,9 @@ std::string MPSState::measure_sequential(std::mt19937_64& rng) {
 
         std::uniform_real_distribution<double> dist(0.0, 1.0);
         int outcome = (dist(rng) < p0) ? 0 : 1;
-        bits[q] = outcome ? '1' : '0';
+        // Project bitstring convention: qubit 0 is the RIGHTMOST character
+        // (matches Statevector::sample_counts and the per-shot paths).
+        bits[n_qubits - 1 - q] = outcome ? '1' : '0';
 
         // Project: zero out the other physical index
         const int other = 1 - outcome;
@@ -783,11 +785,14 @@ static std::array<Complex128, 16> gate4x4(const Instruction& inst) {
             break;
         }
         case GT::RYY: {
+            // exp(-i t/2 Y(x)Y): cos on the full diagonal, +i*sin outer /
+            // -i*sin inner anti-diagonal. Matches gates::apply_ryy.
             double c=std::cos(p[0]/2), s=std::sin(p[0]/2);
             for (auto& x : U) x = Complex128(0,0);
-            U[0*4+0]=Complex128(c,0); U[0*4+3]=Complex128(0,s);
-            U[1*4+2]=Complex128(0,-s); U[2*4+1]=Complex128(0,-s);
-            U[3*4+0]=Complex128(0,s); U[3*4+3]=Complex128(c,0);
+            U[0*4+0]=Complex128(c,0); U[1*4+1]=Complex128(c,0);
+            U[2*4+2]=Complex128(c,0); U[3*4+3]=Complex128(c,0);
+            U[0*4+3]=Complex128(0,s); U[1*4+2]=Complex128(0,-s);
+            U[2*4+1]=Complex128(0,-s); U[3*4+0]=Complex128(0,s);
             break;
         }
         case GT::RZZ: {
@@ -809,12 +814,15 @@ static std::array<Complex128, 16> gate4x4(const Instruction& inst) {
             break;
         }
         case GT::RZX: {
+            // exp(-i t/2 Z(x)X), Z on the first qubit (MSB of the pair label),
+            // X on the second (LSB). Rows 0,1 (Z=+1) couple with -i*sin; rows
+            // 2,3 (Z=-1) couple with +i*sin. Matches gates::apply_rzx.
             double c=std::cos(p[0]/2), s=std::sin(p[0]/2);
             for (auto& x : U) x = Complex128(0,0);
-            U[0*4+0]=Complex128(c,0); U[0*4+2]=Complex128(0,-s);
-            U[1*4+1]=Complex128(c,0); U[1*4+3]=Complex128(0,-s);
-            U[2*4+0]=Complex128(0,-s); U[2*4+2]=Complex128(c,0);
-            U[3*4+1]=Complex128(0,-s); U[3*4+3]=Complex128(c,0);
+            U[0*4+0]=Complex128(c,0); U[0*4+1]=Complex128(0,-s);
+            U[1*4+0]=Complex128(0,-s); U[1*4+1]=Complex128(c,0);
+            U[2*4+2]=Complex128(c,0); U[2*4+3]=Complex128(0,s);
+            U[3*4+2]=Complex128(0,s); U[3*4+3]=Complex128(c,0);
             break;
         }
         case GT::CU: {
@@ -843,19 +851,26 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
 
     if (inst.type == GT::RESET) {
         int qubit = inst.qubits[0];
+        // probabilities_single returns RAW marginals <psi|P_k|psi> (they sum
+        // to the state's norm^2, not necessarily 1); normalise for sampling.
         auto probs = mps.probabilities_single(qubit);
+        const double p0_raw = std::max(0.0, probs[0]);
+        const double p1_raw = std::max(0.0, probs[1]);
+        double total = p0_raw + p1_raw;
+        if (total < 1e-30) total = 1.0;
         std::uniform_real_distribution<double> udist(0.0, 1.0);
-        int outcome = (udist(rng) < probs[0]) ? 0 : 1;
+        int outcome = (udist(rng) < p0_raw / total) ? 0 : 1;
         int keep = outcome, zero_phys = 1 - outcome;
         auto& T = mps.tensors[qubit];
-        double norm_sq = 0.0;
         for (int l = 0; l < T.bond_left; ++l)
-            for (int r = 0; r < T.bond_right; ++r) {
+            for (int r = 0; r < T.bond_right; ++r)
                 T(l, zero_phys, r) = Complex128(0.0, 0.0);
-                norm_sq += T(l, keep, r).real * T(l, keep, r).real
-                         + T(l, keep, r).imag * T(l, keep, r).imag;
-            }
-        double inv_norm = (norm_sq > 1e-15) ? 1.0 / std::sqrt(norm_sq) : 1.0;
+        // Renormalise by the environment-contracted marginal of the sampled
+        // outcome: the projected state's global norm^2 equals that marginal.
+        // The local Frobenius norm is only valid in canonical form, which gate
+        // application does not maintain.
+        const double p_raw = (outcome == 0) ? p0_raw : p1_raw;
+        const double inv_norm = (p_raw > 1e-30) ? 1.0 / std::sqrt(p_raw) : 1.0;
         for (int l = 0; l < T.bond_left; ++l)
             for (int r = 0; r < T.bond_right; ++r) {
                 T(l, keep, r).real *= inv_norm;
@@ -1030,6 +1045,25 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
     }
 }
 
+// True when no instruction (other than BARRIER) acts on a qubit after that
+// qubit has been measured. The pre-measurement state is then deterministic and
+// outcomes can be sampled from a single forward pass instead of per-shot
+// trajectories. A second MEASURE or a RESET on a measured qubit also counts as
+// "acting on it" and forces the per-shot path.
+static bool mps_measures_are_terminal(const QuantumCircuit& circuit) {
+    std::vector<bool> measured(static_cast<size_t>(circuit.n_qubits), false);
+    for (const auto& inst : circuit.instructions) {
+        if (inst.type == Instruction::GateType::BARRIER) continue;
+        for (int q : inst.qubits)
+            if (q >= 0 && q < circuit.n_qubits &&
+                measured[static_cast<size_t>(q)])
+                return false;
+        if (inst.type == Instruction::GateType::MEASURE)
+            measured[static_cast<size_t>(inst.qubits[0])] = true;
+    }
+    return true;
+}
+
 MPSSimulator::Result MPSSimulator::run(
     const QuantumCircuit& circuit, int max_bond_dim,
     int shots, uint64_t seed
@@ -1040,75 +1074,84 @@ MPSSimulator::Result MPSSimulator::run(
     auto t_start = std::chrono::high_resolution_clock::now();
     std::mt19937_64 rng(seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed);
 
-    // Determine whether the circuit contains any mid-circuit MEASURE gates.
-    // If so, each shot must re-run the full circuit from |0...0⟩ so that the
-    // stochastic collapse is sampled independently per shot.  If there are no
-    // MEASURE instructions the state is deterministic after one forward pass
-    // and we fall back to the fast sample_counts / measure_sequential path.
+    // Execution strategy (see docs/api/simulators.md, Execution semantics):
+    //   1. Terminal-only measurements (no feedforward, nothing acting on a
+    //      qubit after it was measured): ONE forward pass, then sample
+    //      outcomes from the final state with the qubit -> clbit mapping.
+    //   2. Mid-circuit measurement or feedforward with shots > 0: per-shot
+    //      trajectories (each stochastic collapse drawn independently).
+    //   3. shots == 0: a single seeded trajectory; classical conditions are
+    //      honoured and MEASURE outcomes recorded along the way.
     bool has_measure = false;
+    bool has_condition = false;
     int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
     for (const auto& inst : circuit.instructions) {
-        if (inst.type == Instruction::GateType::MEASURE) {
-            has_measure = true;
-            break;
-        }
+        if (inst.type == Instruction::GateType::MEASURE) has_measure = true;
+        if (inst.condition_clbit >= 0) has_condition = true;
     }
+    const bool terminal_only =
+        has_measure && !has_condition && mps_measures_are_terminal(circuit);
 
-    if (shots > 0 && has_measure) {
-        // Per-shot execution: re-initialise the MPS to |0...0⟩ and re-simulate
-        // for every shot so that each MEASURE collapses the state independently.
+    // Collapse one qubit to a sampled outcome. probabilities_single returns
+    // RAW marginals <psi|P_k|psi>; sampling normalises by their sum, and the
+    // post-projection state is renormalised by the sampled outcome's marginal
+    // (the projected global norm^2), NOT by the local tensor Frobenius norm,
+    // which is only valid in canonical form.
+    auto collapse_qubit = [&](MPSState& state, int qubit) -> int {
+        auto probs = state.probabilities_single(qubit);
+        const double p0_raw = std::max(0.0, probs[0]);
+        const double p1_raw = std::max(0.0, probs[1]);
+        double total = p0_raw + p1_raw;
+        if (total < 1e-30) total = 1.0;
+        std::uniform_real_distribution<double> udist(0.0, 1.0);
+        const int outcome = (udist(rng) < p0_raw / total) ? 0 : 1;
+        auto& T = state.tensors[qubit];
+        const int other = 1 - outcome;
+        for (int l = 0; l < T.bond_left; ++l)
+            for (int r = 0; r < T.bond_right; ++r)
+                T(l, other, r) = Complex128(0.0, 0.0);
+        const double p_raw = (outcome == 0) ? p0_raw : p1_raw;
+        const double inv_norm = (p_raw > 1e-30) ? 1.0 / std::sqrt(p_raw) : 1.0;
+        for (int l = 0; l < T.bond_left; ++l)
+            for (int r = 0; r < T.bond_right; ++r) {
+                T(l, outcome, r).real *= inv_norm;
+                T(l, outcome, r).imag *= inv_norm;
+            }
+        return outcome;
+    };
+
+    // One trajectory: honours classical conditions, records MEASURE outcomes.
+    auto run_trajectory = [&](MPSState& state, std::vector<int>& clreg) {
+        for (const auto& inst : circuit.instructions) {
+            using GT = Instruction::GateType;
+            if (inst.type == GT::BARRIER) continue;
+            if (inst.condition_clbit >= 0) {
+                int cv = (inst.condition_clbit < n_clbits)
+                         ? clreg[inst.condition_clbit] : 0;
+                if (cv != inst.condition_value) continue;
+            }
+            if (inst.type == GT::MEASURE) {
+                const int qubit = inst.qubits[0];
+                const int clbit = inst.clbits.empty() ? -1 : inst.clbits[0];
+                const int outcome = collapse_qubit(state, qubit);
+                if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
+                continue;
+            }
+            mps_apply_instruction(state, inst, rng);
+        }
+    };
+
+    std::vector<int> clreg(n_clbits, 0);
+
+    if (shots > 0 && has_measure && !terminal_only) {
+        // Per-shot trajectories: re-initialise the MPS to |0...0⟩ and
+        // re-simulate for every shot so that each MEASURE collapses the state
+        // independently (required for mid-circuit measurement / feedforward).
         result.counts.clear();
-        std::vector<int> clreg(n_clbits, 0);
-
         for (int shot = 0; shot < shots; ++shot) {
-            // Reset MPS to |0...0⟩
             result.final_state = MPSState(circuit.n_qubits, max_bond_dim);
             clreg.assign(n_clbits, 0);
-
-            for (const auto& inst : circuit.instructions) {
-                using GT = Instruction::GateType;
-                if (inst.type == GT::BARRIER) continue;
-
-                if (inst.type == GT::MEASURE) {
-                    // Collapse the qubit and record the outcome in the classical register.
-                    int qubit = inst.qubits[0];
-                    int clbit = inst.clbits.empty() ? -1 : inst.clbits[0];
-                    auto probs = result.final_state.probabilities_single(qubit);
-                    double p0 = std::max(0.0, probs[0]);
-                    double p1 = std::max(0.0, probs[1]);
-                    double total = p0 + p1;
-                    if (total < 1e-30) { p0 = p1 = 0.5; total = 1.0; }
-                    p0 /= total;
-                    std::uniform_real_distribution<double> udist(0.0, 1.0);
-                    int outcome = (udist(rng) < p0) ? 0 : 1;
-                    // Collapse: zero out the other physical index and renormalize
-                    auto& T = result.final_state.tensors[qubit];
-                    int other = 1 - outcome;
-                    double norm_sq = 0.0;
-                    for (int l = 0; l < T.bond_left; ++l)
-                        for (int r = 0; r < T.bond_right; ++r) {
-                            T(l, other, r) = Complex128(0.0, 0.0);
-                            norm_sq += T(l, outcome, r).real * T(l, outcome, r).real
-                                     + T(l, outcome, r).imag * T(l, outcome, r).imag;
-                        }
-                    double inv_norm = (norm_sq > 1e-15) ? 1.0 / std::sqrt(norm_sq) : 1.0;
-                    for (int l = 0; l < T.bond_left; ++l)
-                        for (int r = 0; r < T.bond_right; ++r) {
-                            T(l, outcome, r).real *= inv_norm;
-                            T(l, outcome, r).imag *= inv_norm;
-                        }
-                    if (clbit >= 0 && clbit < n_clbits) {
-                        clreg[clbit] = outcome;
-                    }
-                } else {
-                    if (inst.condition_clbit >= 0) {
-                        int cv = (inst.condition_clbit < n_clbits)
-                                 ? clreg[inst.condition_clbit] : 0;
-                        if (cv != inst.condition_value) continue;
-                    }
-                    mps_apply_instruction(result.final_state, inst, rng);
-                }
-            }
+            run_trajectory(result.final_state, clreg);
 
             // Build bitstring: clbit 0 is LSB (rightmost), highest clbit is MSB.
             std::string bits(n_clbits, '0');
@@ -1118,27 +1161,67 @@ MPSSimulator::Result MPSSimulator::run(
             result.counts[bits]++;
         }
     } else {
-        // No mid-circuit measurements: run the circuit once, then sample.
-        for (const auto& inst : circuit.instructions) {
-            using GT = Instruction::GateType;
-            if (inst.type == GT::BARRIER || inst.type == GT::MEASURE) continue;
-            mps_apply_instruction(result.final_state, inst, rng);
+        if (shots == 0) {
+            // Single seeded trajectory (collapses measures, honours
+            // conditions); final_state is one reproducible trajectory.
+            run_trajectory(result.final_state, clreg);
+        } else {
+            // Terminal-only measurements (or none): one forward pass with
+            // MEASURE skipped; outcomes are sampled from the final state.
+            // Conditions can only reference initial-zero clbits here.
+            for (const auto& inst : circuit.instructions) {
+                using GT = Instruction::GateType;
+                if (inst.type == GT::BARRIER || inst.type == GT::MEASURE) continue;
+                if (inst.condition_clbit >= 0) {
+                    int cv = (inst.condition_clbit < n_clbits)
+                             ? clreg[inst.condition_clbit] : 0;
+                    if (cv != inst.condition_value) continue;
+                }
+                mps_apply_instruction(result.final_state, inst, rng);
+            }
         }
 
-        // Use full statevector contraction for small N (MPS_SV_CROSSOVER) where it
-        // outperforms sequential MPS sampling. MPS_SV_MAX_QUBITS is the hard memory
-        // limit for to_statevector() and is intentionally larger than the crossover.
-        const bool use_sv = circuit.n_qubits <= MPS_SV_CROSSOVER;
-        if (shots > 0 && use_sv) {
-            auto sv = result.final_state.to_statevector();
-            result.counts = sv.sample_counts(shots, seed);
-        } else if (shots > 0) {
-            // Sequential MPS measurement: correctly handles correlations.
-            // O(N * chi^3) per shot. Each shot works on a copy of the MPS.
-            for (int s = 0; s < shots; ++s) {
-                MPSState mps_copy = result.final_state;
-                std::string bits = mps_copy.measure_sequential(rng);
-                result.counts[bits]++;
+        if (shots > 0) {
+            // qubit -> clbit map of the terminal measurements. Empty when the
+            // circuit has no MEASURE: sample the full register (legacy keys).
+            std::vector<std::pair<int, int>> meas;
+            for (const auto& inst : circuit.instructions)
+                if (inst.type == Instruction::GateType::MEASURE)
+                    meas.emplace_back(inst.qubits[0],
+                                      inst.clbits.empty() ? inst.qubits[0]
+                                                          : inst.clbits[0]);
+
+            const int nq = circuit.n_qubits;
+            auto record = [&](const std::string& qubit_bits, int count) {
+                // qubit_bits: full register, qubit q at position nq-1-q.
+                if (meas.empty()) {
+                    result.counts[qubit_bits] += count;
+                    return;
+                }
+                std::string key(n_clbits, '0');
+                for (const auto& [q, c] : meas) {
+                    if (c < 0 || c >= n_clbits) continue;
+                    if (qubit_bits[nq - 1 - q] == '1') key[n_clbits - 1 - c] = '1';
+                }
+                result.counts[key] += count;
+            };
+
+            // Use full statevector contraction for small N (MPS_SV_CROSSOVER)
+            // where it outperforms sequential MPS sampling. MPS_SV_MAX_QUBITS
+            // is the hard memory limit for to_statevector() and is
+            // intentionally larger than the crossover.
+            const bool use_sv = circuit.n_qubits <= MPS_SV_CROSSOVER;
+            if (use_sv) {
+                auto sv = result.final_state.to_statevector();
+                auto raw = sv.sample_counts(shots, seed);
+                for (const auto& [bits, cnt] : raw) record(bits, cnt);
+            } else {
+                // Sequential MPS measurement: correctly handles correlations.
+                // O(N * chi^3) per shot. Each shot works on a copy of the MPS.
+                for (int s = 0; s < shots; ++s) {
+                    MPSState mps_copy = result.final_state;
+                    record(mps_copy.measure_sequential(rng), 1);
+                }
             }
         }
     }

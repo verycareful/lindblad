@@ -19,11 +19,12 @@ The constructor computes `total_shots` and calls `compute()` immediately.
 
 ## Fields
 
-- `counts`: raw sampled counts (bitstring -> count)
+- `counts`: raw sampled counts (bitstring -> count); keys follow the project convention (qubit 0 is the rightmost character)
 - `total_shots`: sum of all counts
-- `soft_assignment`: fractional assignment per bit
-- `best_bitstring`: most probable bitstring
+- `soft_assignment`: fractional assignment indexed by QUBIT/GENERATOR: `soft_assignment[i]` belongs to qubit i (it reads key position n-1-i). Frozen in R.1.12; it previously indexed raw string positions, i.e. the reversed generator order
+- `best_bitstring`: most probable counts key (qubit 0 rightmost)
 - `best_probability`: probability of `best_bitstring`
+- `threshold_round()` returns an INDEX-ORDER string (`result[i]` = qubit/generator i), not a counts key; reverse it if a key is needed
 
 ## Construction
 

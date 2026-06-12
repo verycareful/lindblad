@@ -15,6 +15,7 @@ Fields:
 
 - `operators`: list of flattened matrices (dimension depends on `n_qubits`)
 - `n_qubits`: number of qubits the channel acts on
+- Multi-qubit operator matrices follow the project-wide qubits[0]-is-LSB convention (`docs/Architecture.md`, Conventions): bit i of the matrix index is the state of the i-th targeted qubit. The density-matrix backend bridges to its internal addressing automatically.
 
 Helpers:
 
@@ -26,13 +27,14 @@ Helpers:
 Factory functions that build common `KrausChannel` instances:
 
 - `depolarizing(p, n_qubits = 1)`
-  - Supports 1- and 2-qubit depolarizing channels
-  - For other `n_qubits`, the channel is returned with no operators
+  - General n-qubit Pauli twirl: total error probability p is split uniformly over the 4^n - 1 non-identity Paulis
+  - `n_qubits` must be in [1, 6] (the operator count is 4^n; wider registers should compose per-qubit channels); out-of-range sizes and p outside [0, 1] throw
 - `amplitude_damping(gamma)`
 - `phase_damping(lambda)`
 - `thermal_relaxation(T1, T2, gate_time, excited_state_population = 0.0)`
   - Validates `T2 <= 2*T1` and `T1`, `T2` > 0; `gate_time` must be >= 0
   - Clamps excited-state population into [0, 1]
+  - Coherences decay by exactly `exp(-t/T2)` (fixed in R.1.12: the pure-dephasing factor previously decayed at half the requested rate for T2 < 2*T1)
 - `pauli(px, py, pz)`
   - Validates `px + py + pz <= 1`
 - `bit_flip(p)`

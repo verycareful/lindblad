@@ -24,35 +24,28 @@ QuantumCircuit QPE::build_circuit(
         qc.h(i);
     }
 
+    // Extract the unitary's matrix ONCE (2^nu basis-column simulations); the
+    // per-k powers are then produced by repeated squaring below, so the whole
+    // loop costs m-1 matrix products instead of 2^m - 1.
+    const int nu = unitary.n_qubits;
+    const size_t ud = 1ULL << nu;
+
+    std::vector<std::vector<std::complex<double>>> U_cols(ud,
+        std::vector<std::complex<double>>(ud, 0.0));
+    for (size_t col = 0; col < ud; ++col) {
+        Statevector basis(nu);
+        basis.initialize_basis(col);
+        StatevectorSimulator sv_sim;
+        sv_sim.simulate_circuit(basis, unitary);
+        for (size_t row = 0; row < ud; ++row) {
+            U_cols[row][col] = {basis.real_parts[row], basis.imag_parts[row]};
+        }
+    }
+
+    // Up holds U^(2^k) for the current evaluation qubit k.
+    std::vector<std::vector<std::complex<double>>> Up = U_cols;
+
     for (int k = 0; k < num_eval_qubits; ++k) {
-        int power = 1 << k;
-
-        int nu = unitary.n_qubits;
-        size_t ud = 1ULL << nu;
-
-        std::vector<std::vector<std::complex<double>>> U_cols(ud,
-            std::vector<std::complex<double>>(ud, 0.0));
-        for (size_t col = 0; col < ud; ++col) {
-            Statevector basis(nu);
-            basis.initialize_basis(col);
-            StatevectorSimulator sv_sim;
-            sv_sim.simulate_circuit(basis, unitary);
-            for (size_t row = 0; row < ud; ++row) {
-                U_cols[row][col] = {basis.real_parts[row], basis.imag_parts[row]};
-            }
-        }
-
-        std::vector<std::vector<std::complex<double>>> Up = U_cols;
-        for (int rep = 1; rep < power; ++rep) {
-            std::vector<std::vector<std::complex<double>>> Unew(
-                ud, std::vector<std::complex<double>>(ud, 0.0));
-            for (size_t r = 0; r < ud; ++r)
-                for (size_t c = 0; c < ud; ++c)
-                    for (size_t m = 0; m < ud; ++m)
-                        Unew[r][c] += Up[r][m] * U_cols[m][c];
-            Up = Unew;
-        }
-
         std::vector<Complex128> Upow_flat(ud * ud);
         for (size_t r = 0; r < ud; ++r)
             for (size_t c = 0; c < ud; ++c)
@@ -77,6 +70,17 @@ QuantumCircuit QPE::build_circuit(
             ctrl_u.qubits.push_back(num_eval_qubits + tq);
         ctrl_u.matrix = CU_matrix;
         qc.instructions.push_back(ctrl_u);
+
+        // Advance to U^(2^(k+1)) by one squaring (repeated squaring).
+        if (k + 1 < num_eval_qubits) {
+            std::vector<std::vector<std::complex<double>>> Unew(
+                ud, std::vector<std::complex<double>>(ud, 0.0));
+            for (size_t r = 0; r < ud; ++r)
+                for (size_t c = 0; c < ud; ++c)
+                    for (size_t m = 0; m < ud; ++m)
+                        Unew[r][c] += Up[r][m] * Up[m][c];
+            Up = std::move(Unew);
+        }
     }
 
     // Inverse QFT on the evaluation register.

@@ -1,4 +1,5 @@
 #include "lindblad/circuit.hpp"
+#include "lindblad/operators.hpp"
 
 #include "visualisation/document.hpp"
 #include "visualisation/render_ascii.hpp"
@@ -888,30 +889,56 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
             continue;
         }
 
-        // Generic controlled gate: block-diagonal [[I,0],[0,U]] for all ctrl=|1⟩.
-        // Declared as a lambda to replace the former goto-based flow.
+        // Generic controlled gate. Controls occupy ci.qubits[0..nc) and are
+        // therefore the LOW bits of the matrix index under the project
+        // convention (apply_unitary: index bit i = qubits[i]); the original
+        // gate's qubits follow as the HIGH bits. The U block lives on the
+        // index slice whose control bits are ALL 1 (interleaved layout, the
+        // same structure as the hand-built controlled-U in shor.cpp/qpe.cpp):
+        //   M[(2^nc - 1) | (r << nc), (2^nc - 1) | (c << nc)] = U[r][c]
+        // and identity on every other diagonal entry. Gates without a known
+        // matrix cannot be controlled silently: parameterised placeholders
+        // throw instead of degrading to identity (no silent failures).
         auto emit_generic_ctrl = [&]() {
-            int gate_qubits = static_cast<int>(inst.qubits.size());
-            int total_gate_qubits = gate_qubits + num_ctrl_qubits;
-            size_t gate_dim = 1ULL << gate_qubits;
-            size_t total_dim = 1ULL << total_gate_qubits;
+            if (inst.is_parameterised())
+                throw std::runtime_error(
+                    "control(): cannot control an unresolved parameterised gate '" +
+                    inst.gate_name() + "'; call assign_parameters() first");
+
+            const int gate_qubits = static_cast<int>(inst.qubits.size());
+            const int total_gate_qubits = gate_qubits + num_ctrl_qubits;
+            const size_t gate_dim = 1ULL << gate_qubits;
+            const size_t total_dim = 1ULL << total_gate_qubits;
 
             std::vector<Complex128> gate_matrix;
-            if (inst.type == GT::UNITARY && !inst.matrix.empty()) {
+            if (inst.type == GT::UNITARY) {
+                if (inst.matrix.size() != gate_dim * gate_dim)
+                    throw std::runtime_error(
+                        "control(): UNITARY instruction matrix size mismatch");
                 gate_matrix = inst.matrix;
             } else {
-                gate_matrix.resize(gate_dim * gate_dim, Complex128(0, 0));
-                for (size_t i = 0; i < gate_dim; ++i)
-                    gate_matrix[i * gate_dim + i] = Complex128(1, 0);
+                // Extract the named gate's matrix (LSB convention: index bit i
+                // = local qubit i) by simulating the lone instruction on a
+                // standalone register with operand order preserved.
+                QuantumCircuit local(gate_qubits);
+                Instruction local_inst = inst;
+                local_inst.condition_clbit = -1;  // raw gate action only
+                local_inst.qubits.clear();
+                for (int i = 0; i < gate_qubits; ++i)
+                    local_inst.qubits.push_back(i);
+                local.instructions.push_back(std::move(local_inst));
+                gate_matrix = Operator::from_circuit(local).data;
             }
 
             std::vector<Complex128> ctrl_matrix(total_dim * total_dim, Complex128(0, 0));
-            size_t ctrl_subspace = total_dim - gate_dim;
-            for (size_t i = 0; i < ctrl_subspace; ++i)
-                ctrl_matrix[i * total_dim + i] = Complex128(1, 0);
+            const size_t ctrl_mask = (1ULL << num_ctrl_qubits) - 1;
+            for (size_t s = 0; s < total_dim; ++s)
+                if ((s & ctrl_mask) != ctrl_mask)
+                    ctrl_matrix[s * total_dim + s] = Complex128(1, 0);
             for (size_t r = 0; r < gate_dim; ++r)
                 for (size_t c = 0; c < gate_dim; ++c)
-                    ctrl_matrix[(ctrl_subspace + r) * total_dim + (ctrl_subspace + c)] =
+                    ctrl_matrix[(ctrl_mask | (r << num_ctrl_qubits)) * total_dim +
+                                (ctrl_mask | (c << num_ctrl_qubits))] =
                         gate_matrix[r * gate_dim + c];
 
             Instruction ci;
@@ -920,6 +947,8 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
             for (int k = 0; k < num_ctrl_qubits; ++k) ci.qubits.push_back(k);
             for (int q : shifted_qubits) ci.qubits.push_back(q);
             ci.label = "c_" + inst.gate_name();
+            ci.condition_clbit = inst.condition_clbit;
+            ci.condition_value = inst.condition_value;
             result.instructions.push_back(std::move(ci));
         };
 
@@ -930,6 +959,8 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
                 Instruction ci;
                 ci.qubits = {ctrl, tgt};
                 ci.params = inst.params;
+                ci.condition_clbit = inst.condition_clbit;
+                ci.condition_value = inst.condition_value;
                 bool handled = true;
                 switch (inst.type) {
                     case GT::X:   ci.type = GT::CX;  break;
@@ -965,11 +996,15 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
                 switch (inst.type) {
                     case GT::CX: {
                         Instruction ci; ci.type = GT::CCX; ci.qubits = {ctrl, q0, q1};
+                        ci.condition_clbit = inst.condition_clbit;
+                        ci.condition_value = inst.condition_value;
                         result.instructions.push_back(std::move(ci));
                         continue;
                     }
                     case GT::SWAP: {
                         Instruction ci; ci.type = GT::CSWAP; ci.qubits = {ctrl, q0, q1};
+                        ci.condition_clbit = inst.condition_clbit;
+                        ci.condition_value = inst.condition_value;
                         result.instructions.push_back(std::move(ci));
                         continue;
                     }
@@ -1337,6 +1372,18 @@ static Instruction::GateType str_to_gate_type(const std::string& s) {
 }
 
 std::string QuantumCircuit::to_json() const {
+    // Unbound symbolic parameter expressions (produced by from_qasm3) have no
+    // JSON representation; silently dropping them would corrupt the
+    // round-trip, so refuse loudly instead.
+    for (const auto& inst : instructions) {
+        if (!inst.param_exprs.empty()) {
+            throw std::runtime_error(
+                "QuantumCircuit::to_json: instruction '" + inst.gate_name() +
+                "' carries unbound symbolic parameter expressions; call "
+                "bind_parameters() before serialising");
+        }
+    }
+
     std::ostringstream o;
     o << std::setprecision(17);  // full double precision
 

@@ -39,8 +39,12 @@ static bool is_cancellable_rotation(const Instruction& inst) {
     }
 }
 
-// Check if two rotation gates cancel (same type, opposite parameters)
+// Check if two rotation gates cancel (same type, opposite parameters).
+// Classically-conditioned gates never participate: whether they fire depends
+// on runtime state, so cancelling or merging them against other gates would
+// silently change feedforward semantics.
 static bool rotations_cancel(const Instruction& a, const Instruction& b, double atol = 1e-10) {
+    if (a.condition_clbit >= 0 || b.condition_clbit >= 0) return false;
     if (a.type != b.type) return false;
     if (a.qubits != b.qubits) return false;
     if (a.params.size() != b.params.size()) return false;
@@ -52,6 +56,7 @@ static bool rotations_cancel(const Instruction& a, const Instruction& b, double 
 
 // Check if two rotation gates of the same type can be merged
 static bool rotations_merge(const Instruction& a, const Instruction& b) {
+    if (a.condition_clbit >= 0 || b.condition_clbit >= 0) return false;
     return a.type == b.type && a.qubits == b.qubits &&
            a.params.size() == 1 && b.params.size() == 1;
 }
@@ -60,6 +65,11 @@ static bool rotations_merge(const Instruction& a, const Instruction& b) {
 // Conservative: only recognize Z-diagonal through Z-diagonal,
 // and self-inverse gates through themselves.
 static bool commutes_on_wire(const Instruction& moving, const Instruction& barrier_gate, int wire) {
+    // Never commute past (or move) a classically-conditioned gate: its action
+    // depends on runtime classical state that this static analysis cannot see.
+    if (moving.condition_clbit >= 0 || barrier_gate.condition_clbit >= 0)
+        return false;
+
     // Z-diagonal gates commute with each other on any shared wire
     if (is_z_diagonal(moving) && is_z_diagonal(barrier_gate)) return true;
 
@@ -99,6 +109,8 @@ DAGCircuit CommutativeCancellation::run(const DAGCircuit& dag, const Transpilati
             if (removed[i]) continue;
             const auto& inst_i = insts[i];
 
+            // Conditioned gates are excluded from this pass entirely.
+            if (inst_i.condition_clbit >= 0) continue;
             if (!is_cancellable_rotation(inst_i) && !is_z_diagonal(inst_i)) continue;
 
             int wire = inst_i.qubits[0];

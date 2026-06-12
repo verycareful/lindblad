@@ -30,8 +30,10 @@ void SoftDispatchResult::compute() {
             best_probability = prob;
             best_bitstring = bs;
         }
+        // Counts keys follow the project bitstring convention (qubit 0 is the
+        // rightmost character); soft_assignment is indexed by qubit/generator.
         for (int i = 0; i < n; ++i) {
-            if (bs[i] == '1') soft_assignment[i] += prob;
+            if (bs[n - 1 - i] == '1') soft_assignment[i] += prob;
         }
     }
 }

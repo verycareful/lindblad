@@ -249,8 +249,48 @@ DensityMatrix partial_trace(const DensityMatrix& rho, const std::vector<int>& tr
 }
 
 DensityMatrix partial_trace(const Statevector& sv, const std::vector<int>& trace_out_qubits) {
-    DensityMatrix rho = DensityMatrix::from_statevector(sv);
-    return partial_trace(rho, trace_out_qubits);
+    // Accumulate the reduced matrix directly from the amplitudes:
+    //   rho_red[i, j] = sum_t psi[full(i,t)] * conj(psi[full(j,t)])
+    // O(4^nk * 2^nt) work with O(4^nk) memory, instead of materialising the
+    // full 2^n x 2^n density matrix first (which dominated memory for large n).
+    const int nq = sv.n_qubits;
+    const int nt = static_cast<int>(trace_out_qubits.size());
+    const int nk = nq - nt;
+    const size_t dim_keep = 1ULL << nk;
+    const size_t dim_trace = 1ULL << nt;
+
+    std::vector<int> keep_qubits;
+    keep_qubits.reserve(static_cast<size_t>(nk));
+    for (int q = 0; q < nq; ++q) {
+        bool traced = false;
+        for (int tq : trace_out_qubits) if (tq == q) { traced = true; break; }
+        if (!traced) keep_qubits.push_back(q);
+    }
+
+    auto build_full = [&](size_t keep_idx, size_t trace_idx) -> size_t {
+        size_t full = 0;
+        for (int ki = 0; ki < nk; ++ki)
+            if ((keep_idx >> ki) & 1) full |= (size_t(1) << keep_qubits[ki]);
+        for (int ti = 0; ti < nt; ++ti)
+            if ((trace_idx >> ti) & 1) full |= (size_t(1) << trace_out_qubits[ti]);
+        return full;
+    };
+
+    DensityMatrix result(nk);
+    for (size_t i = 0; i < dim_keep; ++i) {
+        for (size_t j = 0; j < dim_keep; ++j) {
+            Complex128 sum(0.0, 0.0);
+            for (size_t t = 0; t < dim_trace; ++t) {
+                const size_t fi = build_full(i, t);
+                const size_t fj = build_full(j, t);
+                const Complex128 a(sv.real_parts[fi], sv.imag_parts[fi]);
+                const Complex128 b(sv.real_parts[fj], -sv.imag_parts[fj]);
+                sum += a * b;
+            }
+            result(i, j) = sum;
+        }
+    }
+    return result;
 }
 
 // =============================================================================

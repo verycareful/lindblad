@@ -21,12 +21,18 @@ Fields and defaults:
 
 - `shots = 0`: shot budget **per non-identity Pauli term** in the observable.
   - `shots == 0`: exact analytic expectation (zero variance, reproducible).
+    THROWS for circuits containing measurement or classically-conditioned
+    instructions (frozen in R.1.12): the exact expectation of a stochastic
+    trajectory is undefined; estimate such circuits from counts with
+    `shots > 0`.
   - `shots  > 0`: real shot-noise sampling — each non-identity term is rotated
     into the Z measurement basis and measured `shots` times. Variance scales
     as `1/√shots` per term.
   - **Changed in R.1.10.7:** `shots > 0` now performs real sampling. Prior
     releases used `shots` as a hidden DM-backend toggle and returned exact
     values with zero variance regardless of `shots`.
+  - Pauli strings follow the project LSB-first convention (`pauli[q]` acts on
+    qubit q); the exact and sampling paths agree on it (frozen in R.1.12).
 - `seed = 0`: RNG seed forwarded to the simulator. Each Pauli term gets a
   decorrelated derived seed so the shot streams across terms are independent.
 - `noise_model`: when non-ideal (`!is_ideal()`), the sampling/exact path uses

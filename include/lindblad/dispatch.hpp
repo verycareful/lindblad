@@ -27,8 +27,11 @@ struct SoftDispatchResult {
     int total_shots = 0;
 
     // Computed fields (filled by compute())
-    std::vector<double> soft_assignment;   // fractional x_i ∈ [0,1]
-    std::string best_bitstring;            // highest-probability bitstring
+    // soft_assignment[i] is indexed by QUBIT/GENERATOR i (counts keys follow
+    // the project bitstring convention: qubit 0 is the RIGHTMOST character,
+    // so soft_assignment[i] reads key position n-1-i).
+    std::vector<double> soft_assignment;   // fractional x_i ∈ [0,1], index i = qubit i
+    std::string best_bitstring;            // highest-probability counts key (qubit 0 rightmost)
     double best_probability = 0.0;
 
     // Construct from raw sampler counts
@@ -38,7 +41,8 @@ struct SoftDispatchResult {
     void compute();
 
     // Round soft_assignment to a binary solution by thresholding.
-    // Returns a bitstring (MSB first).
+    // Returns an INDEX-ORDER string: result[i] = qubit/generator i (NOT the
+    // counts-key convention; convert with std::reverse if a key is needed).
     std::string threshold_round(double threshold = 0.5) const;
 
     // Greedy rounding for demand-constrained dispatch.

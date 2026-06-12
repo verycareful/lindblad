@@ -103,14 +103,14 @@ void apply_cswap(Statevector& sv, int ctrl, int q1, int q2) noexcept {
 
 // =============================================================================
 // RCCX (Margolus / simplified Toffoli)
-// Equivalent to CCX up to relative phase on |101⟩ and |111⟩
+// Equivalent to CCX up to relative phases.
 //
-// Matrix in computational basis (sorted by c1,c2,tgt):
-// Acts as identity except in the c1=1,c2=1 subspace where it applies
-// a simplified X rotation. The exact implementation:
-//   |110⟩ → |111⟩
-//   |111⟩ → |110⟩
-// with a relative phase on |101⟩ (multiply by i) and |100⟩ (multiply by -i)
+// Exact action in the |c1 c2 t⟩ basis (verified against the gate sequence
+// below and pinned by the B4 regression tests):
+//   |101⟩ → -|101⟩            (c1=1, c2=0, t=1 picks up a sign)
+//   |110⟩ →  i|111⟩
+//   |111⟩ → -i|110⟩           (the controlled-X swap carries the ±i pair)
+//   all other basis states are unchanged.
 //
 // This is the simplified Toffoli used in Qiskit:
 // RCCX = H(tgt) . T(tgt) . CX(c2,tgt) . Tdg(tgt) . CX(c1,tgt) .

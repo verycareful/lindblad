@@ -13,10 +13,14 @@ This page documents the public operator APIs in `lindblad/operators.hpp`, includ
 
 Represents a tensor product of single-qubit Paulis with a complex coefficient.
 
-Ordering (from the header):
+Ordering (project LSB-first convention, frozen in R.1.12; see
+`docs/Architecture.md`, Conventions):
 
-- `pauli[0]` acts on the most significant qubit
-- `pauli[n-1]` acts on qubit 0 (least significant)
+- `pauli[q]` acts on qubit q: `pauli[0]` is qubit 0 (least significant), `pauli[n-1]` is qubit n-1
+- Example: `"XIZ"` means X on qubit 0, I on qubit 1, Z on qubit 2
+- This is a deliberate deviation from Qiskit's label order (which puts qubit n-1 first)
+- Footgun: Pauli strings read in the OPPOSITE direction from measurement bitstrings, whose rightmost character is qubit 0; `"XI"` (X on qubit 0) marks the basis state counted under the key `"01"`
+- `tensor(other)`: `this` occupies the low qubits of the result, `other` the high qubits
 
 Key API:
 

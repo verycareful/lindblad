@@ -17,11 +17,12 @@ namespace lindblad {
 
 namespace {
 
-// Sample ⟨P⟩ for a single Pauli string `pauli` (e.g. "XYZII", index 0 = MSB
-// per PauliString convention) on the prepared circuit. Appends basis-rotation
-// gates so each non-I Pauli is measured in the Z basis, takes `shots`
-// measurements, and returns the mean of (+1 for even-parity outcomes, -1 for
-// odd parity) over the qubits where the Pauli is non-I.
+// Sample ⟨P⟩ for a single Pauli string `pauli` (project LSB-first convention:
+// pauli[q] acts on qubit q, see docs/Architecture.md "Conventions") on the
+// prepared circuit. Appends basis-rotation gates so each non-I Pauli is
+// measured in the Z basis, takes `shots` measurements, and returns the mean
+// of (+1 for even-parity outcomes, -1 for odd parity) over the qubits where
+// the Pauli is non-I.
 //
 // Backend choice: noise-aware (DM) when noise_model is non-ideal, otherwise
 // SV. Shot count is the per-term budget; total work scales linearly with the
@@ -45,7 +46,7 @@ double sample_pauli_expectation(
     std::vector<int> non_identity_qubits;
     non_identity_qubits.reserve(n);
     for (int i = 0; i < n; ++i) {
-        const int qubit = n - 1 - i;   // pauli[0] = MSB = qubit (n-1)
+        const int qubit = i;   // LSB-first: pauli[i] acts on qubit i
         const char p = pauli[i];
         if (p == 'I' || p == 'i') continue;
         non_identity_qubits.push_back(qubit);
@@ -202,8 +203,11 @@ double Estimator::run_single(
         }
 
         // Cache miss: transpile outside the lock so threads don't serialize.
+        // CouplingMap() (n = 0) declares "no connectivity constraint": routing
+        // passes are skipped, only the optimisation passes run. An edgeless
+        // CouplingMap(n) would be a literal no-edge graph and unroutable.
         {
-            QuantumCircuit transpiled = lindblad::transpile(circuit, CouplingMap(circuit.n_qubits),
+            QuantumCircuit transpiled = lindblad::transpile(circuit, CouplingMap(),
                                                             {}, options.optimization_level);
             std::lock_guard<std::mutex> lk(cache_mutex_);
             // Another thread may have inserted while we compiled; use try_emplace
@@ -225,6 +229,23 @@ double Estimator::run_single(
             bindings[names[i]] = parameters[i];
         }
         to_simulate = to_simulate.assign_parameters(bindings);
+    }
+
+    // Strict exact-evaluation rule (docs/api/estimator.md): shots == 0 means
+    // "exact expectation value", which is undefined for stochastic evolution.
+    // Circuits with measurement or classical conditioning must be estimated
+    // from sampled counts instead of silently evaluating one trajectory.
+    if (options.shots <= 0) {
+        for (const auto& inst : to_simulate.instructions) {
+            if (inst.type == Instruction::GateType::MEASURE ||
+                inst.condition_clbit >= 0) {
+                throw std::invalid_argument(
+                    "Estimator: shots == 0 requests an exact expectation "
+                    "value, which is undefined for circuits containing "
+                    "measurement or classically-conditioned instructions. "
+                    "Set options.shots > 0 to estimate from sampled counts.");
+            }
+        }
     }
 
     // Three modes:

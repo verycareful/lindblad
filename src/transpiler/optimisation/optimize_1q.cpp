@@ -12,6 +12,7 @@
 
 #include "lindblad/transpiler.hpp"
 #include "lindblad/gates.hpp"
+#include "lindblad/simulators/statevector_sim.hpp"
 
 #include <Eigen/Dense>
 
@@ -238,7 +239,11 @@ DAGCircuit Optimize1qGates::run(const DAGCircuit& dag, const TranspilationContex
     };
 
     for (const auto& inst : qc.instructions) {
-        if (is_single_qubit_gate(inst)) {
+        // Classically-conditioned gates depend on runtime state: they must
+        // never be merged into an unconditional run (the merged rotation
+        // would silently drop the condition). They break the run and pass
+        // through untouched, like multi-qubit gates.
+        if (is_single_qubit_gate(inst) && inst.condition_clbit < 0) {
             int q = inst.qubits[0];
             Eigen::Matrix2cd gate_mat = instruction_to_2x2(inst);
             // Accumulate: new_U = gate_mat * accum  (gates applied left-to-right)
@@ -246,7 +251,7 @@ DAGCircuit Optimize1qGates::run(const DAGCircuit& dag, const TranspilationContex
             run[q].active = true;
             run[q].qubit = q;
         } else {
-            // Multi-qubit or special gate: flush all affected qubits
+            // Multi-qubit, special, or conditioned gate: flush affected qubits
             for (int q : inst.qubits) {
                 flush(q);
             }
@@ -280,8 +285,14 @@ DAGCircuit CXCancellation::run(const DAGCircuit& dag, const TranspilationContext
     for (const auto& inst : qc.instructions) {
         if (is_self_inverse_2q(inst.type) && !optimized.instructions.empty()) {
             const auto& prev = optimized.instructions.back();
+            // Cancellation also requires IDENTICAL classical conditioning:
+            // a conditional CX must never cancel an unconditional one (they
+            // fire under different runtime states). Equal-condition pairs
+            // (including both unconditioned, clbit == -1) cancel validly.
             if (prev.type == inst.type &&
-                prev.qubits == inst.qubits) {
+                prev.qubits == inst.qubits &&
+                prev.condition_clbit == inst.condition_clbit &&
+                prev.condition_value == inst.condition_value) {
                 // Cancel
                 optimized.instructions.pop_back();
                 continue;
@@ -302,11 +313,13 @@ DAGCircuit CXCancellation::run(const DAGCircuit& dag, const TranspilationContext
 // This limits 2Q gate count to 3 CX (or fewer if interaction coefficients are zero).
 // =============================================================================
 
-// Helper: build 4x4 from instruction (reused from density_matrix_sim approach)
-static Eigen::Matrix4cd instruction_to_4x4(const Instruction& inst) {
-    // For the KAK pass we need the action of the full gate in the 4D space.
-    // We use a small statevector simulation (N=2) to extract the unitary column by column.
+// Helper: build 4x4 from instruction via basis-column statevector simulation.
+// Returns nullopt for anything that cannot (or must not) be consolidated:
+// classically-conditioned gates and unknown gate types. The previous identity
+// fallback silently DELETED unsupported gates from consolidated blocks.
+static std::optional<Eigen::Matrix4cd> instruction_to_4x4(const Instruction& inst) {
     using GT = Instruction::GateType;
+    if (inst.condition_clbit >= 0) return std::nullopt;
     Eigen::Matrix4cd U = Eigen::Matrix4cd::Zero();
 
     for (int col = 0; col < 4; ++col) {
@@ -324,16 +337,57 @@ static Eigen::Matrix4cd instruction_to_4x4(const Instruction& inst) {
             case GT::CRY:   gates::apply_cry(basis, 0, 1, p[0]); break;
             case GT::CRZ:   gates::apply_crz(basis, 0, 1, p[0]); break;
             case GT::CP:    gates::apply_cp(basis, 0, 1, p[0]); break;
+            case GT::CU:    gates::apply_cu(basis, 0, 1, p[0], p[1], p[2], p[3]); break;
+            case GT::ECR:   gates::apply_ecr(basis, 0, 1); break;
+            case GT::RZX:   gates::apply_rzx(basis, 0, 1, p[0]); break;
             case GT::RXX:   gates::apply_rxx(basis, 0, 1, p[0]); break;
             case GT::RYY:   gates::apply_ryy(basis, 0, 1, p[0]); break;
             case GT::RZZ:   gates::apply_rzz(basis, 0, 1, p[0]); break;
-            default: U = Eigen::Matrix4cd::Identity(); return U;
+            case GT::UNITARY:
+                if (inst.matrix.size() != 16) return std::nullopt;
+                gates::apply_unitary(basis, {0, 1}, inst.matrix);
+                break;
+            default: return std::nullopt;
         }
         for (int row = 0; row < 4; ++row) {
             U(row, col) = std::complex<double>(basis.real_parts[row], basis.imag_parts[row]);
         }
     }
     return U;
+}
+
+// 4x4 matrix of a 2-qubit circuit on qubits {0,1} (basis-column simulation).
+static Eigen::Matrix4cd circuit_to_4x4(const QuantumCircuit& qc2) {
+    Eigen::Matrix4cd U = Eigen::Matrix4cd::Zero();
+    StatevectorSimulator sim;
+    for (int col = 0; col < 4; ++col) {
+        Statevector basis(2);
+        basis.initialize_basis(col);
+        for (const auto& ki : qc2.instructions) sim.apply_instruction(basis, ki);
+        for (int row = 0; row < 4; ++row)
+            U(row, col) = std::complex<double>(basis.real_parts[row],
+                                               basis.imag_parts[row]);
+    }
+    return U;
+}
+
+// Equality up to a global phase, anchored on B's largest-magnitude entry.
+static bool matrices_equal_up_to_phase(const Eigen::Matrix4cd& A,
+                                       const Eigen::Matrix4cd& B,
+                                       double tol = 1e-6) {
+    int bi = 0, bj = 0;
+    double best = 0.0;
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j)
+            if (std::abs(B(i, j)) > best) {
+                best = std::abs(B(i, j));
+                bi = i;
+                bj = j;
+            }
+    if (best < 1e-12) return A.norm() < tol;
+    const std::complex<double> phase = A(bi, bj) / B(bi, bj);
+    if (std::abs(std::abs(phase) - 1.0) > tol) return false;
+    return (A - phase * B).norm() < tol;
 }
 
 // Tensor-product split: W (4x4) = W1 ⊗ W0  (W1 = qubit-1/MSB, W0 = qubit-0/LSB)
@@ -568,9 +622,18 @@ DAGCircuit ConsolidateBlocks::run(const DAGCircuit& dag, const TranspilationCont
         int qa = inst.qubits[0];
         int qb = inst.qubits[1];
 
-        // Collect all consecutive gates involving only {qa, qb}
-        // Stop when we see a gate on qa or qb that isn't on both.
-        Eigen::Matrix4cd accum = instruction_to_4x4(inst);
+        // Collect all consecutive gates involving only {qa, qb}.
+        // Stop when we see a gate on qa or qb that isn't on both, or a gate
+        // we cannot represent as a 4x4 (conditioned / unknown): those must
+        // never be absorbed into the block (the old identity fallback
+        // silently deleted them).
+        auto accum_opt = instruction_to_4x4(inst);
+        if (!accum_opt) {
+            optimized.instructions.push_back(inst);
+            continue;
+        }
+        Eigen::Matrix4cd accum = *accum_opt;
+        std::vector<Instruction> block_insts = {inst};
         consumed[i] = true;
         int block_count = 1;
         int j = i + 1;
@@ -590,8 +653,10 @@ DAGCircuit ConsolidateBlocks::run(const DAGCircuit& dag, const TranspilationCont
             }
             if (involves_qa && involves_qb && next.qubits.size() == 2 &&
                 next.qubits[0] == qa && next.qubits[1] == qb) {
-                Eigen::Matrix4cd gate = instruction_to_4x4(next);
-                accum = gate * accum;  // gates applied in order -> rightmost first in circuit
+                auto gate_opt = instruction_to_4x4(next);
+                if (!gate_opt) break;  // unsupported: leave it for the outer loop
+                accum = (*gate_opt) * accum;  // gates applied in order -> rightmost first in circuit
+                block_insts.push_back(next);
                 consumed[j] = true;
                 ++block_count;
             } else if (!involves_qa && !involves_qb) {
@@ -611,8 +676,26 @@ DAGCircuit ConsolidateBlocks::run(const DAGCircuit& dag, const TranspilationCont
             optimized.instructions.push_back(inst);
         } else {
             QuantumCircuit kak_circ = kak_decompose(accum, qa, qb);
-            for (const auto& ki : kak_circ.instructions) {
-                optimized.instructions.push_back(ki);
+
+            // Verification net: the Takagi step inside kak_decompose assumes
+            // distinct eigenvalues of the magic-basis Gram matrix; degenerate
+            // blocks can yield wrong local corrections. Rebuild the
+            // decomposition's 4x4 and require equality with the block (up to
+            // global phase); on mismatch keep the ORIGINAL block instructions
+            // (correctness over optimisation, no silent corruption).
+            QuantumCircuit local(2);
+            for (auto ki : kak_circ.instructions) {
+                for (auto& q : ki.qubits) q = (q == qa) ? 0 : 1;
+                local.instructions.push_back(std::move(ki));
+            }
+            if (matrices_equal_up_to_phase(circuit_to_4x4(local), accum)) {
+                for (const auto& ki : kak_circ.instructions) {
+                    optimized.instructions.push_back(ki);
+                }
+            } else {
+                for (const auto& bi : block_insts) {
+                    optimized.instructions.push_back(bi);
+                }
             }
         }
     }

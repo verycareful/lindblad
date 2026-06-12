@@ -1,11 +1,14 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/gates.hpp"
 #include "lindblad/operators.hpp"
+#include <algorithm>
 #include <cmath>
 #include <chrono>
 #include <memory>
 #include <random>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -145,6 +148,76 @@ void StatevectorSimulator::apply_instruction(Statevector& sv, const Instruction&
 }
 
 // =============================================================================
+// Trajectory helpers
+// =============================================================================
+
+// Collapse `qubit` to a sampled outcome (Born rule), renormalise, return it.
+static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng) {
+    const size_t step = 1ULL << qubit;
+    double prob0 = 0.0;
+    for (size_t i = 0; i < sv.dim; i += 2 * step)
+        for (size_t j = i; j < i + step; ++j)
+            prob0 += sv.real_parts[j] * sv.real_parts[j]
+                   + sv.imag_parts[j] * sv.imag_parts[j];
+    std::uniform_real_distribution<double> udist(0.0, 1.0);
+    const int outcome = (udist(rng) < prob0) ? 0 : 1;
+    const double p_out = (outcome == 0) ? prob0 : (1.0 - prob0);
+    const double inv_norm = (p_out > 1e-15) ? 1.0 / std::sqrt(p_out) : 1.0;
+    for (size_t i = 0; i < sv.dim; ++i) {
+        if (static_cast<int>((i >> qubit) & 1) != outcome) {
+            sv.real_parts[i] = 0.0;
+            sv.imag_parts[i] = 0.0;
+        } else {
+            sv.real_parts[i] *= inv_norm;
+            sv.imag_parts[i] *= inv_norm;
+        }
+    }
+    return outcome;
+}
+
+// Execute one trajectory: classical conditions are honoured against `clreg`,
+// MEASURE collapses the state and records its outcome into `clreg`.
+static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
+                              const QuantumCircuit& circuit,
+                              std::vector<int>& clreg, int n_clbits,
+                              std::mt19937_64& rng) {
+    using GT = Instruction::GateType;
+    for (const auto& inst : circuit.instructions) {
+        if (inst.type == GT::BARRIER) continue;
+        if (inst.condition_clbit >= 0) {
+            const int cv = (inst.condition_clbit < n_clbits)
+                           ? clreg[inst.condition_clbit] : 0;
+            if (cv != inst.condition_value) continue;
+        }
+        if (inst.type == GT::MEASURE) {
+            const int qubit = inst.qubits[0];
+            const int clbit = inst.clbits.empty() ? -1 : inst.clbits[0];
+            const int outcome = sv_collapse_qubit(sv, qubit, rng);
+            if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
+            continue;
+        }
+        sim.apply_instruction(sv, inst);
+    }
+}
+
+// True when no instruction (other than BARRIER) acts on a qubit after that
+// qubit has been measured: the pre-measurement state is then deterministic and
+// outcomes can be sampled from one forward pass instead of per-shot reruns.
+static bool sv_measures_are_terminal(const QuantumCircuit& circuit) {
+    std::vector<bool> measured(static_cast<size_t>(circuit.n_qubits), false);
+    for (const auto& inst : circuit.instructions) {
+        if (inst.type == Instruction::GateType::BARRIER) continue;
+        for (int q : inst.qubits)
+            if (q >= 0 && q < circuit.n_qubits &&
+                measured[static_cast<size_t>(q)])
+                return false;
+        if (inst.type == Instruction::GateType::MEASURE)
+            measured[static_cast<size_t>(inst.qubits[0])] = true;
+    }
+    return true;
+}
+
+// =============================================================================
 // simulate_circuit
 // =============================================================================
 
@@ -152,9 +225,15 @@ void StatevectorSimulator::simulate_circuit(
     Statevector& sv,
     const QuantumCircuit& circuit
 ) {
-    for (const auto& inst : circuit.instructions) {
-        apply_instruction(sv, inst);
-    }
+    // Trajectory semantics (docs/api/simulators.md, Execution semantics):
+    // classical conditions are honoured against a local register and MEASURE
+    // outcomes are recorded into it (collapse drawn from the thread-local
+    // RNG). For circuits without measurement or conditioning this reduces to
+    // the plain forward pass.
+    const int n_clbits =
+        circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
+    std::vector<int> clreg(static_cast<size_t>(n_clbits), 0);
+    sv_run_trajectory(*this, sv, circuit, clreg, n_clbits, sv_sim_rng);
 }
 
 // =============================================================================
@@ -168,6 +247,21 @@ double StatevectorSimulator::eval_expectation(
     if (circuit.n_qubits < 1)
         throw std::invalid_argument(
             "StatevectorSimulator::eval_expectation: circuit must have at least 1 qubit");
+
+    // Strict exact-evaluation rule (docs/api/simulators.md): an exact
+    // expectation value is undefined for stochastic evolution. Circuits with
+    // measurement or classical conditioning must be estimated from counts
+    // (run() with shots > 0) instead of silently evaluating one trajectory.
+    for (const auto& inst : circuit.instructions) {
+        if (inst.type == Instruction::GateType::MEASURE ||
+            inst.condition_clbit >= 0) {
+            throw std::invalid_argument(
+                "StatevectorSimulator::eval_expectation: circuit contains "
+                "measurement or classically-conditioned instructions; the "
+                "exact expectation of a stochastic trajectory is undefined. "
+                "Use run() with shots > 0 and estimate from counts.");
+        }
+    }
 
     thread_local std::unique_ptr<Statevector> sv_work;
     if (!sv_work || sv_work->n_qubits != circuit.n_qubits) {
@@ -226,66 +320,36 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         };
         sv_sim_rng.seed(seq);
 
-        // Determine whether the circuit contains any mid-circuit MEASURE gates.
-        // If so, each shot must re-run the full circuit from |0...0⟩ so that the
-        // stochastic collapse is sampled independently per shot.  If there are no
-        // MEASURE instructions the state is deterministic after one forward pass
-        // and we fall back to the fast sample_counts path.
+        // Execution strategy (docs/api/simulators.md, Execution semantics):
+        //   1. Terminal-only measurements (no feedforward, nothing acting on
+        //      a qubit after it was measured): ONE forward pass, then sample
+        //      outcomes from the final state with the qubit -> clbit map.
+        //      O(gates + shots) instead of O(shots * gates).
+        //   2. Mid-circuit measurement or feedforward with shots > 0:
+        //      per-shot trajectories (each collapse drawn independently).
+        //   3. Otherwise (shots == 0, or no measurements): a single seeded
+        //      trajectory; conditions honoured, MEASURE outcomes recorded.
         bool has_measure = false;
+        bool has_condition = false;
         int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
         for (const auto& inst : circuit.instructions) {
-            if (inst.type == Instruction::GateType::MEASURE) {
-                has_measure = true;
-                break;
-            }
+            if (inst.type == Instruction::GateType::MEASURE) has_measure = true;
+            if (inst.condition_clbit >= 0) has_condition = true;
         }
+        const bool terminal_only =
+            has_measure && !has_condition && sv_measures_are_terminal(circuit);
 
-        if (shots > 0 && has_measure) {
-            // Per-shot execution: re-initialise and re-simulate for every shot so
-            // that each MEASURE collapses the state independently.
+        if (shots > 0 && has_measure && !terminal_only) {
+            // Per-shot trajectories: re-initialise and re-simulate for every
+            // shot so each MEASURE collapses the state independently.
             result.counts.clear();
-            std::vector<int> clreg(n_clbits, 0);  // classical register for one shot
+            std::vector<int> clreg(n_clbits, 0);
 
             for (int shot = 0; shot < shots; ++shot) {
                 sv_work->initialize();
                 clreg.assign(n_clbits, 0);
-
-                for (const auto& inst : circuit.instructions) {
-                    if (inst.type == Instruction::GateType::MEASURE) {
-                        // Collapse the qubit and record the outcome in the classical register.
-                        int qubit = inst.qubits[0];
-                        int clbit = inst.clbits[0];
-                        size_t step = 1ULL << qubit;
-                        double prob0 = 0.0;
-                        for (size_t i = 0; i < sv_work->dim; i += 2 * step)
-                            for (size_t j = i; j < i + step; ++j)
-                                prob0 += sv_work->real_parts[j] * sv_work->real_parts[j]
-                                       + sv_work->imag_parts[j] * sv_work->imag_parts[j];
-                        std::uniform_real_distribution<double> udist(0.0, 1.0);
-                        int outcome = (udist(sv_sim_rng) < prob0) ? 0 : 1;
-                        double p_out = (outcome == 0) ? prob0 : (1.0 - prob0);
-                        double inv_norm = (p_out > 1e-15) ? 1.0 / std::sqrt(p_out) : 1.0;
-                        for (size_t i = 0; i < sv_work->dim; ++i) {
-                            if (static_cast<int>((i >> qubit) & 1) != outcome) {
-                                sv_work->real_parts[i] = 0.0;
-                                sv_work->imag_parts[i] = 0.0;
-                            } else {
-                                sv_work->real_parts[i] *= inv_norm;
-                                sv_work->imag_parts[i] *= inv_norm;
-                            }
-                        }
-                        if (clbit >= 0 && clbit < n_clbits) {
-                            clreg[clbit] = outcome;
-                        }
-                    } else {
-                        if (inst.condition_clbit >= 0) {
-                            int cv = (inst.condition_clbit < n_clbits)
-                                     ? clreg[inst.condition_clbit] : 0;
-                            if (cv != inst.condition_value) continue;
-                        }
-                        apply_instruction(*sv_work, inst);
-                    }
-                }
+                sv_run_trajectory(*this, *sv_work, circuit, clreg, n_clbits,
+                                  sv_sim_rng);
 
                 // Build bitstring: clbit 0 is LSB (rightmost), highest clbit is MSB.
                 std::string bits(n_clbits, '0');
@@ -294,8 +358,60 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                 }
                 result.counts[bits]++;
             }
+        } else if (shots > 0 && terminal_only) {
+            // Terminal-measurement fast path: a single evolution with MEASURE
+            // skipped (the pre-measurement state is deterministic), then
+            // multinomial sampling keyed by the qubit -> clbit mapping.
+            for (const auto& inst : circuit.instructions) {
+                if (inst.type == Instruction::GateType::MEASURE ||
+                    inst.type == Instruction::GateType::BARRIER) continue;
+                apply_instruction(*sv_work, inst);
+            }
+
+            std::vector<std::pair<int, int>> meas;  // (qubit, clbit)
+            for (const auto& inst : circuit.instructions)
+                if (inst.type == Instruction::GateType::MEASURE)
+                    meas.emplace_back(inst.qubits[0],
+                                      inst.clbits.empty() ? inst.qubits[0]
+                                                          : inst.clbits[0]);
+
+            // Cumulative probabilities + binary search per shot (same scheme
+            // as Statevector::sample_counts, with clbit-mapped keys).
+            std::vector<double> cum(sv_work->dim);
+            double acc = 0.0;
+            for (size_t i = 0; i < sv_work->dim; ++i) {
+                acc += sv_work->real_parts[i] * sv_work->real_parts[i]
+                     + sv_work->imag_parts[i] * sv_work->imag_parts[i];
+                cum[i] = acc;
+            }
+            // Sample with the per-call RNG seeded above from {seed, tid}:
+            // identical seeds on DIFFERENT threads stay statistically
+            // independent (B9_StatevectorRngParallelIndependence, relied on
+            // by Estimator::run_batch), while single-threaded runs remain
+            // reproducible (sv_sim_rng is reseeded deterministically per
+            // call). A plain mt19937_64(seed) here would give every thread
+            // the same stream.
+            std::uniform_real_distribution<double> udist(0.0, 1.0);
+            for (int s = 0; s < shots; ++s) {
+                const double r = udist(sv_sim_rng);
+                auto it = std::lower_bound(cum.begin(), cum.end(), r);
+                size_t outcome = static_cast<size_t>(
+                    std::distance(cum.begin(), it));
+                if (outcome >= sv_work->dim) outcome = sv_work->dim - 1;
+
+                std::string bits(n_clbits, '0');
+                for (const auto& [q, c] : meas) {
+                    if (c < 0 || c >= n_clbits) continue;
+                    if ((outcome >> q) & 1) bits[n_clbits - 1 - c] = '1';
+                }
+                result.counts[bits]++;
+            }
         } else {
-            simulate_circuit(*sv_work, circuit);
+            // Single seeded trajectory (shots == 0 semantics; also the plain
+            // forward pass for measurement-free circuits with shots > 0).
+            std::vector<int> clreg(n_clbits, 0);
+            sv_run_trajectory(*this, *sv_work, circuit, clreg, n_clbits,
+                              sv_sim_rng);
             if (shots > 0) {
                 result.counts = sv_work->sample_counts(shots, seed);
             }

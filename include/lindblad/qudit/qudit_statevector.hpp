@@ -44,15 +44,17 @@ public:
     void apply_1qudit(int q, const std::vector<Complex128>& U);
 
     // Apply a d²×d² unitary U to qudits (q0, q1), q0 != q1.
-    // Row index r = new_q0*d + new_q1; col index c = old_q0*d + old_q1.
-    // q0 is the "first" qudit (control) and q1 the "second" (target) in the
-    // tensor-product ordering used to construct U.
+    // Convention (project LSB-first, docs/Architecture.md "Conventions"):
+    // the FIRST argument is the LEAST significant digit of the matrix index:
+    //   row r = new_q1*d + new_q0; col c = old_q1*d + old_q0.
+    // This is the d-level generalisation of the qubit apply_unitary contract
+    // (index bit i = qubits[i]).
     void apply_2qudit(int q0, int q1, const std::vector<Complex128>& U);
 
     // Apply a d^k × d^k unitary U to k distinct qudits in the order given by
-    // `qudits`. Row index in U is r = sum_i new_x_{qudits[i]} * d^(k-1-i)
-    // (i.e., the i-th qudit in the list is the most significant when i is
-    // smallest). U is row-major and must have size d^(2k).
+    // `qudits`. Row index in U is r = sum_i new_x_{qudits[i]} * d^i
+    // (LSB-first: qudits[0] is the LEAST significant digit). U is row-major
+    // and must have size d^(2k).
     // qudits must contain distinct indices in [0, n_qudits).
     void apply_kqudit(const std::vector<int>& qudits,
                       const std::vector<Complex128>& U);

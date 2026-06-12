@@ -85,6 +85,11 @@ DAGCircuit DAGCircuit::from_circuit(const QuantumCircuit& qc) {
     std::vector<int> last_qubit_node = qubit_in_nodes;
     std::vector<int> last_clbit_node = clbit_in_nodes;
 
+    // Conditional instructions that read a clbit since its last write; a new
+    // write into that clbit must be ordered after all of them.
+    std::vector<std::vector<int>> clbit_readers(
+        static_cast<size_t>(qc.n_clbits));
+
     // Add OP nodes for each instruction
     for (const auto& inst : qc.instructions) {
         DAGNode op_node;
@@ -100,7 +105,24 @@ DAGCircuit DAGCircuit::from_circuit(const QuantumCircuit& qc) {
             dag.add_edge(last_qubit_node[q], node_id, q, false);
             last_qubit_node[q] = node_id;
         }
+
+        // Read-after-write: a classically-conditioned instruction depends on
+        // the last writer of its condition bit. Without this edge the DAG has
+        // no ordering between a measurement and the feedforward gate it
+        // drives whenever they share no qubit wire.
+        if (inst.condition_clbit >= 0 && inst.condition_clbit < qc.n_clbits) {
+            const int c = inst.condition_clbit;
+            dag.add_edge(last_clbit_node[c], node_id, c, true);
+            clbit_readers[static_cast<size_t>(c)].push_back(node_id);
+        }
+
         for (int c : inst.clbits) {
+            // Write-after-read: a new write into clbit c must come after
+            // every conditional that consumed the previous value.
+            for (int reader : clbit_readers[static_cast<size_t>(c)]) {
+                if (reader != node_id) dag.add_edge(reader, node_id, c, true);
+            }
+            clbit_readers[static_cast<size_t>(c)].clear();
             dag.add_edge(last_clbit_node[c], node_id, c, true);
             last_clbit_node[c] = node_id;
         }
@@ -164,8 +186,12 @@ std::vector<int> DAGCircuit::topological_sort() const {
     }
 
     std::queue<int> q;
-    for (const auto& [nid, deg] : in_degree) {
-        if (deg == 0) q.push(nid);
+    // Seed in nodes-vector order (deterministic) instead of hash-map
+    // iteration order, so to_circuit round-trips and downstream passes are
+    // reproducible run to run.
+    for (const auto& node : nodes) {
+        auto dit = in_degree.find(node.node_id);
+        if (dit != in_degree.end() && dit->second == 0) q.push(node.node_id);
     }
 
     std::vector<int> result;

@@ -117,6 +117,15 @@ public:
 };
 ```
 
+### Semantics (frozen in R.1.12)
+
+- The edge list is LITERAL: `CouplingMap(n)` with no edges declares n qubits where no pair may interact. Routing a 2-qubit gate against it throws a routing error.
+- "Unconstrained" is expressed by the ABSENCE of a map: `CouplingMap()` (n = 0). Routing passes skip it entirely. Matches Qiskit/tket semantics.
+- SABRE never silently drops gates: a routing stall (no viable SWAP candidates, or a gate spanning disconnected components) throws `std::runtime_error` describing the cause. Before R.1.12 the unroutable remainder of the circuit was silently discarded.
+- 3+ qubit gates are routed only if every wire pair is already adjacent; otherwise SABRE throws and asks for decomposition to 1q/2q gates first. Barriers carry no routing constraint.
+- Classically-conditioned instructions are ordered in the DAG after the measurement writing their condition bit (read-after-write, plus write-after-read for re-measurement), and the optimisation passes (`Optimize1qGates`, `CXCancellation`, `CommutativeCancellation`, `ConsolidateBlocks`) never merge, cancel, or absorb them.
+- `ConsolidateBlocks` verifies every KAK decomposition against the consolidated block's unitary (up to global phase) and keeps the original block on mismatch.
+
 ### Predefined Topologies
 
 **Linear**: Qubits $0 \to 1 \to 2 \to \cdots \to N-1$

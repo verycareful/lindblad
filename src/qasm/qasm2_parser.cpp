@@ -1,5 +1,6 @@
 #include "lindblad/circuit.hpp"
 
+#include <cctype>
 #include <sstream>
 #include <stdexcept>
 #include <regex>
@@ -20,6 +21,8 @@ public:
         int n_clbits = 0;
         std::unordered_map<std::string, int> qreg_offsets;
         std::unordered_map<std::string, int> creg_offsets;
+        std::unordered_map<std::string, int> qreg_sizes;
+        std::unordered_map<std::string, int> creg_sizes;
 
         // Gate definition library: name -> { param_names, qubit_names, body_lines }
         std::unordered_map<std::string, GateDefinition> gate_defs;
@@ -59,6 +62,7 @@ public:
                     std::string reg_name = trim(line.substr(5, bracket_pos - 5));
                     int reg_size = std::stoi(line.substr(bracket_pos + 1, close_pos - bracket_pos - 1));
                     qreg_offsets[reg_name] = n_qubits;
+                    qreg_sizes[reg_name] = reg_size;
                     n_qubits += reg_size;
                 }
             } else if (line.find("creg") != std::string::npos) {
@@ -68,6 +72,7 @@ public:
                     std::string reg_name = trim(line.substr(5, bracket_pos - 5));
                     int reg_size = std::stoi(line.substr(bracket_pos + 1, close_pos - bracket_pos - 1));
                     creg_offsets[reg_name] = n_clbits;
+                    creg_sizes[reg_name] = reg_size;
                     n_clbits += reg_size;
                 }
             }
@@ -112,25 +117,86 @@ public:
             std::vector<double> params;
             std::vector<int> qubits;
 
-            // Check for measurement
+            // Measurement: indexed form `measure q[i] -> c[j];` or the
+            // standard whole-register form `measure q -> c;` (expanded to one
+            // measurement per bit). Unresolvable operands THROW: silently
+            // dropping measurements corrupted imports before R.1.12.
             if (line.find("measure") != std::string::npos) {
                 auto arrow = line.find("->");
-                if (arrow != std::string::npos) {
-                    int q = resolve_reg_index(line.substr(0, arrow), qreg_offsets);
-                    int c = resolve_reg_index(line.substr(arrow + 2), creg_offsets);
-                    if (q >= 0 && c >= 0) qc.measure(q, c);
+                if (arrow == std::string::npos)
+                    throw std::runtime_error(
+                        "QASM2Parser: malformed measure statement: " + line);
+                const std::string lhs = line.substr(0, arrow);
+                const std::string rhs = line.substr(arrow + 2);
+                int q = resolve_reg_index(lhs, qreg_offsets);
+                int c = resolve_reg_index(rhs, creg_offsets);
+                if (q >= 0 && c >= 0) {
+                    qc.measure(q, c);
+                    continue;
                 }
-                continue;
+                int q_off = 0, q_size = 0, c_off = 0, c_size = 0;
+                if (resolve_reg_whole(lhs, qreg_offsets, qreg_sizes, q_off, q_size) &&
+                    resolve_reg_whole(rhs, creg_offsets, creg_sizes, c_off, c_size)) {
+                    if (q_size != c_size)
+                        throw std::runtime_error(
+                            "QASM2Parser: register size mismatch in '" + line +
+                            "' (qreg size " + std::to_string(q_size) +
+                            ", creg size " + std::to_string(c_size) + ")");
+                    for (int i = 0; i < q_size; ++i)
+                        qc.measure(q_off + i, c_off + i);
+                    continue;
+                }
+                throw std::runtime_error(
+                    "QASM2Parser: could not resolve measure operands in: " + line);
             }
 
+            // Reset: indexed `reset q[i];` or whole-register `reset q;`.
             if (line.find("reset") != std::string::npos) {
                 int q = resolve_reg_index(line, qreg_offsets);
-                if (q >= 0) qc.reset(q);
-                continue;
+                if (q >= 0) {
+                    qc.reset(q);
+                    continue;
+                }
+                int q_off = 0, q_size = 0;
+                if (resolve_reg_whole(line, qreg_offsets, qreg_sizes, q_off, q_size)) {
+                    for (int i = 0; i < q_size; ++i) qc.reset(q_off + i);
+                    continue;
+                }
+                throw std::runtime_error(
+                    "QASM2Parser: could not resolve reset operand in: " + line);
             }
 
+            // Barrier: honour the operand list (`barrier q[0], r;`); a bare
+            // `barrier;` or an unresolvable list falls back to full register.
             if (line.find("barrier") != std::string::npos) {
-                qc.barrier();
+                std::string operand_str =
+                    trim(line.substr(line.find("barrier") + 7));
+                std::vector<int> bq;
+                bool ok = !operand_str.empty();
+                if (ok) {
+                    std::istringstream ops(operand_str);
+                    std::string tok;
+                    while (std::getline(ops, tok, ',')) {
+                        tok = trim(tok);
+                        if (tok.empty()) continue;
+                        int q = resolve_reg_index(tok, qreg_offsets);
+                        if (q >= 0) {
+                            bq.push_back(q);
+                            continue;
+                        }
+                        int q_off = 0, q_size = 0;
+                        if (resolve_reg_whole(tok, qreg_offsets, qreg_sizes,
+                                              q_off, q_size)) {
+                            for (int i = 0; i < q_size; ++i)
+                                bq.push_back(q_off + i);
+                        } else {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if (ok && !bq.empty()) qc.barrier(bq);
+                else qc.barrier();
                 continue;
             }
 
@@ -426,6 +492,37 @@ private:
             return offset + std::stoi(s.substr(bracket, close - bracket));
         }
         return -1;
+    }
+
+    // Resolve a BARE register reference (no [index]) inside `s`: matches a
+    // known register name as a whole token (not a substring of a longer
+    // identifier, and not followed by '[') and returns its offset and size.
+    static bool resolve_reg_whole(
+        const std::string& s,
+        const std::unordered_map<std::string, int>& offsets,
+        const std::unordered_map<std::string, int>& sizes,
+        int& offset_out, int& size_out
+    ) {
+        auto is_ident = [](char ch) {
+            return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_';
+        };
+        for (const auto& [name, offset] : offsets) {
+            auto pos = s.find(name);
+            while (pos != std::string::npos) {
+                const bool left_ok = (pos == 0) || !is_ident(s[pos - 1]);
+                const size_t end = pos + name.size();
+                const bool right_ok =
+                    (end >= s.size()) || (!is_ident(s[end]) && s[end] != '[');
+                if (left_ok && right_ok) {
+                    offset_out = offset;
+                    auto it = sizes.find(name);
+                    size_out = (it != sizes.end()) ? it->second : 0;
+                    return size_out > 0;
+                }
+                pos = s.find(name, pos + 1);
+            }
+        }
+        return false;
     }
 
     // Parse "reg[i], reg[j], ..." using register offset map for global indices.

@@ -46,12 +46,23 @@ QuantumCircuit Grover::build_circuit(
             } else if (nq == 3) {
                 qc.ccx(0, 1, 2);
             } else {
+                // MCX targeting qubit nq-1 (the H-wrapped qubit below),
+                // controlled on qubits 0..nq-2. Under the apply_unitary
+                // convention (matrix-index bit i = qubits[i] = qubit i) the
+                // swapped pair is "all controls 1, target 0/1":
+                //   lo = 2^(nq-1) - 1  (controls 1, target 0)
+                //   hi = 2^nq - 1      (controls 1, target 1)
+                // The previous pair (2^nq - 2, 2^nq - 1) differed in bit 0 and
+                // therefore targeted qubit 0 while H wrapped qubit nq-1,
+                // breaking the diffusion operator for every nq >= 4.
                 size_t mcu = 1ULL << nq;
+                const size_t lo = (mcu >> 1) - 1;
+                const size_t hi = mcu - 1;
                 std::vector<Complex128> mcx_mat(mcu * mcu, Complex128(0.0, 0.0));
                 for (size_t idx = 0; idx < mcu; ++idx) {
-                    if (idx == mcu - 2)      mcx_mat[idx * mcu + (mcu - 1)] = Complex128(1.0, 0.0);
-                    else if (idx == mcu - 1) mcx_mat[idx * mcu + (mcu - 2)] = Complex128(1.0, 0.0);
-                    else                     mcx_mat[idx * mcu + idx]        = Complex128(1.0, 0.0);
+                    if (idx == lo)      mcx_mat[idx * mcu + hi]  = Complex128(1.0, 0.0);
+                    else if (idx == hi) mcx_mat[idx * mcu + lo]  = Complex128(1.0, 0.0);
+                    else                mcx_mat[idx * mcu + idx] = Complex128(1.0, 0.0);
                 }
                 Instruction mcx_inst;
                 mcx_inst.type = Instruction::GateType::UNITARY;

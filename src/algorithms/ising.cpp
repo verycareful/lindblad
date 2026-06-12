@@ -9,8 +9,10 @@ namespace lindblad {
 //
 // H = offset + sum_i h[i] Z_i + sum_{i<j} J[i][j] Z_i Z_j
 //
-// Pauli string convention: pauli[0] acts on the most significant qubit (qubit
-// n-1 in ket notation). So Z on qubit q maps to position (n-1-q) in the string.
+// Pauli string convention (project LSB-first, docs/Architecture.md
+// "Conventions"): pauli[q] acts on qubit q, so Z on qubit i sits at string
+// position i. Note this reads in the opposite direction from measurement
+// bitstrings (whose rightmost character is qubit 0).
 // =============================================================================
 
 SparsePauliOp IsingHamiltonian::to_sparse_pauli_op() const {
@@ -28,7 +30,7 @@ SparsePauliOp IsingHamiltonian::to_sparse_pauli_op() const {
     for (int i = 0; i < n; ++i) {
         if (h[i] == 0.0) continue;
         std::string p(n, 'I');
-        p[n - 1 - i] = 'Z';   // qubit i → position n-1-i (MSB-first)
+        p[i] = 'Z';   // qubit i → string position i (LSB-first)
         terms.push_back({p, Complex128(h[i], 0.0)});
     }
 
@@ -38,8 +40,8 @@ SparsePauliOp IsingHamiltonian::to_sparse_pauli_op() const {
             double v = J[i][j];
             if (v == 0.0) continue;
             std::string p(n, 'I');
-            p[n - 1 - i] = 'Z';
-            p[n - 1 - j] = 'Z';
+            p[i] = 'Z';
+            p[j] = 'Z';
             terms.push_back({p, Complex128(v, 0.0)});
         }
     }

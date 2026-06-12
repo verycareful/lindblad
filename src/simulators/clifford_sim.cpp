@@ -361,13 +361,16 @@ bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
                 break;
             case GT::P: {
                 // Accept P only if the angle maps to a Clifford gate.
+                // The a ~ 2*pi case covers fmod boundary values (e.g. an
+                // input of -1e-12) and mirrors the acceptance list in run().
                 if (inst.params.empty()) return false;
                 double a = std::fmod(inst.params[0], 2.0 * pi);
                 if (a < 0) a += 2.0 * pi;
                 if (!(std::abs(a) < 1e-9 ||
                       std::abs(a - pi / 2.0) < 1e-9 ||
                       std::abs(a - pi)        < 1e-9 ||
-                      std::abs(a - 3.0 * pi / 2.0) < 1e-9))
+                      std::abs(a - 3.0 * pi / 2.0) < 1e-9 ||
+                      std::abs(a - 2.0 * pi) < 1e-9))
                     return false;
                 break;
             }

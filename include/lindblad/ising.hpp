@@ -26,8 +26,9 @@ struct IsingHamiltonian {
     int n_qubits() const { return static_cast<int>(h.size()); }
 
     // Convert to SparsePauliOp for use with Estimator / VQE / QAOA.
-    // Bit ordering: bitstring[0] = qubit n-1 (MSB), bitstring[n-1] = qubit 0 (LSB).
-    // Qubit i maps to Pauli string position n-1-i (Qiskit/MSB-first convention).
+    // Pauli string ordering (project LSB-first convention, see
+    // docs/Architecture.md "Conventions"): qubit i maps to string position i,
+    // so h[i] becomes a 'Z' at pauli[i].
     SparsePauliOp to_sparse_pauli_op() const;
 
     // Evaluate energy for a given bitstring (x ∈ {0,1}^n, MSB first).

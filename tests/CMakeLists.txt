@@ -54,6 +54,10 @@ set(LINDBLAD_TEST_SOURCES
     test_visualiser_file_io.cpp
     # R.1.11.1 test suite — qudit completeness (apply_P odd-d, affine oracles, composite-d Simon)
     test_qudit_r1111.cpp
+    # 2026-06-11 audit verification suite: asserts correct behaviour per audit
+    # findings C1..C17; each test FAILS while its bug is open and becomes a
+    # regression once fixed (same convention as test_bug_regression.cpp)
+    test_audit_2026_06_11.cpp
 )
 
 # Create test executable

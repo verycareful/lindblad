@@ -94,6 +94,16 @@ public:
         const QuantumCircuit& circuit,
         const std::vector<double>& parameters = {}
     );
+
+private:
+    // run() threads per-circuit seeds through this overload instead of
+    // mutating options.seed (which was racy for a shared Sampler and leaked
+    // the temporary value on exceptions).
+    std::unordered_map<std::string, int> run_single_seeded(
+        const QuantumCircuit& circuit,
+        const std::vector<double>& parameters,
+        uint64_t seed
+    );
 };
 
 } // namespace lindblad

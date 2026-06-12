@@ -14,18 +14,24 @@ class QuantumCircuit;
 // =============================================================================
 // PauliString — tensor product of single-qubit Paulis
 // =============================================================================
-// Qubit ordering convention (matches Qiskit):
-//   pauli[0] acts on the MOST significant qubit (highest index in ket notation).
-//   pauli[N-1] acts on the LEAST significant qubit (qubit 0).
+// Qubit ordering convention (project-wide, LSB-first; see
+// docs/Architecture.md "Conventions"):
+//   pauli[q] acts on qubit q. pauli[0] is qubit 0 (the LEAST significant
+//   qubit), pauli[N-1] is qubit N-1.
 //
 //   Example: PauliString("XIZ") on a 3-qubit system means:
-//     X on qubit 2, I on qubit 1, Z on qubit 0.
+//     X on qubit 0, I on qubit 1, Z on qubit 2.
 //
-//   In ket notation |q2 q1 q0⟩, the leftmost character maps to the leftmost
-//   (highest) qubit. This is big-endian / MSB-first ordering.
+//   NOTE: this is the opposite character order from Qiskit's labels, and it
+//   reads in the opposite direction from measurement bitstrings (whose
+//   rightmost character is qubit 0). "XI" (X on qubit 0) marks the state
+//   counted under the key "01".
+//
+//   tensor(): this->pauli occupies the LOW qubits of the result, other the
+//   HIGH qubits (labels concatenate left to right as qubit index grows).
 
 struct PauliString {
-    std::string pauli;    // e.g., "XYZII" — index 0 = most significant qubit
+    std::string pauli;    // e.g., "XYZII" — index q acts on qubit q (LSB-first)
     Complex128 coeff;
 
     PauliString() : coeff(1.0, 0.0) {}

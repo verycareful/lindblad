@@ -10,9 +10,6 @@
 #include "lindblad/operators.hpp"
 #include "lindblad/types.hpp"
 
-#include <Eigen/Dense>
-#include <Eigen/Eigenvalues>
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -175,6 +172,27 @@ void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
 // apply_kraus — rho -> sum_k K_k * rho * K_k†
 // =============================================================================
 
+// Permute a 2^k x 2^k matrix by k-bit reversal of row and column indices.
+// Translates between the project-wide external convention (bit 0 of the
+// matrix index = qubits[0]; see docs/Architecture.md "Conventions") and
+// DensityMatrix::apply_gate's internal MSB-first sub-block addressing.
+static std::vector<Complex128> dm_bit_reverse_matrix(
+    const std::vector<Complex128>& M, int k
+) {
+    const size_t d = 1ULL << k;
+    auto rev = [k](size_t idx) {
+        size_t r = 0;
+        for (int b = 0; b < k; ++b)
+            if ((idx >> b) & 1) r |= (size_t(1) << (k - 1 - b));
+        return r;
+    };
+    std::vector<Complex128> out(d * d, Complex128(0.0, 0.0));
+    for (size_t r = 0; r < d; ++r)
+        for (size_t c = 0; c < d; ++c)
+            out[rev(r) * d + rev(c)] = M[r * d + c];
+    return out;
+}
+
 void DensityMatrix::apply_kraus(
     const std::vector<std::vector<Complex128>>& kraus_ops,
     const std::vector<int>& qubits
@@ -184,9 +202,17 @@ void DensityMatrix::apply_kraus(
     const auto original = data;
     std::vector<Complex128> result_data(dim * dim, Complex128(0.0, 0.0));
 
+    // Convention bridge: KrausChannel operator matrices follow the external
+    // qubits[0]-is-LSB contract; apply_gate addresses qubits[0] as the MSB.
+    const int k = static_cast<int>(qubits.size());
+
     for (const auto& K : kraus_ops) {
         data = original;        // restore rho (overwrites existing allocation)
-        apply_gate(K, qubits);  // rho -> K * rho * K†  in-place
+        if (k >= 2) {
+            apply_gate(dm_bit_reverse_matrix(K, k), qubits);
+        } else {
+            apply_gate(K, qubits);  // rho -> K * rho * K†  in-place
+        }
         for (size_t i = 0; i < dim * dim; ++i) result_data[i] += data[i];
     }
 
@@ -221,12 +247,13 @@ double DensityMatrix::expectation_value_sparse(const SparsePauliOp& hamiltonian)
     // phase(row) = Π_{Z qubits} (-1)^{bit} · Π_{Y qubits} i·(-1)^{bit}
     double result = 0.0;
     for (const auto& term : hamiltonian.terms) {
-        // pauli[q] acts on qubit (nq-1-q) = bit position (nq-1-q) in basis index.
+        // Project convention (docs/Architecture.md "Conventions"): Pauli
+        // strings are LSB-first, pauli[q] acts on qubit q = bit q.
         size_t flip_mask = 0;
         std::vector<int> z_bits, y_bits;
         for (int q = 0; q < nq; ++q) {
             const char p = term.pauli[q];
-            const int bit = nq - 1 - q;
+            const int bit = q;
             if (p == 'X' || p == 'x') {
                 flip_mask |= (1ULL << bit);
             } else if (p == 'Y' || p == 'y') {
@@ -381,19 +408,30 @@ static std::vector<Complex128> gate_matrix_for_dm(const Instruction& inst) {
             set(2,0,s); set(2,1,{0,-inv_sqrt2}); set(3,0,{0,-inv_sqrt2}); set(3,1,s); break;
         }
         case GT::RZX: {
+            // exp(-i t/2 Z(x)X), Z on qubits[0] (MSB of this builder's index),
+            // X on qubits[1] (LSB). X couples index pairs differing in the LSB;
+            // the sign of the off-diagonal follows the Z eigenvalue of the MSB:
+            // rows 0,1 (Z=+1) get -i*sin, rows 2,3 (Z=-1) get +i*sin.
+            // Matches gates::apply_rzx (statevector reference implementation).
             double c=std::cos(p[0]/2), s=std::sin(p[0]/2);
-            set(0,0,{c,0}); set(0,2,{0,-s}); set(1,1,{c,0}); set(1,3,{0,-s});
-            set(2,0,{0,-s}); set(2,2,{c,0}); set(3,1,{0,-s}); set(3,3,{c,0}); break;
+            set(0,0,{c,0}); set(0,1,{0,-s}); set(1,0,{0,-s}); set(1,1,{c,0});
+            set(2,2,{c,0}); set(2,3,{0,s});  set(3,2,{0,s});  set(3,3,{c,0}); break;
         }
         case GT::RXX: {
+            // exp(-i t/2 X(x)X): cos on the full diagonal, -i*sin on the
+            // anti-diagonal. Matches gates::apply_rxx.
             double c=std::cos(p[0]/2), s=std::sin(p[0]/2);
-            set(0,0,{c,0}); set(0,3,{0,-s}); set(1,2,{0,-s});
-            set(2,1,{0,-s}); set(3,0,{0,-s}); set(3,3,{c,0}); break;
+            set(0,0,{c,0}); set(1,1,{c,0}); set(2,2,{c,0}); set(3,3,{c,0});
+            set(0,3,{0,-s}); set(1,2,{0,-s});
+            set(2,1,{0,-s}); set(3,0,{0,-s}); break;
         }
         case GT::RYY: {
+            // exp(-i t/2 Y(x)Y): cos on the full diagonal, +i*sin on the outer
+            // anti-diagonal and -i*sin on the inner. Matches gates::apply_ryy.
             double c=std::cos(p[0]/2), s=std::sin(p[0]/2);
-            set(0,0,{c,0}); set(0,3,{0,s}); set(1,2,{0,-s});
-            set(2,1,{0,-s}); set(3,0,{0,s}); set(3,3,{c,0}); break;
+            set(0,0,{c,0}); set(1,1,{c,0}); set(2,2,{c,0}); set(3,3,{c,0});
+            set(0,3,{0,s}); set(1,2,{0,-s});
+            set(2,1,{0,-s}); set(3,0,{0,s}); break;
         }
         case GT::RZZ: {
             double c=std::cos(p[0]/2), s=std::sin(p[0]/2);
@@ -431,8 +469,15 @@ static std::vector<Complex128> gate_matrix_for_dm(const Instruction& inst) {
             U[7*8+7] = Complex128(0.0, 0.0);     // clear diagonal
             break;
         }
-        case GT::UNITARY:
-            return inst.matrix;  // Already provided
+        case GT::UNITARY: {
+            // Convention bridge. Instruction::matrix follows the project-wide
+            // contract (docs/Architecture.md "Conventions"): bit 0 (LSB) of the
+            // matrix index is qubits[0]. DensityMatrix::apply_gate addresses
+            // the sub-block with qubits[0] as the MSB, so permute rows and
+            // columns by k-bit reversal. Mirrors the bridge in mps_sim.cpp.
+            if (k <= 1 || inst.matrix.empty()) return inst.matrix;
+            return dm_bit_reverse_matrix(inst.matrix, k);
+        }
         default:
             // Identity
             for (size_t i = 0; i < sub_dim; ++i) U[i * sub_dim + i] = Complex128(1.0, 0.0);
@@ -445,6 +490,24 @@ static std::vector<Complex128> gate_matrix_for_dm(const Instruction& inst) {
 // DensityMatrixSimulator::run
 // =============================================================================
 
+// True when no instruction (other than BARRIER) acts on a qubit after that
+// qubit has been measured: outcomes can then be sampled from the final
+// density matrix in one pass. A second MEASURE or RESET on a measured qubit
+// forces the per-shot trajectory path.
+static bool dm_measures_are_terminal(const QuantumCircuit& circuit) {
+    std::vector<bool> measured(static_cast<size_t>(circuit.n_qubits), false);
+    for (const auto& inst : circuit.instructions) {
+        if (inst.type == Instruction::GateType::BARRIER) continue;
+        for (int q : inst.qubits)
+            if (q >= 0 && q < circuit.n_qubits &&
+                measured[static_cast<size_t>(q)])
+                return false;
+        if (inst.type == Instruction::GateType::MEASURE)
+            measured[static_cast<size_t>(inst.qubits[0])] = true;
+    }
+    return true;
+}
+
 DensityMatrixSimulator::Result DensityMatrixSimulator::run(
     const QuantumCircuit& circuit,
     const NoiseModel& noise_model,
@@ -456,14 +519,22 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
     try {
         auto t_start = std::chrono::high_resolution_clock::now();
 
-        // Detect feedforward: any instruction with a classical condition.
-        // When present, every shot must re-simulate from |0><0| so that
-        // mid-circuit MEASURE outcomes stochastically drive subsequent gates.
+        // Execution strategy (see docs/api/simulators.md, Execution semantics):
+        // per-shot trajectories whenever a classical condition exists OR a
+        // measurement is followed by further operations on its qubit (the
+        // collapse then influences later evolution and must be drawn per
+        // shot). Otherwise: one pass with MEASURE deferred to sampling.
+        // shots == 0 on the per-shot path runs a single seeded trajectory.
         bool has_feedforward = false;
+        bool has_measure = false;
         const int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
         for (const auto& inst : circuit.instructions) {
-            if (inst.condition_clbit >= 0) { has_feedforward = true; break; }
+            if (inst.condition_clbit >= 0) has_feedforward = true;
+            if (inst.type == Instruction::GateType::MEASURE) has_measure = true;
         }
+        const bool needs_per_shot =
+            has_feedforward ||
+            (has_measure && !dm_measures_are_terminal(circuit));
 
         // Reusable Kraus operators for RESET (|0><0| and |0><1| channels).
         const std::vector<Complex128> K0_reset = {
@@ -510,10 +581,11 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             }
         };
 
-        if (has_feedforward) {
-            // Per-shot feedforward path.
-            // Each shot: fresh DM, iterate instructions with condition checks,
-            // collapse DM on MEASURE and record outcome to clreg.
+        if (needs_per_shot) {
+            // Per-shot trajectory path (feedforward and/or mid-circuit
+            // measurement). Each shot: fresh DM, iterate instructions with
+            // condition checks, collapse DM on MEASURE, record to clreg.
+            // shots == 0 runs exactly one seeded trajectory for final_state.
             std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
             std::uniform_real_distribution<double> udist(0.0, 1.0);
             std::vector<int> clreg(n_clbits, 0);
@@ -582,7 +654,9 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                     result.counts[bits]++;
                 }
 
-                dm_last = dm;
+                // Keep only the last trajectory's state (moved, not copied:
+                // a full 4^N copy per shot is pure overhead otherwise).
+                if (shot == n_shots - 1) dm_last = std::move(dm);
             }
 
             result.final_state = std::move(dm_last);
@@ -598,8 +672,19 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 apply_inst(dm, inst);
             }
 
-            // Sample measurements from diagonal of density matrix
+            // Sample measurements from the diagonal of the density matrix.
+            // Keys follow the qubit -> clbit mapping of the (terminal)
+            // MEASURE instructions; clbit 0 is the rightmost character. When
+            // the circuit has no MEASURE at all, the full register is sampled
+            // with qubit-indexed keys (legacy behaviour).
             if (shots > 0) {
+                std::vector<std::pair<int, int>> meas;  // (qubit, clbit)
+                for (const auto& inst : circuit.instructions)
+                    if (inst.type == Instruction::GateType::MEASURE)
+                        meas.emplace_back(inst.qubits[0],
+                                          inst.clbits.empty() ? inst.qubits[0]
+                                                              : inst.clbits[0]);
+
                 auto probs = dm.probabilities();
                 // Build cumulative probability array and sample via binary search —
                 // avoids the O(2^N) alias table built by std::discrete_distribution.
@@ -615,12 +700,21 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                     size_t outcome = static_cast<size_t>(std::distance(cum.begin(), it));
                     if (outcome >= dm.dim) outcome = dm.dim - 1;
 
-                    std::string bits(circuit.n_qubits, '0');
-                    for (int b = circuit.n_qubits - 1; b >= 0; --b) {
-                        if ((outcome >> b) & 1)
-                            bits[circuit.n_qubits - 1 - b] = '1';
+                    if (meas.empty()) {
+                        std::string bits(circuit.n_qubits, '0');
+                        for (int b = circuit.n_qubits - 1; b >= 0; --b) {
+                            if ((outcome >> b) & 1)
+                                bits[circuit.n_qubits - 1 - b] = '1';
+                        }
+                        result.counts[bits]++;
+                    } else {
+                        std::string bits(n_clbits, '0');
+                        for (const auto& [q, c] : meas) {
+                            if (c < 0 || c >= n_clbits) continue;
+                            if ((outcome >> q) & 1) bits[n_clbits - 1 - c] = '1';
+                        }
+                        result.counts[bits]++;
                     }
-                    result.counts[bits]++;
                 }
             }
 

@@ -18,6 +18,8 @@
 #include <limits>
 #include <numeric>
 #include <random>
+#include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -43,6 +45,19 @@ static SabreRoutingResult sabre_route(
 ) {
     int N = dag.n_qubits;
     std::vector<int> layout = initial_layout;
+
+    // O(1) adjacency lookups for the routing hot loop. is_connected() scans
+    // the edge vector linearly per query, which dominated large-map routing.
+    std::unordered_set<long long> adj_pairs;
+    adj_pairs.reserve(coupling_map.edges.size() * 2 + 1);
+    const long long ADJ_KEY = 1000003LL;
+    for (const auto& [ea, eb] : coupling_map.edges) {
+        adj_pairs.insert(static_cast<long long>(ea) * ADJ_KEY + eb);
+        adj_pairs.insert(static_cast<long long>(eb) * ADJ_KEY + ea);
+    }
+    auto is_adjacent = [&](int a, int b) {
+        return adj_pairs.count(static_cast<long long>(a) * ADJ_KEY + b) > 0;
+    };
 
     // Build logical reverse: physical → logical
     auto build_inv = [&]() {
@@ -91,6 +106,15 @@ static SabreRoutingResult sabre_route(
     std::vector<bool> done(id_range, false);
     int swap_count = 0;
 
+    // Termination guard: a gate spanning disconnected coupling-map components
+    // can never become adjacent, yet SWAP candidates may keep existing inside
+    // one component. Routing any gate needs at most n_physical SWAPs, so this
+    // budget is generous for every routable circuit and only trips on
+    // genuinely unroutable input.
+    const long long swap_budget =
+        static_cast<long long>(num_nodes + 16) *
+        static_cast<long long>(std::max(1, coupling_map.n_physical_qubits));
+
     // Decay parameters (per-qubit, penalise re-using same qubits for SWAPs)
     std::vector<double> decay(N, 1.0);
     constexpr double DECAY_FACTOR = 0.001;
@@ -100,17 +124,41 @@ static SabreRoutingResult sabre_route(
         std::vector<int> executable, blocked;
         for (int nid : front) {
             const auto& node = dag.nodes[id_to_idx.at(nid)];
-            if (node.qubit_wires.size() < 2) {
+            const size_t nw = node.qubit_wires.size();
+            if (nw < 2 || node.op.type == Instruction::GateType::BARRIER) {
+                // 0/1-qubit operations and barriers carry no routing
+                // constraint (a full-register BARRIER previously fell into
+                // the 2-qubit branch and could block routing forever).
                 executable.push_back(nid);
-            } else {
+            } else if (nw == 2) {
                 int la = node.qubit_wires[0];
                 int lb = node.qubit_wires[1];
                 int pa = layout[la];
                 int pb = layout[lb];
-                if (coupling_map.is_connected(pa, pb)) {
+                if (is_adjacent(pa, pb)) {
                     executable.push_back(nid);
                 } else {
                     blocked.push_back(nid);
+                }
+            } else {
+                // 3+ qubit gates: SABRE only inserts SWAPs for pairs.
+                // Executable iff EVERY wire pair is already adjacent;
+                // otherwise refuse loudly (decompose to 1q/2q gates before
+                // routing) instead of validating only the first two wires.
+                bool all_adjacent = true;
+                for (size_t a = 0; a < nw && all_adjacent; ++a)
+                    for (size_t b = a + 1; b < nw && all_adjacent; ++b)
+                        if (!is_adjacent(layout[node.qubit_wires[a]],
+                                         layout[node.qubit_wires[b]]))
+                            all_adjacent = false;
+                if (all_adjacent) {
+                    executable.push_back(nid);
+                } else {
+                    throw std::runtime_error(
+                        "SABRE routing: " + std::to_string(nw) +
+                        "-qubit gate '" + node.op.gate_name() +
+                        "' is not executable on this coupling map; decompose "
+                        "multi-qubit gates to 1q/2q gates before routing");
                 }
             }
         }
@@ -217,12 +265,28 @@ static SabreRoutingResult sabre_route(
             }
         }
 
-        if (best_l0 < 0) break;  // No progress
+        if (best_l0 < 0) {
+            // No SWAP candidate can make progress. Throwing here is the
+            // no-silent-failure contract: the previous `break` discarded
+            // every not-yet-emitted gate from the routed circuit.
+            throw std::runtime_error(
+                "SABRE routing stalled: the coupling map cannot host the "
+                "remaining 2-qubit gates (no SWAP candidates). Note that an "
+                "edgeless CouplingMap(n) declares a graph with NO allowed "
+                "pairs; pass CouplingMap() for unconstrained routing or "
+                "CouplingMap::all_to_all(n) for full connectivity.");
+        }
 
         // Apply the SWAP
         int p0 = layout[best_l0], p1 = layout[best_l1];
         std::swap(layout[best_l0], layout[best_l1]);
         swap_count++;
+        if (swap_count > swap_budget) {
+            throw std::runtime_error(
+                "SABRE routing exceeded its SWAP budget: a 2-qubit gate "
+                "appears to span disconnected coupling-map components and "
+                "can never be made adjacent.");
+        }
 
         // Emit a SWAP instruction
         Instruction sw;

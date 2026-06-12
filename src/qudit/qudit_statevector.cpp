@@ -102,13 +102,15 @@ void QuditStatevector::apply_1qudit(int q, const std::vector<Complex128>& U) {
 // ---------------------------------------------------------------------------
 // apply_2qudit — apply d²×d² unitary U to qudits (q0, q1)
 // ---------------------------------------------------------------------------
-// Row index r = new_q0*d + new_q1; col index c = old_q0*d + old_q1.
+// Convention (project LSB-first, docs/Architecture.md "Conventions"): the
+// FIRST argument is the LEAST significant digit of the matrix index:
+//   row r = new_q1 * d + new_q0;  col c = old_q1 * d + old_q0.
+// This mirrors the qubit-layer apply_unitary contract (index bit i =
+// qubits[i]) at d = 2.
 //
-// We iterate over every "base" index — an index where both qudit q0 and qudit q1
-// have value 0 — and for each base we extract the d² amplitudes (one per joint
-// (q0,q1) value pair), multiply by U, and write back.
-//
-// Base condition: (idx / stride0) % d == 0  AND  (idx / stride1) % d == 0
+// Base indices (both target digits 0) are enumerated directly over the
+// d^(n-2) combinations of the remaining digits instead of scanning all dim
+// indices with divisions.
 
 void QuditStatevector::apply_2qudit(int q0, int q1,
                                     const std::vector<Complex128>& U) {
@@ -122,14 +124,26 @@ void QuditStatevector::apply_2qudit(int q0, int q1,
     std::vector<Complex128> old_amp(static_cast<size_t>(dd));
     std::vector<Complex128> new_amp(static_cast<size_t>(dd));
 
-    for (size_t idx = 0; idx < dim; ++idx) {
-        if ((idx / stride0) % static_cast<size_t>(d) != 0) continue;
-        if ((idx / stride1) % static_cast<size_t>(d) != 0) continue;
+    // Strides of the non-target qudits, for direct base enumeration.
+    std::vector<size_t> other_strides;
+    other_strides.reserve(static_cast<size_t>(n_qudits));
+    for (int q = 0; q < n_qudits; ++q)
+        if (q != q0 && q != q1)
+            other_strides.push_back(ipow(static_cast<size_t>(d), q));
+    const size_t n_bases = dim / (static_cast<size_t>(dd));
 
-        // Extract d² amplitudes: old_amp[x0*d + x1] for (x0,x1) in {0..d-1}^2
+    for (size_t b = 0; b < n_bases; ++b) {
+        size_t idx = 0;
+        size_t rem = b;
+        for (size_t i = 0; i < other_strides.size(); ++i) {
+            idx += (rem % static_cast<size_t>(d)) * other_strides[i];
+            rem /= static_cast<size_t>(d);
+        }
+
+        // Extract d² amplitudes: old_amp[x1*d + x0] for (x0,x1) in {0..d-1}^2
         for (int x0 = 0; x0 < d; ++x0)
             for (int x1 = 0; x1 < d; ++x1)
-                old_amp[static_cast<size_t>(x0 * d + x1)] =
+                old_amp[static_cast<size_t>(x1 * d + x0)] =
                     amplitudes[idx
                         + static_cast<size_t>(x0) * stride0
                         + static_cast<size_t>(x1) * stride1];
@@ -149,15 +163,18 @@ void QuditStatevector::apply_2qudit(int q0, int q1,
                 amplitudes[idx
                     + static_cast<size_t>(x0) * stride0
                     + static_cast<size_t>(x1) * stride1] =
-                        new_amp[static_cast<size_t>(x0 * d + x1)];
+                        new_amp[static_cast<size_t>(x1 * d + x0)];
     }
 }
 
 // ---------------------------------------------------------------------------
 // apply_kqudit — apply d^k × d^k unitary U to k distinct qudits
 // ---------------------------------------------------------------------------
-// U[row, col] where row/col are k-digit base-d indices, with qudits[0] as the
-// most significant digit and qudits[k-1] as the least significant.
+// Convention (project LSB-first, docs/Architecture.md "Conventions"):
+// U[row, col] where row/col are k-digit base-d indices with qudits[0] as the
+// LEAST significant digit and qudits[k-1] as the most significant. This is
+// the d-level generalisation of the qubit-layer apply_unitary contract
+// (index bit i = qubits[i]).
 //
 // For each "base" index (where every qudit in `qudits` has value 0):
 //   - extract d^k amplitudes from the joint subspace
@@ -194,34 +211,41 @@ void QuditStatevector::apply_kqudit(const std::vector<int>& qudits,
     std::vector<Complex128> new_amp(dk);
 
     // Build a list of (subspace_index, flat_offset) pairs:
-    // subspace_index ranges over [0, dk); for each value v we have
-    //   digit_i = (v / d^(k-1-i)) % d   for i = 0..k-1
-    // offset = sum_i digit_i * strides[i]
-    // Precompute these offsets once.
+    // subspace_index ranges over [0, dk); qudits[0] is the LEAST significant
+    // digit of v (LSB-first), so digit_i = (v / d^i) % d maps to qudits[i].
+    // offset = sum_i digit_i * strides[i]. Precompute these offsets once.
     std::vector<size_t> sub_offset(dk);
     for (size_t v = 0; v < dk; ++v) {
         size_t off = 0;
         size_t v_rem = v;
-        // qudits[0] is MOST SIGNIFICANT digit of v.
-        // Extract digits: digit_i = (v / d^(k-1-i)) % d  for i = 0..k-1
         for (int i = 0; i < k; ++i) {
-            // power = d^(k-1-i)
-            size_t power = 1;
-            for (int p = 0; p < k - 1 - i; ++p) power *= static_cast<size_t>(d);
-            const size_t digit = (v_rem / power) % static_cast<size_t>(d);
+            const size_t digit = v_rem % static_cast<size_t>(d);
+            v_rem /= static_cast<size_t>(d);
             off += digit * strides[static_cast<size_t>(i)];
         }
         sub_offset[v] = off;
     }
 
-    // Iterate over all base indices (all qudits in `qudits` have value 0)
-    for (size_t idx = 0; idx < dim; ++idx) {
-        bool is_base = true;
-        for (int i = 0; i < k && is_base; ++i)
-            if ((idx / strides[static_cast<size_t>(i)])
-                % static_cast<size_t>(d) != 0)
-                is_base = false;
-        if (!is_base) continue;
+    // Enumerate base indices (all qudits in `qudits` at digit 0) directly
+    // over the d^(n-k) combinations of the remaining digits.
+    std::vector<size_t> other_strides;
+    other_strides.reserve(static_cast<size_t>(n_qudits));
+    for (int q = 0; q < n_qudits; ++q) {
+        bool is_target = false;
+        for (int i = 0; i < k; ++i)
+            if (qudits[static_cast<size_t>(i)] == q) { is_target = true; break; }
+        if (!is_target)
+            other_strides.push_back(ipow(static_cast<size_t>(d), q));
+    }
+    const size_t n_bases = dim / dk;
+
+    for (size_t b = 0; b < n_bases; ++b) {
+        size_t idx = 0;
+        size_t rem = b;
+        for (size_t i = 0; i < other_strides.size(); ++i) {
+            idx += (rem % static_cast<size_t>(d)) * other_strides[i];
+            rem /= static_cast<size_t>(d);
+        }
 
         // Extract
         for (size_t v = 0; v < dk; ++v)

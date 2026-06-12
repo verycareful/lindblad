@@ -31,8 +31,22 @@ void StatevectorSimulator::apply_instruction(Statevector& sv, const Instruction&
 2. **State initialization**: Allocate and initialize state representation (SV, DM, tableau, or MPS)
 3. **Instruction iteration**: Loop over `circuit.instructions` in order
 4. **Gate dispatch**: Call appropriate `gates::apply_*` or `apply_gate` function
-5. **Measurement handling**: If any `GT::MEASURE` instruction is present and `shots > 0`, the circuit is re-executed from `|0...0⟩` once per shot so that each collapse is independent. Outcomes are written into the classical register (`n_clbits`-wide). If no MEASURE instructions are present, the state is simulated once and `sample_counts` samples the final distribution.
+5. **Measurement handling**: see Execution Semantics below
 6. **Result collection**: Extract final state and sampled bitstrings (if shots > 0)
+
+### Execution Semantics (frozen in R.1.12)
+
+The statevector, density-matrix, and MPS simulators pick one of three
+strategies:
+
+- **Terminal-only measurements** (no classical conditioning, and nothing acts on a qubit after it is measured, the `measure_all` pattern): ONE forward pass with MEASURE skipped, then outcomes are sampled from the final state. Counts keys follow the qubit-to-clbit map of the measure instructions (`n_clbits` wide, clbit 0 rightmost); partial measurements key only the measured qubits. This replaces the per-shot re-execution used before R.1.12, which cost `shots` full evolutions for the most common circuit shape.
+- **Mid-circuit measurement or feedforward** with `shots > 0`: per-shot trajectories. The circuit is re-executed from `|0...0⟩` once per shot; each MEASURE collapse is drawn independently, conditions are evaluated against the per-shot classical register.
+- **shots == 0**: a single seeded trajectory. Classical conditions are honoured and MEASURE outcomes are recorded along the way; `final_state` is one reproducible trajectory. (`eval_expectation` instead THROWS for measure/conditional circuits: the exact expectation of one random trajectory is undefined; estimate from counts with `shots > 0`.)
+
+The collapse renormalisation in the MPS simulator divides by the
+environment-contracted outcome marginal (valid for non-canonical tensors);
+sampled MPS bitstrings use the project key convention (qubit 0 rightmost) at
+every register width.
 
 ## StatevectorSimulator
 

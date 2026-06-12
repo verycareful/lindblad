@@ -12,76 +12,64 @@ namespace NoiseChannels {
 // =============================================================================
 
 KrausChannel depolarizing(double p, int n_qubits) {
+    // General n-qubit Pauli twirl:
+    //   E(rho) = (1-p) rho + p/(4^n - 1) * sum_{P != I} P rho P
+    // K_0 = sqrt(1-p) I, K_P = sqrt(p/(4^n-1)) P for each non-identity Pauli.
+    //
+    // The hard cap protects against the 4^n operator count: n = 6 already
+    // means 4095 Kraus matrices of dimension 64. Larger registers should
+    // model depolarisation with per-qubit channels instead.
+    if (n_qubits < 1 || n_qubits > 6)
+        throw std::invalid_argument(
+            "depolarizing: n_qubits must be in [1, 6] (got " +
+            std::to_string(n_qubits) + "); compose per-qubit channels for "
+            "wider registers");
+    if (p < 0.0 || p > 1.0)
+        throw std::invalid_argument("depolarizing: p must be in [0, 1]");
+
     KrausChannel ch;
     ch.n_qubits = n_qubits;
 
-    if (n_qubits == 1) {
-        double sqrt_1mp = std::sqrt(1.0 - p);
-        double sqrt_p3 = std::sqrt(p / 3.0);
+    const size_t dim = 1ULL << n_qubits;
+    const size_t n_paulis = 1ULL << (2 * n_qubits);  // 4^n
+    const double w_id  = std::sqrt(1.0 - p);
+    const double w_err = std::sqrt(p / static_cast<double>(n_paulis - 1));
 
-        // K0 = sqrt(1-p) * I
-        ch.operators.push_back({
-            Complex128(sqrt_1mp, 0.0), Complex128(0.0, 0.0),
-            Complex128(0.0, 0.0),      Complex128(sqrt_1mp, 0.0)
-        });
-        // K1 = sqrt(p/3) * X
-        ch.operators.push_back({
-            Complex128(0.0, 0.0),      Complex128(sqrt_p3, 0.0),
-            Complex128(sqrt_p3, 0.0),  Complex128(0.0, 0.0)
-        });
-        // K2 = sqrt(p/3) * Y
-        ch.operators.push_back({
-            Complex128(0.0, 0.0),       Complex128(0.0, -sqrt_p3),
-            Complex128(0.0, sqrt_p3),   Complex128(0.0, 0.0)
-        });
-        // K3 = sqrt(p/3) * Z
-        ch.operators.push_back({
-            Complex128(sqrt_p3, 0.0),   Complex128(0.0, 0.0),
-            Complex128(0.0, 0.0),       Complex128(-sqrt_p3, 0.0)
-        });
-    } else if (n_qubits == 2) {
-        // 2-qubit depolarizing: 16 Pauli terms
-        size_t dim = 4;
-        double sqrt_1mp = std::sqrt(1.0 - p);
-        double sqrt_p15 = std::sqrt(p / 15.0);
+    // i^k lookup for the Y = iXZ phase factor.
+    static const Complex128 I_POW[4] = {
+        Complex128(1.0, 0.0), Complex128(0.0, 1.0),
+        Complex128(-1.0, 0.0), Complex128(0.0, -1.0)
+    };
 
-        // K0 = sqrt(1-p) * I⊗I
-        std::vector<Complex128> I4(dim * dim, Complex128(0.0, 0.0));
-        for (size_t i = 0; i < dim; ++i) I4[i * dim + i] = Complex128(sqrt_1mp, 0.0);
-        ch.operators.push_back(I4);
+    // Pauli index m encodes two bits per qubit: bit (2q) = X component,
+    // bit (2q+1) = Z component for qubit q (both set = Y). Each Pauli has
+    // exactly one non-zero entry per column j, at row j ^ x_mask, with phase
+    // i^{#Y} * (-1)^{popcount(j & z_mask)}. Qubit q maps to index bit q
+    // (project LSB convention); the channel as a whole is permutation
+    // symmetric, so this choice is also convention-safe for apply_kraus.
+    for (size_t m = 0; m < n_paulis; ++m) {
+        const double w = (m == 0) ? w_id : w_err;
+        if (w == 0.0) continue;  // p == 0 (skip error terms) or p == 1 (skip K0)
 
-        // All 15 non-identity 2-qubit Paulis
-        // P ∈ {I,X,Y,Z} ⊗ {I,X,Y,Z} minus I⊗I
-        std::vector<std::vector<Complex128>> paulis_1q = {
-            // I
-            {Complex128(1,0), Complex128(0,0), Complex128(0,0), Complex128(1,0)},
-            // X
-            {Complex128(0,0), Complex128(1,0), Complex128(1,0), Complex128(0,0)},
-            // Y
-            {Complex128(0,0), Complex128(0,-1), Complex128(0,1), Complex128(0,0)},
-            // Z
-            {Complex128(1,0), Complex128(0,0), Complex128(0,0), Complex128(-1,0)}
-        };
-
-        for (int a = 0; a < 4; ++a) {
-            for (int b = 0; b < 4; ++b) {
-                if (a == 0 && b == 0) continue;  // skip I⊗I
-
-                // Tensor product: (Pa ⊗ Pb) scaled by sqrt(p/15)
-                std::vector<Complex128> K(dim * dim, Complex128(0.0, 0.0));
-                for (size_t i = 0; i < 2; ++i) {
-                    for (size_t j = 0; j < 2; ++j) {
-                        for (size_t k = 0; k < 2; ++k) {
-                            for (size_t l = 0; l < 2; ++l) {
-                                K[(i*2+k) * dim + (j*2+l)] =
-                                    paulis_1q[a][i*2+j] * paulis_1q[b][k*2+l] * sqrt_p15;
-                            }
-                        }
-                    }
-                }
-                ch.operators.push_back(K);
-            }
+        uint64_t x_mask = 0, z_mask = 0;
+        int y_count = 0;
+        for (int q = 0; q < n_qubits; ++q) {
+            const bool xb = (m >> (2 * q)) & 1ULL;
+            const bool zb = (m >> (2 * q + 1)) & 1ULL;
+            if (xb) x_mask |= (1ULL << q);
+            if (zb) z_mask |= (1ULL << q);
+            if (xb && zb) ++y_count;
         }
+        const Complex128 yphase = I_POW[y_count & 3] * w;
+
+        std::vector<Complex128> K(dim * dim, Complex128(0.0, 0.0));
+        for (size_t j = 0; j < dim; ++j) {
+            const size_t row = j ^ x_mask;
+            Complex128 v = yphase;
+            if (LINDBLAD_POPCOUNT64(j & z_mask) & 1) v = -v;
+            K[row * dim + j] = v;
+        }
+        ch.operators.push_back(std::move(K));
     }
 
     return ch;
@@ -176,9 +164,18 @@ KrausChannel thermal_relaxation(
     double p1 = std::max(0.0, std::min(1.0, excited_state_population));
     double p0 = 1.0 - p1;
 
-    // Fractional excess dephasing: rate = 1/T2 - 1/(2*T1)
+    // Fractional excess dephasing: rate = 1/T2 - 1/(2*T1).
+    //
+    // The Kraus operators below carry sqrt(e1 * e_phi) on the off-diagonal,
+    // so the channel's coherence factor is sqrt(e1) * sqrt(e_phi)
+    //   = exp(-t/(2*T1)) * sqrt(e_phi).
+    // For the defining transverse decay exp(-t/T2) this requires
+    //   e_phi = exp(-2 * t * (1/T2 - 1/(2*T1))).
+    // (The factor 2 was previously missing, which dephased at half the
+    // requested rate for every T2 < 2*T1; only the T2 = 2*T1 boundary was
+    // correct.)
     double pure_dephasing_rate = std::max(0.0, 1.0 / T2 - 0.5 / T1);
-    double e_phi = std::exp(-gate_time * pure_dephasing_rate);  // pure dephasing factor
+    double e_phi = std::exp(-2.0 * gate_time * pure_dephasing_rate);
 
     KrausChannel ch;
     ch.n_qubits = 1;

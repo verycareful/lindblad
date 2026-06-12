@@ -30,15 +30,19 @@ std::vector<Complex128> shift_matrix(int d, int m = 1);
 // d²×d² controlled-ADD gate for secret component s:
 //   |x_control> |y_target>  ->  |x_control> |(y_target + s*x_control) mod d>
 //
-// Row index r = new_control*d + new_target
-// Col index c = old_control*d + old_target
+// Index convention matches apply_2qudit (project LSB-first): the control
+// (first operand) is the LEAST significant digit:
+// Row index r = new_target*d + new_control
+// Col index c = old_target*d + old_control
 // U[r*d^2 + c] = 1 if new_control == old_control
 //                  and new_target == (old_target + s*old_control) mod d,
 //                else 0.
 std::vector<Complex128> cadd_matrix(int d, int s);
 
 // d²×d² controlled-power gate: clock qudit c applies U^{c*k} to target qudit.
-// Row index r = r_ctrl*d + r_tgt; col index c = c_ctrl*d + c_tgt.
+// Index convention matches apply_2qudit (project LSB-first): the control
+// (first operand) is the LEAST significant digit:
+// Row index r = r_tgt*d + r_ctrl; col index c = c_tgt*d + c_ctrl.
 // M[r, c] = delta(r_ctrl, c_ctrl) * (U^{c_ctrl*k})[r_tgt, c_tgt].
 // U must be a d×d row-major unitary matrix.
 // k may be any non-negative integer (including 0 = identity; 1 = U itself).

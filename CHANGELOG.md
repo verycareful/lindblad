@@ -4,6 +4,141 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.12.0] - 2026-06-12
+
+Resolves GitHub issues #9 through #26 (every currently open issue) in one
+correctness and performance wave, and freezes the project conventions. The
+normative convention reference is the new "Conventions" section in
+[`docs/Architecture.md`](docs/Architecture.md).
+
+The underlying defects were identified by a full-codebase correctness and
+performance audit performed with Claude Fable 5, Anthropic's Mythos-class
+model; every finding was verified by independent numerical replication before
+being filed as an issue, and several (the non-unitary DM/MPS interaction
+matrices, the n >= 4 Grover diffusion, the half-rate T2 dephasing, the
+cross-backend convention splits) had survived prior manual review of the codebase.
+
+### Changed
+
+- **Pauli strings are LSB-first project-wide** (#11, BREAKING): `pauli[q]` acts
+  on qubit q. This is a deliberate deviation from Qiskit's label order, and
+  Pauli strings read in the opposite direction from measurement bitstrings
+  (whose rightmost character is qubit 0). `IsingHamiltonian::to_sparse_pauli_op`,
+  the Estimator sampling path, and `DensityMatrix::expectation_value_sparse`
+  were flipped to match the already-LSB-first `SparsePauliOp` evaluation,
+  Clifford `expectation_pauli`, and QAOA internals. This closes the split where
+  the same observable evaluated with opposite signs depending on the execution
+  path (exact vs sampled vs noisy), and where QAOA returned qubit-reversed
+  variable assignments for `IsingHamiltonian` problems.
+- **Multi-qubit matrices are `qubits[0]`-is-LSB on every backend** (#13,
+  BREAKING): `unitary()` instructions and multi-qubit `KrausChannel` operators
+  now mean the same operation on the statevector, density-matrix, and MPS
+  simulators; the DM backend gained the bit-reversal bridges the MPS already
+  had (`gate_matrix_for_dm` UNITARY case and `apply_kraus`).
+- **Qudit subspace matrices flipped to first-operand-is-least-significant-digit**
+  (BREAKING for hand-built matrices only): `apply_2qudit`/`apply_kqudit` and
+  the `qudit_gates` builders changed in lockstep, so all in-tree algorithms
+  behave identically. See [`docs/api/qudit.md`](docs/api/qudit.md).
+- **ECR argument order resolved as a documented deliberate deviation** (#24):
+  `ecr(a, b)` equals Qiskit `ecr(b, a)`; all three simulators agree. Documented
+  in [`docs/api/gates.md`](docs/api/gates.md); swap operands when porting
+  Qiskit circuits.
+- **CouplingMap edge lists are literal** (BREAKING): an edgeless
+  `CouplingMap(n)` declares a graph with no allowed pairs and routing 2-qubit
+  gates against it throws; unconstrained routing is expressed by
+  `CouplingMap()` (n = 0). SABRE now THROWS on a routing stall instead of
+  silently discarding the unroutable remainder of the circuit, enforces
+  all-pairs adjacency for 3+ qubit gates, routes barriers freely, and guards
+  against unroutable cross-component gates with a SWAP budget.
+- **shots == 0 is one seeded trajectory** (BREAKING): classical conditions are
+  honoured and MEASURE outcomes are recorded along the way;
+  `eval_expectation` and `Estimator` with shots == 0 throw for circuits
+  containing measurement or conditional instructions (the exact expectation of
+  a single stochastic trajectory is undefined).
+- **Terminal-measurement sampling** (#25): circuits whose measurements are all
+  terminal (the `measure_all` pattern) now run ONE forward evolution and
+  sample outcomes from the final state, keyed by the qubit-to-clbit map
+  (partial measurements key only the measured clbits). Replaces per-shot
+  re-simulation: roughly shots-times faster on sampling workloads, about 128x
+  on `Shor::find_order`. Per-thread RNG stream independence is preserved on
+  the fast path (pinned by `BugRegression.B9`).
+- **QPE builds U^(2^k) by repeated squaring** (#26) with the base-matrix
+  extraction hoisted out of the per-qubit loop: m-1 matrix products instead of
+  2^m - 1, and one column extraction instead of m.
+- Smaller performance work: O(1) adjacency lookups in SABRE's routing loop,
+  direct base-index enumeration in the qudit subspace appliers,
+  `partial_trace(Statevector)` no longer materialises the full density matrix,
+  and the DM per-shot path moves (not copies) the final trajectory state.
+- Known red tests shipped with this release, pending the R.1.12.1 suite
+  refresh: `AuditR1112.C4a` (pins the superseded MSB-first string docs),
+  `AuditR1112.C16` (pins Qiskit's ECR order), `AuditR1112.C17` (pins the
+  pre-freeze unconstrained CouplingMap reading; transpile now correctly
+  throws there).
+
+### Fixed
+
+- **DM/MPS interaction-gate matrices** (#9): RZX acted as a local RX
+  (non-entangling) on both backends; DM RXX and DM/MPS RYY were non-unitary
+  (missing diagonal cos entries) and silently destroyed probability mass. All
+  five wrong matrices now match the statevector reference implementations.
+- **Grover at 4+ qubits** (#10): the diffusion MCX matrix targeted qubit 0
+  while the H sandwich wrapped qubit nq-1, collapsing success probability to
+  noise level; the MCX now targets the wrapped qubit.
+- **`QuantumCircuit::control()`** (#12): the generic path silently emitted the
+  IDENTITY for every gate without a dedicated controlled mapping (controlled
+  SX/CZ/RZZ, any gate with 2+ controls) and placed the gate block on the wrong
+  qubits for UNITARY instructions. Rebuilt with real gate matrices and the
+  interleaved control layout used by Shor/QPE; unresolved parameterised gates
+  throw instead of degrading.
+- **`thermal_relaxation` dephasing rate** (#14): coherences now decay by
+  exactly exp(-t/T2); previously half the requested pure-dephasing rate for
+  every T2 < 2*T1 (only the T2 = 2*T1 boundary was correct), which made every
+  `NoiseModel::from_t1_t2` model too coherent.
+- **Estimator with optimization_level >= 1** (#15): silently deleted every
+  gate from the first 2-qubit gate onward (edgeless internal CouplingMap plus
+  SABRE's silent stall). The Estimator now passes `CouplingMap()` and stalls
+  throw.
+- **MPS sampling above 18 qubits** (#16): `measure_sequential` returned
+  bit-reversed count keys; qubit 0 is now the rightmost character at every
+  register width.
+- **MPS mid-circuit measurement and reset** (#17): collapse renormalises by
+  the environment-contracted outcome marginal (the local Frobenius norm is
+  only valid in canonical form, leaving the state unnormalised); RESET samples
+  from normalised probabilities.
+- **Feedforward integrity** (#18, #19, #20): the statevector simulator
+  honours classical conditions outside the per-shot path (trajectory
+  semantics); `Optimize1qGates` no longer merges conditioned gates into
+  unconditional rotations, `CXCancellation` requires identical conditioning,
+  `CommutativeCancellation` excludes conditioned gates entirely; the DAG gains
+  read-after-write and write-after-read classical-dependency edges and a
+  deterministic topological order.
+- **ConsolidateBlocks** (#21): unsupported 2-qubit gates (ECR, CU, RZX,
+  UNITARY) are no longer absorbed as identity inside consolidated blocks;
+  unrepresentable gates break the block, and every KAK decomposition is
+  verified against the block unitary (up to global phase) with the original
+  block kept on mismatch.
+- **QASM 2 importer** (#22): whole-register `measure q -> c;` and `reset q;`
+  expand to per-bit instructions (register-size mismatches throw);
+  unresolvable measure/reset operands THROW instead of being silently dropped
+  (previously register-form files imported with all measurements missing);
+  `barrier` honours its operand list.
+- **`depolarizing(p, n_qubits)`** (#23): general n-qubit Pauli twirl for n in
+  [1, 6] with argument validation; previously returned a silent EMPTY channel
+  for n >= 3 that annihilated the state when applied.
+- Assorted: `to_json()` throws on unbound symbolic parameters instead of
+  silently dropping them; `Sampler` batches thread per-circuit seeds without
+  mutating `options.seed`; `is_clifford` accepts the 2-pi fmod boundary like
+  `run()`; the RCCX phase comment matches the implemented operator;
+  `noise.hpp` includes `<array>` directly.
+
+### Results
+
+- 1314/1317 tests across 103 suites passed (14.4 s, WSL). The 3 failures are
+  the convention-pinned `AuditR1112` tests (C4a, C16, C17) described under
+  Changed: they encode the superseded pre-freeze expectations and are slated
+  for the R.1.12.1 test-suite refresh. `BugRegression.B9` (per-thread RNG
+  independence) is green on the new terminal-measurement sampling path.
+
 ## [R.1.11.2] - 2026-06-02
 
 ### Fixed

@@ -56,7 +56,9 @@ std::vector<Complex128> shift_matrix(int d, int m) {
 // ---------------------------------------------------------------------------
 // cadd_matrix — |x>|y> -> |x>|(y + s*x) mod d>
 // ---------------------------------------------------------------------------
-// Row r = new_ctrl*d + new_tgt, col c = old_ctrl*d + old_tgt.
+// Convention matches apply_2qudit (project LSB-first): the FIRST operand
+// (the control, x) is the LEAST significant digit of the matrix index:
+//   row r = new_tgt*d + new_ctrl, col c = old_tgt*d + old_ctrl.
 // Non-zero entry where new_ctrl == old_ctrl AND new_tgt == (old_tgt + s*old_ctrl) mod d.
 
 std::vector<Complex128> cadd_matrix(int d, int s) {
@@ -68,8 +70,8 @@ std::vector<Complex128> cadd_matrix(int d, int s) {
         for (int c1 = 0; c1 < d; ++c1) {
             const int r0  = c0;
             const int r1  = (c1 + (s_norm * c0) % d) % d;
-            const int row = r0 * d + r1;
-            const int col = c0 * d + c1;
+            const int row = r1 * d + r0;
+            const int col = c1 * d + c0;
             U[static_cast<size_t>(row * dd + col)] = Complex128(1.0, 0.0);
         }
     }
@@ -118,7 +120,9 @@ static std::vector<Complex128> mat_pow(const std::vector<Complex128>& U,
 // ---------------------------------------------------------------------------
 // controlled_power_matrix — d²×d² gate: clock ctrl=c applies U^{c*k} to target
 // ---------------------------------------------------------------------------
-// Convention matches apply_2qudit: row r = r_ctrl*d + r_tgt, col = c_ctrl*d + c_tgt.
+// Convention matches apply_2qudit (project LSB-first): the FIRST operand (the
+// control) is the LEAST significant digit:
+//   row r = r_tgt*d + r_ctrl, col = c_tgt*d + c_ctrl.
 // For ctrl value c: target block is U^{c*k}. k=0 → identity; k=1 → standard CU.
 
 std::vector<Complex128> controlled_power_matrix(int d,
@@ -131,8 +135,8 @@ std::vector<Complex128> controlled_power_matrix(int d,
         const auto Uk = mat_pow(U, d, ctrl * k);
         for (int r_t = 0; r_t < d; ++r_t)
             for (int c_t = 0; c_t < d; ++c_t) {
-                const int row = ctrl * d + r_t;
-                const int col = ctrl * d + c_t;
+                const int row = r_t * d + ctrl;
+                const int col = c_t * d + ctrl;
                 M[static_cast<size_t>(row * dd + col)] =
                     Uk[static_cast<size_t>(r_t * d + c_t)];
             }

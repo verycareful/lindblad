@@ -15,7 +15,11 @@ struct QuditGateOp {
     enum class Type { SINGLE, TWO } type;
     int q0;          // qudit index (SINGLE) or control qudit (TWO)
     int q1 = -1;     // target qudit (TWO only; ignored for SINGLE)
-    std::vector<Complex128> matrix;  // d×d (SINGLE) or d²×d² (TWO), row-major
+    // d×d (SINGLE) or d²×d² (TWO), row-major. TWO matrices follow the
+    // project LSB-first convention (docs/Architecture.md "Conventions"):
+    // q0, the first operand, is the LEAST significant digit of the index
+    // (row r = r_q1*d + r_q0), matching QuditStatevector::apply_2qudit.
+    std::vector<Complex128> matrix;
 };
 
 // =============================================================================

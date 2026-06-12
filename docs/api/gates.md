@@ -222,7 +222,8 @@ for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)
 ### Interaction Gates
 
 **ECR (Echoed Cross-Resonance)** (`apply_ecr`): Native two-qubit gate for superconducting qubits
-- **Implementation**: Via `apply_controlled_matrix` with native ECR coefficients
+- **Implementation**: dedicated 4-index loop over the documented ECR matrix
+- **Argument convention (frozen in R.1.12, deliberate Qiskit deviation)**: the FIRST argument binds to the high bit of the documented matrix, so `lindblad ecr(a, b)` equals `Qiskit ecr(b, a)` (equivalently SWAP * ECR_qiskit * SWAP). All three simulators implement the same convention. Swap the operands when porting Qiskit circuits.
 
 **RZX(θ), RXX(θ), RYY(θ), RZZ(θ)**: Ising interaction gates
 - **RXX(θ)**: $RXX(\theta) = e^{-i\theta(X \otimes X)/2}$ — applies XX rotation

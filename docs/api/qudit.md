@@ -61,6 +61,15 @@ Qudit 0 is the least-significant digit; stride of qudit q is `d^q`. The static
 helpers `QuditStatevector::index_to_digits` and `digits_to_index` convert
 between the flat index and the per-qudit digit vector.
 
+Subspace matrices follow the same rule (frozen in R.1.12, mirroring the qubit
+layer's `apply_unitary` contract): in `apply_2qudit(q0, q1, U)` the FIRST
+argument is the LEAST significant digit of the matrix index
+(`row = x1*d + x0`), and `apply_kqudit(qudits, U)` places `qudits[i]` at digit
+weight `d^i`. The `qudit_gates` builders (`cadd_matrix`,
+`controlled_power_matrix`) are constructed in this convention; before R.1.12
+the first operand was the MOST significant digit, so hand-built matrices from
+older code must swap their digit roles.
+
 ---
 
 ## `QuditStatevector`
