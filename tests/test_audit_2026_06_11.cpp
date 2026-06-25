@@ -1,11 +1,20 @@
 // Audit verification suite (2026-06-11, audited at R.1.11.2).
 //
 // One test per unexplained correctness finding of the full performance and
-// correctness audit. Finding IDs (C1..C17) match the audit report.
+// correctness audit. Finding IDs (C1..C17) match the audit report and GitHub
+// issues #9..#26.
 //
-// Each test asserts the CORRECT behaviour, so it FAILS while the corresponding
-// bug is open and becomes a permanent regression test once the fix lands.
-// This mirrors the convention of test_bug_regression.cpp.
+// Each test asserts the CORRECT behaviour, so it FAILED while the
+// corresponding bug was open and became a permanent regression test once the
+// fix landed in R.1.12.0. This mirrors the convention of
+// test_bug_regression.cpp.
+//
+// R.1.12.1: C4a, C16, and C17 were rewritten to the conventions frozen in
+// R.1.12.0 (docs/Architecture.md "Conventions"). Their original audit
+// versions pinned the superseded pre-freeze expectations (MSB-first Pauli
+// docs, Qiskit ECR order, unconstrained-when-empty CouplingMap) and were the
+// three deliberate reds of the R.1.12.0 baseline. The whole suite must stay
+// green from R.1.12.1 onward.
 //
 // Per the audit methodology, every expected value below was independently
 // verified by replicating the exact C++ construction in NumPy and comparing
@@ -27,6 +36,7 @@
 #include "lindblad/transpiler.hpp"
 
 #include <cmath>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -132,10 +142,12 @@ TEST(AuditR1112, C3_GroverFourQubits) {
 }
 
 // =============================================================================
-// C4a - Pauli string convention. Documented convention (operators API doc,
-// ising.cpp, estimator.cpp): pauli[0] acts on the MOST significant qubit.
-// For the state X(0)|00> the observable "ZI" (Z on qubit 1) is +1.
-// The exact statevector path and the DM path must agree on this.
+// C4a - Pauli string convention, frozen in R.1.12 (docs/Architecture.md
+// "Conventions"): strings are LSB-first, pauli[q] acts on qubit q. For the
+// state X(0)|00> the observable "ZI" (Z on QUBIT 0) is therefore -1, and the
+// exact statevector path and the DM path must agree on it.
+// (Rewritten in R.1.12.1: the original audit version pinned the superseded
+// MSB-first documentation convention and expected +1.)
 // =============================================================================
 TEST(AuditR1112, C4a_PauliConvention_SVMatchesDM) {
     QuantumCircuit qc(2);
@@ -150,10 +162,12 @@ TEST(AuditR1112, C4a_PauliConvention_SVMatchesDM) {
     ASSERT_TRUE(dm_res.success);
     const double dm_val = dm_res.final_state.expectation_value_sparse(zi);
 
-    EXPECT_NEAR(dm_val, 1.0, kTol) << "DM path violates documented convention";
-    EXPECT_NEAR(sv_val, 1.0, kTol)
-        << "SparsePauliOp::expectation_value reads the string LSB-first "
-        << "(contradicts documented MSB-first convention)";
+    EXPECT_NEAR(sv_val, -1.0, kTol)
+        << "frozen LSB-first convention: 'ZI' is Z on qubit 0, so X(0)|00> "
+        << "must give -1 on the exact statevector path";
+    EXPECT_NEAR(dm_val, -1.0, kTol)
+        << "DM expectation path must follow the same frozen LSB-first "
+        << "convention";
     EXPECT_NEAR(sv_val, dm_val, kTol)
         << "SV and DM expectation paths disagree on the same operator";
 }
@@ -503,35 +517,58 @@ TEST(AuditR1112, C15_DepolarizingThreeQubitNotEmpty) {
 }
 
 // =============================================================================
-// C16 - ECR argument convention versus Qiskit (the project's stated parity
-// reference). Qiskit ecr(0, 1) maps |q0=1, q1=0> entirely into the q1=1
-// subspace. The lindblad implementation currently equals Qiskit ecr(1, 0).
-// NOTE: if the maintainers resolve this as a documented deviation instead of
-// a code change, invert this expectation and pin the documented convention.
+// C16 - ECR argument convention, frozen in R.1.12 (docs/api/gates.md):
+// lindblad keeps its own order as a documented deliberate deviation,
+// lindblad ecr(a, b) == Qiskit ecr(b, a). Pinned from both directions:
+//   x(0); ecr(0,1): |q0=1, q1=0> -> (|00> + i|q1=1>)/sqrt(2)
+//                   P(idx0) = P(idx2) = 0.5, P(idx1) = P(idx3) = 0
+//   x(1); ecr(0,1): the |q1=1> input maps ENTIRELY into the q0=1 subspace,
+//                   which is exactly Qiskit's ecr(1, 0) behaviour.
+// (Rewritten in R.1.12.1: the original audit version asserted Qiskit's
+// ecr(0,1) semantics; the maintainer decision was keep-and-document.)
 // =============================================================================
-TEST(AuditR1112, C16_ECRMatchesQiskitConvention) {
+TEST(AuditR1112, C16_ECRMatchesDocumentedConvention) {
     Statevector sv(2);
     gates::apply_x(sv, 0);        // |q0=1, q1=0>
     gates::apply_ecr(sv, 0, 1);
 
-    const double p_q1_high = sv.probability(2) + sv.probability(3);
-    EXPECT_NEAR(p_q1_high, 1.0, kTol)
-        << "ecr(0,1) does not match Qiskit's ECR(0,1) (arguments are reversed: "
-        << "P(q1=1) = " << p_q1_high << ", expected 1.0)";
+    EXPECT_NEAR(sv.probability(0), 0.5, kTol);
+    EXPECT_NEAR(sv.probability(1), 0.0, kTol);
+    EXPECT_NEAR(sv.probability(2), 0.5, kTol);
+    EXPECT_NEAR(sv.probability(3), 0.0, kTol);
+
+    Statevector sv2(2);
+    gates::apply_x(sv2, 1);       // |q0=0, q1=1>
+    gates::apply_ecr(sv2, 0, 1);
+
+    const double p_q0_high = sv2.probability(1) + sv2.probability(3);
+    EXPECT_NEAR(p_q0_high, 1.0, kTol)
+        << "ecr(0,1) on |q1=1> must populate only the q0=1 subspace "
+        << "(lindblad ecr(a,b) == Qiskit ecr(b,a), docs/api/gates.md)";
 }
 
 // =============================================================================
-// C17 - transpile with an edgeless CouplingMap(n) (what the Estimator passes
-// at optimization_level >= 1) must not silently delete gates. SABRE currently
-// blocks every 2-qubit gate, finds no SWAP candidates, and drops the rest of
-// the circuit.
+// C17 - CouplingMap semantics, frozen in R.1.12 (docs/api/transpiler.md):
+// the edge list is LITERAL. An edgeless CouplingMap(n) declares n qubits
+// where no pair may interact, so routing a 2-qubit gate against it must
+// THROW (never silently truncate the circuit, which was the original bug).
+// Unconstrained transpilation is expressed by CouplingMap() (n = 0) and must
+// preserve circuit semantics.
+// (Rewritten in R.1.12.1: the original audit version pinned the pre-freeze
+// "unconstrained when empty" reading and expected the gates to survive.)
 // =============================================================================
-TEST(AuditR1112, C17_TranspileEdgelessCouplingKeepsGates) {
+TEST(AuditR1112, C17_EdgelessCouplingMapIsLiteral) {
     QuantumCircuit qc(2);
     qc.h(0);
     qc.cx(0, 1);
 
-    auto out = transpile(qc, CouplingMap(2), {}, 1);
+    // Literal no-edge graph: routing must refuse loudly.
+    EXPECT_THROW(transpile(qc, CouplingMap(2), {}, 1), std::runtime_error)
+        << "routing a 2-qubit gate against an edgeless CouplingMap(n) must "
+        << "throw instead of silently dropping gates";
+
+    // Unconstrained (no map declared): semantics preserved.
+    auto out = transpile(qc, CouplingMap(), {}, 1);
 
     StatevectorSimulator sim;
     auto ref = sim.run(qc, 0, 1);
@@ -539,10 +576,8 @@ TEST(AuditR1112, C17_TranspileEdgelessCouplingKeepsGates) {
     ASSERT_TRUE(ref.success);
     ASSERT_TRUE(opt.success);
 
-    // The Bell state has P(00) = P(11) = 0.5; if the CX was dropped the
-    // transpiled circuit gives P(00) = P(01) = 0.5 instead.
+    // The Bell state has P(00) = P(11) = 0.5.
     EXPECT_NEAR(opt.final_state.probability(3),
                 ref.final_state.probability(3), 1e-6)
-        << "transpile with an edgeless CouplingMap dropped the entangling gate "
-        << "(this is the Estimator optimization_level >= 1 configuration)";
+        << "unconstrained transpile (CouplingMap()) changed the Bell statistics";
 }

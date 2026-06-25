@@ -1,6 +1,7 @@
 # Build artifacts
 /build/
 /build-clang/
+/build-cov/
 /build_win/
 /out/
 /bin/
@@ -29,16 +30,14 @@ __pycache__/
 
 # Misc
 TODO.txt
-commercial_prep.md
-Build Logs.txt
 changes_version.md
 edits_temp
 outputs/
 Audit docs/
 docs/plans
-Bug Fixes.txt
 docs/superpowers/
 .github/
+local/
 
 # Claude
 .claude/

@@ -22,6 +22,7 @@ Important CMake options:
 
 - `LINDBLAD_BUILD_BENCHMARKS` (default `ON`)
 - `LINDBLAD_BUILD_PYTHON` (default `OFF`)
+- `LINDBLAD_BUILD_COVERAGE` (default `OFF`)
 
 Example with options:
 
@@ -62,6 +63,22 @@ For multi-config builds, specify configuration:
 ```powershell
 ctest --test-dir build -C Release --output-on-failure
 ```
+
+## Coverage
+
+`LINDBLAD_BUILD_COVERAGE=ON` compiles `lindblad_core` and the test tree with
+`--coverage -O0 -g` on GCC and Clang (the option is ignored on MSVC). Build a
+dedicated coverage tree, run the suite, then generate a report with gcovr:
+
+```bash
+cmake -B build-cov -DLINDBLAD_BUILD_COVERAGE=ON
+cmake --build build-cov -j$(nproc)
+ctest --test-dir build-cov --output-on-failure
+gcovr -r . --html-details build-cov/coverage.html --txt build-cov/coverage.txt build-cov
+```
+
+The coverage build is unoptimised and instrumented, so it runs slower than a
+normal build; use it only for reporting, not for benchmarking.
 
 ## Benchmark Execution
 

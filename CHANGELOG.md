@@ -4,6 +4,83 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.12.1] - 2026-06-25
+
+R.1.12.1 is the test-only release of the R.1.12 cadence (the `.1` patch slot
+carries no production code). It adds a total-coverage suite for the conventions
+frozen in R.1.12.0: every public symbol in
+[`include/lindblad/`](include/lindblad) is now exercised by at least one test
+that asserts its contract, every gate and channel formula is pinned numerically,
+every documented error path is checked, and every frozen convention has an
+asymmetric (convention-revealing) test.
+
+Driving coverage this thoroughly surfaced four latent correctness defects that
+earlier suites had missed. Per the project's release policy each one ships as a
+documented failing test that asserts the CORRECT contract, so it becomes a
+regression guard the moment the bug is fixed; the fixes themselves are deferred
+to R.1.12.2, since the `.1` slot is test-only.
+
+### Tests
+
+- New `LINDBLAD_BUILD_COVERAGE` CMake option (off by default) compiles
+  `lindblad_core` and the test tree with `--coverage -O0 -g` on GCC/Clang for
+  gcovr line and branch reporting.
+- 24 new `tests/test_r1121_*.cpp` suites plus a `LINDBLAD_BUILD_PYTHON`-gated
+  Python bindings harness under `tests/python/`. A static symbol
+  cross-reference drove the suite to zero unreferenced public symbols.
+- Core: `Complex128` algebra and constants, `Statevector` (bounds, sampling key
+  convention, move and clone), every gate matrix under the frozen LSB
+  convention, the `QuantumCircuit` builder, validation, compose, inverse and
+  `control()` surface, JSON and QASM2/QASM3 round-trips, and the `DAGCircuit`
+  API.
+- Engines: the SV/DM/MPS execution-strategy matrix (nine measurement scenarios
+  across shots 0, 1 and 1024 with cross-backend distribution agreement), every
+  noise channel (CPTP plus closed-form density-matrix evolution, including the
+  full thermal-relaxation T1/T2 grid and the exact depolarizing Bloch
+  contraction), `SparsePauliOp` and `Operator` algebra, quantum-information
+  metrics (fidelity families, entropies, Werner-state concurrence, partial
+  traces), the Clifford conjugation table, and `MPSState` (bond-dimension growth
+  and truncation, non-adjacent and reversed two-qubit gates, sequential
+  measurement).
+- Toolchain: exact `CouplingMap` edge sets for the four named topologies, each
+  transpiler pass on crafted DAGs (`ConsolidateBlocks` over the full two-qubit
+  gate set, routing validity across topologies at every optimization level), the
+  `Estimator` four-mode matrix and the `Sampler` seed scheme, and `LocalBackend`
+  selection.
+- Qudit layer and algorithms: `QuditStatevector`, density-matrix, MPS and
+  Clifford backends at d = 2 to 7 (general-d gate unitarity, the LSB digit
+  convention, channel trace preservation, Lindblad decay), and end-to-end QFT,
+  Shor, QPE (dyadic and non-dyadic phases), Grover (asymmetric targets), VQE,
+  QAOA/MA-QAOA and Ising mapping.
+- Visualisation: the full `DrawOptions` matrix across the ASCII, SVG, LaTeX and
+  HTML renderers, plus `draw_to_file`.
+
+### Results
+
+- 1693/1702 tests across 129 suites passed (coverage-instrumented build, WSL).
+  The 9 failures are the four documented findings below, each asserting the
+  correct contract and slated for the R.1.12.2 fix:
+  - `SparsePauliOp::to_matrix()` builds a non-Hermitian matrix for any Pauli
+    term containing Y (the i^(number of Y) factor is applied per output column
+    rather than once per term):
+    `R1121Operators.PauliComposeMatchesMatrixProductAllPairs`,
+    `.PauliComposeMultiQubitAndLengthThrow`,
+    `.ExpectationValueMatchesQuadraticForm`.
+  - `Optimize1qGates` (via `zyz_decompose`) merges a generic single-qubit run
+    into a gate with the correct rotation angle but wrong phase angles, so
+    `transpile()` and `preset_pass_manager()` silently alter a circuit's
+    unitary: `R1121Passes.Optimize1qPreservesGenericRun`,
+    `.PassManagerComposesAndPreservesSemantics`,
+    `.TranspilePresetLevelsPreserveSemantics`,
+    `R1121PassesMore.PresetPassManagerPreservesSemanticsUnconstrained`.
+  - The density-matrix simulator does not apply `ReadoutError`:
+    `R1121NoiseModel.ReadoutErrorPerturbsCounts_EXPECTED_RED`.
+  - The qubit `Grover` auto iteration count `round(pi/4 * sqrt(N))` over-rotates
+    the N = 4 (two-qubit) search (2 iterations instead of the optimal 1),
+    leaving the marked state un-amplified; the qudit Grover in the same file
+    already uses the corrected count:
+    `R1121Algos.GroverTwoQubitAutoIterationsOverRotate_EXPECTED_RED`.
+
 ## [R.1.12.0] - 2026-06-12
 
 Resolves GitHub issues #9 through #26 (every currently open issue) in one

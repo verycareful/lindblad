@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.12.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.12.1 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.12.0")
+set(LINDBLAD_VERSION_LABEL "R.1.12.1")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,6 +11,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Compiler flags
 # ==============================================================================
 option(LINDBLAD_MARCH_NATIVE "Compile with -march=native (non-distributable, max perf)" OFF)
+
+# Coverage instrumentation for gcovr/lcov reports (test infrastructure; see
+# docs/plans/R.1.12.1-test-coverage-plan.md). OFF for normal builds: it
+# overrides optimisation with -O0 so line attribution is exact.
+option(LINDBLAD_BUILD_COVERAGE "Compile with --coverage for gcovr/lcov reports" OFF)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     add_compile_options(
@@ -29,6 +34,11 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
         add_compile_options(-march=x86-64-v3)
     endif()
     add_link_options(-fopenmp)
+    if(LINDBLAD_BUILD_COVERAGE)
+        add_compile_options(--coverage -O0 -g)
+        add_link_options(--coverage)
+        message(STATUS "lindblad: coverage instrumentation enabled (--coverage -O0 -g)")
+    endif()
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     add_compile_options(
         /O2
@@ -37,6 +47,10 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         /fp:fast
         /W4
     )
+    if(LINDBLAD_BUILD_COVERAGE)
+        message(WARNING
+            "LINDBLAD_BUILD_COVERAGE is only supported with GCC/Clang; ignored for MSVC")
+    endif()
 endif()
 
 # ==============================================================================
