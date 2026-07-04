@@ -638,7 +638,21 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                             for (auto& v : dm.data) { v.real *= inv_p; v.imag *= inv_p; }
                         }
 
-                        if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
+                        // Readout error (issue #33): flip the RECORDED value
+                        // with the qubit's confusion probability. The state
+                        // stays collapsed to the true outcome; only the
+                        // classical record (and any feedforward reading it)
+                        // sees the noisy bit. Uses the run RNG so seeds stay
+                        // reproducible; ideal models draw nothing extra.
+                        int recorded = outcome;
+                        auto ro_it = noise_model.readout_errors.find(qubit);
+                        if (ro_it != noise_model.readout_errors.end()) {
+                            const double flip_p = (outcome == 0)
+                                ? ro_it->second.prob_meas_1_prep_0
+                                : ro_it->second.prob_meas_0_prep_1;
+                            if (flip_p > 0.0 && udist(rng) < flip_p) recorded ^= 1;
+                        }
+                        if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = recorded;
                         continue;
                     }
 
@@ -711,7 +725,19 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                         std::string bits(n_clbits, '0');
                         for (const auto& [q, c] : meas) {
                             if (c < 0 || c >= n_clbits) continue;
-                            if ((outcome >> q) & 1) bits[n_clbits - 1 - c] = '1';
+                            int bit = static_cast<int>((outcome >> q) & 1);
+                            // Readout error (issue #33): per-shot, per-qubit
+                            // flip of the recorded bit through the confusion
+                            // matrix. Ideal models draw nothing extra, so
+                            // seeded ideal runs are bit-for-bit unchanged.
+                            auto ro_it = noise_model.readout_errors.find(q);
+                            if (ro_it != noise_model.readout_errors.end()) {
+                                const double flip_p = (bit == 0)
+                                    ? ro_it->second.prob_meas_1_prep_0
+                                    : ro_it->second.prob_meas_0_prep_1;
+                                if (flip_p > 0.0 && udist(rng) < flip_p) bit ^= 1;
+                            }
+                            if (bit) bits[n_clbits - 1 - c] = '1';
                         }
                         result.counts[bits]++;
                     }

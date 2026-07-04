@@ -20,7 +20,6 @@
 using namespace lindblad;
 
 static constexpr double kTol  = 1e-9;   // exact comparisons
-static constexpr double kStat = 0.05;   // statistical fraction tolerance (shots-based)
 
 // =============================================================================
 // B1 — from_qasm2() wiring

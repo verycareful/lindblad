@@ -169,12 +169,6 @@ void apply_unitary(
     // Iterate over all indices, but only process each group once.
     // A group is identified by the bits NOT in the target set.
 
-    // Create a mask of all non-target bits
-    size_t target_mask_all = 0;
-    for (int i = 0; i < k; ++i) {
-        target_mask_all |= (1ULL << targets[i]);
-    }
-
     // Count number of background groups
     size_t n_groups = sv.dim >> k;
 

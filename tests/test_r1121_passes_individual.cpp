@@ -65,18 +65,15 @@ TEST(R1121Passes, Optimize1qCancelsHadamardPair) {
     EXPECT_LE(out.size(), 1) << "H H collapses to (near) identity";
 }
 
-// KNOWN-RED (R.1.12.1 finding -> issue, fix in R.1.12.2): Optimize1qGates merges
-// a generic single-qubit run into the WRONG gate. The merged unitary has the
-// correct rotation angle theta (all entry magnitudes match) but incorrect phase
-// angles phi/lambda (per-entry phases differ; it is NOT a global phase, which the
-// equivalence helper accounts for). Root cause is in zyz_decompose's phi/lambda
-// extraction (src/transpiler/optimisation/optimize_1q.cpp). Because transpile()
-// and preset_pass_manager() run Optimize1qGates, this also reds
-// PassManagerComposesAndPreservesSemantics, TranspilePresetLevelsPreserveSemantics
-// (here) and PresetPassManagerPreservesSemanticsUnconstrained (passes_more):
-// transpilation silently changes a circuit's unitary whenever it merges a generic
-// 1q run. The .1 slot is test-only, so the fix is deferred; these assert the
-// correct contract and become regressions once zyz_decompose is fixed.
+// REGRESSION (shipped red in R.1.12.1, fixed in R.1.12.2): zyz_decompose's
+// phase extraction was sign-flipped (arg(SU[0,0]) = -(phi+lam)/2, not
+// +(phi+lam)/2), so Optimize1qGates merged a generic single-qubit run into a
+// gate with the correct theta but wrong phi/lambda, and transpile() /
+// preset_pass_manager() silently changed circuit unitaries. This test and
+// PassManagerComposesAndPreservesSemantics /
+// TranspilePresetLevelsPreserveSemantics (here) plus
+// PresetPassManagerPreservesSemanticsUnconstrained (passes_more) pin the
+// correct contract: passes preserve the unitary up to a global phase.
 TEST(R1121Passes, Optimize1qPreservesGenericRun) {
     QuantumCircuit qc(1);
     qc.rx(0.7, 0).ry(-0.4, 0).rz(1.1, 0).h(0);

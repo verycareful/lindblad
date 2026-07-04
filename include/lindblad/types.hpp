@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <new>
 
@@ -28,6 +29,21 @@ namespace lindblad {
 // MSVC uses OpenMP 2.0 (legacy) and silently ignores unrecognised pragma clauses
 // like the aligned() clause on #pragma omp simd (OpenMP 4.0+).
 // We use conditional compilation to remove the pragma on MSVC; GCC/Clang use it.
+
+// =============================================================================
+// is_finite_strict — IEEE-754 finiteness test immune to -ffast-math
+// =============================================================================
+// The project compiles with -ffast-math (-ffinite-math-only), under which the
+// compiler may constant-fold std::isfinite / std::isnan to "always finite",
+// silently disabling NaN guards (clang warns via -Wnan-infinity-disabled; GCC
+// does not warn at all). This bit-pattern test (finite iff the exponent field
+// is not all-ones) survives any flag set and costs one integer compare; use it
+// for every guard whose job is to DETECT non-finite values.
+inline bool is_finite_strict(double x) noexcept {
+    std::uint64_t bits;
+    std::memcpy(&bits, &x, sizeof bits);
+    return (bits & 0x7FF0000000000000ULL) != 0x7FF0000000000000ULL;
+}
 
 // =============================================================================
 // Complex128 — SIMD-friendly complex number with explicit memory layout

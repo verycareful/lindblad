@@ -28,7 +28,6 @@ const std::string kUnicodeCtrl    = "\xe2\x97\x8f"; // U+25cf
 const std::string kUnicodeXor     = "\xe2\x8a\x95"; // U+2295
 const std::string kUnicodeSwap    = "\xe2\x9c\x95"; // U+2715
 const std::string kUnicodeStrutV  = "\xe2\x94\x82"; // U+2502
-const std::string kUnicodeStrutX  = "\xe2\x94\xbc"; // U+253c
 const std::string kUnicodeBarrier = "\xe2\x94\x8a"; // U+250a
 
 // Helper: does `s` contain any byte >= 0x80 (i.e. any non-ASCII)?

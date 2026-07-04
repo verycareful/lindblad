@@ -83,8 +83,22 @@ Attaches noise channels to gate names and qubit patterns.
 ### Readout errors
 
 - `add_readout_error(error, qubit)` stores a readout error per qubit
-- Readout errors are stored in the model but are not currently applied by the
-  density-matrix simulator path
+- The density-matrix simulator applies readout errors to every sampled
+  MEASURE outcome: the recorded classical bit is flipped with the qubit's
+  conditional probability from the confusion matrix
+  (`prob_meas_1_prep_0` when the true outcome is 0, `prob_meas_0_prep_1`
+  when it is 1)
+- The quantum state is unaffected: on the per-shot path the density matrix
+  stays collapsed to the true outcome and only the classical record (and any
+  feedforward that reads it) sees the noisy bit
+- Flips are drawn from the run's seeded RNG, so seeded runs are reproducible
+  and ideal models consume no extra draws
+- Circuits without MEASURE instructions (legacy full-register sampling) do
+  not apply readout errors: there is no readout to corrupt
+- The statevector, MPS, and Clifford backends do not apply readout errors;
+  route noisy-readout workloads through `DensityMatrixSimulator` (this is
+  what `Estimator`/`Sampler`/`LocalBackend` AUTO already do for any
+  non-ideal model)
 
 ### Other helpers
 

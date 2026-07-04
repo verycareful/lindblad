@@ -426,20 +426,31 @@ Mat mat_pow(const Mat& M, int n, int k) {
     return result;
 }
 
-// Extend a k-qubit matrix M with a single control to a (k+1)-qubit matrix:
-// the new layout is | control · M ⊕ identity | with the control qubit being
-// the MSB of the index (consistent with Lindblad's existing CX/CCX layout
-// where ctrl @ x q[0], q[1] places q[0] as the controlling MSB).
+// Extend a k-qubit matrix M with a single control to a (k+1)-qubit matrix.
+//
+// Project convention (docs/Architecture.md "Conventions", frozen in R.1.12.0):
+// Instruction::matrix is qubits[0]-is-LSB, and `ctrl @` prepends the control
+// as qubits[0]. The control is therefore index BIT 0 and the layout is the
+// interleaved controlled form (controls = low index bits): even indices
+// (control = 0) are identity, and M maps over the odd indices with the
+// original k bits shifted up by one. Iterating this helper for ctrl @ ctrl @
+// stacks yields the all-controls-1 slice on the low bits, matching control()
+// and the Shor/QPE controlled matrices.
+//
+// Until R.1.12.2 this helper used a block-diagonal layout (control = MSB),
+// which under the frozen operand order silently SWAPPED control and target
+// for every gate routed through the matrix fallback. Named fast paths were
+// unaffected, which is why no earlier test caught it.
 Mat mat_add_control(const Mat& M, int k) {
     const size_t d = size_t(1) << k;
     const size_t D = 2 * d;
     Mat R(D * D, Complex128{0.0, 0.0});
-    // ctrl = 0 block (top-left d×d): identity
-    for (size_t i = 0; i < d; ++i) R[i * D + i] = Complex128{1.0, 0.0};
-    // ctrl = 1 block (bottom-right d×d): M
+    // ctrl = 0 (even indices): identity
+    for (size_t i = 0; i < d; ++i) R[(2 * i) * D + (2 * i)] = Complex128{1.0, 0.0};
+    // ctrl = 1 (odd indices): M over the remaining bits, shifted up by one
     for (size_t r = 0; r < d; ++r) {
         for (size_t c = 0; c < d; ++c) {
-            R[(d + r) * D + (d + c)] = M[r * d + c];
+            R[(2 * r + 1) * D + (2 * c + 1)] = M[r * d + c];
         }
     }
     return R;
@@ -1310,8 +1321,6 @@ private:
                         const std::vector<int>& qubits,
                         int n_ctrl, bool inv, int pow_exp)
     {
-        using GT = Instruction::GateType;
-
         // `pow(n) @ <self-inverse>` collapses to identity (n even) or the
         // gate (n odd). Reduce here so the named lookup sees pow_exp=1.
         int eff_pow = pow_exp;
@@ -1374,6 +1383,16 @@ private:
             // Parameterised rotations: fold inv (negate) and pow (scale) into the angle.
             std::vector<ParamExpr> emit_params;
             if (spec.n_params > 0) {
+                // Angle folding (scale by inv*pow) is only a valid identity
+                // for SINGLE-axis rotations: RX(a)^n = RX(n*a) and
+                // inv RX(a) = RX(-a), same for ry/rz/p/u1. It is WRONG for
+                // multi-parameter gates: Euler angles do not scale
+                // (U3(t,p,l)^2 != U3(2t,2p,2l)) and inv U3(t,p,l) =
+                // U3(-t,-l,-p), with phi and lambda swapped. Route those to
+                // the exact matrix fallback (mat_pow / mat_dagger) instead.
+                // Pre-R.1.12.2 this folded u/u2/u3 and silently imported a
+                // slightly different unitary.
+                if ((inv || eff_pow != 1) && spec.n_params > 1) return false;
                 double sign = inv ? -1.0 : 1.0;
                 emit_params = fold_angle_params(sign);
                 eff_pow = 1;

@@ -21,9 +21,13 @@ QuantumCircuit Grover::build_circuit(
     int nq = oracle.n_qubits;
 
     if (num_iterations < 0) {
-        num_iterations = static_cast<int>(
-            std::round(PI / 4.0 * std::sqrt(static_cast<double>(1 << nq)))
-        );
+        // Exact-angle optimum: theta = asin(1/sqrt(N)), r* = round(pi/(4*theta) - 1/2).
+        // The rounded textbook pi/4*sqrt(N) over-shoots for small N (N = 4:
+        // 2 iterations instead of the optimal 1, success 0.25 instead of 1.0).
+        // Mirrors qudit_grover_auto_iters below. Fixes issue #32.
+        const double theta =
+            std::asin(1.0 / std::sqrt(static_cast<double>(1 << nq)));
+        num_iterations = static_cast<int>(std::round(PI / (4.0 * theta) - 0.5));
         if (num_iterations < 1) num_iterations = 1;
     }
 
@@ -93,9 +97,10 @@ Grover::Result Grover::search(
     // explicitly when k > 1.
     int nq = oracle.n_qubits;
     if (num_iterations < 0) {
-        num_iterations = static_cast<int>(
-            std::round(PI / 4.0 * std::sqrt(static_cast<double>(1 << nq)))
-        );
+        // Exact-angle optimum, kept in lockstep with build_circuit (issue #32).
+        const double theta =
+            std::asin(1.0 / std::sqrt(static_cast<double>(1 << nq)));
+        num_iterations = static_cast<int>(std::round(PI / (4.0 * theta) - 0.5));
         if (num_iterations < 1) num_iterations = 1;
     }
 

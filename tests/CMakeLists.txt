@@ -92,6 +92,14 @@ set(LINDBLAD_TEST_SOURCES
     # public symbols (passes + assorted previously-untested public methods).
     test_r1121_passes_more.cpp
     test_r1121_symbol_gaps.cpp
+    # R.1.12.2 coverage-fill suite: closes the line-coverage gaps measured on
+    # the instrumented R.1.12.1 run (gcovr). F1: simulator engines.
+    # F2: transpiler. F3: algorithms. F4: front ends, primitives, backend,
+    # noise factories, qudit MPS, circuit/DAG utilities, viz catalogues.
+    test_r1122_fill_simulators.cpp
+    test_r1122_fill_transpiler.cpp
+    test_r1122_fill_algorithms.cpp
+    test_r1122_fill_frontends.cpp
 )
 
 # Create test executable

@@ -153,7 +153,7 @@ Returns: `"lindblad_local_simulator"`
 std::string version() const;
 ```
 
-Returns the build version string derived from the CMake `LINDBLAD_VERSION_LABEL` compile definition (e.g. `"R.1.12.1"`). The value tracks `LINDBLAD_VERSION_LABEL` in `CMakeLists.txt` and cannot drift from the project version.
+Returns the build version string derived from the CMake `LINDBLAD_VERSION_LABEL` compile definition (e.g. `"R.1.12.2"`). The value tracks `LINDBLAD_VERSION_LABEL` in `CMakeLists.txt` and cannot drift from the project version.
 
 ### `max_qubits()`
 
@@ -332,3 +332,4 @@ for (int layer = 0; layer < num_layers; ++layer) {
 - [Noise API](noise.md) — Kraus operators, noise channels, thermal models
 - [Sampler API](sampler.md) — Bitstring sampling primitive (uses LocalBackend internally)
 - [Estimator API](estimator.md) — Expectation value computation (uses LocalBackend internally)
+                                                                                                                                                                                                                                                                                                                                              

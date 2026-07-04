@@ -4,6 +4,125 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.12.2] - 2026-07-04
+
+Fix release of the R.1.12 cadence. Resolves the four defects pinned red by the
+R.1.12.1 total-coverage suite, closes that suite's line-coverage target with
+four additional fill suites, and fixes eight more defects the fill and a full
+compiler-warning triage surfaced along the way. Closes issues #30 #31 #32 #33
+#34 #35 #36 #37 #38 #40 #42 #43 (#27 closed as duplicate of #30; #39 closed as
+intended behaviour, superseded by tracking issue #41).
+
+### Fixed
+
+- `SparsePauliOp::to_matrix()` built a non-Hermitian matrix for any Y-containing
+  term: the `i^(#Y)` factor is now a per-term constant folded into the
+  coefficient (`Y = iXZ`) instead of a per-column `i^popcount(j & y_mask)`.
+  `to_matrix` now agrees with `expectation_value` and composes homomorphically.
+  (#30)
+- `zyz_decompose` extracted `phi`/`lambda` with a flipped sign
+  (`arg(SU[0,0]) = -(phi+lam)/2`, not `+`), so `Optimize1qGates` merged generic
+  single-qubit runs into a different unitary and `transpile()` /
+  `preset_pass_manager()` silently altered circuits at every optimization
+  level. The theta-only-approximately-zero branch had the same defect. (#31)
+- Qubit `Grover` auto iteration count now uses the exact-angle optimum
+  `max(1, round(pi/(4*asin(1/sqrt(N))) - 1/2))`, mirroring the qudit path;
+  N = 4 selects 1 iteration instead of over-rotating with 2. (#32)
+- `DensityMatrixSimulator` now applies per-qubit `ReadoutError` confusion to
+  every sampled MEASURE outcome on both sampling paths (terminal clbit-keyed
+  sampling and per-shot trajectories). The state stays collapsed to the true
+  outcome; only the classical record (and feedforward reading it) sees the
+  noisy bit. Flips draw from the run's seeded RNG; ideal models consume no
+  extra draws, so seeded ideal runs are bit-for-bit unchanged. (#33)
+- `BasisTranslator` gained the missing `CU` (CU3 ladder with the gamma phase
+  folded into the control U1) and `RCCX` (Margolus H/T/CX ladder) recipes;
+  both previously passed through the default `{cx, u3}` target undecomposed
+  with no error. (#34)
+- QASM2 custom-gate parameter arithmetic: numeric tokens must now parse in
+  full (`"2*a"` no longer partial-parses to 2.0), unresolvable tokens throw
+  instead of silently becoming 0, and `+`/`-` bind at the lowest precedence so
+  `a-pi/2` evaluates as `a - (pi/2)`. (#35)
+- `VQE::compute_minimum_eigenvalue` no longer surfaces an uninitialised value
+  when NLopt fails: the integer status is checked first, a non-finite result
+  falls back to the minimum of the recorded energy history, and a run whose
+  objective never evaluated throws. (#36)
+- `SabreLayout` was a silent no-op on every circuit: the front layer counted
+  wire IN-node edges in its in-degree seeding, so it was permanently empty and
+  the pass always returned the trivial layout with zero swaps. Seeding now
+  counts OP-source edges only; the heuristic and forward/backward/final passes
+  execute for the first time. (#37)
+- The QASM3 modifier matrix fallback embedded `ctrl @` controls as the MSB
+  (block-diagonal), which under the frozen qubits[0]-is-LSB convention swapped
+  control and target for every gate routed through it. It now uses the
+  interleaved layout (control = index bit 0), matching `control()` and the
+  Shor/QPE controlled matrices. (#38)
+- `QAOA` evolved multi-qubit mixer terms as independent per-qubit rotations
+  (`RX (x) RY` instead of `exp(-i*beta*XY)`), a wrong ansatz for entangling
+  (e.g. constraint-preserving XY) mixers. The mixer loop now uses the same
+  per-term Pauli-rotation recipe as the cost unitary; single-qubit mixers are
+  bit-for-bit unchanged. (#40)
+- QASM3 `pow(n) @` / `inv @` folding scaled every gate parameter by
+  `inv*pow`, an identity valid only for single-axis rotations; `u`/`u2`/`u3`
+  under those modifiers silently imported a slightly different unitary
+  (Euler angles do not scale, and `inv U3(t,p,l) = U3(-t,-l,-p)`). Multi-
+  parameter gates now route to the exact matrix fallback. (#42)
+- The build handed the project's `-ffast-math` to vendored NLopt, whose
+  COBYLA convergence logic assumes IEEE semantics; under Clang with
+  `-march=native` the optimiser bailed after the initial evaluation (VQE
+  returned the starting energy). NLopt now compiles with `-fno-fast-math`
+  (keeping `-O3`/`-march`). (#43)
+
+### Changed
+
+- `MAQAOA::optimize` / `build_circuit` now throw `std::invalid_argument` on a
+  non-empty `mixer_hamiltonian` instead of silently ignoring it: the MA-QAOA
+  mixer is definitionally the fixed per-qubit RX (Herrman et al. 2022), with
+  beta customisation via `options.mixer_weights` / `options.orbit_assignments`.
+  First-class custom-mixer support is tracked in #41. (Supersedes #39.)
+- All NaN guards in `maqaoa`/`vqe` use the new bit-level
+  `lindblad::is_finite_strict`, immune to `-ffast-math` folding
+  `std::isfinite` away (GCC never warns about this; Clang's
+  `-Wnan-infinity-disabled` does).
+- Eigen 3.4.0 keyed its test registration on the standard `BUILD_TESTING`
+  variable and silently registered ~915 phantom ctest entries; dependencies
+  now build with `BUILD_TESTING` forced OFF, so `ctest` lists only Lindblad
+  tests. NLopt additionally builds with `-w` to keep warning inventories
+  signal-only.
+- README Clang recipe corrected: `-DLINDBLAD_MARCH_NATIVE=ON` (a flag-level
+  `-march=native` was silently overridden by the project's `-march=x86-64-v3`)
+  and an accurate explanation of `-Wno-nan-infinity-disabled`.
+- Full GCC and Clang warning inventories driven to zero in project sources:
+  dead code removed (`QuditSimon::null_space_ring`, an unused HTML escape
+  helper, `glyph_row_span`, phantom `BackendProperties` forward declarations,
+  dead locals in the gate kernels), dangling-else sites braced, intentionally
+  unused parameters documented.
+- Documentation updated across `docs/api/` (operators, grover, maqaoa, qaoa,
+  qasm, vqe, noise) to state the corrected contracts, including the QASM3
+  modifier folding rules and the readout-error application semantics.
+
+### Added
+
+- Coverage fill suites `tests/test_r1122_fill_{simulators,transpiler,
+  algorithms,frontends}.cpp` (~75 tests): every gate branch through MPS and DM
+  against the statevector oracle, the MPS statevector-fallback path,
+  BasisTranslator full-gate decomposition sweep, SABRE routing contracts,
+  scheduling barrier semantics, algorithm option matrices
+  (QFT/Simon/MAQAOA/VQE/Shor), QASM2 builtin and custom-gate sweeps, QASM3
+  modifier stacks, Estimator transpile cache, LocalBackend AUTO selection,
+  every noise-channel factory checked for trace preservation, qudit MPS vs
+  QuditStatevector cross-checks, and the visualisation catalogues.
+- `lindblad::is_finite_strict(double)` in `types.hpp`: IEEE-754 finiteness
+  test via bit pattern, one integer compare, immune to any compiler flag set.
+
+### Results
+
+- Full suite: 1784/1784 across 133 suites. Verified on GCC 13 (WSL) and
+  Clang 18 with `-march=native`; zero compiler warnings in project sources.
+- Line coverage 95.13% on `src/` + `include/` (gcovr, instrumented build),
+  every file at or above 85% except the two documented gcov
+  aggregate-initializer artifacts in the visualisation catalogues; the
+  R.1.12.1 coverage plan's definition of done is closed.
+
 ## [R.1.12.1] - 2026-06-25
 
 R.1.12.1 is the test-only release of the R.1.12 cadence (the `.1` patch slot
@@ -2475,3 +2594,4 @@ execute end-to-end. No new features.
 ### Changed
 
 - CMake project version updated from `0.1.0` to `1.0.0` for the alpha release line.
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             

@@ -33,7 +33,6 @@ namespace lindblad {
 // decay_factor    = penalty for repeatedly swapping the same pair
 static double sabre_heuristic(
     const std::vector<int>& front_layer_ops,
-    const DAGCircuit& dag,
     const std::unordered_map<int, const DAGNode*>& node_by_id,
     const std::vector<int>& layout,
     const std::vector<std::vector<int>>& dist,
@@ -91,7 +90,16 @@ static SABRERunResult sabre_run(
         executed[node.node_id]  = false;
     }
     for (const auto& edge : dag.edges) {
-        in_degree[edge.dst_node]++;
+        // Only OP predecessors gate execution order. Wire IN nodes are never
+        // "executed", so counting their edges pinned every first-layer gate
+        // at in_degree >= 1, left the front layer permanently empty, and
+        // silently reduced the whole SABRE pass to a no-op that returned the
+        // trivial layout with zero swaps.
+        auto sit = node_by_id.find(edge.src_node);
+        if (sit != node_by_id.end() &&
+            sit->second->type == DAGNode::Type::OP) {
+            in_degree[edge.dst_node]++;
+        }
     }
 
     // Front layer: OP nodes with in-degree 0 (stored as node IDs).
@@ -173,7 +181,7 @@ static SABRERunResult sabre_run(
         }
 
         for (auto [l0, l1] : candidates) {
-            double cost = sabre_heuristic(blocked, dag, node_by_id, layout, dist, l0, l1, 0.0);
+            double cost = sabre_heuristic(blocked, node_by_id, layout, dist, l0, l1, 0.0);
             if (cost < best_cost) {
                 best_cost = cost;
                 best_l0 = l0;

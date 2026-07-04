@@ -9,9 +9,6 @@
 
 namespace lindblad {
 
-// Forward declarations
-class BackendProperties;
-
 // =============================================================================
 // KrausChannel — Kraus representation of a quantum channel
 // =============================================================================

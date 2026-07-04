@@ -409,33 +409,42 @@ private:
         const std::string& expr,
         const std::unordered_map<std::string, double>& param_map
     ) {
-        // Try division: "a/N"
+        // Lowest precedence first: split on +/- (scanning from the right)
+        // BEFORE division and multiplication, so "a-pi/2" evaluates as
+        // a - (pi/2) instead of (a-pi)/2. Operands recurse through this
+        // function, so compound sub-expressions like "2*a+pi" resolve too.
+        for (int i = static_cast<int>(expr.size()) - 1; i > 0; --i) {
+            if (expr[i] == '+' || expr[i] == '-') {
+                // A sign directly after another operator belongs to the
+                // operand ("2*-3"), not to this split.
+                const char prev = expr[i - 1];
+                if (prev == '*' || prev == '/' || prev == '+' || prev == '-')
+                    continue;
+                std::string lhs = trim(expr.substr(0, i));
+                std::string rhs = trim(expr.substr(i + 1));
+                double l = evaluate_param_expr(lhs, param_map);
+                double r = evaluate_param_expr(rhs, param_map);
+                return (expr[i] == '+') ? l + r : l - r;
+            }
+        }
+
+        // Division: "a/N", "pi/2", ...
         auto div_pos = expr.find('/');
         if (div_pos != std::string::npos) {
             std::string lhs = trim(expr.substr(0, div_pos));
             std::string rhs = trim(expr.substr(div_pos + 1));
-            double l = resolve_single(lhs, param_map);
-            double r = resolve_single(rhs, param_map);
+            double l = evaluate_param_expr(lhs, param_map);
+            double r = evaluate_param_expr(rhs, param_map);
             return (r != 0.0) ? l / r : 0.0;
         }
 
-        // Try multiplication: "N*a" or "a*N"
+        // Multiplication: "N*a" or "a*N"
         auto mul_pos = expr.find('*');
         if (mul_pos != std::string::npos) {
             std::string lhs = trim(expr.substr(0, mul_pos));
             std::string rhs = trim(expr.substr(mul_pos + 1));
-            return resolve_single(lhs, param_map) * resolve_single(rhs, param_map);
-        }
-
-        // Try addition/subtraction (scan from right to handle -pi correctly)
-        for (int i = static_cast<int>(expr.size()) - 1; i > 0; --i) {
-            if (expr[i] == '+' || expr[i] == '-') {
-                std::string lhs = trim(expr.substr(0, i));
-                std::string rhs = trim(expr.substr(i + 1));
-                double l = resolve_single(lhs, param_map);
-                double r = resolve_single(rhs, param_map);
-                return (expr[i] == '+') ? l + r : l - r;
-            }
+            return evaluate_param_expr(lhs, param_map) *
+                   evaluate_param_expr(rhs, param_map);
         }
 
         return resolve_single(expr, param_map);
@@ -451,7 +460,11 @@ private:
         try {
             return evaluate_pi_expr(tok);
         } catch (...) {
-            return 0.0;
+            // Silently substituting 0.0 here injected wrong angles into
+            // custom-gate bodies. Unresolvable tokens must surface.
+            throw std::runtime_error(
+                "QASM2Parser: cannot resolve parameter token '" + tok +
+                "' (not a formal parameter, pi expression, or number)");
         }
     }
 
@@ -566,7 +579,17 @@ private:
 
         auto pi_pos = tok.find("pi");
         if (pi_pos == std::string::npos) {
-            return std::stod(tok);
+            // Strict numeric parse. A bare std::stod accepts partial parses
+            // ("2*a" -> 2.0 with the "*a" silently dropped), which corrupted
+            // custom-gate parameter arithmetic: the exception that routes the
+            // token to evaluate_param_expr never fired. Require the token to
+            // be consumed entirely.
+            size_t used = 0;
+            const double v = std::stod(tok, &used);
+            if (used != tok.size())
+                throw std::invalid_argument(
+                    "QASM2Parser: not a pure numeric token: '" + tok + "'");
+            return v;
         }
 
         // Split around "pi": prefix * pi / suffix

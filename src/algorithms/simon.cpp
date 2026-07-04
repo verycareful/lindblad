@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <numeric>
 #include <random>
 #include <string>
 #include <utility>
@@ -320,119 +319,6 @@ QuditSimon::Result QuditSimon::solve(
     };
 
     return post_process(equations, n, d, queries, is_period);
-}
-
-// =============================================================================
-// QuditSimon — kernel over the ring Z_d via integer Smith Normal Form
-//
-// Diagonalises the integer equation matrix M (rows × n) as U·M·V = D with U, V
-// unimodular and D diagonal, then reads the kernel mod d off the diagonal.
-// We only need a diagonal form (not the full invariant-factor divisibility
-// chain), so the routine performs the row/column gcd elimination without the
-// extra divisibility-correction step. V is tracked (column operations only);
-// U is never needed because it is unimodular and therefore invertible mod d:
-//   M·s ≡ 0 (mod d)  ⟺  D·t ≡ 0 (mod d)   where  s = V·t.
-// For each pivot column i (i < rank): D_ii·t_i ≡ 0 (mod d) ⟺ t_i is a multiple
-// of d/gcd(D_ii, d); each free column (i ≥ rank) contributes a free t_i ∈ Z_d.
-// Returns one generating vector per nontrivial kernel direction (reduced mod d).
-// =============================================================================
-
-std::vector<std::vector<int>> QuditSimon::null_space_ring(
-    const std::vector<std::vector<int>>& M_in, int n, int d)
-{
-    const int rows = static_cast<int>(M_in.size());
-    const int cols = n;
-
-    // Work in 64-bit to absorb intermediate growth during elimination.
-    std::vector<std::vector<long long>> D(static_cast<size_t>(rows),
-                                          std::vector<long long>(static_cast<size_t>(cols), 0));
-    for (int i = 0; i < rows; ++i)
-        for (int j = 0; j < cols; ++j)
-            D[static_cast<size_t>(i)][static_cast<size_t>(j)] = M_in[static_cast<size_t>(i)][static_cast<size_t>(j)];
-
-    // V (cols × cols) accumulates the column operations; starts as identity.
-    std::vector<std::vector<long long>> V(static_cast<size_t>(cols),
-                                          std::vector<long long>(static_cast<size_t>(cols), 0));
-    for (int i = 0; i < cols; ++i) V[static_cast<size_t>(i)][static_cast<size_t>(i)] = 1;
-
-    auto swap_cols = [&](int a, int b) {
-        if (a == b) return;
-        for (int i = 0; i < rows; ++i) std::swap(D[static_cast<size_t>(i)][static_cast<size_t>(a)], D[static_cast<size_t>(i)][static_cast<size_t>(b)]);
-        for (int i = 0; i < cols; ++i) std::swap(V[static_cast<size_t>(i)][static_cast<size_t>(a)], V[static_cast<size_t>(i)][static_cast<size_t>(b)]);
-    };
-    auto col_axpy = [&](int a, int b, long long q) {     // col_a -= q * col_b
-        for (int i = 0; i < rows; ++i) D[static_cast<size_t>(i)][static_cast<size_t>(a)] -= q * D[static_cast<size_t>(i)][static_cast<size_t>(b)];
-        for (int i = 0; i < cols; ++i) V[static_cast<size_t>(i)][static_cast<size_t>(a)] -= q * V[static_cast<size_t>(i)][static_cast<size_t>(b)];
-    };
-    auto row_axpy = [&](int a, int b, long long q) {     // row_a -= q * row_b
-        for (int j = 0; j < cols; ++j) D[static_cast<size_t>(a)][static_cast<size_t>(j)] -= q * D[static_cast<size_t>(b)][static_cast<size_t>(j)];
-    };
-
-    const int lim = std::min(rows, cols);
-    int rank = 0;
-    for (int t = 0; t < lim; ++t) {
-        bool pivot_found = false;
-        while (true) {
-            // Pick the nonzero entry of smallest magnitude in the submatrix [t:, t:].
-            int pi = -1, pj = -1;
-            long long best = 0;
-            for (int i = t; i < rows; ++i)
-                for (int j = t; j < cols; ++j) {
-                    const long long v = D[static_cast<size_t>(i)][static_cast<size_t>(j)];
-                    if (v != 0 && (pi < 0 || std::llabs(v) < best)) { best = std::llabs(v); pi = i; pj = j; }
-                }
-            if (pi < 0) break;            // submatrix all zero → no more pivots
-            pivot_found = true;
-            if (pi != t) std::swap(D[static_cast<size_t>(pi)], D[static_cast<size_t>(t)]);
-            swap_cols(pj, t);
-
-            const long long piv = D[static_cast<size_t>(t)][static_cast<size_t>(t)];
-            bool reduced = false;
-            for (int i = t + 1; i < rows; ++i)
-                if (D[static_cast<size_t>(i)][static_cast<size_t>(t)] != 0) {
-                    row_axpy(i, t, D[static_cast<size_t>(i)][static_cast<size_t>(t)] / piv);
-                    if (D[static_cast<size_t>(i)][static_cast<size_t>(t)] != 0) reduced = true;
-                }
-            for (int j = t + 1; j < cols; ++j)
-                if (D[static_cast<size_t>(t)][static_cast<size_t>(j)] != 0) {
-                    col_axpy(j, t, D[static_cast<size_t>(t)][static_cast<size_t>(j)] / piv);
-                    if (D[static_cast<size_t>(t)][static_cast<size_t>(j)] != 0) reduced = true;
-                }
-            if (reduced) continue;        // remainder left → re-pivot (gcd loop)
-            break;                        // row t and col t now zero off the diagonal
-        }
-        if (!pivot_found) break;
-        rank = t + 1;
-    }
-
-    // Build one kernel generator per nontrivial direction.
-    auto column_mod_d = [&](int col, long long mult) -> std::vector<int> {
-        std::vector<int> s(static_cast<size_t>(n));
-        bool nonzero = false;
-        for (int i = 0; i < n; ++i) {
-            long long e = ((V[static_cast<size_t>(i)][static_cast<size_t>(col)] * mult) % d + d) % d;
-            s[static_cast<size_t>(i)] = static_cast<int>(e);
-            if (e != 0) nonzero = true;
-        }
-        return nonzero ? s : std::vector<int>();
-    };
-
-    std::vector<std::vector<int>> basis;
-    for (int i = 0; i < cols; ++i) {
-        if (i < rank) {
-            const long long di = std::llabs(D[static_cast<size_t>(i)][static_cast<size_t>(i)]);
-            const long long g  = std::gcd(di, static_cast<long long>(d));
-            const long long mi = static_cast<long long>(d) / g;   // smallest nonzero t_i with di*t_i ≡ 0
-            if (mi < d) {                                         // g > 1 → nontrivial direction
-                auto s = column_mod_d(i, mi);
-                if (!s.empty()) basis.push_back(std::move(s));
-            }
-        } else {
-            auto s = column_mod_d(i, 1);                          // free column
-            if (!s.empty()) basis.push_back(std::move(s));
-        }
-    }
-    return basis;
 }
 
 // =============================================================================

@@ -76,7 +76,11 @@ Behavior:
 - Initial state is `H|0>` on each qubit, unless `initial_thetas` is set
 - Each layer applies cost then mixer rotations
 - Cost terms are implemented as Pauli rotations (including basis changes for X/Y)
-- Mixer terms apply `Rx`, `Ry`, or `Rz` depending on the Pauli operator
+- Mixer terms are evolved as the ordered product of per-term rotations
+  `exp(-i·β·c_k·P_k)`: single-qubit terms as `Rx`/`Ry`/`Rz`, multi-qubit
+  terms via the same basis-change + CX-chain recipe as the cost unitary.
+  Exact when the terms commute (the default X mixer); a first-order Trotter
+  step otherwise
 
 ## Example
 

@@ -40,12 +40,15 @@ static ZYZParams zyz_decompose(const Eigen::Matrix2cd& U) {
     double global_phase = std::arg(det) / 2.0;
     Eigen::Matrix2cd SU = U / std::exp(std::complex<double>(0, global_phase));
 
-    // SU = [[a, -b*],[b, a*]]
-    // RY(theta) = [[cos(t/2), -sin(t/2)],[sin(t/2), cos(t/2)]]
-    // RZ(phi)*RY(theta)*RZ(lam) = [[...]]
-    // from the matrix elements:
-    //   SU[0,0] = cos(t/2) * e^{i*(phi+lam)/2}  (but we want real -> look at |a| and arg)
-    //   SU[1,0] = sin(t/2) * e^{i*(phi-lam)/2}
+    // With RZ(x) = diag(e^{-ix/2}, e^{ix/2}):
+    //   RZ(phi)*RY(theta)*RZ(lam) =
+    //     [[ cos(t/2)*e^{-i(phi+lam)/2}, -sin(t/2)*e^{-i(phi-lam)/2} ],
+    //      [ sin(t/2)*e^{+i(phi-lam)/2},  cos(t/2)*e^{+i(phi+lam)/2} ]]
+    // so from the matrix elements:
+    //   arg(SU[0,0]) = -(phi+lam)/2      arg(SU[1,0]) = +(phi-lam)/2
+    // The pre-R.1.12.2 extraction used arg(a) = +(phi+lam)/2 (sign flipped),
+    // producing a merged gate with the correct theta but wrong phi/lambda:
+    // transpilation silently changed circuit unitaries (issue #31).
     auto a = SU(0, 0);
     auto b = SU(1, 0);
 
@@ -57,18 +60,18 @@ static ZYZParams zyz_decompose(const Eigen::Matrix2cd& U) {
 
     double phi, lam;
     if (abs_a > 1e-10 && abs_b > 1e-10) {
-        // arg(a) = (phi+lam)/2, arg(b) = (phi-lam)/2
+        // phi+lam = -2*arg(a), phi-lam = +2*arg(b)
         double arg_a = std::arg(a);
         double arg_b = std::arg(b);
-        phi = arg_a + arg_b;
-        lam = arg_a - arg_b;
+        phi = arg_b - arg_a;
+        lam = -(arg_a + arg_b);
     } else if (abs_a < 1e-10) {
-        // theta ≈ pi → set phi + lam = 0
+        // theta ≈ pi: only phi-lam = 2*arg(b) is defined; set phi + lam = 0
         phi = std::arg(b);
         lam = -phi;
     } else {
-        // theta ≈ 0 → b ≈ 0, set phi + lam = 2*arg(a)
-        phi = std::arg(a);
+        // theta ≈ 0: only phi+lam = -2*arg(a) is defined; set lam = 0
+        phi = -2.0 * std::arg(a);
         lam = 0.0;
     }
 
@@ -725,9 +728,14 @@ DAGCircuit PassManager::run(const DAGCircuit& dag, const TranspilationContext& c
 
 PassManager preset_pass_manager(
     int optimization_level,
-    const CouplingMap& coupling_map,
-    const std::vector<std::string>& basis_gates
+    const CouplingMap& /*coupling_map*/,
+    const std::vector<std::string>& /*basis_gates*/
 ) {
+    // The coupling map and basis gates are intentionally not consumed here:
+    // pass COMPOSITION depends only on the optimisation level, and every
+    // composed pass reads the coupling map / basis from the
+    // TranspilationContext handed to run(). The parameters stay in the
+    // signature so callers hold one uniform entry point (see transpile()).
     PassManager pm;
 
     if (optimization_level >= 0) {

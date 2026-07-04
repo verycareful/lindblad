@@ -68,14 +68,13 @@ void expect_mat_eq(const Mat& a, const Mat& b, double tol = kTol) {
 // PauliString
 // =============================================================================
 //
-// KNOWN-RED (R.1.12.1 finding -> issue, fix in R.1.12.2): SparsePauliOp::to_matrix()
-// builds a non-Hermitian matrix for any term containing Y. It produces Y as
-// [[0,-i],[1,0]] instead of the correct [[0,-i],[i,0]] (X and Z are correct).
-// Root cause: the i^(#Y) factor is computed per-column as i^popcount(j & y_mask)
-// rather than as the constant i^popcount(y_mask) per term (Y = i*X*Z). The three
-// tests below assert the CORRECT contract and therefore fail until the bug is
-// fixed; they become regressions once it is. The .1 slot is test-only, so the
-// fix itself is deferred. Tests with no Y term (e.g. the X/Z/I pairs) pass.
+// REGRESSION (shipped red in R.1.12.1, fixed in R.1.12.2):
+// SparsePauliOp::to_matrix() applies the i^(#Y) factor as a per-term constant
+// folded into the coefficient (Y = i*X*Z, so one i per Y in the string). The
+// pre-fix code applied i^popcount(j & y_mask) per column, which made every
+// Y-containing matrix non-Hermitian. The three tests below pin the correct
+// contract: to_matrix is Hermitian for Hermitian operators, agrees with
+// expectation_value, and is a homomorphism under compose().
 
 TEST(R1121Operators, PauliComposeMatchesMatrixProductAllPairs) {
     const std::vector<std::string> ps = {"I", "X", "Y", "Z"};

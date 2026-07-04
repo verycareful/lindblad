@@ -120,12 +120,13 @@ TEST(R1121NoiseModel, AssignmentMatrixColumnsAreStochastic) {
 }
 
 // =============================================================================
-// EXPECTED RED (new-bug policy): readout error must perturb measured counts.
-// The DensityMatrixSimulator does not currently apply readout_errors, so this
-// fails until the readout-application item lands (R.1.12.2+). Ships red + issue.
+// REGRESSION (shipped red in R.1.12.1, fixed in R.1.12.2): the
+// DensityMatrixSimulator applies per-qubit readout errors to every sampled
+// MEASURE outcome through the confusion matrix; the state itself stays
+// collapsed to the true outcome.
 // =============================================================================
 
-TEST(R1121NoiseModel, ReadoutErrorPerturbsCounts_EXPECTED_RED) {
+TEST(R1121NoiseModel, ReadoutErrorPerturbsCounts) {
     QuantumCircuit qc(1, 1);
     qc.measure(0, 0);  // prepared |0>, measured ideally always "0"
 

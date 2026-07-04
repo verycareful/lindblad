@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.12.1 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.12.2 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.12.1")
+set(LINDBLAD_VERSION_LABEL "R.1.12.2")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,9 +12,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ==============================================================================
 option(LINDBLAD_MARCH_NATIVE "Compile with -march=native (non-distributable, max perf)" OFF)
 
-# Coverage instrumentation for gcovr/lcov reports (test infrastructure; see
-# docs/plans/R.1.12.1-test-coverage-plan.md). OFF for normal builds: it
-# overrides optimisation with -O0 so line attribution is exact.
+# Coverage instrumentation for gcovr/lcov reports (test infrastructure; the
+# measurement workflow is documented in docs/BuildAndTest.md). OFF for normal
+# builds: it overrides optimisation with -O0 so line attribution is exact.
 option(LINDBLAD_BUILD_COVERAGE "Compile with --coverage for gcovr/lcov reports" OFF)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -111,7 +111,28 @@ option(LINDBLAD_BUILD_BENCHMARKS "Build benchmarks (ON when building Lindblad di
 option(LINDBLAD_BUILD_PYTHON     "Build Python bindings" OFF)
 option(LINDBLAD_BUILD_APPS       "Build user-facing CLI apps (lindblad_draw, ...)" ${PROJECT_IS_TOP_LEVEL})
 
+# Eigen 3.4.0 gates its own test registration on the standard BUILD_TESTING
+# variable (its option() defaults it ON); the EIGEN_BUILD_TESTING name below
+# is only honoured by newer Eigen. Without this, Eigen silently registers
+# ~915 ctest entries for test binaries that are never built. Lindblad's own
+# suite uses enable_testing() + LINDBLAD_BUILD_TESTS and never consults
+# BUILD_TESTING, so forcing it OFF affects dependencies only.
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+
 FetchContent_MakeAvailable(nlopt eigen)
+
+# Third-party hygiene for the vendored NLopt build:
+#   -w              its own sources (stogo) trip warnings; the project's
+#                   warning inventory must stay signal-only.
+#   -fno-fast-math  NLopt is a numerical optimiser whose convergence logic
+#                   assumes IEEE semantics; inheriting the directory-wide
+#                   -ffast-math broke COBYLA outright under Clang with
+#                   -march=native (immediate bail-out, observed as VQE
+#                   returning the initial energy). Later flags override, so
+#                   NLopt keeps -O3/-march but regains strict FP behaviour.
+if(TARGET nlopt AND (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+    target_compile_options(nlopt PRIVATE -w -fno-fast-math)
+endif()
 
 if(LINDBLAD_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
@@ -225,31 +246,4 @@ target_link_libraries(lindblad_core PUBLIC Eigen3::Eigen)
 
 # ==============================================================================
 # Python bindings
-# ==============================================================================
-if(LINDBLAD_BUILD_PYTHON)
-    pybind11_add_module(lindblad_python bindings/python_bindings.cpp)
-    target_link_libraries(lindblad_python PRIVATE lindblad_core)
-    set_target_properties(lindblad_python PROPERTIES OUTPUT_NAME "lindblad")
-endif()
-
-# ==============================================================================
-# Tests
-# ==============================================================================
-if(LINDBLAD_BUILD_TESTS)
-    enable_testing()
-    add_subdirectory(tests)
-endif()
-
-# ==============================================================================
-# Benchmarks
-# ==============================================================================
-if(LINDBLAD_BUILD_BENCHMARKS)
-    add_subdirectory(benchmarks)
-endif()
-
-# ==============================================================================
-# CLI apps (R.1.10.3: lindblad_draw)
-# ==============================================================================
-if(LINDBLAD_BUILD_APPS)
-    add_subdirectory(apps)
-endif()
+# =========================================

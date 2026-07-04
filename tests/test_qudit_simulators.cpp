@@ -54,21 +54,6 @@ static double sv_prob(const QuditStatevector& sv, size_t i) {
     return a.real * a.real + a.imag * a.imag;
 }
 
-// Matrix multiply helpers (for constructing test gates).
-static std::vector<Complex128> mat_mul_cx(
-    const std::vector<Complex128>& A,
-    const std::vector<Complex128>& B,
-    int n)
-{
-    std::vector<Complex128> C(static_cast<size_t>(n * n), Complex128(0.0, 0.0));
-    for (int r = 0; r < n; ++r)
-        for (int c = 0; c < n; ++c)
-            for (int k = 0; k < n; ++k)
-                C[static_cast<size_t>(r * n + c)] +=
-                    A[static_cast<size_t>(r * n + k)] * B[static_cast<size_t>(k * n + c)];
-    return C;
-}
-
 // Build the d×d Hadamard (= QFT for d=2) gate manually for verification.
 static std::vector<Complex128> hadamard_d2() {
     const double inv_sqrt2 = 1.0 / std::sqrt(2.0);
@@ -456,15 +441,21 @@ TEST(QuditClifford, InitialTableau_d2_n3) {
     // Destabilizers (rows 0,1,2): X_j — xbits[j][j]=1, zbits=0, phase=0
     for (int j = 0; j < 3; ++j) {
         EXPECT_EQ(c.xbits[j][static_cast<size_t>(j)], 1) << "destab j=" << j;
-        for (int q = 0; q < 3; ++q)
-            if (q != j) EXPECT_EQ(c.xbits[j][static_cast<size_t>(q)], 0);
+        for (int q = 0; q < 3; ++q) {
+            if (q != j) {
+                EXPECT_EQ(c.xbits[j][static_cast<size_t>(q)], 0);
+            }
+        }
         EXPECT_EQ(c.phase[j], 0);
     }
     // Stabilizers (rows 3,4,5): Z_j — zbits[n+j][j]=1, xbits=0, phase=0
     for (int j = 0; j < 3; ++j) {
         EXPECT_EQ(c.zbits[3 + j][static_cast<size_t>(j)], 1) << "stab j=" << j;
-        for (int q = 0; q < 3; ++q)
-            if (q != j) EXPECT_EQ(c.zbits[3 + j][static_cast<size_t>(q)], 0);
+        for (int q = 0; q < 3; ++q) {
+            if (q != j) {
+                EXPECT_EQ(c.zbits[3 + j][static_cast<size_t>(q)], 0);
+            }
+        }
         EXPECT_EQ(c.phase[3 + j], 0);
     }
 }

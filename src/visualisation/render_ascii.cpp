@@ -176,37 +176,6 @@ int glyph_natural_width(const Glyph& g) {
     return max_w;
 }
 
-// Compute the row range a glyph visually spans, including any tall BoxPart.
-// Returned as (top, bot) inclusive in wire-row coordinates.
-struct RowRange { int top; int bot; };
-
-RowRange glyph_row_span(const Glyph& g) {
-    int top = -1, bot = -1;
-    auto bump = [&](int r) {
-        if (top < 0 || r < top) { top = r; }
-        if (bot < 0 || r > bot) { bot = r; }
-    };
-    for (const auto& kv : g.parts) {
-        const int qrow = kv.first;
-        const GlyphPart& part = kv.second;
-        bump(wire_row(qrow));
-        std::visit([&](auto&& p) {
-            using T = std::decay_t<decltype(p)>;
-            if constexpr (std::is_same_v<T, BoxPart>) {
-                if (p.rowspan > 1) {
-                    bump(wire_row(qrow + p.rowspan - 1));
-                }
-            }
-        }, part);
-    }
-    if (g.has_strut) {
-        bump(wire_row(g.strut_top));
-        bump(wire_row(g.strut_bot));
-    }
-    if (top < 0) { top = 0; bot = 0; }
-    return { top, bot };
-}
-
 // =============================================================================
 // Paint one glyph at column origin x0 in the grid
 // =============================================================================

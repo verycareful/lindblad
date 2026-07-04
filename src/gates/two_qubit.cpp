@@ -30,8 +30,6 @@ static inline void apply_controlled_matrix(
 ) noexcept {
     assert(ctrl != tgt);
     const size_t dim = sv.dim;
-    const size_t ctrl_step = 1ULL << ctrl;
-    const size_t tgt_step  = 1ULL << tgt;
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
 

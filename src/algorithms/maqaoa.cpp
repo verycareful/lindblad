@@ -157,7 +157,7 @@ static double computational_basis_cost(
 static void evolve_into(
     Statevector& sv,
     const SparsePauliOp& cost,
-    const SparsePauliOp& mixer,
+    const SparsePauliOp& /*mixer: always empty, guarded at the public entry points*/,
     const std::vector<double>& params,
     int p,
     const std::vector<int>& term_orbit_map,
@@ -244,7 +244,14 @@ static void evolve_into(
             }
         }
 
-        // Mixer unitary: one beta per orbit (or per qubit in standard mode)
+        // Mixer unitary: one beta per orbit (or per qubit in standard mode).
+        // The mixer is DEFINITIONALLY the per-qubit transverse-field RX
+        // (MA-QAOA, Herrman et al. 2022): U_B(beta_l) = prod_i RX(2*beta_l_i).
+        // Every mixer customisation happens through the beta parameters
+        // (options.mixer_weights for PI-MA-QAOA scaling,
+        // options.orbit_assignments for power-orbit sharing). Custom mixer
+        // Hamiltonians are rejected with a throw at the public entry points
+        // pending the designed feature (see project TODO).
         for (int i = 0; i < n_mixer_orbits; ++i) {
             layer_betas[i] = (param_idx < static_cast<int>(params.size()))
                              ? params[param_idx++] : 0.0;
@@ -292,7 +299,7 @@ static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, vo
             : 1e12;
         ++cb->nfev;
         if (value < cb->best_val) cb->best_val = value;
-        return std::isfinite(value) ? value : 1e12;
+        return is_finite_strict(value) ? value : 1e12;
     }
     evolve_into(*cb->sv, *cb->cost_hamiltonian, *cb->mixer_hamiltonian, cb->params_buf,
                 cb->maqaoa->options.p,
@@ -304,7 +311,7 @@ static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, vo
     const double value = cb->cost_hamiltonian->expectation_value(*cb->sv);
     ++cb->nfev;
     if (value < cb->best_val) cb->best_val = value;
-    return std::isfinite(value) ? value : 1e12;
+    return is_finite_strict(value) ? value : 1e12;
 }
 
 // =============================================================================
@@ -344,7 +351,7 @@ static double layer_objective(unsigned n, const double* x, double* /*grad*/, voi
         const double value = dm_result.success
             ? dm_result.final_state.expectation_value_sparse(*d->cost_hamiltonian)
             : 1e12;
-        const double v     = std::isfinite(value) ? value : 1e12;
+        const double v     = is_finite_strict(value) ? value : 1e12;
         ++d->nfev;
         if (v < d->best_val) d->best_val = v;
         if (d->nfev % 50 == 0) {
@@ -362,7 +369,7 @@ static double layer_objective(unsigned n, const double* x, double* /*grad*/, voi
                 *d->active_qubits,
                 d->initial_thetas);
     const double value = d->cost_hamiltonian->expectation_value(*d->sv);
-    const double v     = std::isfinite(value) ? value : 1e12;
+    const double v     = is_finite_strict(value) ? value : 1e12;
     ++d->nfev;
     if (v < d->best_val) d->best_val = v;
     if (d->nfev % 50 == 0) {
@@ -412,14 +419,21 @@ MAQAOA::Result MAQAOA::optimize(
 
     const int nq = cost_hamiltonian.n_qubits();
 
-    SparsePauliOp mixer = mixer_hamiltonian_in;
-    if (mixer.terms.empty()) {
-        for (int q = 0; q < nq; ++q) {
-            std::string pauli(nq, 'I');
-            pauli[q] = 'X';
-            mixer.terms.push_back({pauli, Complex128(1.0, 0.0)});
-        }
+    // Fail loud on custom mixers (silent ignoring is not acceptable in this
+    // project). The MA-QAOA mixer is definitionally the fixed per-qubit RX
+    // (Herrman et al. 2022); customise the betas via options.mixer_weights
+    // and options.orbit_assignments. First-class custom-mixer support is
+    // planned but must be designed first: see the MAQAOA entry in the
+    // project TODO and its tracking issue.
+    if (!mixer_hamiltonian_in.terms.empty()) {
+        throw std::invalid_argument(
+            "MAQAOA::optimize: custom mixer Hamiltonians are not supported "
+            "(the MA-QAOA mixer is the fixed per-qubit RX; customise betas "
+            "via options.mixer_weights / options.orbit_assignments)");
     }
+    // Always empty past the guard; threaded to evolve_into as plumbing for
+    // the planned custom-mixer feature.
+    SparsePauliOp mixer = mixer_hamiltonian_in;
 
     // Precompute orbit data once for the entire run (Change 6)
     const bool use_orbits = (!options.orbit_assignments.empty() &&
@@ -565,7 +579,7 @@ MAQAOA::Result MAQAOA::optimize(
                       << " wall_time=" << layer_wall << "s"
                       << std::endl;
 
-            if (nlopt_res < 0 || nlopt_res == NLOPT_MAXEVAL_REACHED || !std::isfinite(min_val)) {
+            if (nlopt_res < 0 || nlopt_res == NLOPT_MAXEVAL_REACHED || !is_finite_strict(min_val)) {
                 all_layers_converged = false;
             }
 
@@ -598,9 +612,9 @@ MAQAOA::Result MAQAOA::optimize(
                         active_qubits_per_term, options.initial_thetas);
             result.optimal_value = cost_hamiltonian.expectation_value(inner_sv);
         }
-        result.converged     = all_layers_converged && std::isfinite(result.optimal_value);
+        result.converged     = all_layers_converged && is_finite_strict(result.optimal_value);
 
-        if (!std::isfinite(result.optimal_value)) result.optimal_value = 1e12;
+        if (!is_finite_strict(result.optimal_value)) result.optimal_value = 1e12;
 
         if (!sampler.options.noise_model.is_ideal()) {
             auto circuit = build_circuit(cost_hamiltonian, mixer, all_params);
@@ -665,11 +679,11 @@ MAQAOA::Result MAQAOA::optimize(
         const nlopt_result nlopt_res  = nlopt_optimize(opt, params.data(), &min_val);
         nlopt_destroy(opt);
 
-        result.optimal_value  = std::isfinite(min_val) ? min_val : 1e12;
+        result.optimal_value  = is_finite_strict(min_val) ? min_val : 1e12;
         result.optimal_params = params;
         result.converged      = (nlopt_res > 0) &&
                     (nlopt_res != NLOPT_MAXEVAL_REACHED) &&
-                    std::isfinite(min_val);
+                    is_finite_strict(min_val);
         result.num_iterations = cb_data.nfev;
 
         // Sampling directly from the evolved statevector (Change 10)
@@ -718,6 +732,14 @@ QuantumCircuit MAQAOA::build_circuit(
     const SparsePauliOp& mixer_hamiltonian,
     const std::vector<double>& params
 ) const {
+    // Fail loud on custom mixers; see the guard in optimize().
+    if (!mixer_hamiltonian.terms.empty()) {
+        throw std::invalid_argument(
+            "MAQAOA::build_circuit: custom mixer Hamiltonians are not "
+            "supported (the MA-QAOA mixer is the fixed per-qubit RX; "
+            "customise betas via options.mixer_weights / "
+            "options.orbit_assignments)");
+    }
     int nq = cost_hamiltonian.n_qubits();
     QuantumCircuit qc(nq);
 
@@ -816,6 +838,8 @@ QuantumCircuit MAQAOA::build_circuit(
                              params[param_idx++] : 0.0;
         }
 
+        // Fixed per-qubit RX mixer by definition (see evolve_into); custom
+        // mixers are rejected at the entry guard above.
         for (int q = 0; q < nq; ++q) {
             int beta_idx = use_orbits ? options.orbit_assignments[q] : q;
             qc.rx(2.0 * layer_betas[beta_idx], q);

@@ -104,6 +104,10 @@ public:
 
     QAOA() = default;
 
+    // Mixer terms are evolved as the ordered product of per-term rotations
+    // exp(-i*beta*c_k*P_k): exact for commuting terms (e.g. the default X
+    // mixer), a first-order Trotter step otherwise. Multi-qubit mixer terms
+    // use the same CX-chain Pauli-rotation recipe as the cost unitary.
     Result optimize(
         const SparsePauliOp& cost_hamiltonian,
         const SparsePauliOp& mixer_hamiltonian = {}
@@ -193,6 +197,14 @@ public:
 
     MAQAOA() = default;
 
+    // The mixer is the fixed per-qubit transverse-field RX of MA-QAOA
+    // (Herrman et al. 2022): U_B(beta_l) = prod_i RX(2*beta_l_i). Customise
+    // it through the beta machinery (options.mixer_weights for PI-MA-QAOA
+    // scaling, options.orbit_assignments for power-orbit sharing). Passing a
+    // non-empty mixer_hamiltonian THROWS std::invalid_argument, here and in
+    // build_circuit: silent ignoring is not acceptable, and first-class
+    // custom-mixer support is planned but not yet designed (see the project
+    // TODO / tracking issue).
     Result optimize(
         const SparsePauliOp& cost_hamiltonian,
         const SparsePauliOp& mixer_hamiltonian = {}
@@ -645,13 +657,11 @@ public:
 //
 // Classical post-processing — recover H = {s : y·s ≡ 0 (mod d) ∀ measured y}:
 //   - prime d:     Gaussian elimination over the field GF(d) (null_space_gf).
-//   - composite d: Z_d is only a ring, so Gaussian elimination breaks. We instead
-//     compute the kernel via the integer Smith Normal Form of the equation matrix
-//     (null_space_ring): for U·E·V = D diagonal, s = V·t solves E·s ≡ 0 (mod d)
-//     iff each pivot t_i is a multiple of d/gcd(D_ii, d) and free t_i range over
-//     Z_d. This is uniform across all moduli (it also reproduces the field result
-//     for prime d) and needs no separate CRT recombination. Candidate generators
-//     are then verified against the oracle (f(x) = f(x+s)) to select a true period.
+//   - composite d: Z_d is only a ring, so Gaussian elimination breaks. A direct
+//     verified search over Z_d^n finds a nonzero s that annihilates every
+//     measured y AND is a true period of the oracle (f(x) = f(x+s)). Always
+//     feasible: the quantum simulation already materialised d^{2n} amplitudes,
+//     so enumerating the d^n candidates is cheap by comparison.
 //
 // Quantum advantage: O(n) queries vs exponential classical.
 // =============================================================================
@@ -703,9 +713,6 @@ private:
     static int  mod_inv(int a, int p);   // modular inverse, p prime, a != 0
     static std::vector<std::vector<int>> null_space_gf(
         std::vector<std::vector<int>> M, int n, int d);
-    // Kernel over the ring Z_d (composite d) via integer Smith Normal Form.
-    static std::vector<std::vector<int>> null_space_ring(
-        const std::vector<std::vector<int>>& M, int n, int d);
     // Shared post-processing: equations → Result. is_period(s) must return true
     // iff s is a nonzero valid period of the oracle (verified against f).
     static Result post_process(

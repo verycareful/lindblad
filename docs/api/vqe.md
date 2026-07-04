@@ -33,7 +33,10 @@ Defaults:
 
 Fields:
 
-- `eigenvalue`: minimum energy found
+- `eigenvalue`: minimum energy found. Always finite: on an NLopt failure
+  code the minimum of `energy_history` (the best objective actually
+  evaluated) is returned instead of the optimizer's output, and if the
+  objective never ran at all the call throws `std::runtime_error`
 - `optimal_parameters`: final optimized ansatz parameters
 - `num_iterations`: number of recorded optimizer steps
 - `energy_history`: objective trace over the optimization run

@@ -44,8 +44,12 @@ Key API:
 - `operator+`: concatenates terms then `simplify`
 - `operator*`: scales coefficients
 - `to_matrix()`: builds the dense $2^n \times 2^n$ matrix; uses the action
-  $P|j\rangle = \text{phase}(j) \cdot |j \oplus x\_\text{mask}\rangle$ to fill
-  each column in $O(2^n)$ per term (not $O(4^n)$ tensor-product chains)
+  $P|j\rangle = i^{\#Y} \cdot (-1)^{\text{popcount}(j \wedge z\_\text{mask})}
+  \cdot |j \oplus x\_\text{mask}\rangle$ to fill each column in $O(2^n)$ per
+  term (not $O(4^n)$ tensor-product chains); the $i^{\#Y}$ factor is a
+  per-term constant folded into the coefficient ($Y = iXZ$), so Hermitian
+  operators yield Hermitian matrices and `to_matrix` agrees with
+  `expectation_value` and composes homomorphically
 - `expectation_value(statevector)`: computes ⟨psi|H|psi⟩ without cloning
 - `expectation_value_batch(states)`: batch version with shared mask precompute
 - `n_qubits()`: number of qubits in the first term (0 if empty)

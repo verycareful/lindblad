@@ -26,8 +26,10 @@ static QuantumCircuit build_circuit(
 
 Behavior (verified against `src/algorithms/grover.cpp`):
 
-- `num_iterations < 0` uses `round(π/4 · √(2^n))` with a minimum of 1; this
-  formula assumes **one marked item**
+- `num_iterations < 0` uses the exact-angle optimum
+  `max(1, round(π/(4·asin(1/√(2^n))) - 1/2))` (mirroring the qudit path);
+  N = 4 gives 1 iteration, N = 8 gives 2. The formula assumes **one marked
+  item**
 - Starts with Hadamards on all qubits
 - Each iteration:
     - appends the oracle instructions

@@ -188,7 +188,6 @@ CouplingMap CouplingMap::heavy_hex(int n_qubits) {
         }
     };
 
-    int qubit = 0;
     int rows = (n_qubits + row_qubit_count - 1) / row_qubit_count;
 
     // For each row of data+horizontal-ancilla qubits
@@ -579,6 +578,39 @@ static std::vector<Instruction> decompose_to_cx_u3(
             out.push_back(u3_inst(0, 0, -pi4, a));
             out.push_back(cx_inst(c, a));
             out.push_back(cx_inst(b, a));
+            break;
+        }
+
+        case GT::CU: {
+            // CU(θ, φ, λ, γ): the controlled block is e^{iγ}·U3(θ, φ, λ)
+            // (project convention, see gate builders / the analytic 4x4).
+            // Standard CU3 ladder with the γ phase folded into the control's
+            // diagonal U1 = U3(0, 0, ·).
+            double th = p[0], ph = p[1], la = p[2], ga = p[3];
+            out.push_back(u3_inst(0, 0, ga + (la + ph) / 2.0, q0));
+            out.push_back(u3_inst(0, 0, (la - ph) / 2.0, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(-th / 2.0, 0, -(ph + la) / 2.0, q1));
+            out.push_back(cx_inst(q0, q1));
+            out.push_back(u3_inst(th / 2.0, ph, 0, q1));
+            break;
+        }
+
+        case GT::RCCX: {
+            // Margolus (relative-phase Toffoli): H T CX T† CX T CX T† H
+            // ladder, matching gates::apply_rccx and the MPS decomposition
+            // exactly (not just up to phase).
+            int c0 = q0, c1 = q1, t = inst.qubits[2];
+            double pi4 = pi / 4.0;
+            out.push_back(u3_inst(pi2, 0, pi, t));   // H t
+            out.push_back(u3_inst(0, 0, pi4, t));    // T t
+            out.push_back(cx_inst(c1, t));
+            out.push_back(u3_inst(0, 0, -pi4, t));   // T† t
+            out.push_back(cx_inst(c0, t));
+            out.push_back(u3_inst(0, 0, pi4, t));    // T t
+            out.push_back(cx_inst(c1, t));
+            out.push_back(u3_inst(0, 0, -pi4, t));   // T† t
+            out.push_back(u3_inst(pi2, 0, pi, t));   // H t
             break;
         }
 

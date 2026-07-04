@@ -217,14 +217,44 @@ QuantumCircuit QAOA::build_circuit(
             }
         }
 
-        // Mixer unitary: e^{-i * beta * B}
+        // Mixer unitary: e^{-i * beta * B}, applied as the ordered product of
+        // per-term rotations exp(-i*beta*c_k*P_k). Exact when the terms
+        // commute (the default X mixer); a first-order Trotter step
+        // otherwise. Multi-qubit terms use the same basis-change + CX-chain
+        // recipe as the cost unitary: until R.1.12.2 they were FACTORISED
+        // into independent per-qubit rotations (RX(x)RY instead of
+        // exp(-i*beta*XY)), a wrong ansatz for entangling mixers such as the
+        // constraint-preserving XY family.
         for (const auto& term : mixer_hamiltonian.terms) {
             double angle = 2.0 * beta * term.coeff.real;
 
+            std::vector<int> active_qubits;
             for (int q = 0; q < nq; ++q) {
+                if (term.pauli[q] != 'I') active_qubits.push_back(q);
+            }
+            if (active_qubits.empty()) continue;
+
+            if (active_qubits.size() == 1) {
+                const int q = active_qubits[0];
                 if (term.pauli[q] == 'X') qc.rx(angle, q);
                 else if (term.pauli[q] == 'Y') qc.ry(angle, q);
-                else if (term.pauli[q] == 'Z') qc.rz(angle, q);
+                else qc.rz(angle, q);
+            } else {
+                for (int q : active_qubits) {
+                    if (term.pauli[q] == 'X') qc.h(q);
+                    else if (term.pauli[q] == 'Y') { qc.sdg(q); qc.h(q); }
+                }
+                for (size_t i = 0; i + 1 < active_qubits.size(); ++i) {
+                    qc.cx(active_qubits[i], active_qubits[i + 1]);
+                }
+                qc.rz(angle, active_qubits.back());
+                for (int i = static_cast<int>(active_qubits.size()) - 2; i >= 0; --i) {
+                    qc.cx(active_qubits[i], active_qubits[i + 1]);
+                }
+                for (int q : active_qubits) {
+                    if (term.pauli[q] == 'X') qc.h(q);
+                    else if (term.pauli[q] == 'Y') { qc.h(q); qc.s(q); }
+                }
             }
         }
     }

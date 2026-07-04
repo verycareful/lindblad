@@ -43,6 +43,10 @@ static QuantumCircuit from_qasm3(const std::string& qasm);
   pass; assigns global qubit/classical indices in declaration order
 - Supports `gate name(params) qargs { body }` user definitions with recursive
   inlining and parameter substitution (including `pi` expressions)
+- Body-parameter arithmetic (`a/2`, `2*a`, `a+pi`, `a-pi/2`, ...) binds
+  `+`/`-` at the lowest precedence and evaluates operands recursively;
+  numeric tokens must parse in full (no partial `stod`), and any
+  unresolvable token throws instead of silently becoming 0
 - Recognises every gate in the `qelib1.inc` standard library plus the same
   multi-qubit set supported by the circuit (`ccx`, `cswap`, `rxx`, `ryy`,
   `rzz`, `iswap`, etc.)
@@ -139,7 +143,11 @@ Named fast paths:
 - `inv @ s → sdg`, `inv @ sdg → s`, similarly `t ↔ tdg`, `sx ↔ sxdg`
 - `inv @ <self-inverse> → <self-inverse>` (H, X, Y, Z, CX, CZ, SWAP, …)
 - `inv @ rx(θ) → rx(-θ)`, `inv @ ry(θ) → ry(-θ)`, `inv @ rz(θ) → rz(-θ)`
-- `pow(n) @ rx(θ) → rx(n·θ)` (and similarly for other rotations)
+- `pow(n) @ rx(θ) → rx(n·θ)` (and similarly for the other SINGLE-parameter
+  rotations: ry, rz, p, u1). Angle folding is only a valid identity for
+  single-axis rotations; `u`/`u2`/`u3` under `inv @` or `pow(n) @` route to
+  the exact matrix fallback instead (Euler angles do not scale, and
+  `inv U3(θ,φ,λ) = U3(-θ,-λ,-φ)` with φ and λ swapped)
 - `pow(0) @ <anything>` is dropped during modifier resolution
 - `pow(even) @ <self-inverse>` collapses to identity (dropped)
 - `pow(odd) @ <self-inverse>` collapses to the bare gate
@@ -148,9 +156,14 @@ Matrix fallback path (used when no named gate fits):
 
 - Required for combinations like `pow(2) @ s` (= Z) or `inv @ iswap`
 - The base 1-qubit matrix is constructed from `build_1q_base(name, params)`
-- `inv` becomes a conjugate-transpose (`mat_dagger`)
+- `inv` becomes a conjugate-transpose (`mat_dagger`); negative `pow`
+  exponents dagger first
 - `pow(n)` becomes binary exponentiation (`mat_pow` — `O(log n)` matmuls)
-- Each `ctrl` extends the matrix block-diagonally (`mat_add_control`)
+- Each `ctrl` extends the matrix in the project's interleaved controlled
+  layout (`mat_add_control`): `ctrl @` prepends the control as `qubits[0]`,
+  and `Instruction::matrix` is qubits[0]-is-LSB, so the control is index
+  BIT 0 (iterating for `ctrl @ ctrl @` stacks puts all controls on the low
+  bits, matching `control()` and the Shor/QPE controlled matrices)
 - The resulting matrix is emitted as a `UNITARY` instruction
 - The fallback requires numeric parameters; mixing symbolic angles with the
   fallback throws — bind first

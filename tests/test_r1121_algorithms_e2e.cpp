@@ -89,9 +89,9 @@ TEST(R1121Algos, QpeApproximatesNonDyadicPhase) {
 // =============================================================================
 
 TEST(R1121Algos, GroverFindsAsymmetricTargets) {
-    // n >= 3: the auto-iteration count round(pi/4*sqrt(N)) lands close enough to
-    // optimal that the marked state dominates. (n = 2 is a separate KNOWN-RED;
-    // see GroverTwoQubitAutoIterationsOverRotate_EXPECTED_RED below.)
+    // n >= 3: the exact-angle auto-iteration count lands at or near optimal
+    // and the marked state dominates. (The n = 2 case is pinned separately in
+    // GroverTwoQubitAutoIterationsOptimal below.)
     struct Case { int n, t; double min_prob; };
     const Case cases[] = {
         {3, 5, 0.85},   // "101"
@@ -116,20 +116,17 @@ TEST(R1121Algos, GroverExplicitIterationCountIsHonoured) {
     EXPECT_GT(res.probability, 0.99);
 }
 
-// KNOWN-RED (R.1.12.1 finding -> issue, fix in R.1.12.2): the qubit Grover's
-// auto-iteration formula round(pi/4 * sqrt(N)) gives round(pi/2) = 2 for N = 4
-// (n = 2), but the optimum is 1. Two iterations OVER-rotate to sin^2(5*theta) =
-// 0.25 (theta = asin(1/2) = 30 deg), leaving a near-uniform distribution in
-// which the marked state is NOT amplified. The qudit Grover in the same file
-// already uses the corrected count (qudit_grover_auto_iters: round(pi/(4 theta)
-// - 0.5)), so this is a qubit-side gap. This test asserts the CORRECT contract
-// (auto-iteration 2-qubit search finds its target with high probability) and
-// fails until the formula is fixed. The .1 slot is test-only; fix deferred.
-TEST(R1121Algos, GroverTwoQubitAutoIterationsOverRotate_EXPECTED_RED) {
+// REGRESSION (shipped red in R.1.12.1, fixed in R.1.12.2): the qubit Grover
+// auto-iteration count uses the exact-angle optimum
+// max(1, round(pi/(4*asin(1/sqrt(N))) - 1/2)), mirroring
+// qudit_grover_auto_iters. The old rounded textbook pi/4*sqrt(N) gave 2
+// iterations for N = 4 where the optimum is 1, over-rotating to a 0.25
+// success probability.
+TEST(R1121Algos, GroverTwoQubitAutoIterationsOptimal) {
     auto res = Grover::search(grover_oracle(2, 2), -1, 4000, 7);
+    EXPECT_EQ(res.num_iterations, 1) << "N = 4 optimum is a single iteration";
     EXPECT_EQ(res.solution, "10") << "n=2 target should be found with auto iterations";
-    EXPECT_GT(res.probability, 0.9)
-        << "auto-iteration count over-rotates N=4 (2 iters vs optimal 1)";
+    EXPECT_GT(res.probability, 0.9);
 }
 
 // =============================================================================

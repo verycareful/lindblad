@@ -108,7 +108,11 @@ Result optimize(
 
 Behavior (verified against `src/algorithms/maqaoa.cpp`):
 
-- If `mixer_hamiltonian` is empty, constructs a default mixer $\sum_i X_i$
+- The mixer is the fixed per-qubit transverse-field RX of MA-QAOA
+  (Herrman et al. 2022); customise the betas via `options.mixer_weights`
+  and `options.orbit_assignments`. A non-empty `mixer_hamiltonian` throws
+  `std::invalid_argument` (the parameter exists for QAOA signature parity;
+  first-class custom-mixer support is planned but not yet designed)
 - Parameter layout per layer: `[gammas..., betas...]`
 - Uses COBYLA with bounds `[-2*pi, 2*pi]` and initial step size `0.3`
 - If `estimator.options.noise_model` is non-ideal, evaluates with `DensityMatrixSimulator`
@@ -140,6 +144,8 @@ Behavior:
 - Initializes with `H|0>` on each qubit unless `initial_thetas` is provided
 - Uses orbit or term-indexed gamma dispatch depending on options
 - Applies per-orbit or per-qubit mixer `Rx` rotations
+- A non-empty `mixer_hamiltonian` throws `std::invalid_argument`, matching
+  `optimize`
 - Kept for API compatibility and offline inspection; hot path uses direct evolution
 
 ## Example

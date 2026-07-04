@@ -22,26 +22,6 @@
 
 namespace lindblad::viz {
 
-namespace {
-
-// HTML escape for text appearing inside <title>, <div>, etc.
-std::string html_escape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        switch (c) {
-            case '<': out += "&lt;";   break;
-            case '>': out += "&gt;";   break;
-            case '&': out += "&amp;";  break;
-            case '"': out += "&quot;"; break;
-            default:  out += c;        break;
-        }
-    }
-    return out;
-}
-
-} // anonymous namespace
-
 // =============================================================================
 // render_html : public entry point
 // =============================================================================
@@ -87,7 +67,6 @@ std::string render_html(const CircuitDocument& doc, const DrawOptions& opts) {
         << "</body>\n"
         << "</html>\n";
 
-    (void)html_escape; // reserved for future title interpolation
     return out.str();
 }
 

@@ -148,25 +148,35 @@ std::vector<Complex128> SparsePauliOp::to_matrix() const {
             }
         }
 
+        // P = i^{#Y} * X^{x_mask} * Z^{z_mask} (because Y = i*X*Z): the i
+        // factor is a CONSTANT per term, one i for every Y in the string.
+        // The pre-R.1.12.2 code applied i^popcount(j & y_mask) per column,
+        // dropping the factor whenever the Y-position input bit was 0, which
+        // made every Y-containing matrix non-Hermitian (issue #30). Fold the
+        // constant into the coefficient once, before the column loop.
+        const int y_count = LINDBLAD_POPCOUNT64(y_mask) & 3;
+        double ty_r = 1.0, ty_i = 0.0;
+        switch (y_count) {
+            case 1: ty_r =  0.0; ty_i =  1.0; break;
+            case 2: ty_r = -1.0; ty_i =  0.0; break;
+            case 3: ty_r =  0.0; ty_i = -1.0; break;
+            default: break;
+        }
+        const Complex128 tcoeff(
+            ty_r * term.coeff.real - ty_i * term.coeff.imag,
+            ty_r * term.coeff.imag + ty_i * term.coeff.real
+        );
+
         for (size_t j = 0; j < dim; ++j) {
             const size_t row = j ^ x_mask;
             const int z_parity = LINDBLAD_POPCOUNT64(j & z_mask) & 1;
-            const int y_count  = LINDBLAD_POPCOUNT64(j & y_mask) & 3;
-
-            double phase_r = 1.0, phase_i = 0.0;
-            switch (y_count) {
-                case 1: phase_r =  0.0; phase_i =  1.0; break;
-                case 2: phase_r = -1.0; phase_i =  0.0; break;
-                case 3: phase_r =  0.0; phase_i = -1.0; break;
-                default: break;
+            // P|j> = i^{#Y} * (-1)^{popcount(j & z_mask)} |j XOR x_mask>
+            // (z_mask includes the Y positions: the Z factor of Y acts there).
+            if (z_parity) {
+                matrix[row * dim + j] += Complex128(-tcoeff.real, -tcoeff.imag);
+            } else {
+                matrix[row * dim + j] += tcoeff;
             }
-            if (z_parity) { phase_r = -phase_r; phase_i = -phase_i; }
-
-            Complex128 entry(
-                phase_r * term.coeff.real - phase_i * term.coeff.imag,
-                phase_r * term.coeff.imag + phase_i * term.coeff.real
-            );
-            matrix[row * dim + j] += entry;
         }
     }
 

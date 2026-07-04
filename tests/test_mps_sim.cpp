@@ -16,7 +16,6 @@
 
 using namespace lindblad;
 
-static constexpr double kTol  = 1e-8;
 static constexpr double kFid  = 1e-6;  // fidelity tolerance for MPS (truncation may introduce error)
 
 // Helper: state fidelity |⟨ψ|φ⟩|²

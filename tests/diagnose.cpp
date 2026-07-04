@@ -27,14 +27,6 @@ static QuantumCircuit bv_oracle(const std::string& s) {
     for (int i = 0; i < n; ++i) if (s[i] == '1') qc.cx(i, n);
     return qc;
 }
-static QuantumCircuit simon_oracle(const std::string& s) {
-    int n = s.size(); QuantumCircuit qc(2 * n);
-    for (int i = 0; i < n; ++i) qc.cx(i, n + i);
-    int k = -1;
-    for (int i = 0; i < n; ++i) if (s[i] == '1') { k = i; break; }
-    if (k >= 0) for (int i = 0; i < n; ++i) if (s[i] == '1') qc.cx(k, n + i);
-    return qc;
-}
 static double fidelity(const Statevector& a, const Statevector& b) {
     auto ip = a.inner_product(b); return ip.real*ip.real + ip.imag*ip.imag;
 }

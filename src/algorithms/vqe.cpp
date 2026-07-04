@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <stdexcept>
 
@@ -73,8 +74,27 @@ VQE::Result VQE::compute_minimum_eigenvalue(
     cb_data.energy_history = &result.energy_history;
     nlopt_set_min_objective(opt, vqe_objective, &cb_data);
 
-    double min_val;
+    // NLopt failure codes (< 0) can return without writing min_val, which
+    // previously surfaced an indeterminate stack value as Result::eigenvalue.
+    // Initialise to NaN, recover the best objective actually evaluated from
+    // the recorded history, and fail loudly if the objective never ran.
+    // The integer status check comes FIRST: it is immune to -ffast-math,
+    // under which std::isfinite may fold away (hence is_finite_strict).
+    double min_val = std::numeric_limits<double>::quiet_NaN();
     nlopt_result nlopt_res = nlopt_optimize(opt, params.data(), &min_val);
+
+    if (nlopt_res < 0 || !is_finite_strict(min_val)) {
+        if (result.energy_history.empty()) {
+            nlopt_destroy(opt);
+            throw std::runtime_error(
+                "VQE::compute_minimum_eigenvalue: optimiser returned no finite "
+                "energy (nlopt code " +
+                std::to_string(static_cast<int>(nlopt_res)) +
+                ") and never evaluated the objective");
+        }
+        min_val = *std::min_element(result.energy_history.begin(),
+                                    result.energy_history.end());
+    }
 
     result.eigenvalue = min_val;
     result.optimal_parameters = params;

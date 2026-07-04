@@ -19,7 +19,6 @@ using namespace lindblad;
 using namespace lindblad::algorithms;
 
 static constexpr double kTol  = 1e-9;
-static constexpr double kStat = 0.05; // statistical tolerance (fraction)
 
 // =============================================================================
 // C-1 — apply_rzx sign pattern
