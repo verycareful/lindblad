@@ -89,6 +89,12 @@ static SABRERunResult sabre_run(
         in_degree[node.node_id] = 0;
         executed[node.node_id]  = false;
     }
+    // Adjacency list of OP-source edges (audit F-15): advancing successors by
+    // scanning ALL dag.edges per executed gate was O(N*E) per pass; the list
+    // makes it O(degree). Built with the same OP-source filter as in_degree so
+    // the two stay consistent (duplicates per wire are kept — each is one
+    // in_degree decrement).
+    std::unordered_map<int, std::vector<int>> adj_out;
     for (const auto& edge : dag.edges) {
         // Only OP predecessors gate execution order. Wire IN nodes are never
         // "executed", so counting their edges pinned every first-layer gate
@@ -99,6 +105,7 @@ static SABRERunResult sabre_run(
         if (sit != node_by_id.end() &&
             sit->second->type == DAGNode::Type::OP) {
             in_degree[edge.dst_node]++;
+            adj_out[edge.src_node].push_back(edge.dst_node);
         }
     }
 
@@ -125,7 +132,7 @@ static SABRERunResult sabre_run(
                 int lb = node.qubit_wires[1];
                 int pa = layout[la];
                 int pb = layout[lb];
-                if (coupling_map.is_connected(pa, pb)) {
+                if (dist[pa][pb] == 1) {  // adjacent (audit F-15: was is_connected O(E))
                     executable.push_back(nid);
                 } else {
                     blocked.push_back(nid);
@@ -135,16 +142,15 @@ static SABRERunResult sabre_run(
 
         for (int nid : executable) {
             executed[nid] = true;
-            for (const auto& edge : dag.edges) {
-                if (edge.src_node == nid) {
-                    in_degree[edge.dst_node]--;
-                    if (in_degree[edge.dst_node] == 0 &&
-                        node_by_id[edge.dst_node]->type == DAGNode::Type::OP &&
-                        !executed[edge.dst_node]) {
-                        front_layer.push_back(edge.dst_node);
+            auto ait = adj_out.find(nid);
+            if (ait != adj_out.end())
+                for (int dst : ait->second) {
+                    if (--in_degree[dst] == 0 &&
+                        node_by_id[dst]->type == DAGNode::Type::OP &&
+                        !executed[dst]) {
+                        front_layer.push_back(dst);
                     }
                 }
-            }
         }
 
         front_layer.erase(

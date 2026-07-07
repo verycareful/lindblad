@@ -142,6 +142,9 @@ std::string Instruction::gate_name() const {
         case GateType::RESET:  return "reset";
         case GateType::BARRIER: return "barrier";
         case GateType::UNITARY: return label.empty() ? "unitary" : label;
+        case GateType::MCX:     return "mcx";
+        case GateType::MCP:     return "mcp";
+        case GateType::PERMUTATION: return label.empty() ? "permutation" : label;
         case GateType::PARAM_RX: return "rx";
         case GateType::PARAM_RY: return "ry";
         case GateType::PARAM_RZ: return "rz";
@@ -441,6 +444,60 @@ QuantumCircuit& QuantumCircuit::unitary(const std::vector<Complex128>& matrix,
     return *this;
 }
 
+QuantumCircuit& QuantumCircuit::mcx(const std::vector<int>& controls, int target) {
+    validate_qubit(target);
+    for (int c : controls) {
+        validate_qubit(c);
+        if (c == target)
+            throw std::invalid_argument("mcx: control qubit equals target");
+    }
+    Instruction inst;
+    inst.type = Instruction::GateType::MCX;
+    inst.qubits = controls;          // controls first, ...
+    inst.qubits.push_back(target);   // ... target last
+    instructions.push_back(std::move(inst));
+    return *this;
+}
+
+QuantumCircuit& QuantumCircuit::mcp(double lambda, const std::vector<int>& qubits) {
+    if (qubits.empty())
+        throw std::invalid_argument("mcp: needs at least one qubit");
+    for (int q : qubits) validate_qubit(q);
+    Instruction inst;
+    inst.type = Instruction::GateType::MCP;
+    inst.qubits = qubits;
+    inst.params = {lambda};
+    instructions.push_back(std::move(inst));
+    return *this;
+}
+
+QuantumCircuit& QuantumCircuit::permute(const std::vector<int>& perm,
+                                        const std::vector<int>& qubits,
+                                        const std::string& label) {
+    for (int q : qubits) validate_qubit(q);
+    const size_t k = qubits.size();
+    const size_t sub_dim = size_t(1) << k;
+    if (perm.size() != sub_dim)
+        throw std::invalid_argument(
+            "permute: permutation size must be 2^qubits.size()");
+    // Validate bijection over [0, 2^k) — a non-bijective map is non-unitary.
+    std::vector<char> seen(sub_dim, 0);
+    for (int v : perm) {
+        if (v < 0 || static_cast<size_t>(v) >= sub_dim)
+            throw std::invalid_argument("permute: image index out of range");
+        if (seen[static_cast<size_t>(v)])
+            throw std::invalid_argument("permute: map is not a bijection");
+        seen[static_cast<size_t>(v)] = 1;
+    }
+    Instruction inst;
+    inst.type = Instruction::GateType::PERMUTATION;
+    inst.qubits = qubits;
+    inst.permutation = perm;
+    inst.label = label;
+    instructions.push_back(std::move(inst));
+    return *this;
+}
+
 // =============================================================================
 // Special operations
 // =============================================================================
@@ -716,6 +773,7 @@ QuantumCircuit QuantumCircuit::inverse() const {
             case Instruction::GateType::CCZ:
             case Instruction::GateType::CSWAP:
             case Instruction::GateType::ECR:
+            case Instruction::GateType::MCX:  // multi-controlled X is self-inverse
                 break;
 
             // S <-> SDG
@@ -762,10 +820,21 @@ QuantumCircuit QuantumCircuit::inverse() const {
             case Instruction::GateType::P:
             case Instruction::GateType::U1:
             case Instruction::GateType::CP:
+            case Instruction::GateType::MCP:  // multi-controlled phase: negate lambda
                 for (auto& param : inv_inst.params) {
                     param = -param;
                 }
                 break;
+
+            // Permutation inverse: invert the index map (perm[x]=y -> inv[y]=x).
+            case Instruction::GateType::PERMUTATION: {
+                std::vector<int> inv(inv_inst.permutation.size());
+                for (size_t x = 0; x < inv_inst.permutation.size(); ++x)
+                    inv[static_cast<size_t>(inv_inst.permutation[x])] =
+                        static_cast<int>(x);
+                inv_inst.permutation = std::move(inv);
+                break;
+            }
 
             // U(theta, phi, lambda) → U(-theta, -lambda, -phi)
             case Instruction::GateType::U:
@@ -1126,6 +1195,17 @@ std::string QuantumCircuit::to_qasm2() const {
             continue;
         }
 
+        // MCX/MCP/PERMUTATION have no faithful qelib1 representation (the
+        // permutation map in particular cannot be encoded); refuse rather than
+        // emit silently-wrong QASM. Decompose to 1/2-qubit gates before export.
+        if (inst.type == Instruction::GateType::MCX ||
+            inst.type == Instruction::GateType::MCP ||
+            inst.type == Instruction::GateType::PERMUTATION) {
+            throw std::runtime_error(
+                "to_qasm2: " + gname + " is not representable in OpenQASM 2.0; "
+                "decompose it to 1/2-qubit gates before export");
+        }
+
         // 1-qubit UNITARY: Euler-angle decomposition → U(theta, phi, lambda).
         //
         // OpenQASM 2.0 has no representation for a global phase (no `gphase`
@@ -1251,6 +1331,16 @@ std::string QuantumCircuit::to_qasm3() const {
         if (inst.type == Instruction::GateType::RESET) {
             oss << "reset q[" << inst.qubits[0] << "];\n";
             continue;
+        }
+
+        // MCX/MCP/PERMUTATION are not yet lowered to QASM 3 (`ctrl @` / a
+        // permutation encoding); refuse rather than emit an unknown gate call.
+        if (inst.type == Instruction::GateType::MCX ||
+            inst.type == Instruction::GateType::MCP ||
+            inst.type == Instruction::GateType::PERMUTATION) {
+            throw std::runtime_error(
+                "to_qasm3: " + gname + " is not yet representable in OpenQASM 3.0; "
+                "decompose it to 1/2-qubit gates before export");
         }
 
         // 1-qubit UNITARY: Euler-angle decomposition + lossless global phase
@@ -1381,6 +1471,17 @@ std::string QuantumCircuit::to_json() const {
                 "QuantumCircuit::to_json: instruction '" + inst.gate_name() +
                 "' carries unbound symbolic parameter expressions; call "
                 "bind_parameters() before serialising");
+        }
+        // The permutation index-map has no JSON field yet, and MCX/MCP would
+        // reverse-map to UNITARY on import (str_to_gate_type has no entry),
+        // silently corrupting the round-trip. Refuse until first-class support
+        // lands; decompose these before serialising.
+        if (inst.type == Instruction::GateType::MCX ||
+            inst.type == Instruction::GateType::MCP ||
+            inst.type == Instruction::GateType::PERMUTATION) {
+            throw std::runtime_error(
+                "QuantumCircuit::to_json: MCX/MCP/PERMUTATION serialisation is "
+                "not yet supported; decompose them before serialising");
         }
     }
 
@@ -1635,6 +1736,10 @@ QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
                     } else if (ikey == "label") {
                         inst.label = r.read_string();
                     } else if (ikey == "matrix") {
+                        // Accumulate into a local vector, then assign once:
+                        // Instruction::matrix is copy-on-write (immutable), so
+                        // it cannot be push_back-ed into in place (audit F-18).
+                        std::vector<Complex128> mat;
                         r.expect('[');
                         while (r.peek() != ']') {
                             if (r.peek() == ',') r.next();
@@ -1643,9 +1748,10 @@ QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
                             r.expect(',');
                             double im = r.read_number();
                             r.expect(']');
-                            inst.matrix.push_back(Complex128(re, im));
+                            mat.push_back(Complex128(re, im));
                         }
                         r.expect(']');
+                        inst.matrix = std::move(mat);
                     } else if (ikey == "condition_clbit") {
                         inst.condition_clbit = r.read_int();
                     } else if (ikey == "condition_value") {

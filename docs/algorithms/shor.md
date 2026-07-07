@@ -6,7 +6,7 @@ This page documents `lindblad::algorithms::Shor`.
 
 Shor's algorithm factors a composite integer N into two non-trivial factors using quantum order finding. It is the canonical demonstration of exponential quantum speedup over classical algorithms for a practical problem (integer factorisation).
 
-In lindblad, `Shor` assembles the existing `QFT`, `QPE`, and `UNITARY` gate primitives into a complete factoring pipeline with classical preprocessing and continued-fraction period recovery.
+In lindblad, `Shor` assembles the existing `QFT`/`IQFT` primitives and a `PERMUTATION` modular-multiplication oracle into a complete factoring pipeline with classical preprocessing and continued-fraction period recovery.
 
 ## Theory Summary
 
@@ -19,7 +19,7 @@ Shor's algorithm factors N = p × q through these steps:
 5. **Classical post-processing**: if r is even and a^(r/2) ≢ −1 (mod N), compute p = gcd(a^(r/2) − 1, N) and q = gcd(a^(r/2) + 1, N).
 6. **Retry**: if the period is odd or the GCD yields a trivial factor, repeat with a new random base (up to max_attempts).
 
-The quantum circuit uses O(n²) controlled-unitary gates where n = ⌈log₂N⌉. Each controlled-U^(2^k) is a (2·2^n × 2·2^n) permutation matrix encoding the map |x⟩ → |a^(2^k)·x mod N⟩ on the target register, with identity on the control-0 subspace.
+The quantum circuit uses O(n²) controlled-unitary steps where n = ⌈log₂N⌉. Each controlled-U^(2^k) encodes the map |x⟩ → |a^(2^k)·x mod N⟩ on the target register, with identity on the control-0 subspace. As of R.1.13 (audit F-9) this is emitted as a native `PERMUTATION` instruction over (control, target) — a `2^(n_target+1)`-entry index map — rather than a dense `(2·2^n × 2·2^n)` matrix. Memory drops from `O(4^n_target)` to `O(2^n_target)` per step and the application is `O(dim)` instead of `O(dim·2^n_target)`.
 
 ## Required Inputs
 
@@ -77,14 +77,14 @@ Use:
 
 Shor uses `backends::LocalBackend` internally. The backend selection is configured via `Options::simulator`.
 
-The modular exponentiation oracle is implemented as explicit `Instruction::GateType::UNITARY` gates — dense permutation matrices on the target register. This means:
+The modular exponentiation oracle is implemented as `Instruction::GateType::PERMUTATION` gates (R.1.13, audit F-9) — a basis-index map over (control, target), applied as an amplitude gather rather than a dense matrix multiply. This means:
 
 | Backend | Supported | Notes |
 |---|---|---|
-| `STATEVECTOR` | ✓ | Default. Exact dense statevector simulation. |
-| `DENSITY_MATRIX` | ✓ | Full mixed-state; useful for studying noise effects on factoring. |
-| `MPS` | ✓ | Tensor-network; may lose fidelity at low bond dimension. |
-| `CLIFFORD` | ✗ | **Not supported.** The modular exponentiation gates are arbitrary permutation matrices — they cannot be decomposed into the Clifford gate set {H, S, CX, X, Y, Z}. This is a fundamental mathematical constraint, not an implementation limitation. |
+| `STATEVECTOR` | ✓ | Default. Exact statevector simulation; PERMUTATION applied natively as an O(dim) gather. |
+| `DENSITY_MATRIX` | ✓ | Full mixed-state; useful for studying noise effects on factoring. PERMUTATION applied as a native row/column relabel. |
+| `MPS` | ✓ | PERMUTATION uses the bounded statevector fallback (`to_statevector` → apply → `mps_from_sv`, capped at `MPS_SV_MAX_QUBITS`), as the dense UNITARY did before R.1.13. |
+| `CLIFFORD` | ✗ | **Not supported.** The modular exponentiation map is an arbitrary permutation — it cannot be decomposed into the Clifford gate set {H, S, CX, X, Y, Z}. This is a fundamental mathematical constraint, not an implementation limitation. |
 
 The `QFT::build_inverse_circuit` is used for the IQFT stage of the evaluation register.
 
@@ -96,9 +96,8 @@ The period-finding circuit has two registers:
 - **Target register**: qubits n_eval to n_eval+n_target−1 — initialised to |1⟩ via X on the first target qubit.
 
 For each evaluation qubit k (k = 0, 1, ..., n_eval−1):
-- Build the permutation matrix U_{a^(2^k)} of size 2^n_target × 2^n_target
-- Wrap it as a controlled unitary of size 2^(n_target+1) × 2^(n_target+1) using the LSB convention (control qubit k maps to bit 0)
-- Append as a single UNITARY instruction on qubits {k, n_eval, n_eval+1, ..., n_eval+n_target−1}
+- Build the permutation index map over the (control, target) sub-state of size 2^(n_target+1), using the LSB convention (control qubit k maps to bit 0): control-0 sub-states map to themselves; control-1 sub-states map |x⟩ → |a^(2^k)·x mod N⟩
+- Append as a single `PERMUTATION` instruction on qubits {k, n_eval, n_eval+1, ..., n_eval+n_target−1} (a 2^(n_target+1)-entry map, not a dense matrix)
 
 Total qubit count: n_eval + n_target.
 
@@ -160,8 +159,8 @@ Failure modes that lead to retries (not exceptions):
 
 ## Common Pitfalls
 
-- **Memory**: the circuit uses 2^(n_target+1) × 2^(n_target+1) dense matrices for controlled unitaries. For N = 15 (n_target = 4), each CU matrix is 32×32 = 1024 complex entries. For N = 100 (n_target = 7), each is 256×256 = 65536 entries. Memory scales exponentially.
-- **Practical range**: N ≤ ~100 is feasible on a desktop. Larger N requires exponentially more memory and simulation time.
+- **Memory**: since R.1.13 each controlled-U step stores a `PERMUTATION` index map of 2^(n_target+1) integers (not a 2^(n_target+1) × 2^(n_target+1) dense matrix). For N = 15 (n_target = 4) that is 32 entries; for N = 100 (n_target = 7), 256 entries. The dominant cost is the statevector itself (2^(n_eval + n_target) amplitudes).
+- **Practical range**: N ≤ ~100 is feasible on a desktop. Larger N requires exponentially more statevector memory and simulation time.
 - **Seed sensitivity**: the quantum measurement outcome is probabilistic. Different seeds may require different numbers of attempts.
 - **Classical shortcuts**: for small N, the algorithm often returns via `"trivial_gcd"` (even numbers, numbers with small prime factors) before reaching the quantum path. This is by design — classical pre-screening avoids expensive QPE when possible.
 - **CLIFFORD backend**: will fail at runtime because the controlled modular-exponentiation gates are non-Clifford.

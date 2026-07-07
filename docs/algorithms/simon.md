@@ -77,9 +77,23 @@ The implementation stores the raw measured equations and then runs a GF(2) elimi
 
 ### `Simon::solve`
 
-- Repeatedly samples the Simon circuit
-- Collects independent equations from measurement results
-- Solves for the hidden period using Gaussian elimination over GF(2)
+```cpp
+static Result solve(const QuantumCircuit& oracle, int n,
+                    uint64_t seed = 0, int extra_samples = 2,
+                    bool batch_shots = true);
+```
+
+- Samples the Simon circuit, collects independent equations from the
+  measurement outcomes, and solves for the hidden period using Gaussian
+  elimination over GF(2).
+- `batch_shots = true` (default, added in R.1.13, audit F-21): draws all
+  equation samples from ONE batched simulation (the circuit's measurements are
+  terminal) and harvests the distinct non-zero outcomes, using a `std::set` so
+  the equation order is deterministic and a given `seed` is reproducible. Set
+  `false` to restore the pre-R.1.13 per-sample loop (one single-shot simulation
+  per equation), which reproduces the old seeded equation stream byte-for-byte.
+  Both paths are statistically equivalent; only the seeded byte output differs
+  (seeds reproduce within a version, not across versions).
 
 ### `Simon::gaussian_eliminate`
 

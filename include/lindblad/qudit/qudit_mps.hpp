@@ -60,6 +60,10 @@ public:
     int d;
     int max_bond_dim;
     double svd_cutoff;
+    // SVD backend (audit F-23): default accurate Jacobi. BDC is a faster opt-in
+    // that is CURRENTLY BROKEN (Eigen BDCSVD bug, R.1.11.2) and emits a loud
+    // runtime warning when selected. Shared enum lives in types.hpp.
+    SVDMethod svd_method = SVDMethod::Jacobi;
     std::vector<MPSSiteTensor> tensors;
 
     // Construct in state |0...0> with bond dim 1.

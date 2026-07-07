@@ -126,40 +126,40 @@ QuantumCircuit Shor::build_period_finding_circuit(
     // Step 2: |1⟩ in target register
     qc.x(n_eval);
 
-    // Step 3: controlled-U^(2^k) gates
+    // Step 3: controlled-U^(2^k) gates.
     // ak = a^(2^k) mod N, updated by squaring each iteration.
+    //
+    // R.1.13 (audit F-9): the controlled modular multiplication is a
+    // permutation, so it is emitted as a PERMUTATION over (control, target)
+    // instead of a dense (2·2^nt)^2 matrix. Convention: qubits[0] = control k
+    // is the LSB of the sub-state index (bit 0 = control, bits 1.. = target),
+    // matching the interleaved controlled layout the UNITARY path used.
+    //   ctrl = 0 -> identity;  ctrl = 1 -> target |x> -> |ak·x mod N> (x < N).
+    // Memory drops from O((2^nt)^2) to O(2^nt), application from
+    // O(dim·2^nt) to O(dim).
     uint64_t ak = a % N;
+    const size_t fd = 2 * td;
+    std::vector<int> perm_qubits;
+    perm_qubits.reserve(static_cast<size_t>(1 + n_target));
+    perm_qubits.push_back(0);  // placeholder for the control, set per k below
+    for (int tq = 0; tq < n_target; ++tq)
+        perm_qubits.push_back(n_eval + tq);
+
     for (int k = 0; k < n_eval; ++k) {
-        // Build td×td permutation matrix U_ak: U[j,i] = 1 iff j = ak*i mod N (i<N)
-        std::vector<Complex128> U(td * td, Complex128(0.0, 0.0));
-        for (size_t x = 0; x < td; ++x) {
-            size_t y = (x < N)
-                ? static_cast<size_t>(
-                    static_cast<__uint128_t>(ak) * x % N)
-                : x;   // identity on out-of-range states
-            U[y * td + x] = Complex128(1.0, 0.0);
+        std::vector<int> perm(fd);
+        for (size_t sub = 0; sub < fd; ++sub) {
+            if ((sub & 1) == 0) {
+                perm[sub] = static_cast<int>(sub);          // ctrl = 0: identity
+            } else {
+                const size_t x = sub >> 1;                  // target sub-state
+                const size_t y = (x < N)
+                    ? static_cast<size_t>(static_cast<__uint128_t>(ak) * x % N)
+                    : x;                                    // identity for x >= N
+                perm[sub] = static_cast<int>((y << 1) | 1); // ctrl = 1: modmult
+            }
         }
-
-        // Build (2*td)×(2*td) controlled-U:
-        //   ctrl=0 block (even indices) → identity
-        //   ctrl=1 block (odd indices)  → U
-        // apply_unitary convention: targets[0] (ctrl qubit k) maps to bit 0 (LSB)
-        // of the matrix index, so ctrl=0 ↔ even and ctrl=1 ↔ odd.
-        const size_t fd = 2 * td;
-        std::vector<Complex128> CU(fd * fd, Complex128(0.0, 0.0));
-        for (size_t i = 0; i < td; ++i)
-            CU[(2 * i) * fd + (2 * i)] = Complex128(1.0, 0.0);
-        for (size_t r = 0; r < td; ++r)
-            for (size_t c = 0; c < td; ++c)
-                CU[(2 * r + 1) * fd + (2 * c + 1)] = U[r * td + c];
-
-        Instruction inst;
-        inst.type   = Instruction::GateType::UNITARY;
-        inst.qubits = {k};  // control = eval qubit k
-        for (int tq = 0; tq < n_target; ++tq)
-            inst.qubits.push_back(n_eval + tq);
-        inst.matrix = std::move(CU);
-        qc.instructions.push_back(inst);
+        perm_qubits[0] = k;  // control = eval qubit k
+        qc.permute(perm, perm_qubits);
 
         // a^(2^{k+1}) mod N = (a^(2^k))^2 mod N
         ak = static_cast<uint64_t>(

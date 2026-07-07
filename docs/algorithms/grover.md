@@ -16,7 +16,7 @@ Grover search alternates between:
 2. applying the diffusion operator
 3. repeating for a chosen number of iterations
 
-The diffusion operator in lindblad is implemented with the standard Hadamard/X pattern and a multi-controlled phase flip on the all-ones state.
+The diffusion operator in lindblad is implemented with the standard Hadamard/X pattern and a multi-controlled phase flip on the all-ones state. As of R.1.13 (audit F-7) the phase flip is an H-wrapped native `MCX` (multi-controlled X) instruction rather than a dense $2^n \times 2^n$ matrix built per iteration: `MCX` with 1 control reduces to CX and with 2 to CCX, so this covers every register width $\geq 2$, and qubit Grover is no longer memory-capped by the diffusion matrix.
 
 ## Required Inputs
 

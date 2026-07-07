@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <iostream>
+#include <random>
 #include <stdexcept>
 #include <utility>
 
@@ -20,6 +22,42 @@ static inline std::complex<double> to_std(const Complex128& c) noexcept {
 
 static inline Complex128 from_std(const std::complex<double>& z) noexcept {
     return Complex128(z.real(), z.imag());
+}
+
+// One-time loud warning when the (currently broken) BDCSVD backend is selected
+// on the qudit MPS. Mirrors the qubit-layer warning (audit F-23).
+static void warn_bdc_broken_once_qudit() {
+    static bool warned = false;
+    if (warned) return;
+    warned = true;
+    std::cerr <<
+        "\n***************************************************************\n"
+        "[lindblad] WARNING: SVDMethod::BDC (Eigen BDCSVD) is SELECTED on the\n"
+        "  qudit MPS but is CURRENTLY BROKEN for complex / degenerate inputs\n"
+        "  (R.1.11.2 bug, docs/plans/eigen-bdcsvd-bug.md). Results may be\n"
+        "  SILENTLY WRONG. Use SVDMethod::Jacobi (the default) until fixed.\n"
+        "***************************************************************\n";
+}
+
+// SVD with the selected backend. Jacobi is accurate (default); BDC is faster
+// but currently broken, so it warns loudly. Writes thin U, singular values S,
+// and V (not V^dagger).
+static void qmps_svd(const Eigen::MatrixXcd& M, SVDMethod method,
+                     Eigen::MatrixXcd& U, Eigen::VectorXd& S, Eigen::MatrixXcd& V) {
+    if (method == SVDMethod::BDC) {
+        warn_bdc_broken_once_qudit();
+        Eigen::BDCSVD<Eigen::MatrixXcd> svd(
+            M, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        U = svd.matrixU();
+        S = svd.singularValues();
+        V = svd.matrixV();
+    } else {
+        Eigen::JacobiSVD<Eigen::MatrixXcd> svd(
+            M, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        U = svd.matrixU();
+        S = svd.singularValues();
+        V = svd.matrixV();
+    }
 }
 
 // =============================================================================
@@ -165,11 +203,9 @@ QuditMPS::QuditMPS(const QuditStatevector& sv,
                                      static_cast<size_t>(d)]);
 
     for (int q = 0; q < n_qudits - 1; ++q) {
-        Eigen::JacobiSVD<Eigen::MatrixXcd> svd(
-            M, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        const auto& S = svd.singularValues();
-        const auto& U = svd.matrixU();
-        const auto& V = svd.matrixV();
+        Eigen::MatrixXcd U, V;
+        Eigen::VectorXd S;
+        qmps_svd(M, svd_method, U, S, V);
 
         const int full_rank = static_cast<int>(S.size());
         const double smax = (full_rank > 0) ? S(0) : 0.0;
@@ -426,11 +462,9 @@ void QuditMPS::split_two_sites(int q, const Eigen::MatrixXcd& Theta) {
         Theta.cols() != static_cast<Eigen::Index>(d) * chi_R)
         throw std::runtime_error("split_two_sites: shape mismatch");
 
-    Eigen::JacobiSVD<Eigen::MatrixXcd> svd(
-        Theta, Eigen::ComputeThinU | Eigen::ComputeThinV);
-    const auto& S = svd.singularValues();
-    const auto& U = svd.matrixU();
-    const auto& V = svd.matrixV();
+    Eigen::MatrixXcd U, V;
+    Eigen::VectorXd S;
+    qmps_svd(Theta, svd_method, U, S, V);
 
     const int full_rank = static_cast<int>(S.size());
     const double smax = (full_rank > 0) ? S(0) : 0.0;
@@ -645,9 +679,97 @@ void QuditMPS::apply_function_oracle(int n_query, int n_output,
     *this = QuditMPS(sv, max_bond_dim, svd_cutoff);
 }
 
+// Sequential environment sampling (audit F-5): previously this contracted the
+// whole MPS to a dense d^n statevector and sampled that, defeating MPS
+// compactness for wide registers. Now it precomputes the right environments
+// once (build_right_envs, O(n·chi^3)) and samples left-to-right read-only,
+// carrying the left environment incrementally — O(n·chi^3) total, memory
+// bounded by the bond dimension. Mirrors the qubit-layer mps_sample.
 std::vector<int> QuditMPS::measure(uint64_t seed) {
-    auto sv = to_statevector();
-    return sv.measure(seed);
+    std::mt19937_64 rng(seed == 0
+        ? static_cast<uint64_t>(std::random_device{}())
+        : seed);
+    std::uniform_real_distribution<double> dist(0.0, 1.0);
+
+    // right_envs[q] sized chi_L(q) x chi_L(q); right_envs[n] = [[1]].
+    const auto right_envs = build_right_envs();
+
+    std::vector<int> digits(static_cast<size_t>(n_qudits), 0);
+    Eigen::MatrixXcd left(1, 1);
+    left(0, 0) = std::complex<double>(1.0, 0.0);
+
+    for (int q = 0; q < n_qudits; ++q) {
+        const auto& T = tensors[static_cast<size_t>(q)];
+        const int cl = T.chi_L, cr = T.chi_R;
+        const Eigen::MatrixXcd& R = right_envs[static_cast<size_t>(q + 1)];  // cr x cr
+
+        // prob[sigma] = Re Σ_{l1,l2} left[l1,l2] · B_sigma[l1,l2],
+        //   B_sigma[l1,l2] = Σ_{r1,r2} T[sigma,l1,r1] R[r1,r2] conj(T[sigma,l2,r2]).
+        // Two-stage O(chi^3): A = T_sigma·R, then contract with conj(T_sigma).
+        std::vector<double> probs(static_cast<size_t>(d), 0.0);
+        for (int s = 0; s < d; ++s) {
+            Eigen::MatrixXcd A(cl, cr);
+            for (int l1 = 0; l1 < cl; ++l1)
+                for (int r2 = 0; r2 < cr; ++r2) {
+                    std::complex<double> a(0.0, 0.0);
+                    for (int r1 = 0; r1 < cr; ++r1)
+                        a += to_std(T.at(s, l1, r1)) * R(r1, r2);
+                    A(l1, r2) = a;
+                }
+            std::complex<double> acc(0.0, 0.0);
+            for (int l1 = 0; l1 < cl; ++l1)
+                for (int l2 = 0; l2 < cl; ++l2) {
+                    std::complex<double> b(0.0, 0.0);
+                    for (int r2 = 0; r2 < cr; ++r2)
+                        b += A(l1, r2) * std::conj(to_std(T.at(s, l2, r2)));
+                    acc += left(l1, l2) * b;
+                }
+            probs[static_cast<size_t>(s)] = acc.real();
+        }
+
+        double total = 0.0;
+        for (double& x : probs) { if (x < 0.0) x = 0.0; total += x; }
+
+        int sel;
+        if (total < 1e-30) {
+            sel = 0;  // degenerate marginal: pick digit 0
+        } else {
+            const double roll = dist(rng) * total;
+            double c = 0.0;
+            sel = d - 1;
+            for (int s = 0; s < d; ++s) {
+                c += probs[static_cast<size_t>(s)];
+                if (roll <= c) { sel = s; break; }
+            }
+        }
+        digits[static_cast<size_t>(q)] = sel;
+
+        const double p_out = probs[static_cast<size_t>(sel)];
+        const double inv_p = (p_out > 1e-30) ? 1.0 / p_out : 1.0;
+
+        // new_left[m1,m2] = inv_p · Σ_{l1,l2} left[l1,l2] T[sel,l1,m1] conj(T[sel,l2,m2]).
+        //   C[l2,m1] = Σ_l1 left[l1,l2] T[sel,l1,m1]
+        //   new_left[m1,m2] = Σ_l2 C[l2,m1] conj(T[sel,l2,m2]) · inv_p
+        Eigen::MatrixXcd C(cl, cr);
+        for (int l2 = 0; l2 < cl; ++l2)
+            for (int m1 = 0; m1 < cr; ++m1) {
+                std::complex<double> a(0.0, 0.0);
+                for (int l1 = 0; l1 < cl; ++l1)
+                    a += left(l1, l2) * to_std(T.at(sel, l1, m1));
+                C(l2, m1) = a;
+            }
+        Eigen::MatrixXcd new_left(cr, cr);
+        for (int m1 = 0; m1 < cr; ++m1)
+            for (int m2 = 0; m2 < cr; ++m2) {
+                std::complex<double> a(0.0, 0.0);
+                for (int l2 = 0; l2 < cl; ++l2)
+                    a += C(l2, m1) * std::conj(to_std(T.at(sel, l2, m2)));
+                new_left(m1, m2) = a * inv_p;
+            }
+        left = std::move(new_left);
+    }
+
+    return digits;
 }
 
 // =============================================================================
@@ -660,11 +782,9 @@ void QuditMPS::left_canonicalize() {
         // M = as_left_matrix has shape (d * chi_L, chi_R).
         Eigen::MatrixXcd M = Tq.as_left_matrix();
 
-        Eigen::JacobiSVD<Eigen::MatrixXcd> svd(
-            M, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        const auto& S = svd.singularValues();
-        const auto& U = svd.matrixU();
-        const auto& V = svd.matrixV();
+        Eigen::MatrixXcd U, V;
+        Eigen::VectorXd S;
+        qmps_svd(M, svd_method, U, S, V);
 
         const int full_rank = static_cast<int>(S.size());
         const double smax = (full_rank > 0) ? S(0) : 0.0;
@@ -725,11 +845,9 @@ void QuditMPS::right_canonicalize() {
         // M = as_right_matrix has shape (chi_L, d * chi_R).
         Eigen::MatrixXcd M = Tq.as_right_matrix();
 
-        Eigen::JacobiSVD<Eigen::MatrixXcd> svd(
-            M, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        const auto& S = svd.singularValues();
-        const auto& U = svd.matrixU();
-        const auto& V = svd.matrixV();
+        Eigen::MatrixXcd U, V;
+        Eigen::VectorXd S;
+        qmps_svd(M, svd_method, U, S, V);
 
         const int full_rank = static_cast<int>(S.size());
         const double smax = (full_rank > 0) ? S(0) : 0.0;

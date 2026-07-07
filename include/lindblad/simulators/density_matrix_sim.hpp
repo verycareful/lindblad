@@ -29,6 +29,10 @@ public:
     DensityMatrix();
     explicit DensityMatrix(int n_qubits);
 
+    // Reset in place to |0...0><0...0| (reuses the existing allocation; used
+    // for per-shot buffer reuse in the trajectory path).
+    void initialize();
+
     // Initialise from pure state
     static DensityMatrix from_statevector(const Statevector& sv);
 
@@ -48,6 +52,15 @@ public:
         const std::vector<std::vector<Complex128>>& kraus_ops,
         const std::vector<int>& qubits
     );
+
+    // Full-register basis permutation: rho -> P.rho.P† where full_perm[a] is
+    // the image of basis index a (a bijection of [0, dim)). Applied by row/
+    // column relabel, no dense matrix (used for MCX and PERMUTATION).
+    void apply_permutation(const std::vector<int>& full_perm);
+
+    // Diagonal multi-controlled phase: rho -> D.rho.D† where D multiplies
+    // basis index a by exp(i*lambda) iff (a & mask) == mask (used for MCP).
+    void apply_mcp_phase(size_t mask, double lambda);
 
     // Measurement probabilities
     std::vector<double> probabilities() const;

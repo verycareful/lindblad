@@ -59,6 +59,13 @@ static SabreRoutingResult sabre_route(
         return adj_pairs.count(static_cast<long long>(a) * ADJ_KEY + b) > 0;
     };
 
+    // Physical-qubit neighbour lists (audit F-16): candidate collection scanned
+    // the whole coupling edge list per blocked qubit; this indexes it directly.
+    std::vector<std::vector<int>> phys_neighbors(
+        static_cast<size_t>(coupling_map.n_physical_qubits));
+    for (const auto& [ea, eb] : coupling_map.edges)
+        phys_neighbors[static_cast<size_t>(ea)].push_back(eb);
+
     // Build logical reverse: physical → logical
     auto build_inv = [&]() {
         std::vector<int> inv(coupling_map.n_physical_qubits, -1);
@@ -97,11 +104,9 @@ static SabreRoutingResult sabre_route(
             front.push_back(nid);
     }
 
-    // Build output DAG
-    DAGCircuit out_dag = dag;
-    // Clear all OP nodes' qubit wires — we'll rebuild them
-    // (We track the routing in the layout and insert SWAP nodes)
-    // For a clean approach: accumulate output instructions then rebuild
+    // Routing accumulates output instructions and rebuilds the DAG at the end
+    // (audit F-16: a `DAGCircuit out_dag = dag` full copy here was dead — the
+    // output is built from out_instructions via from_circuit below).
     std::vector<Instruction> out_instructions;
     std::vector<bool> done(id_range, false);
     int swap_count = 0;
@@ -198,20 +203,21 @@ static SabreRoutingResult sabre_route(
             }
         }
 
-        // Collect candidate SWAPs from edges adjacent to blocked logical qubits
+        // Collect candidate SWAPs from edges adjacent to blocked logical qubits.
+        // build_inv() is hoisted out of the per-blocked-qubit loop (audit F-16):
+        // the layout is unchanged until a SWAP is applied at the end of this
+        // iteration, so one inverse map serves the whole candidate scan.
         std::vector<std::pair<int,int>> candidates;
+        const auto inv = build_inv();
         for (int nid : blocked) {
             for (int lq : dag.nodes[id_to_idx.at(nid)].qubit_wires) {
                 int pq = layout[lq];
-                auto inv = build_inv();
-                for (const auto& [pa, pb] : coupling_map.edges) {
-                    if (pa == pq) {
-                        int other_l = inv[pb];
-                        if (other_l >= 0 && other_l != lq) {
-                            auto c = std::make_pair(std::min(lq, other_l), std::max(lq, other_l));
-                            if (std::find(candidates.begin(), candidates.end(), c) == candidates.end())
-                                candidates.push_back(c);
-                        }
+                for (int pb : phys_neighbors[static_cast<size_t>(pq)]) {
+                    int other_l = inv[pb];
+                    if (other_l >= 0 && other_l != lq) {
+                        auto c = std::make_pair(std::min(lq, other_l), std::max(lq, other_l));
+                        if (std::find(candidates.begin(), candidates.end(), c) == candidates.end())
+                            candidates.push_back(c);
                     }
                 }
             }

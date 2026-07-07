@@ -237,6 +237,11 @@ Glyph build_glyph(const Instruction& inst, const DrawOptions& opts) {
             g.data_gate = inst.gate_name();
             return g;
         case Instruction::GateType::UNITARY:
+        // MCX / MCP / PERMUTATION render as a labelled multi-qubit box (same as
+        // UNITARY): they have no catalogue glyph and span an arbitrary qubit set.
+        case Instruction::GateType::MCX:
+        case Instruction::GateType::MCP:
+        case Instruction::GateType::PERMUTATION:
             g = build_unitary_glyph(inst, opts);
             g.data_gate = inst.gate_name();
             return g;

@@ -222,25 +222,28 @@ For noise channels with $m$ Kraus operators $\{K_1, \ldots, K_m\}$ satisfying $\
 
 $$\rho \to \sum_{i=1}^{m} K_i \rho K_i^\dagger$$
 
-**Implementation**:
+**Implementation (R.1.13, audit F-1/F-2)**: `apply_gate` is an OpenMP row-block
+AXPY over contiguous rows (`rho = U rho U†` via an in-place ket multiply plus a
+row-local bra multiply, parallel over background groups / rows) rather than the
+old serial column-strided loop. `apply_kraus` is **out of place**: the input
+`rho` is left untouched as the source, each operator's contribution
+`K rho K†` is built in a scratch buffer via an out-of-place ket multiply, and
+accumulated into a result buffer:
 
 ```cpp
-void DensityMatrix::apply_kraus(const std::vector<std::vector<Complex128>>& kraus_ops,
-                                 const std::vector<int>& qubits) {
-    std::vector<Complex128> result_data(dim * dim, Complex128(0.0, 0.0));
-    
-    for (const auto& K : kraus_ops) {
-        DensityMatrix temp = *this;
-        temp.apply_gate(K, qubits);   // temp = K * rho * K†
-        for (size_t i = 0; i < dim * dim; ++i)
-            result_data[i] += temp.data[i];
-    }
-    
-    data = std::move(result_data);
-}
+// per Kraus operator K: scratch = K·rho (out of place), scratch = scratch·K†,
+// result += scratch.  No per-operator full 4^N restore copy (the previous loop
+// did `data = original` once per K).
 ```
 
-**Complexity**: $O(m \cdot 4^n \cdot 2^k)$ where $m$ = number of Kraus operators
+**Complexity**: $O(m \cdot 4^n \cdot 2^k)$ where $m$ = number of Kraus operators,
+now parallelised and without the per-operator matrix copy.
+
+The `DensityMatrixSimulator` also pre-resolves each instruction's gate matrix
+and noise **once per circuit** into a plan (pointers into the immutable
+`NoiseModel`, no per-call Kraus deep-copy), reuses one density-matrix buffer
+across shots, and applies the structured `MCX`/`MCP`/`PERMUTATION` ops as a
+full-register row/column relabel or diagonal phase (no dense matrix).
 
 ### DensityMatrixSimulator Workflow
 
@@ -375,6 +378,13 @@ CliffordSimulator sim;
 auto result = sim.run(clifford_circuit, 1024);  // Must be Clifford-only
 ```
 
+**Terminal-measurement fast path (R.1.13, audit F-19)**: when there is no
+feedforward, no `RESET`, and nothing acts on a qubit after it is measured, the
+pre-measurement stabilizer state is deterministic. The gate pass then runs
+ONCE and each shot samples measurements from a copy of the tableau, instead of
+re-applying every gate per shot. Circuits with mid-circuit measurement,
+feedforward, or reset use the general per-shot trajectory path.
+
 **Use Cases**:
 - Verification of Clifford circuits (error correction, stabilizer codes)
 - Analysis of stabilizer codes (exact marginal probabilities)
@@ -431,8 +441,19 @@ class MPSState {
     std::vector<MPSTensor> tensors;
     int max_bond_dim;    // chi parameter
     double cutoff;       // SVD truncation threshold
+    SVDMethod svd_method = SVDMethod::Jacobi;  // SVD backend (R.1.13)
 };
 ```
+
+**SVD backend (R.1.13, audit F-23)**: `svd_method` (declared in
+`lindblad/types.hpp`, shared with the qudit MPS) selects the truncation SVD.
+`SVDMethod::Jacobi` is the **default** — accurate, and it avoids the Eigen
+BDCSVD accuracy defect found in R.1.11.2 for complex/degenerate inputs.
+`SVDMethod::BDC` is a faster opt-in but is **CURRENTLY BROKEN**: selecting it
+prints a loud one-time runtime warning to `stderr` and may produce silently
+wrong results, so it should not be used until the upstream Eigen bug is fixed.
+The qubit-MPS default changed from BDC to Jacobi in R.1.13 (a breaking numeric
+shift in truncation values versus R.1.12).
 
 **Complexity**:
 - **Space**: $O(n \cdot \chi^2)$ where $\chi$ = max bond dimension (typically 16–256)
@@ -447,9 +468,12 @@ class MPSState {
 3. Absorb into a neighboring bond (left or right)
 
 **Two-qubit gate on sites $(i, i+1)$** (adjacent):
-1. Contract tensors: `M_i @ bond @ M_{i+1}` → rank-4 tensor
+1. Contract tensors: `M_i @ bond @ M_{i+1}` → rank-4 tensor. In R.1.13 (audit
+   F-6) this contraction is a single zero-copy Eigen GEMM: the MPSTensor data is
+   already contiguous row-major in the needed $(\text{bond}_L \cdot 2) \times \chi$
+   and $\chi \times (2 \cdot \text{bond}_R)$ shapes.
 2. Apply $U$ gate to physical indices
-3. Reshape to matrix and perform SVD: $U = L \cdot S \cdot R^\dagger$
+3. Reshape to matrix and perform SVD (backend per `svd_method`): $U = L \cdot S \cdot R^\dagger$
 4. Truncate singular values: keep only $\chi$ largest with sum $\geq (1 - \text{cutoff})$
 5. Absorb $L \cdot S$ into $M_i$; absorb $R^\dagger$ into $M_{i+1}$
 6. Update bond dimension and track truncation error
@@ -485,6 +509,14 @@ class MPSState {
 4. $O(N \cdot \chi^3)$ time for full bitstring
 
 **Complexity**: $O(n \cdot \chi^3)$ per shot (not $O(2^n)$ like statevector)
+
+**Sampling (R.1.13, audit F-3/F-4)**: the right environments are invariant
+across shots, so the terminal-sampling path computes them ONCE and samples each
+shot read-only (the left environment is carried incrementally and each site's
+outcome slice is read from the unmodified tensors, scaled by $1/p$). There is no
+per-shot MPS copy and no environment rebuild, and every contraction is the
+two-stage $O(\chi^3)$ form (the previous per-shot path rebuilt environments and
+deep-copied the whole MPS, with $O(\chi^4)$ contractions).
 
 ### Statevector Crossover
 

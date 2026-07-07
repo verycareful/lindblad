@@ -269,11 +269,17 @@ for (int ii = 0; ii < static_cast<int>(dim); ++ii) {
 
 (`apply_rccx`): Simplified Toffoli (same as Qiskit RCCX)
 
-**Implementation**: Decomposed as sequence:
-$$\text{RCCX} = H(tgt) \cdot T(tgt) \cdot CX(c_2, tgt) \cdot T^\dagger(tgt) \cdot CX(c_1, tgt) \cdot T(tgt) \cdot CX(c_2, tgt) \cdot T^\dagger(tgt) \cdot H(tgt)$$
+**Exact action** (relative-phase Toffoli): `|101> -> -|101>`, `|110> -> i|111>`,
+`|111> -> -i|110>`, all other basis states unchanged. Equivalent to
+$\text{RCCX} = H \cdot T \cdot CX(c_2,tgt) \cdot T^\dagger \cdot CX(c_1,tgt) \cdot T \cdot CX(c_2,tgt) \cdot T^\dagger \cdot H$ on the target.
 
-- **Benefit**: Avoids direct three-qubit Toffoli implementation; reuses existing gates
-- **Equivalence**: Same unitary action as CCX (up to global phase on |101⟩ and |111⟩)
+- **Implementation (R.1.13, audit F-20)**: a single three-level-stride kernel
+  pass over the `dim/8` base groups, applying the exact `±1`/`±i` action above.
+  This replaced the previous nine-kernel ladder (which swept the full
+  statevector nine times); every coefficient is `±1`/`±i`, so the kernel is
+  exact with no floating-point rounding. The nine-gate ladder is still the
+  reference decomposition used by the transpiler and the MPS backend.
+- **Equivalence**: Same unitary action as CCX up to relative phases.
 
 ## Arbitrary N-Qubit Unitary
 
@@ -341,7 +347,57 @@ for (int gg = 0; gg < static_cast<int>(n_groups); ++gg) {
 **Complexity**:
 - **Time**: $O(2^n \cdot 2^{2k})$ (iterate over $2^{n-k}$ groups, apply $2^{2k}$ matrix operations)
 - **Space**: $O(2^k)$ for temporary vectors per OpenMP thread
-- **Parallelization**: Outer loop over groups parallelizes with `schedule(static)` if `n_groups > 2^15`
+- **Parallelization (R.1.13, audit F-8)**: work-shape dispatch. When there are
+  many background groups (`n_groups > 2^15`), the outer group loop parallelizes.
+  When `k` is large (few groups, big per-group blocks) — e.g. a full-register
+  oracle has a single group — the per-group ROW multiply parallelizes instead,
+  so large-`k` unitaries no longer run serially at $O(4^n)$.
+
+## Multi-Controlled and Permutation Operations
+
+Structured operations that avoid a dense $2^k \times 2^k$ matrix (R.1.13, audit
+F-7/F-9). Declared in `lindblad/gates.hpp`; built via `QuantumCircuit::mcx`,
+`mcp`, and `permute` (see [Circuit API](circuit.md)).
+
+### `apply_mcx` — multi-controlled X
+
+```cpp
+void apply_mcx(Statevector& sv, const std::vector<int>& controls, int target) noexcept;
+```
+
+Flips `target` on every amplitude whose control qubits are all `|1>`. Any number
+of controls (0 controls == plain X, 1 == CX, 2 == CCX). $O(\dim)$, visiting
+disjoint amplitude pairs (safe under OpenMP). Grover's diffusion uses this
+instead of building a dense $2^n \times 2^n$ matrix per iteration.
+
+### `apply_mcp` — multi-controlled phase
+
+```cpp
+void apply_mcp(Statevector& sv, const std::vector<int>& qubits, double lambda) noexcept;
+```
+
+Multiplies by $e^{i\lambda}$ on every amplitude whose listed qubits are all
+`|1>` (symmetric controls; 1 qubit == P, 2 == CP). $O(\dim)$.
+
+### `apply_permutation` — basis permutation
+
+```cpp
+void apply_permutation(Statevector& sv, const std::vector<int>& qubits,
+                       const std::vector<int>& perm);
+```
+
+Applies $|x\rangle \to |\text{perm}[x]\rangle$ within the $2^k$ target subspace
+(LSB = `qubits[0]`); `perm` must be a bijection of $[0, 2^k)$. Applied as an
+$O(\dim)$ amplitude gather. Shor's controlled modular multiplication is emitted
+as a `PERMUTATION` over (control, target), replacing a dense $(2 \cdot 2^{n_t})^2$
+matrix with a $2^{n_t}$-entry index map.
+
+Backend support: native in the statevector and density-matrix backends. The MPS
+backend reduces `MCX` with `<= 2` controls to X/CX/CCX natively; wider MCX and
+MCP/PERMUTATION take the bounded statevector fallback (`to_statevector` ->
+apply -> `mps_from_sv`, same as a 3+ qubit UNITARY, capped at
+`MPS_SV_MAX_QUBITS`). QASM/JSON export and transpiler decomposition of these ops
+are not yet implemented and fail loud (decompose before export/routing).
 
 ## Performance Optimizations
 

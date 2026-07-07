@@ -90,6 +90,15 @@ public:
         const std::vector<int>& qubits
     ) const;
 
+    // Zero-copy access to the raw error bucket for a gate name (nullptr when
+    // the gate has no registered errors). Callers filter by qubits themselves
+    // (ge.qubits.empty() means all qubits). Used by simulators to pre-resolve
+    // noise ONCE per circuit instead of deep-copying every Kraus matrix per
+    // instruction application (R.1.13, audit F-12).
+    const std::vector<GateError>* errors_for_gate_ref(
+        const std::string& gate_name
+    ) const;
+
     bool is_ideal() const;
 
     // Construct a per-qubit T1/T2 thermal-relaxation noise model.

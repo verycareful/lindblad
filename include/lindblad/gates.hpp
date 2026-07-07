@@ -115,5 +115,24 @@ void apply_unitary(
     const std::vector<Complex128>& matrix  // row-major, 2^k × 2^k
 );
 
+// =============================================================================
+// Multi-controlled and permutation operations (structured; no dense matrix)
+// =============================================================================
+
+// Multi-controlled X: flip `target` on every amplitude whose control qubits
+// are all |1>. Any number of controls (0 == plain X). O(dim), disjoint pairs.
+void apply_mcx(Statevector& sv, const std::vector<int>& controls,
+               int target) noexcept;
+
+// Multi-controlled phase: multiply by exp(i*lambda) on every amplitude whose
+// listed qubits are all |1> (symmetric controls). O(dim).
+void apply_mcp(Statevector& sv, const std::vector<int>& qubits,
+               double lambda) noexcept;
+
+// Basis permutation on target qubits: |x> -> |perm[x]> within the 2^k target
+// subspace (LSB = qubits[0]). perm must be a bijection of [0, 2^k). O(dim).
+void apply_permutation(Statevector& sv, const std::vector<int>& qubits,
+                       const std::vector<int>& perm);
+
 } // namespace gates
 } // namespace lindblad

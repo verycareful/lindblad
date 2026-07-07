@@ -230,6 +230,7 @@ parameters).
 | `d` | `int` | local dimension |
 | `max_bond_dim` | `int` | maximum retained singular values per bond |
 | `svd_cutoff` | `double` | relative singular-value cutoff |
+| `svd_method` | `SVDMethod` | SVD backend (R.1.13): default `Jacobi` (accurate). `BDC` is a faster opt-in but is CURRENTLY BROKEN (Eigen defect, R.1.11.2) and prints a loud runtime warning when selected. Declared in `lindblad/types.hpp`. |
 | `tensors` | `std::vector<MPSSiteTensor>` | site tensors |
 
 ### Gate and oracle API
@@ -259,12 +260,20 @@ the flat addend for the output register (both as integers, not digit vectors).
 ### Measurement, norm, and canonicalisation
 
 ```cpp
-std::vector<int> measure(uint64_t seed = 0);  // via dense statevector fallback
+std::vector<int> measure(uint64_t seed = 0);  // sequential environment sampling
 double norm_sq() const;
 void normalize();
 void left_canonicalize();
 void right_canonicalize();
 ```
+
+`measure` (R.1.13, audit F-5): precomputes the right environments once
+(`build_right_envs`, $O(n \cdot \chi^3)$) and samples left-to-right read-only,
+carrying the left environment incrementally. This replaced the previous path
+that contracted the whole MPS to a dense $d^n$ statevector before sampling, so
+measurement is now $O(n \cdot \chi^3)$ with memory bounded by the bond dimension.
+The phase/function oracles still use the dense `to_statevector()` fallback (a
+separate, documented limitation).
 
 ### `MPSSiteTensor`
 

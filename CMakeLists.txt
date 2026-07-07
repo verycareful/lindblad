@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.12.2 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.13.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.12.2")
+set(LINDBLAD_VERSION_LABEL "R.1.13.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -246,4 +246,31 @@ target_link_libraries(lindblad_core PUBLIC Eigen3::Eigen)
 
 # ==============================================================================
 # Python bindings
-# =========================================
+# ==============================================================================
+if(LINDBLAD_BUILD_PYTHON)
+    pybind11_add_module(lindblad_python bindings/python_bindings.cpp)
+    target_link_libraries(lindblad_python PRIVATE lindblad_core)
+    set_target_properties(lindblad_python PROPERTIES OUTPUT_NAME "lindblad")
+endif()
+
+# ==============================================================================
+# Tests
+# ==============================================================================
+if(LINDBLAD_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+# ==============================================================================
+# Benchmarks
+# ==============================================================================
+if(LINDBLAD_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif()
+
+# ==============================================================================
+# CLI apps (R.1.10.3: lindblad_draw)
+# ==============================================================================
+if(LINDBLAD_BUILD_APPS)
+    add_subdirectory(apps)
+endif()

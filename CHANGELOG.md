@@ -4,6 +4,114 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.13.0] - 2026-07-07
+
+Performance wave over the entire shipping library (audit
+`local/audits/2026-07-06-r113-performance-audit.md`, 24 of 29 findings
+implemented). The density-matrix and MPS simulators, the qudit layer, the
+estimator, and the transpiler were reworked for speed without giving up
+correctness; where a genuine accuracy or speed trade existed it is a
+user-selectable option with the exact path as the default. Two structured-oracle
+instructions (MCX, MCP, PERMUTATION) replace the dense per-iteration matrices in
+Grover and Shor. Contains breaking changes (marked BREAKING below). The DAG
+`substitute_node`/`remove_node` refactor (audit F-22) is deferred to its own
+release: it has no in-tree callers and its correctness can only be verified
+against the routing regression suite.
+
+### Added
+
+- `MCX`, `MCP`, and `PERMUTATION` instructions with builders `mcx(controls,
+  target)`, `mcp(lambda, qubits)`, and `permute(perm, qubits)`. MCX and MCP are
+  native two-amplitude/diagonal kernels; PERMUTATION applies a basis-index map
+  as an O(dim) gather. All three are native in the statevector and
+  density-matrix backends (no dense 2^k matrix); the MPS backend reduces MCX
+  with <= 2 controls to X/CX/CCX and fails loud on the rest. Grover's diffusion
+  now uses `mcx` and Shor's controlled modular multiplication uses `permute`.
+- `SVDMethod` option on the qubit and qudit MPS (`MPSState::svd_method`,
+  `QuditMPS::svd_method`). Jacobi (accurate) is the default; BDC is a faster
+  opt-in that is CURRENTLY BROKEN (Eigen BDCSVD defect, R.1.11.2) and emits a
+  loud one-time runtime warning when selected.
+- `Estimator::Options::group_pauli_terms` (default true): groups qubit-wise
+  commuting observable terms so they share measurement runs (all Z/I terms
+  collapse into one run). Set false to restore the pre-R.1.13 one-run-per-term
+  sampling (byte-identical seeded stream).
+- `Simon::solve(..., bool batch_shots = true)`: draws all equation samples from
+  one batched simulation; false restores the pre-R.1.13 per-sample loop.
+- Benchmark sources `benchmarks/bench_qudit_sv.cpp`, `bench_qudit_dm.cpp`,
+  `bench_scaling.cpp` (standard circuit across all four backends).
+
+### Changed
+
+- BREAKING: `Instruction::matrix` is now a copy-on-write `CowMatrix` (shared,
+  immutable buffer) instead of `std::vector<Complex128>`, so Instruction copies
+  no longer deep-copy 2^k x 2^k gate data. Read call sites are source-compatible
+  (implicit conversion to `const std::vector<Complex128>&`); code that mutated
+  the matrix in place must assign a fresh vector instead.
+- Density-matrix simulator: `apply_gate` rewritten as an OpenMP row-block AXPY
+  over contiguous rows (was serial column-strided); `apply_kraus` is out of
+  place (no per-Kraus 4^N restore copy); noise and gate matrices are resolved
+  once per circuit instead of per shot (`errors_for_gate` no longer deep-copies
+  Kraus operators per call); one density-matrix buffer is reused across shots
+  (via a new `DensityMatrix::initialize()` that resets the matrix to
+  `|0..0><0..0|` in place); `expectation_value_sparse` uses folded per-term
+  phase + popcount parity + an OpenMP reduction.
+- MPS sampling: environment contractions are the two-stage O(chi^3) form (were
+  O(chi^4)); terminal-measurement sampling computes the shot-invariant right
+  environments once and samples each shot read-only (no per-shot MPS copy);
+  the two-site gate contraction is a single zero-copy Eigen GEMM. `QuditMPS`
+  measurement uses the same sequential-environment sampler instead of
+  contracting to a dense d^n statevector.
+- Statevector: the MEASURE/RESET/trajectory collapse is one shared OpenMP
+  helper; `apply_unitary` parallelises by total work so large-k oracles no
+  longer run serially; `RCCX` is one three-level-stride kernel pass instead of
+  a nine-kernel ladder.
+- Estimator sampling: qubit-wise-commuting term grouping (see
+  `group_pauli_terms` above). This changes seeded byte output versus R.1.12
+  (statistically identical); seeds reproduce within a version, not across.
+- Qudit statevector: `apply_1qudit`/`apply_2qudit`/`apply_kqudit` are now
+  OpenMP-parallel.
+- Clifford simulator: terminal-measurement circuits run the gate pass once and
+  sample each shot from a copy of the stabilizer tableau.
+- Transpiler: `CouplingMap::distance_matrix` uses BFS per node (was
+  Floyd-Warshall O(V^3)); `SabreLayout` advances successors through an adjacency
+  list and tests adjacency via the distance matrix (was O(N*E) edge scans and
+  per-query `is_connected`); `SabreSwap` drops a dead full-DAG copy, hoists the
+  inverse-layout build, and indexes candidate swaps through physical-neighbour
+  lists.
+- BREAKING: qubit MPS SVD default changed from BDC to Jacobi (accuracy first;
+  see `SVDMethod` above). Truncation results shift numerically versus R.1.12.
+- `MAQAOA`/`QAOA` mixer and other paths unchanged in behaviour; only the shared
+  simulator/estimator internals they call were sped up.
+
+### Fixed
+
+- Restored the truncated tail of the top-level `CMakeLists.txt`. The
+  `add_subdirectory(tests)` / `benchmarks` / `apps` blocks and the
+  Python-bindings body were missing, so a clean configure built only
+  `lindblad_core` and produced no test, benchmark, app, or Python-binding
+  targets. This truncation was present in the published R.1.12.2 release: a
+  fresh clone of R.1.12.2 from GitHub could build the library but could not
+  build or run its tests, benchmarks, or CLI apps. The regression went unnoticed
+  because existing local, separately-configured build directories retained the
+  cached rules from when the file was whole and kept building/running the tests
+  (against a stale binary), so it only surfaced on an R.1.13 clean build. The
+  release version string itself was always correct; only the build of the
+  auxiliary targets was affected.
+- The MPS backend now applies the new `MCX` (wide) / `MCP` / `PERMUTATION`
+  instructions via the bounded statevector fallback (`to_statevector` -> apply
+  -> `mps_from_sv`), the same path a 3+ qubit `UNITARY` already used. Without
+  this, Shor's oracle (which now emits `PERMUTATION`) would have thrown on the
+  MPS backend, whereas its former dense `UNITARY` ran there; the fallback keeps
+  Shor-on-MPS working exactly as before.
+
+### Results
+
+- Full suite: 1783/1784 across 133 suites (21.1 s, WSL / Clang 18,
+  `-march=native`). The one failure, `ShorTest.CircuitContainsUnitaryGates`,
+  asserts the pre-R.1.13 dense-UNITARY modular-multiplication oracle, which F-9
+  deliberately replaced with a `PERMUTATION` instruction; the stale assertion is
+  updated (and new-op coverage added) in the R.1.13.1 test patch.
+
 ## [R.1.12.2] - 2026-07-04
 
 Fix release of the R.1.12 cadence. Resolves the four defects pinned red by the

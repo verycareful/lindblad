@@ -33,12 +33,25 @@ Fields and defaults:
     values with zero variance regardless of `shots`.
   - Pauli strings follow the project LSB-first convention (`pauli[q]` acts on
     qubit q); the exact and sampling paths agree on it (frozen in R.1.12).
-- `seed = 0`: RNG seed forwarded to the simulator. Each Pauli term gets a
-  decorrelated derived seed so the shot streams across terms are independent.
+- `seed = 0`: RNG seed forwarded to the simulator. Each measurement group gets a
+  decorrelated derived seed so the shot streams across groups are independent.
 - `noise_model`: when non-ideal (`!is_ideal()`), the sampling/exact path uses
   `DensityMatrixSimulator` so Kraus channels are applied. Otherwise
   `StatevectorSimulator` is used.
 - `optimization_level = 0`: enables transpilation and caching when > 0.
+- `group_pauli_terms = true` (added in R.1.13, audit F-10): with `shots > 0`,
+  group qubit-wise-commuting observable terms so they share a single
+  measurement run. All Z/I-only terms measure together in the plain Z basis, and
+  the remaining terms group by qubit-wise commutativity (one basis rotation per
+  group). For a T-term observable this is up to a T-fold reduction in
+  simulations, at identical accuracy and statistics. Set `false` to restore the
+  pre-R.1.13 one-run-per-term sampling.
+  - **Seed note:** grouping consumes the RNG stream in a different order, so a
+    given `seed` yields statistically-equivalent but not byte-identical counts
+    versus the ungrouped path (and versus R.1.12). Seeds reproduce **within** a
+    version, not across versions. Use `group_pauli_terms = false` only when you
+    need the old byte-for-byte seeded stream. The flag has no effect when
+    `shots == 0` (the exact path does not sample).
 
 ## `clear_cache`
 

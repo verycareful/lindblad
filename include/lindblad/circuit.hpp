@@ -50,6 +50,65 @@ struct ParamExpr {
 };
 
 // =============================================================================
+// CowMatrix — copy-on-write, immutable gate matrix (audit F-18)
+// =============================================================================
+// A gate matrix is logically constant once built, but Instruction is copied a
+// lot (per estimator evaluation, per transpiler pass via to_circuit/from_circuit,
+// compose/inverse/control). Storing the matrix behind a shared_ptr makes those
+// copies share one buffer instead of deep-copying 2^k x 2^k complex data.
+// There is no in-place mutation: assigning a new vector rebinds to a fresh
+// shared buffer. Read access mirrors the std::vector API and implicitly
+// converts to `const std::vector<Complex128>&`, so existing call sites are
+// unchanged.
+class CowMatrix {
+    std::shared_ptr<const std::vector<Complex128>> data_;
+
+    static const std::vector<Complex128>& empty_vec() {
+        static const std::vector<Complex128> e;
+        return e;
+    }
+
+public:
+    CowMatrix() = default;
+    CowMatrix(std::vector<Complex128> v)
+        : data_(std::make_shared<const std::vector<Complex128>>(std::move(v))) {}
+    CowMatrix(std::initializer_list<Complex128> v)
+        : data_(std::make_shared<const std::vector<Complex128>>(v)) {}
+
+    CowMatrix& operator=(std::vector<Complex128> v) {
+        data_ = std::make_shared<const std::vector<Complex128>>(std::move(v));
+        return *this;
+    }
+    CowMatrix& operator=(std::initializer_list<Complex128> v) {
+        data_ = std::make_shared<const std::vector<Complex128>>(v);
+        return *this;
+    }
+
+    bool empty() const noexcept { return !data_ || data_->empty(); }
+    size_t size() const noexcept { return data_ ? data_->size() : 0; }
+    const Complex128& operator[](size_t i) const { return (*data_)[i]; }
+    const Complex128* data() const noexcept { return data_ ? data_->data() : nullptr; }
+    std::vector<Complex128>::const_iterator begin() const {
+        return (data_ ? *data_ : empty_vec()).begin();
+    }
+    std::vector<Complex128>::const_iterator end() const {
+        return (data_ ? *data_ : empty_vec()).end();
+    }
+
+    // Implicit view as a const vector so functions taking
+    // `const std::vector<Complex128>&` accept an Instruction matrix directly.
+    operator const std::vector<Complex128>&() const {
+        return data_ ? *data_ : empty_vec();
+    }
+
+    bool operator==(const CowMatrix& o) const {
+        return static_cast<const std::vector<Complex128>&>(*this) ==
+               static_cast<const std::vector<Complex128>&>(o);
+    }
+    bool operator!=(const CowMatrix& o) const { return !(*this == o); }
+};
+
+// =============================================================================
 // Gate instruction — what gets stored in the circuit
 // =============================================================================
 
@@ -67,6 +126,14 @@ struct Instruction {
         MEASURE, RESET, BARRIER,
         // Custom unitary
         UNITARY,
+        // Multi-controlled (arbitrary control count) and basis permutation.
+        // MCX: qubits = [controls..., target]; flips target when all controls
+        //      are |1>. MCP: qubits are symmetric controls; applies phase
+        //      params[0] when all are |1>. PERMUTATION: applies the basis-index
+        //      map `permutation` (size 2^k) to the k target qubits as an
+        //      amplitude gather — the structured-oracle building block (Shor,
+        //      Grover diffusion) that avoids a dense 2^k x 2^k matrix.
+        MCX, MCP, PERMUTATION,
         // Parameterised (symbolic)
         PARAM_RX, PARAM_RY, PARAM_RZ, PARAM_P, PARAM_U
     };
@@ -79,8 +146,13 @@ struct Instruction {
     // For symbolic/parameterised circuits
     std::vector<std::string> param_names;
 
-    // For custom unitaries
-    std::vector<Complex128> matrix;  // 2^k × 2^k unitary
+    // For custom unitaries — copy-on-write (audit F-18): shared, immutable
+    // buffer so Instruction copies do not deep-copy 2^k × 2^k complex data.
+    CowMatrix matrix;
+
+    // For PERMUTATION: basis-index map of size 2^k over the k target qubits.
+    // permutation[x] = image of sub-state x (LSB = qubits[0]). Empty otherwise.
+    std::vector<int> permutation;
 
     // Symbolic parameter expressions — populated by the QASM 3 parser when a
     // gate angle uses a named parameter. Empty for purely-numeric instructions
@@ -227,6 +299,24 @@ public:
 
     // Custom unitary
     QuantumCircuit& unitary(const std::vector<Complex128>& matrix,
+                            const std::vector<int>& qubits,
+                            const std::string& label = "");
+
+    // Multi-controlled X: flip `target` when every control qubit is |1>.
+    // Any number of controls (0 controls == plain X). Applied natively by the
+    // statevector and density-matrix backends (no dense 2^n matrix); the
+    // transpiler decomposes it to a CX/CCX ladder for routed/basis targets.
+    QuantumCircuit& mcx(const std::vector<int>& controls, int target);
+
+    // Multi-controlled phase: multiply by exp(i*lambda) when every listed
+    // qubit is |1> (the qubits are symmetric). 1 qubit == P, 2 == CP.
+    QuantumCircuit& mcp(double lambda, const std::vector<int>& qubits);
+
+    // Basis permutation on `qubits`: sub-state x -> perm[x] (perm has size
+    // 2^qubits.size(), LSB = qubits[0]). Unitary iff perm is a bijection;
+    // the builder validates that. Used for reversible-classical oracles
+    // (Shor modular multiplication, Grover diffusion) without a dense matrix.
+    QuantumCircuit& permute(const std::vector<int>& perm,
                             const std::vector<int>& qubits,
                             const std::string& label = "");
 

@@ -72,29 +72,32 @@ double QuditStatevector::norm_sq() const {
 void QuditStatevector::apply_1qudit(int q, const std::vector<Complex128>& U) {
     const size_t stride = ipow(static_cast<size_t>(d), q);
     const size_t block  = stride * static_cast<size_t>(d);  // = d^(q+1)
+    const long long n_outer = static_cast<long long>(dim / block);
 
-    std::vector<Complex128> old_amp(static_cast<size_t>(d));
-    std::vector<Complex128> new_amp(static_cast<size_t>(d));
-
-    for (size_t outer = 0; outer < dim; outer += block) {
-        for (size_t inner = 0; inner < stride; ++inner) {
-            const size_t base = outer + inner;
-            // Extract
-            for (int k = 0; k < d; ++k)
-                old_amp[static_cast<size_t>(k)] =
-                    amplitudes[base + static_cast<size_t>(k) * stride];
-            // Transform: new[k] = sum_j U[k*d+j] * old[j]
-            for (int k = 0; k < d; ++k) {
-                Complex128 acc(0.0, 0.0);
-                for (int j = 0; j < d; ++j)
-                    acc += U[static_cast<size_t>(k * d + j)]
-                         * old_amp[static_cast<size_t>(j)];
-                new_amp[static_cast<size_t>(k)] = acc;
+    // Parallelise over outer blocks (audit F-17); scratch is per-thread.
+    #pragma omp parallel if(dim >= (1u << 12))
+    {
+        std::vector<Complex128> old_amp(static_cast<size_t>(d));
+        std::vector<Complex128> new_amp(static_cast<size_t>(d));
+        #pragma omp for schedule(static)
+        for (long long ob = 0; ob < n_outer; ++ob) {
+            const size_t outer = static_cast<size_t>(ob) * block;
+            for (size_t inner = 0; inner < stride; ++inner) {
+                const size_t base = outer + inner;
+                for (int k = 0; k < d; ++k)
+                    old_amp[static_cast<size_t>(k)] =
+                        amplitudes[base + static_cast<size_t>(k) * stride];
+                for (int k = 0; k < d; ++k) {
+                    Complex128 acc(0.0, 0.0);
+                    for (int j = 0; j < d; ++j)
+                        acc += U[static_cast<size_t>(k * d + j)]
+                             * old_amp[static_cast<size_t>(j)];
+                    new_amp[static_cast<size_t>(k)] = acc;
+                }
+                for (int k = 0; k < d; ++k)
+                    amplitudes[base + static_cast<size_t>(k) * stride] =
+                        new_amp[static_cast<size_t>(k)];
             }
-            // Write back
-            for (int k = 0; k < d; ++k)
-                amplitudes[base + static_cast<size_t>(k) * stride] =
-                    new_amp[static_cast<size_t>(k)];
         }
     }
 }
@@ -121,49 +124,52 @@ void QuditStatevector::apply_2qudit(int q0, int q1,
     const size_t stride1 = ipow(static_cast<size_t>(d), q1);
     const int dd = d * d;
 
-    std::vector<Complex128> old_amp(static_cast<size_t>(dd));
-    std::vector<Complex128> new_amp(static_cast<size_t>(dd));
-
     // Strides of the non-target qudits, for direct base enumeration.
     std::vector<size_t> other_strides;
     other_strides.reserve(static_cast<size_t>(n_qudits));
     for (int q = 0; q < n_qudits; ++q)
         if (q != q0 && q != q1)
             other_strides.push_back(ipow(static_cast<size_t>(d), q));
-    const size_t n_bases = dim / (static_cast<size_t>(dd));
+    const long long n_bases = static_cast<long long>(dim / (static_cast<size_t>(dd)));
 
-    for (size_t b = 0; b < n_bases; ++b) {
-        size_t idx = 0;
-        size_t rem = b;
-        for (size_t i = 0; i < other_strides.size(); ++i) {
-            idx += (rem % static_cast<size_t>(d)) * other_strides[i];
-            rem /= static_cast<size_t>(d);
-        }
+    #pragma omp parallel if(dim >= (1u << 12))
+    {
+        std::vector<Complex128> old_amp(static_cast<size_t>(dd));
+        std::vector<Complex128> new_amp(static_cast<size_t>(dd));
+        #pragma omp for schedule(static)
+        for (long long b = 0; b < n_bases; ++b) {
+            size_t idx = 0;
+            size_t rem = static_cast<size_t>(b);
+            for (size_t i = 0; i < other_strides.size(); ++i) {
+                idx += (rem % static_cast<size_t>(d)) * other_strides[i];
+                rem /= static_cast<size_t>(d);
+            }
 
-        // Extract d² amplitudes: old_amp[x1*d + x0] for (x0,x1) in {0..d-1}^2
-        for (int x0 = 0; x0 < d; ++x0)
-            for (int x1 = 0; x1 < d; ++x1)
-                old_amp[static_cast<size_t>(x1 * d + x0)] =
+            // Extract d² amplitudes: old_amp[x1*d + x0] for (x0,x1) in {0..d-1}^2
+            for (int x0 = 0; x0 < d; ++x0)
+                for (int x1 = 0; x1 < d; ++x1)
+                    old_amp[static_cast<size_t>(x1 * d + x0)] =
+                        amplitudes[idx
+                            + static_cast<size_t>(x0) * stride0
+                            + static_cast<size_t>(x1) * stride1];
+
+            // Matrix multiply: new = U * old  (U is d²×d², row-major)
+            for (int r = 0; r < dd; ++r) {
+                Complex128 acc(0.0, 0.0);
+                for (int c = 0; c < dd; ++c)
+                    acc += U[static_cast<size_t>(r * dd + c)]
+                         * old_amp[static_cast<size_t>(c)];
+                new_amp[static_cast<size_t>(r)] = acc;
+            }
+
+            // Write back
+            for (int x0 = 0; x0 < d; ++x0)
+                for (int x1 = 0; x1 < d; ++x1)
                     amplitudes[idx
                         + static_cast<size_t>(x0) * stride0
-                        + static_cast<size_t>(x1) * stride1];
-
-        // Matrix multiply: new = U * old  (U is d²×d², row-major)
-        for (int r = 0; r < dd; ++r) {
-            Complex128 acc(0.0, 0.0);
-            for (int c = 0; c < dd; ++c)
-                acc += U[static_cast<size_t>(r * dd + c)]
-                     * old_amp[static_cast<size_t>(c)];
-            new_amp[static_cast<size_t>(r)] = acc;
+                        + static_cast<size_t>(x1) * stride1] =
+                            new_amp[static_cast<size_t>(x1 * d + x0)];
         }
-
-        // Write back
-        for (int x0 = 0; x0 < d; ++x0)
-            for (int x1 = 0; x1 < d; ++x1)
-                amplitudes[idx
-                    + static_cast<size_t>(x0) * stride0
-                    + static_cast<size_t>(x1) * stride1] =
-                        new_amp[static_cast<size_t>(x1 * d + x0)];
     }
 }
 
@@ -207,9 +213,6 @@ void QuditStatevector::apply_kqudit(const std::vector<int>& qudits,
     size_t dk = 1;
     for (int i = 0; i < k; ++i) dk *= static_cast<size_t>(d);
 
-    std::vector<Complex128> old_amp(dk);
-    std::vector<Complex128> new_amp(dk);
-
     // Build a list of (subspace_index, flat_offset) pairs:
     // subspace_index ranges over [0, dk); qudits[0] is the LEAST significant
     // digit of v (LSB-first), so digit_i = (v / d^i) % d maps to qudits[i].
@@ -237,31 +240,34 @@ void QuditStatevector::apply_kqudit(const std::vector<int>& qudits,
         if (!is_target)
             other_strides.push_back(ipow(static_cast<size_t>(d), q));
     }
-    const size_t n_bases = dim / dk;
+    const long long n_bases = static_cast<long long>(dim / dk);
 
-    for (size_t b = 0; b < n_bases; ++b) {
-        size_t idx = 0;
-        size_t rem = b;
-        for (size_t i = 0; i < other_strides.size(); ++i) {
-            idx += (rem % static_cast<size_t>(d)) * other_strides[i];
-            rem /= static_cast<size_t>(d);
+    #pragma omp parallel if(dim >= (1u << 12))
+    {
+        std::vector<Complex128> old_amp(dk);
+        std::vector<Complex128> new_amp(dk);
+        #pragma omp for schedule(static)
+        for (long long b = 0; b < n_bases; ++b) {
+            size_t idx = 0;
+            size_t rem = static_cast<size_t>(b);
+            for (size_t i = 0; i < other_strides.size(); ++i) {
+                idx += (rem % static_cast<size_t>(d)) * other_strides[i];
+                rem /= static_cast<size_t>(d);
+            }
+
+            for (size_t v = 0; v < dk; ++v)
+                old_amp[v] = amplitudes[idx + sub_offset[v]];
+
+            for (size_t r = 0; r < dk; ++r) {
+                Complex128 acc(0.0, 0.0);
+                for (size_t c = 0; c < dk; ++c)
+                    acc += U[r * dk + c] * old_amp[c];
+                new_amp[r] = acc;
+            }
+
+            for (size_t v = 0; v < dk; ++v)
+                amplitudes[idx + sub_offset[v]] = new_amp[v];
         }
-
-        // Extract
-        for (size_t v = 0; v < dk; ++v)
-            old_amp[v] = amplitudes[idx + sub_offset[v]];
-
-        // Multiply: new = U * old (row-major)
-        for (size_t r = 0; r < dk; ++r) {
-            Complex128 acc(0.0, 0.0);
-            for (size_t c = 0; c < dk; ++c)
-                acc += U[r * dk + c] * old_amp[c];
-            new_amp[r] = acc;
-        }
-
-        // Write back
-        for (size_t v = 0; v < dk; ++v)
-            amplitudes[idx + sub_offset[v]] = new_amp[v];
     }
 }
 

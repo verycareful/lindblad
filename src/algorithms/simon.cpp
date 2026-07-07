@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <random>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -66,24 +67,45 @@ std::string Simon::gaussian_eliminate(const std::vector<std::string>& eqs, int n
 }
 
 Simon::Result Simon::solve(const QuantumCircuit& oracle, int n,
-                            uint64_t seed, int extra_samples) {
+                            uint64_t seed, int extra_samples, bool batch_shots) {
     auto qc = build_circuit(oracle, n);
     StatevectorSimulator sim;
 
     std::vector<std::string> equations;
-    std::mt19937_64 rng(seed);
 
-    for (int attempt = 0;
-         attempt < n * 4 && (int)equations.size() < n - 1 + extra_samples;
-         ++attempt) {
-        auto res = sim.run(qc, 1, rng());
-        std::string raw = res.counts.begin()->first; // n chars, MSB-first (only query qubits 0..n-1 measured)
-        std::string y = raw;                          // already the query register
-        std::reverse(y.begin(), y.end());            // y[j] = qubit j
-        if (y == std::string(n, '0')) continue;
-        bool dup = false;
-        for (auto& eq : equations) if (eq == y) { dup = true; break; }
-        if (!dup) equations.push_back(y);
+    if (batch_shots) {
+        // One batched simulation (audit F-21): the Simon circuit's measurements
+        // are terminal, so a single run samples all shots from one forward pass.
+        // Harvest the DISTINCT non-zero equations; a std::set keeps the order
+        // deterministic (independent of the counts map's iteration order), so a
+        // given seed is reproducible run to run.
+        const int shots = std::max(1, (n + extra_samples) * 8);
+        auto res = sim.run(qc, shots, seed);
+        std::set<std::string> seen;
+        for (const auto& [raw, cnt] : res.counts) {
+            (void)cnt;
+            std::string y = raw;                  // query register, MSB-first
+            std::reverse(y.begin(), y.end());     // y[j] = qubit j
+            if (y == std::string(n, '0')) continue;
+            seen.insert(y);
+        }
+        equations.assign(seen.begin(), seen.end());
+    } else {
+        // Legacy per-sample loop: one single-shot simulation per equation,
+        // reproducing the pre-R.1.13 seeded stream byte-for-byte.
+        std::mt19937_64 rng(seed);
+        for (int attempt = 0;
+             attempt < n * 4 && (int)equations.size() < n - 1 + extra_samples;
+             ++attempt) {
+            auto res = sim.run(qc, 1, rng());
+            std::string raw = res.counts.begin()->first;
+            std::string y = raw;
+            std::reverse(y.begin(), y.end());
+            if (y == std::string(n, '0')) continue;
+            bool dup = false;
+            for (auto& eq : equations) if (eq == y) { dup = true; break; }
+            if (!dup) equations.push_back(y);
+        }
     }
 
     std::string period = gaussian_eliminate(equations, n);

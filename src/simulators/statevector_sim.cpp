@@ -20,6 +20,10 @@ namespace lindblad {
 // Seeded from run() for reproducibility; default-initialised from random_device otherwise.
 thread_local std::mt19937_64 sv_sim_rng{std::random_device{}()};
 
+// Forward declaration: shared Born-rule collapse helper (defined with the
+// trajectory helpers below; used by the MEASURE/RESET dispatch cases).
+static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng);
+
 // =============================================================================
 // apply_instruction — dispatch to the appropriate gate function
 // =============================================================================
@@ -79,60 +83,38 @@ void StatevectorSimulator::apply_instruction(Statevector& sv, const Instruction&
             gates::apply_unitary(sv, q, inst.matrix);
             break;
 
+        // Multi-controlled X: qubits = [controls..., target].
+        case GT::MCX: {
+            std::vector<int> controls(q.begin(), q.end() - 1);
+            gates::apply_mcx(sv, controls, q.back());
+            break;
+        }
+        // Multi-controlled phase (symmetric controls).
+        case GT::MCP:
+            gates::apply_mcp(sv, q, p[0]);
+            break;
+        // Basis permutation on the target subspace.
+        case GT::PERMUTATION:
+            gates::apply_permutation(sv, q, inst.permutation);
+            break;
+
         // BARRIER — no effect on statevector
         case GT::BARRIER:
             break;
 
-        // MEASURE — project qubit to a random outcome, collapse and renormalise
-        case GT::MEASURE: {
-            int qubit = q[0];
-            size_t step = 1ULL << qubit;
-            double prob0 = 0.0;
-            for (size_t i = 0; i < sv.dim; i += 2 * step)
-                for (size_t j = i; j < i + step; ++j)
-                    prob0 += sv.real_parts[j] * sv.real_parts[j]
-                           + sv.imag_parts[j] * sv.imag_parts[j];
-            std::uniform_real_distribution<double> udist(0.0, 1.0);
-            int outcome = (udist(sv_sim_rng) < prob0) ? 0 : 1;
-            double p_out = (outcome == 0) ? prob0 : (1.0 - prob0);
-            double inv_norm = (p_out > 1e-15) ? 1.0 / std::sqrt(p_out) : 1.0;
-            for (size_t i = 0; i < sv.dim; ++i) {
-                if (static_cast<int>((i >> qubit) & 1) != outcome) {
-                    sv.real_parts[i] = 0.0;
-                    sv.imag_parts[i] = 0.0;
-                } else {
-                    sv.real_parts[i] *= inv_norm;
-                    sv.imag_parts[i] *= inv_norm;
-                }
-            }
+        // MEASURE: project the qubit to a random outcome, collapse and
+        // renormalise via the shared Born-rule helper (outcome recording
+        // happens in the trajectory runner, which calls the helper directly).
+        case GT::MEASURE:
+            sv_collapse_qubit(sv, q[0], sv_sim_rng);
             break;
-        }
 
-        // RESET — measure qubit, then apply X if outcome was |1⟩ to restore |0⟩
-        case GT::RESET: {
-            int qubit = q[0];
-            size_t step = 1ULL << qubit;
-            double prob0 = 0.0;
-            for (size_t i = 0; i < sv.dim; i += 2 * step)
-                for (size_t j = i; j < i + step; ++j)
-                    prob0 += sv.real_parts[j] * sv.real_parts[j]
-                           + sv.imag_parts[j] * sv.imag_parts[j];
-            std::uniform_real_distribution<double> udist(0.0, 1.0);
-            int outcome = (udist(sv_sim_rng) < prob0) ? 0 : 1;
-            double p_out = (outcome == 0) ? prob0 : (1.0 - prob0);
-            double inv_norm = (p_out > 1e-15) ? 1.0 / std::sqrt(p_out) : 1.0;
-            for (size_t i = 0; i < sv.dim; ++i) {
-                if (static_cast<int>((i >> qubit) & 1) != outcome) {
-                    sv.real_parts[i] = 0.0;
-                    sv.imag_parts[i] = 0.0;
-                } else {
-                    sv.real_parts[i] *= inv_norm;
-                    sv.imag_parts[i] *= inv_norm;
-                }
-            }
-            if (outcome == 1) gates::apply_x(sv, qubit);
+        // RESET: measure the qubit, then apply X if the outcome was |1⟩ so
+        // the post-state is |0⟩.
+        case GT::RESET:
+            if (sv_collapse_qubit(sv, q[0], sv_sim_rng) == 1)
+                gates::apply_x(sv, q[0]);
             break;
-        }
 
         // Parameterised — should have been resolved
         case GT::PARAM_RX:
@@ -152,24 +134,49 @@ void StatevectorSimulator::apply_instruction(Statevector& sv, const Instruction&
 // =============================================================================
 
 // Collapse `qubit` to a sampled outcome (Born rule), renormalise, return it.
+// Shared by the MEASURE/RESET dispatch cases and the trajectory runner
+// (pre-R.1.13 the same O(dim) loops were triplicated and always serial;
+// audit F-11). Both passes iterate the two qubit-value halves as strided
+// blocks with branch-free inner loops and are OMP-gated at the same
+// dim >= 2^20 threshold as the gate kernels.
 static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng) {
     const size_t step = 1ULL << qubit;
+    const size_t dim = sv.dim;
+    const int n_blocks = static_cast<int>(dim / (2 * step));
+    double* __restrict__ rp = sv.real_parts;
+    double* __restrict__ ip = sv.imag_parts;
+
     double prob0 = 0.0;
-    for (size_t i = 0; i < sv.dim; i += 2 * step)
-        for (size_t j = i; j < i + step; ++j)
-            prob0 += sv.real_parts[j] * sv.real_parts[j]
-                   + sv.imag_parts[j] * sv.imag_parts[j];
+    #pragma omp parallel for reduction(+:prob0) schedule(static) if(dim >= (1<<20))
+    for (int bi = 0; bi < n_blocks; ++bi) {
+        const size_t base = static_cast<size_t>(bi) * 2 * step;
+        double acc = 0.0;
+        #pragma omp simd reduction(+:acc)
+        for (size_t j = 0; j < step; ++j)
+            acc += rp[base + j] * rp[base + j] + ip[base + j] * ip[base + j];
+        prob0 += acc;
+    }
+
     std::uniform_real_distribution<double> udist(0.0, 1.0);
     const int outcome = (udist(rng) < prob0) ? 0 : 1;
     const double p_out = (outcome == 0) ? prob0 : (1.0 - prob0);
     const double inv_norm = (p_out > 1e-15) ? 1.0 / std::sqrt(p_out) : 1.0;
-    for (size_t i = 0; i < sv.dim; ++i) {
-        if (static_cast<int>((i >> qubit) & 1) != outcome) {
-            sv.real_parts[i] = 0.0;
-            sv.imag_parts[i] = 0.0;
-        } else {
-            sv.real_parts[i] *= inv_norm;
-            sv.imag_parts[i] *= inv_norm;
+    const size_t keep_off = (outcome == 0) ? 0 : step;   // half that survives
+    const size_t zero_off = step - keep_off;             // half that vanishes
+
+    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
+    for (int bi = 0; bi < n_blocks; ++bi) {
+        const size_t base = static_cast<size_t>(bi) * 2 * step;
+        double* __restrict__ kr = rp + base + keep_off;
+        double* __restrict__ ki = ip + base + keep_off;
+        double* __restrict__ zr = rp + base + zero_off;
+        double* __restrict__ zi = ip + base + zero_off;
+        #pragma omp simd
+        for (size_t j = 0; j < step; ++j) {
+            kr[j] *= inv_norm;
+            ki[j] *= inv_norm;
+            zr[j] = 0.0;
+            zi[j] = 0.0;
         }
     }
     return outcome;

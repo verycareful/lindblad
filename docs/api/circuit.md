@@ -22,14 +22,23 @@ Key fields:
 - `param_exprs`: symbolic parameter expression trees (populated by `from_qasm3()`
   when an angle references a named `input` parameter); resolved by
   `QuantumCircuit::bind_parameters()` into `params`
-- `matrix`: custom unitary storage for `UNITARY`
+- `matrix`: custom unitary storage for `UNITARY`. In R.1.13 (audit F-18) this is
+  a **copy-on-write `CowMatrix`**, not a `std::vector<Complex128>`: the matrix is
+  logically immutable, so copying an `Instruction` (per estimator evaluation,
+  per transpiler pass) shares one buffer instead of deep-copying $2^k \times 2^k$
+  data. Read access mirrors `std::vector` (`size()`, `operator[]`, `data()`,
+  iteration) and implicitly converts to `const std::vector<Complex128>&`, so
+  existing read call sites are unchanged. To set it, assign a whole vector
+  (`inst.matrix = some_vector;`); there is no in-place element mutation.
+- `permutation`: basis-index map for `PERMUTATION` (size $2^k$, LSB = `qubits[0]`)
 - `label`: custom label (used for unitary naming)
 - `condition_clbit` / `condition_value`: classical condition metadata (not enforced by the circuit)
 - `schedule_time`: scheduling metadata (set by passes)
 
 Helpers:
 
-- `gate_name()` returns the gate mnemonic (and uses `label` for `UNITARY`)
+- `gate_name()` returns the gate mnemonic (and uses `label` for `UNITARY` /
+  `PERMUTATION`; `mcx` / `mcp` for the multi-controlled ops)
 - `is_parameterised()` is true for `PARAM_RX/RY/RZ/P/U`
 - `is_classical()` is true for `MEASURE` and `RESET`
 
@@ -65,6 +74,25 @@ them to the circuit `parameter_names` list:
 QuantumCircuit qc(1);
 qc.rx("theta", 0);
 ```
+
+**Multi-controlled and permutation builders (R.1.13, audit F-7/F-9):**
+
+```cpp
+qc.mcx({0, 1, 2}, 3);          // flip qubit 3 when 0,1,2 are all |1> (any control count)
+qc.mcp(M_PI / 4, {0, 1, 2});   // phase when 0,1,2 are all |1> (1 qubit == P, 2 == CP)
+qc.permute(perm, {0, 1});      // |x> -> |perm[x]> on the target subspace
+```
+
+- `mcx(controls, target)` validates each qubit and that no control equals the
+  target; stores `[controls..., target]`. `mcp(lambda, qubits)` requires at
+  least one qubit. `permute(perm, qubits)` requires `perm.size() == 2^qubits.size()`
+  and validates that `perm` is a bijection (a non-bijection is non-unitary and
+  throws `std::invalid_argument`).
+- These are native in the statevector and density-matrix backends (no dense
+  $2^k$ matrix). The MPS backend reduces small MCX to X/CX/CCX and uses the
+  bounded statevector fallback for wider MCX / MCP / PERMUTATION. QASM/JSON
+  export and transpiler decomposition of these ops are not yet implemented and
+  throw (decompose before export/routing). See [Gates API](gates.md).
 
 ### Special Operations
 

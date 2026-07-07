@@ -1,5 +1,7 @@
 // mps_sim.cpp — Matrix Product State simulator
-// Uses Eigen3 BDCSVD for numerically stable, high-performance SVD truncation.
+// SVD truncation defaults to Eigen JacobiSVD (accurate). BDCSVD is a faster
+// opt-in but is CURRENTLY BROKEN for complex/degenerate inputs (R.1.11.2, see
+// docs/plans/eigen-bdcsvd-bug.md); selecting it emits a loud runtime warning.
 // Non-adjacent two-qubit gates are handled via SWAP chains (correct MPS-native approach).
 // Single-qubit marginals use efficient left/right boundary contraction — O(N chi^3).
 
@@ -15,11 +17,29 @@
 #include <cassert>
 #include <cmath>
 #include <chrono>
+#include <iostream>
 #include <numeric>
 #include <random>
 #include <stdexcept>
 
 namespace lindblad {
+
+// Emit a one-time, very visible warning when the (currently broken) BDCSVD
+// backend is selected. Eigen's BDCSVD produces inaccurate results for
+// complex/degenerate inputs (R.1.11.2, docs/plans/eigen-bdcsvd-bug.md); Jacobi
+// is the accurate default.
+static void warn_bdc_broken_once() {
+    static bool warned = false;
+    if (warned) return;
+    warned = true;
+    std::cerr <<
+        "\n***************************************************************\n"
+        "[lindblad] WARNING: SVDMethod::BDC (Eigen BDCSVD) is SELECTED but is\n"
+        "  CURRENTLY BROKEN for complex / degenerate inputs (R.1.11.2 bug,\n"
+        "  docs/plans/eigen-bdcsvd-bug.md). MPS results may be SILENTLY WRONG.\n"
+        "  Use SVDMethod::Jacobi (the default) until the upstream fix lands.\n"
+        "***************************************************************\n";
+}
 
 // =============================================================================
 // MPSState implementation
@@ -59,10 +79,23 @@ void MPSState::svd_truncate(
         rows, cols
     );
 
-    Eigen::BDCSVD<EigenCMatrix> svd(mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
-    const auto& S_eigen = svd.singularValues();  // sorted descending
-    const auto& U_eigen = svd.matrixU();          // rows × thin_rank, column-major
-    const auto& V_eigen = svd.matrixV();          // cols × thin_rank  (V, not Vt), column-major
+    // SVD backend (audit F-23): Jacobi by default (accurate, avoids the R.1.11.2
+    // BDCSVD accuracy defect), BDC opt-in for speed at large chi. Compute into
+    // shared locals so the truncation logic below is backend-agnostic.
+    Eigen::MatrixXcd U_eigen, V_eigen;
+    Eigen::VectorXd S_eigen;
+    if (svd_method == SVDMethod::BDC) {
+        warn_bdc_broken_once();
+        Eigen::BDCSVD<EigenCMatrix> svd(mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        S_eigen = svd.singularValues();
+        U_eigen = svd.matrixU();
+        V_eigen = svd.matrixV();
+    } else {
+        Eigen::JacobiSVD<EigenCMatrix> svd(mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        S_eigen = svd.singularValues();
+        U_eigen = svd.matrixU();
+        V_eigen = svd.matrixV();
+    }
 
     const int min_dim = static_cast<int>(S_eigen.size());
 
@@ -142,27 +175,26 @@ void MPSState::apply_two_qubit_gate_adjacent(
     int br = T2.bond_right;
 
     // theta[l, p1, p2, r] = sum_m T1[l,p1,m] * T2[m,p2,r]
-    // Stored as (bl*2) x (2*br) matrix for SVD: row = l*2+p1, col = p2*br+r
+    // Stored as (bl*2) x (2*br) matrix for SVD: row = l*2+p1, col = p2*br+r.
+    //
+    // R.1.13 (audit F-6): this contraction is a single zero-copy Eigen GEMM.
+    // MPSTensor data is contiguous row-major in exactly the needed shapes:
+    //   T1[(l*2+p1), m] is (bl*2) x bm,  T2[m, (p2*br+r)] is bm x (2*br),
+    // and Complex128 is layout-identical to std::complex<double>, so both map
+    // in place. theta = M1 * M2 replaces the O(4*chi^3) scalar loop with BLAS3.
+    // (The 4x4 gate contraction below stays scalar — it is only O(16*chi^2).)
     int rows = bl * 2;
     int cols = 2 * br;
-    std::vector<Complex128> matrix(rows * cols, Complex128(0.0, 0.0));
-
-    for (int l = 0; l < bl; ++l) {
-        for (int p1 = 0; p1 < 2; ++p1) {
-            for (int p2 = 0; p2 < 2; ++p2) {
-                for (int r = 0; r < br; ++r) {
-                    Complex128 sum(0.0, 0.0);
-                    for (int m = 0; m < bm; ++m) {
-                        sum += T1(l, p1, m) * T2(m, p2, r);
-                    }
-                    // Apply gate
-                    // Actually, compute theta_new directly:
-                    // theta_new[l, po1, po2, r] = sum_{pi1,pi2} U[...] * theta[l, pi1, pi2, r]
-                    // We'll first build theta, then apply gate
-                    matrix[(l * 2 + p1) * cols + (p2 * br + r)] += sum;
-                }
-            }
-        }
+    std::vector<Complex128> matrix(static_cast<size_t>(rows) * cols, Complex128(0.0, 0.0));
+    {
+        using EigenCM = Eigen::Matrix<std::complex<double>, Eigen::Dynamic,
+                                      Eigen::Dynamic, Eigen::RowMajor>;
+        Eigen::Map<const EigenCM> M1(
+            reinterpret_cast<const std::complex<double>*>(T1.data.data()), rows, bm);
+        Eigen::Map<const EigenCM> M2(
+            reinterpret_cast<const std::complex<double>*>(T2.data.data()), bm, cols);
+        Eigen::Map<EigenCM>(
+            reinterpret_cast<std::complex<double>*>(matrix.data()), rows, cols) = M1 * M2;
     }
 
     // Apply gate U to theta: theta_new[row(po1),col(po2)] = sum U * theta
@@ -601,7 +633,9 @@ static MPSState mps_from_sv(const Statevector& sv, int n, int max_bond_dim, doub
                         block[alpha * right_cols + p * half_cols + c2].real,
                         block[alpha * right_cols + p * half_cols + c2].imag);
 
-        Eigen::BDCSVD<Eigen::MatrixXcd> svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        // JacobiSVD for accuracy (audit F-23): this is the reconstruction
+        // fallback; the R.1.11.2 BDCSVD defect made composite states unreliable.
+        Eigen::JacobiSVD<Eigen::MatrixXcd> svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
         const auto& svals = svd.singularValues();
         int k = (int)svals.size();
         while (k > 1 && std::abs(svals(k - 1)) < cutoff) --k;
@@ -891,6 +925,41 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
         inst.type == GT::PARAM_U)
         throw std::runtime_error("Unresolved parameterised gate in MPS simulation");
 
+    // Multi-controlled X reduces to X/CX/CCX for <= 2 controls (native MPS
+    // path). Wider MCX and the MCP/PERMUTATION structured ops have no compact
+    // MPS form, so they take the same bounded statevector fallback as a 3+ qubit
+    // UNITARY (to_statevector -> apply -> mps_from_sv). This keeps e.g. Shor's
+    // PERMUTATION oracle runnable on the MPS backend, as its dense UNITARY was.
+    if (inst.type == GT::MCX && inst.qubits.size() <= 3) {
+        Instruction sub = inst;
+        const size_t nq = inst.qubits.size();
+        sub.type = (nq == 1) ? GT::X : (nq == 2) ? GT::CX : GT::CCX;
+        mps_apply_instruction(mps, sub, rng);
+        return;
+    }
+    if (inst.type == GT::MCX || inst.type == GT::MCP ||
+        inst.type == GT::PERMUTATION) {
+        if (mps.n_qubits > MPS_SV_MAX_QUBITS) {
+            throw std::runtime_error(
+                "MPS simulator: " + inst.gate_name() + " on n_qubits=" +
+                std::to_string(mps.n_qubits) + " exceeds the statevector-"
+                "fallback limit (" + std::to_string(MPS_SV_MAX_QUBITS) +
+                "); decompose to 1/2-qubit gates or use the statevector/"
+                "density-matrix backend");
+        }
+        auto sv = mps.to_statevector();
+        if (inst.type == GT::MCX) {
+            std::vector<int> controls(inst.qubits.begin(), inst.qubits.end() - 1);
+            gates::apply_mcx(sv, controls, inst.qubits.back());
+        } else if (inst.type == GT::MCP) {
+            gates::apply_mcp(sv, inst.qubits, inst.params[0]);
+        } else {
+            gates::apply_permutation(sv, inst.qubits, inst.permutation);
+        }
+        mps = mps_from_sv(sv, mps.n_qubits, mps.max_bond_dim, mps.cutoff);
+        return;
+    }
+
     // UNITARY gates store the matrix directly in inst.matrix.
     //
     // 1-qubit and 2-qubit UNITARYs route to MPSState's direct
@@ -1064,6 +1133,131 @@ static bool mps_measures_are_terminal(const QuantumCircuit& circuit) {
     return true;
 }
 
+// =============================================================================
+// Hoisted read-only sequential sampling (audit F-3/F-4)
+//
+// The right environments E_q (transfer-operator contraction of sites q..N-1)
+// are INVARIANT across shots and across the left-to-right projection, so they
+// are computed once. Each shot then samples read-only: the left environment is
+// carried incrementally and each site's outcome slice is read directly from the
+// (unmodified) tensors, scaled by 1/p_outcome — no per-shot MPS copy and no
+// environment rebuild. Every contraction is the two-stage O(chi^3) form (the
+// previous per-shot measure_sequential rebuilt O(N chi^3) environments AND
+// deep-copied the whole MPS per shot; its 4-index contractions were O(chi^4)).
+// =============================================================================
+
+// right_envs[q] = E_q sized (bond_left[q] x bond_left[q]); right_envs[N] = [[1]].
+static std::vector<std::vector<Complex128>> mps_right_envs(
+    const std::vector<MPSTensor>& tensors, int n
+) {
+    std::vector<std::vector<Complex128>> envs(static_cast<size_t>(n + 1));
+    envs[static_cast<size_t>(n)] = {Complex128(1.0, 0.0)};
+
+    for (int q = n - 1; q >= 0; --q) {
+        const auto& T = tensors[static_cast<size_t>(q)];
+        const int bl = T.bond_left, br = T.bond_right;
+        const auto& En = envs[static_cast<size_t>(q + 1)];  // br x br
+
+        std::vector<Complex128> out(static_cast<size_t>(bl) * bl, Complex128(0.0, 0.0));
+        // For each physical index p (two-stage O(chi^3)):
+        //   Y[m1, r2] = sum_r1 T[m1,p,r1] * En[r1,r2]
+        //   out[m1,m2] += sum_r2 Y[m1,r2] * conj(T[m2,p,r2])
+        std::vector<Complex128> Y(static_cast<size_t>(bl) * br);
+        for (int p = 0; p < 2; ++p) {
+            for (int m1 = 0; m1 < bl; ++m1)
+                for (int r2 = 0; r2 < br; ++r2) {
+                    Complex128 acc(0.0, 0.0);
+                    for (int r1 = 0; r1 < br; ++r1)
+                        acc += T(m1, p, r1) * En[static_cast<size_t>(r1) * br + r2];
+                    Y[static_cast<size_t>(m1) * br + r2] = acc;
+                }
+            for (int m1 = 0; m1 < bl; ++m1)
+                for (int m2 = 0; m2 < bl; ++m2) {
+                    Complex128 acc(0.0, 0.0);
+                    for (int r2 = 0; r2 < br; ++r2)
+                        acc += Y[static_cast<size_t>(m1) * br + r2] * T(m2, p, r2).conj();
+                    out[static_cast<size_t>(m1) * bl + m2] += acc;
+                }
+        }
+        envs[static_cast<size_t>(q)] = std::move(out);
+    }
+    return envs;
+}
+
+// Sample one full bitstring read-only, using precomputed right environments.
+// Convention: qubit 0 is the RIGHTMOST character (matches measure_sequential
+// and the statevector sampling paths).
+static std::string mps_sample(
+    const std::vector<MPSTensor>& tensors, int n,
+    const std::vector<std::vector<Complex128>>& right_envs,
+    std::mt19937_64& rng
+) {
+    std::string bits(static_cast<size_t>(n), '0');
+    std::vector<Complex128> left = {Complex128(1.0, 0.0)};  // 1x1
+    std::uniform_real_distribution<double> dist(0.0, 1.0);
+
+    for (int q = 0; q < n; ++q) {
+        const auto& T = tensors[static_cast<size_t>(q)];
+        const int cl = T.bond_left, cr = T.bond_right;
+        const auto& R = right_envs[static_cast<size_t>(q + 1)];  // cr x cr
+
+        double probs[2] = {0.0, 0.0};
+        for (int p = 0; p < 2; ++p) {
+            // A[l1,r2] = sum_r1 T[l1,p,r1] R[r1,r2]
+            std::vector<Complex128> A(static_cast<size_t>(cl) * cr);
+            for (int l1 = 0; l1 < cl; ++l1)
+                for (int r2 = 0; r2 < cr; ++r2) {
+                    Complex128 acc(0.0, 0.0);
+                    for (int r1 = 0; r1 < cr; ++r1)
+                        acc += T(l1, p, r1) * R[static_cast<size_t>(r1) * cr + r2];
+                    A[static_cast<size_t>(l1) * cr + r2] = acc;
+                }
+            // B[l1,l2] = sum_r2 A[l1,r2] conj(T[l2,p,r2]);  prob = Re sum left[l1,l2] B[l1,l2]
+            Complex128 sum(0.0, 0.0);
+            for (int l1 = 0; l1 < cl; ++l1)
+                for (int l2 = 0; l2 < cl; ++l2) {
+                    Complex128 b(0.0, 0.0);
+                    for (int r2 = 0; r2 < cr; ++r2)
+                        b += A[static_cast<size_t>(l1) * cr + r2] * T(l2, p, r2).conj();
+                    sum += left[static_cast<size_t>(l1) * cl + l2] * b;
+                }
+            probs[p] = sum.real;
+        }
+
+        double p0 = std::max(0.0, probs[0]);
+        double p1 = std::max(0.0, probs[1]);
+        double total = p0 + p1;
+        if (total < 1e-30) { p0 = p1 = 0.5; total = 1.0; }
+        const int outcome = (dist(rng) < p0 / total) ? 0 : 1;
+        bits[static_cast<size_t>(n - 1 - q)] = outcome ? '1' : '0';
+
+        const double p_out = (outcome == 0) ? probs[0] : probs[1];
+        const double inv_p = (p_out > 1e-30) ? 1.0 / p_out : 1.0;
+
+        // new_left[m1,m2] = (1/p_out) sum_{l1,l2} left[l1,l2] T[l1,out,m1] conj(T[l2,out,m2])
+        //   C[l2,m1] = sum_l1 left[l1,l2] T[l1,out,m1]
+        //   new_left[m1,m2] = sum_l2 C[l2,m1] conj(T[l2,out,m2]) * inv_p
+        std::vector<Complex128> C(static_cast<size_t>(cl) * cr, Complex128(0.0, 0.0));
+        for (int l2 = 0; l2 < cl; ++l2)
+            for (int m1 = 0; m1 < cr; ++m1) {
+                Complex128 acc(0.0, 0.0);
+                for (int l1 = 0; l1 < cl; ++l1)
+                    acc += left[static_cast<size_t>(l1) * cl + l2] * T(l1, outcome, m1);
+                C[static_cast<size_t>(l2) * cr + m1] = acc;
+            }
+        std::vector<Complex128> new_left(static_cast<size_t>(cr) * cr, Complex128(0.0, 0.0));
+        for (int m1 = 0; m1 < cr; ++m1)
+            for (int m2 = 0; m2 < cr; ++m2) {
+                Complex128 acc(0.0, 0.0);
+                for (int l2 = 0; l2 < cl; ++l2)
+                    acc += C[static_cast<size_t>(l2) * cr + m1] * T(l2, outcome, m2).conj();
+                new_left[static_cast<size_t>(m1) * cr + m2] = acc * inv_p;
+            }
+        left = std::move(new_left);
+    }
+    return bits;
+}
+
 MPSSimulator::Result MPSSimulator::run(
     const QuantumCircuit& circuit, int max_bond_dim,
     int shots, uint64_t seed
@@ -1216,11 +1410,15 @@ MPSSimulator::Result MPSSimulator::run(
                 auto raw = sv.sample_counts(shots, seed);
                 for (const auto& [bits, cnt] : raw) record(bits, cnt);
             } else {
-                // Sequential MPS measurement: correctly handles correlations.
-                // O(N * chi^3) per shot. Each shot works on a copy of the MPS.
+                // Sequential MPS measurement (audit F-4): right environments are
+                // shot-invariant, so compute them ONCE and sample each shot
+                // read-only (no per-shot MPS copy, no environment rebuild).
+                // O(N * chi^3) per shot.
+                const auto right_envs =
+                    mps_right_envs(result.final_state.tensors, circuit.n_qubits);
                 for (int s = 0; s < shots; ++s) {
-                    MPSState mps_copy = result.final_state;
-                    record(mps_copy.measure_sequential(rng), 1);
+                    record(mps_sample(result.final_state.tensors,
+                                      circuit.n_qubits, right_envs, rng), 1);
                 }
             }
         }

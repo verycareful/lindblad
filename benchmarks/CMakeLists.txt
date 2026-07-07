@@ -4,6 +4,9 @@ set(LINDBLAD_BENCH_SOURCES
     bench_gates.cpp
     bench_statevector.cpp
     bench_maqaoa.cpp
+    bench_qudit_sv.cpp
+    bench_qudit_dm.cpp
+    bench_scaling.cpp
 )
 
 foreach(bench_source ${LINDBLAD_BENCH_SOURCES})

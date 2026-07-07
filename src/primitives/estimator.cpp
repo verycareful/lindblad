@@ -17,122 +17,152 @@ namespace lindblad {
 
 namespace {
 
-// Sample ⟨P⟩ for a single Pauli string `pauli` (project LSB-first convention:
-// pauli[q] acts on qubit q, see docs/Architecture.md "Conventions") on the
-// prepared circuit. Appends basis-rotation gates so each non-I Pauli is
-// measured in the Z basis, takes `shots` measurements, and returns the mean
-// of (+1 for even-parity outcomes, -1 for odd parity) over the qubits where
-// the Pauli is non-I.
-//
-// Backend choice: noise-aware (DM) when noise_model is non-ideal, otherwise
-// SV. Shot count is the per-term budget; total work scales linearly with the
-// number of non-identity Pauli terms in the observable.
-double sample_pauli_expectation(
+// Run `circuit` in the Z-measurement basis defined by `basis` (basis[q] in
+// {I,X,Y,Z}, uppercase): X -> prepend H, Y -> prepend S†H, Z/I -> nothing.
+// measure_all maps qubit q -> clbit q. Returns the shot counts. Backend is
+// noise-aware DM when the model is non-ideal, otherwise statevector.
+std::unordered_map<std::string, int> run_in_basis(
     const QuantumCircuit& circuit,
-    const std::string& pauli,
-    int shots,
-    uint64_t seed,
-    const NoiseModel& noise_model
+    const std::vector<char>& basis,
+    int shots, uint64_t seed, const NoiseModel& noise_model
 ) {
-    const int n = circuit.n_qubits;
-    if (static_cast<int>(pauli.size()) != n) {
-        throw std::invalid_argument(
-            "Estimator: Pauli string length " + std::to_string(pauli.size()) +
-            " does not match circuit n_qubits=" + std::to_string(n));
-    }
-
-    // Build measurement circuit: copy + basis rotation + measure_all.
     QuantumCircuit meas = circuit;
-    std::vector<int> non_identity_qubits;
-    non_identity_qubits.reserve(n);
-    for (int i = 0; i < n; ++i) {
-        const int qubit = i;   // LSB-first: pauli[i] acts on qubit i
-        const char p = pauli[i];
-        if (p == 'I' || p == 'i') continue;
-        non_identity_qubits.push_back(qubit);
-        if (p == 'X' || p == 'x') {
-            meas.h(qubit);
-        } else if (p == 'Y' || p == 'y') {
-            meas.sdg(qubit).h(qubit);   // S†H rotates Y eigenbasis → Z eigenbasis
-        } else if (p == 'Z' || p == 'z') {
-            // already Z basis
-        } else {
-            throw std::invalid_argument(
-                std::string("Estimator: unknown Pauli character '") + p +
-                "' in pauli string \"" + pauli + "\"");
-        }
+    for (int q = 0; q < circuit.n_qubits; ++q) {
+        if (basis[static_cast<size_t>(q)] == 'X') meas.h(q);
+        else if (basis[static_cast<size_t>(q)] == 'Y') meas.sdg(q).h(q);
     }
     meas.measure_all();
 
-    // If the Pauli is the identity, expectation is trivially +1 and we should
-    // never have routed here, but guard regardless.
-    if (non_identity_qubits.empty()) return 1.0;
-
-    // Run shots through the appropriate backend. Each simulator returns its
-    // own nested Result type, so we extract counts inside each branch into a
-    // common local map and then process uniformly.
-    std::unordered_map<std::string, int> counts;
     if (!noise_model.is_ideal()) {
         DensityMatrixSimulator dm_sim;
         auto res = dm_sim.run(meas, noise_model, shots, seed);
-        if (!res.success) {
+        if (!res.success)
             throw std::runtime_error("Estimator sampling failed: " + res.error_message);
-        }
-        counts = std::move(res.counts);
-    } else {
-        StatevectorSimulator sv_sim;
-        auto res = sv_sim.run(meas, shots, seed);
-        if (!res.success) {
-            throw std::runtime_error("Estimator sampling failed: " + res.error_message);
-        }
-        counts = std::move(res.counts);
+        return std::move(res.counts);
     }
+    StatevectorSimulator sv_sim;
+    auto res = sv_sim.run(meas, shots, seed);
+    if (!res.success)
+        throw std::runtime_error("Estimator sampling failed: " + res.error_message);
+    return std::move(res.counts);
+}
 
-    // Accumulate parity-weighted estimate. Bitstring layout per statevector_sim:
-    // clbit c is at string position (n - 1 - c); measure_all maps qubit q to
-    // clbit q. So qubit q is at bits[n - 1 - q] (rightmost = qubit 0).
+// Parity-weighted expectation of a single Pauli string over shot counts.
+// Qubit q sits at bits[n - 1 - q] (clbit c at string position n-1-c;
+// measure_all maps qubit q -> clbit q). Mean of +1 (even parity) / -1 (odd)
+// over the qubits where `pauli` is non-I.
+double parity_expectation(
+    const std::unordered_map<std::string, int>& counts,
+    const std::string& pauli, int n
+) {
     long long pos_count = 0, total = 0;
     for (const auto& [bits, count] : counts) {
         int parity = 0;
-        for (int q : non_identity_qubits) {
+        for (int q = 0; q < n; ++q) {
+            const char p = pauli[static_cast<size_t>(q)];
+            if (p == 'I' || p == 'i') continue;
             const int pos = n - 1 - q;
-            if (pos >= 0 && pos < static_cast<int>(bits.size()) && bits[pos] == '1') {
+            if (pos >= 0 && pos < static_cast<int>(bits.size()) && bits[pos] == '1')
                 parity ^= 1;
-            }
         }
         total += count;
         pos_count += (parity == 0 ? +1 : -1) * count;
     }
-    if (total == 0) return 0.0;
-    return static_cast<double>(pos_count) / static_cast<double>(total);
+    return total == 0 ? 0.0 : static_cast<double>(pos_count) / static_cast<double>(total);
 }
 
-// Sampling expectation value of a SparsePauliOp. Each term is measured with
-// `shots` shots; the contributions are summed with their coefficients.
+// Uppercase Pauli, mapping I/i->I etc.; throws on unknown characters.
+char norm_pauli(char c, const std::string& ctx) {
+    switch (c) {
+        case 'I': case 'i': return 'I';
+        case 'X': case 'x': return 'X';
+        case 'Y': case 'y': return 'Y';
+        case 'Z': case 'z': return 'Z';
+        default:
+            throw std::invalid_argument(
+                std::string("Estimator: unknown Pauli character '") + c +
+                "' in \"" + ctx + "\"");
+    }
+}
+
+// Sampling expectation value of a SparsePauliOp (audit F-10). When
+// `group_terms` is true, qubit-wise-commuting terms share one measurement run
+// (all Z/I terms collapse into a single Z-basis run); otherwise each term is
+// measured independently (pre-R.1.13 behaviour, byte-identical seeded stream).
 double sampled_expectation_value(
     const QuantumCircuit& circuit,
     const SparsePauliOp& observable,
-    int shots,
-    uint64_t seed,
-    const NoiseModel& noise_model
+    int shots, uint64_t seed,
+    const NoiseModel& noise_model, bool group_terms
 ) {
+    const int n = circuit.n_qubits;
     double total = 0.0;
-    uint64_t term_seed = seed == 0 ? 0 : seed;
-    for (const auto& term : observable.terms) {
-        // Identity term: contributes coeff.real with no sampling noise.
-        bool is_identity = true;
-        for (char c : term.pauli) {
-            if (c != 'I' && c != 'i') { is_identity = false; break; }
+
+    // Split off identity terms (exact, no sampling) and normalise the rest.
+    std::vector<size_t> nonid;
+    nonid.reserve(observable.terms.size());
+    for (size_t i = 0; i < observable.terms.size(); ++i) {
+        const auto& term = observable.terms[i];
+        if (static_cast<int>(term.pauli.size()) != n)
+            throw std::invalid_argument(
+                "Estimator: Pauli string length " + std::to_string(term.pauli.size()) +
+                " does not match circuit n_qubits=" + std::to_string(n));
+        bool is_id = true;
+        for (char c : term.pauli) { if (norm_pauli(c, term.pauli) != 'I') { is_id = false; break; } }
+        if (is_id) total += term.coeff.real;
+        else nonid.push_back(i);
+    }
+    if (nonid.empty()) return total;
+
+    uint64_t grp_seed = seed;
+
+    if (!group_terms) {
+        for (size_t i : nonid) {
+            const auto& term = observable.terms[i];
+            std::vector<char> basis(static_cast<size_t>(n), 'I');
+            for (int q = 0; q < n; ++q) basis[static_cast<size_t>(q)] = norm_pauli(term.pauli[static_cast<size_t>(q)], term.pauli);
+            auto counts = run_in_basis(circuit, basis, shots, grp_seed, noise_model);
+            total += term.coeff.real * parity_expectation(counts, term.pauli, n);
+            if (grp_seed != 0) ++grp_seed;
         }
-        if (is_identity) {
-            total += term.coeff.real;
-            continue;
+        return total;
+    }
+
+    // Greedy qubit-wise-commutativity grouping: a term joins the first group
+    // whose merged basis agrees with it on every non-I qubit.
+    struct Group { std::vector<char> basis; std::vector<size_t> terms; };
+    std::vector<Group> groups;
+    for (size_t i : nonid) {
+        const auto& p = observable.terms[i].pauli;
+        int placed = -1;
+        for (size_t g = 0; g < groups.size() && placed < 0; ++g) {
+            bool ok = true;
+            for (int q = 0; q < n && ok; ++q) {
+                const char pc = norm_pauli(p[static_cast<size_t>(q)], p);
+                const char gb = groups[g].basis[static_cast<size_t>(q)];
+                if (pc != 'I' && gb != 'I' && pc != gb) ok = false;
+            }
+            if (ok) placed = static_cast<int>(g);
         }
-        const double term_exp = sample_pauli_expectation(
-            circuit, term.pauli, shots, term_seed, noise_model
-        );
-        total += term.coeff.real * term_exp;
-        if (term_seed != 0) ++term_seed;   // decorrelate per-term sampling
+        if (placed < 0) {
+            groups.push_back({std::vector<char>(static_cast<size_t>(n), 'I'), {}});
+            placed = static_cast<int>(groups.size()) - 1;
+        }
+        Group& g = groups[static_cast<size_t>(placed)];
+        for (int q = 0; q < n; ++q) {
+            const char pc = norm_pauli(p[static_cast<size_t>(q)], p);
+            if (pc != 'I') g.basis[static_cast<size_t>(q)] = pc;
+        }
+        g.terms.push_back(i);
+    }
+
+    for (const auto& g : groups) {
+        auto counts = run_in_basis(circuit, g.basis, shots, grp_seed, noise_model);
+        for (size_t ti : g.terms) {
+            const auto& term = observable.terms[ti];
+            total += term.coeff.real * parity_expectation(counts, term.pauli, n);
+        }
+        if (grp_seed != 0) ++grp_seed;
     }
     return total;
 }
@@ -257,7 +287,8 @@ double Estimator::run_single(
     //   3. shots == 0, ideal  → SV evolution, exact analytical expectation.
     if (options.shots > 0) {
         return sampled_expectation_value(
-            to_simulate, observable, options.shots, options.seed, options.noise_model
+            to_simulate, observable, options.shots, options.seed,
+            options.noise_model, options.group_pauli_terms
         );
     }
 

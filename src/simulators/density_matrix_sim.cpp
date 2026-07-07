@@ -35,6 +35,11 @@ DensityMatrix::DensityMatrix(int n_qubits)
     data[0] = Complex128(1.0, 0.0);  // |0⟩⟨0|
 }
 
+void DensityMatrix::initialize() {
+    std::fill(data.begin(), data.end(), Complex128(0.0, 0.0));
+    data[0] = Complex128(1.0, 0.0);  // |0...0><0...0|
+}
+
 DensityMatrix DensityMatrix::from_statevector(const Statevector& sv) {
     DensityMatrix dm(sv.n_qubits);
     // rho_{ij} = psi_i * conj(psi_j)
@@ -74,98 +79,174 @@ bool DensityMatrix::is_valid(double atol) const {
 }
 
 // =============================================================================
-// apply_gate — localized tensor operation: rho -> U * rho * U†
-// Works on the 2^k subspace spanned by target qubits.
+// Localized sub-block application helpers (R.1.13, audit F-1/F-2)
 //
-// Background indices (those with all target bits = 0) are enumerated directly
-// via bit-insertion, eliminating the O(4^N) branch-per-element loop.
-// Each sub-block update uses an O(2^k) scratch buffer — no full-matrix copy.
+// Rewrite of the previous serial, column-strided apply_gate. rho is row-major
+// dim×dim, so a full row is contiguous. The ket (left) multiply therefore
+// becomes a complex AXPY over contiguous dim-length rows, parallelised over
+// background groups; the bra (right) multiply stays row-local and parallelises
+// over rows. An out-of-place ket variant lets apply_kraus avoid the per-Kraus
+// full-matrix restore copy entirely.
+// =============================================================================
+
+namespace {
+
+// OMP-gate threshold: total complex elements touched by a pass. Below this the
+// parallel/simd machinery costs more than it saves (small-register DM tests).
+constexpr size_t DM_PAR_THRESHOLD = 1u << 16;
+
+// Build the sub-block offset table (MSB-first internal addressing: sub-index
+// bit qi maps to physical qubit qubits[k-1-qi]) and the background-index table
+// (all target bits zero) for a k-qubit operator on `qubits`.
+void dm_build_tables(int n_qubits, size_t dim, const std::vector<int>& qubits,
+                     std::vector<size_t>& sub_off, std::vector<size_t>& bg) {
+    const int k = static_cast<int>(qubits.size());
+    const size_t sub_dim = size_t(1) << k;
+    std::vector<bool> is_tgt(static_cast<size_t>(n_qubits), false);
+    for (int q : qubits) is_tgt[static_cast<size_t>(q)] = true;
+
+    sub_off.resize(sub_dim);
+    for (size_t s = 0; s < sub_dim; ++s) {
+        size_t off = 0;
+        for (int qi = 0; qi < k; ++qi)
+            if ((s >> qi) & 1) off |= (size_t(1) << qubits[static_cast<size_t>(k - 1 - qi)]);
+        sub_off[s] = off;
+    }
+
+    const size_t n_bg = dim >> k;
+    bg.resize(n_bg);
+    for (size_t bidx = 0; bidx < n_bg; ++bidx) {
+        size_t b = 0;
+        int src_bit = 0;
+        for (int bb = 0; bb < n_qubits; ++bb) {
+            if (!is_tgt[static_cast<size_t>(bb)]) {
+                if ((bidx >> src_bit) & 1) b |= (size_t(1) << bb);
+                ++src_bit;
+            }
+        }
+        bg[bidx] = b;
+    }
+}
+
+// Ket (left) multiply, out-of-place: dst = U·rho on the row index.
+// Reads `src`, writes `dst` (must NOT alias). Every row is written exactly
+// once, so `dst` needs no pre-zeroing. Inner loop streams two contiguous
+// complex arrays (a complex AXPY) and vectorises.
+void dm_ket_apply(const Complex128* __restrict src, Complex128* __restrict dst,
+                  const std::vector<Complex128>& U,
+                  const std::vector<size_t>& sub_off,
+                  const std::vector<size_t>& bg,
+                  size_t sub_dim, size_t dim) {
+    const int n_bg = static_cast<int>(bg.size());
+    #pragma omp parallel for schedule(static) if(bg.size() * dim >= DM_PAR_THRESHOLD)
+    for (int bi = 0; bi < n_bg; ++bi) {
+        const size_t base = bg[static_cast<size_t>(bi)];
+        for (size_t ro = 0; ro < sub_dim; ++ro) {
+            Complex128* __restrict d = dst + (base + sub_off[ro]) * dim;
+            const Complex128 u0 = U[ro * sub_dim];
+            const Complex128* __restrict s0 = src + (base + sub_off[0]) * dim;
+            for (size_t c = 0; c < dim; ++c) d[c] = u0 * s0[c];
+            for (size_t ri = 1; ri < sub_dim; ++ri) {
+                const Complex128 u = U[ro * sub_dim + ri];
+                if (u.real == 0.0 && u.imag == 0.0) continue;
+                const Complex128* __restrict s = src + (base + sub_off[ri]) * dim;
+                for (size_t c = 0; c < dim; ++c) d[c] += u * s[c];
+            }
+        }
+    }
+}
+
+// Ket (left) multiply, in-place: rho = U·rho on the row index. Output rows
+// overlap input rows, so each background group's sub_dim rows are snapshotted
+// (thread-local, grows to the largest sub_dim*dim seen — reused across gates
+// so no per-gate allocation) before the AXPY writes back.
+void dm_ket_apply_inplace(Complex128* __restrict data,
+                          const std::vector<Complex128>& U,
+                          const std::vector<size_t>& sub_off,
+                          const std::vector<size_t>& bg,
+                          size_t sub_dim, size_t dim) {
+    const int n_bg = static_cast<int>(bg.size());
+    #pragma omp parallel if(bg.size() * dim >= DM_PAR_THRESHOLD)
+    {
+        thread_local std::vector<Complex128> snap;
+        if (snap.size() < sub_dim * dim) snap.resize(sub_dim * dim);
+        #pragma omp for schedule(static)
+        for (int bi = 0; bi < n_bg; ++bi) {
+            const size_t base = bg[static_cast<size_t>(bi)];
+            for (size_t s = 0; s < sub_dim; ++s) {
+                const Complex128* row = data + (base + sub_off[s]) * dim;
+                std::copy(row, row + dim, snap.begin() + static_cast<ptrdiff_t>(s * dim));
+            }
+            for (size_t ro = 0; ro < sub_dim; ++ro) {
+                Complex128* __restrict d = data + (base + sub_off[ro]) * dim;
+                const Complex128 u0 = U[ro * sub_dim];
+                const Complex128* s0 = snap.data();
+                for (size_t c = 0; c < dim; ++c) d[c] = u0 * s0[c];
+                for (size_t ri = 1; ri < sub_dim; ++ri) {
+                    const Complex128 u = U[ro * sub_dim + ri];
+                    if (u.real == 0.0 && u.imag == 0.0) continue;
+                    const Complex128* s = snap.data() + ri * dim;
+                    for (size_t c = 0; c < dim; ++c) d[c] += u * s[c];
+                }
+            }
+        }
+    }
+}
+
+// Bra (right) multiply, in-place: rho = rho·U† on the column index. Row-local
+// (mixes only the sub_dim target columns within each row), parallelised over
+// rows. new[c_out] = Σ_{c_in} rho[c_in] · conj(U[c_out, c_in]).
+void dm_bra_apply_inplace(Complex128* __restrict data,
+                          const std::vector<Complex128>& U,
+                          const std::vector<size_t>& sub_off,
+                          const std::vector<size_t>& bg,
+                          size_t sub_dim, size_t dim) {
+    const int ndim = static_cast<int>(dim);
+    #pragma omp parallel if(dim * bg.size() >= DM_PAR_THRESHOLD)
+    {
+        thread_local std::vector<Complex128> tmp;
+        if (tmp.size() < sub_dim) tmp.resize(sub_dim);
+        #pragma omp for schedule(static)
+        for (int row = 0; row < ndim; ++row) {
+            Complex128* __restrict rp = data + static_cast<size_t>(row) * dim;
+            for (size_t bidx = 0; bidx < bg.size(); ++bidx) {
+                const size_t base = bg[bidx];
+                for (size_t ci = 0; ci < sub_dim; ++ci)
+                    tmp[ci] = rp[base + sub_off[ci]];
+                for (size_t co = 0; co < sub_dim; ++co) {
+                    Complex128 sum(0.0, 0.0);
+                    for (size_t ci = 0; ci < sub_dim; ++ci)
+                        sum += tmp[ci] * U[co * sub_dim + ci].conj();
+                    rp[base + sub_off[co]] = sum;
+                }
+            }
+        }
+    }
+}
+
+}  // namespace
+
+// =============================================================================
+// apply_gate — localized tensor operation: rho -> U * rho * U†
+// In-place ket AXPY followed by in-place bra multiply (audit F-1). Background
+// indices (all target bits = 0) are enumerated directly; each pass is
+// OpenMP-parallel and streams contiguous rows.
 // =============================================================================
 
 void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
                                 const std::vector<int>& qubits) {
-    int k = static_cast<int>(qubits.size());
-    size_t sub_dim = 1ULL << k;
+    const int k = static_cast<int>(qubits.size());
+    const size_t sub_dim = size_t(1) << k;
 
     if (U.size() != sub_dim * sub_dim) {
         throw std::invalid_argument("Gate matrix size mismatch");
     }
 
-    // Mark target qubits for background-index enumeration.
-    std::vector<bool> is_tgt(n_qubits, false);
-    for (int q : qubits) is_tgt[q] = true;
+    std::vector<size_t> sub_off, bg;
+    dm_build_tables(n_qubits, dim, qubits, sub_off, bg);
 
-    // Map sub-index → physical address using the ORIGINAL qubit order.
-    // Gate matrices are MSB-first: qubits[0] is the MSB of the matrix index.
-    // Sub-index bit qi (LSB=0) therefore maps to physical qubit qubits[k-1-qi].
-    std::vector<size_t> sub_offsets(sub_dim);
-    for (size_t s = 0; s < sub_dim; ++s) {
-        size_t off = 0;
-        for (int qi = 0; qi < k; ++qi)
-            if ((s >> qi) & 1) off |= (size_t(1) << qubits[k - 1 - qi]);
-        sub_offsets[s] = off;
-    }
-
-    // Precompute the 2^(N-k) background indices by inserting zero bits at
-    // each target position into a compact (N-k)-bit counter.
-    size_t n_bg = dim >> k;
-    std::vector<size_t> bg_indices(n_bg);
-    for (size_t bg_idx = 0; bg_idx < n_bg; ++bg_idx) {
-        size_t bg = 0;
-        int src_bit = 0;
-        for (int b = 0; b < n_qubits; ++b) {
-            if (!is_tgt[b]) {
-                if ((bg_idx >> src_bit) & 1) bg |= (size_t(1) << b);
-                ++src_bit;
-            }
-        }
-        bg_indices[bg_idx] = bg;
-    }
-
-    // Scratch buffer: O(2^k) — thread-local to avoid repeated allocation
-    thread_local std::vector<Complex128> scratch;
-    if (scratch.size() < sub_dim) scratch.resize(sub_dim);
-
-    // ---- Left multiply: data = U * data  (updates row index) ----
-    // For each background row index bg, and for each column col:
-    //   Read the sub_dim-vector data[bg|sub_offsets[s], col] into scratch,
-    //   apply U in-place, write back.
-    for (size_t bi = 0; bi < n_bg; ++bi) {
-        const size_t bg = bg_indices[bi];
-        for (size_t col = 0; col < dim; ++col) {
-            // Read
-            for (size_t s = 0; s < sub_dim; ++s)
-                scratch[s] = data[(bg | sub_offsets[s]) * dim + col];
-            // Apply U and write
-            for (size_t r_out = 0; r_out < sub_dim; ++r_out) {
-                Complex128 sum(0.0, 0.0);
-                for (size_t r_in = 0; r_in < sub_dim; ++r_in)
-                    sum += U[r_out * sub_dim + r_in] * scratch[r_in];
-                data[(bg | sub_offsets[r_out]) * dim + col] = sum;
-            }
-        }
-    }
-
-    // ---- Right multiply: data = data * U†  (updates column index) ----
-    // For each row row, and for each background col index bg:
-    //   Read the sub_dim-vector data[row, bg|sub_offsets[s]] into scratch,
-    //   apply U† (= conj(U^T)) in-place, write back.
-    for (size_t row = 0; row < dim; ++row) {
-        Complex128* row_ptr = data.data() + row * dim;
-        for (size_t bi = 0; bi < n_bg; ++bi) {
-            const size_t bg = bg_indices[bi];
-            // Read
-            for (size_t s = 0; s < sub_dim; ++s)
-                scratch[s] = row_ptr[bg | sub_offsets[s]];
-            // Apply U†: new[c_out] = sum_{c_in} conj(U[c_out, c_in]) * scratch[c_in]
-            for (size_t c_out = 0; c_out < sub_dim; ++c_out) {
-                Complex128 sum(0.0, 0.0);
-                for (size_t c_in = 0; c_in < sub_dim; ++c_in)
-                    sum += scratch[c_in] * U[c_out * sub_dim + c_in].conj();
-                row_ptr[bg | sub_offsets[c_out]] = sum;
-            }
-        }
-    }
+    dm_ket_apply_inplace(data.data(), U, sub_off, bg, sub_dim, dim);
+    dm_bra_apply_inplace(data.data(), U, sub_off, bg, sub_dim, dim);
 }
 
 // =============================================================================
@@ -197,26 +278,74 @@ void DensityMatrix::apply_kraus(
     const std::vector<std::vector<Complex128>>& kraus_ops,
     const std::vector<int>& qubits
 ) {
-    // Save the original rho once so we can restore it before each K application
-    // without re-allocating a new DensityMatrix per Kraus operator.
-    const auto original = data;
-    std::vector<Complex128> result_data(dim * dim, Complex128(0.0, 0.0));
+    // Out-of-place accumulation (R.1.13, audit F-2): the previous loop did
+    // `data = original` (a full 4^N copy) before each in-place K application.
+    // Here `data` is left untouched as the source and each K's contribution is
+    // built in `scratch` via the out-of-place ket multiply (no restore copy),
+    // then accumulated into `result`. Peak memory is unchanged (result +
+    // scratch), but the per-operator full-matrix copy is gone.
+    const int k = static_cast<int>(qubits.size());
+    const size_t sub_dim = size_t(1) << k;
+
+    std::vector<size_t> sub_off, bg;
+    dm_build_tables(n_qubits, dim, qubits, sub_off, bg);
+
+    std::vector<Complex128> result(dim * dim, Complex128(0.0, 0.0));
+    std::vector<Complex128> scratch(dim * dim);
+    const Complex128* orig = data.data();  // untouched until the final move
 
     // Convention bridge: KrausChannel operator matrices follow the external
-    // qubits[0]-is-LSB contract; apply_gate addresses qubits[0] as the MSB.
-    const int k = static_cast<int>(qubits.size());
-
+    // qubits[0]-is-LSB contract; the internal sub-block addressing here treats
+    // qubits[0] as the MSB, so bit-reverse for k >= 2 (a no-op for k <= 1).
     for (const auto& K : kraus_ops) {
-        data = original;        // restore rho (overwrites existing allocation)
-        if (k >= 2) {
-            apply_gate(dm_bit_reverse_matrix(K, k), qubits);
-        } else {
-            apply_gate(K, qubits);  // rho -> K * rho * K†  in-place
-        }
-        for (size_t i = 0; i < dim * dim; ++i) result_data[i] += data[i];
+        const std::vector<Complex128>* Kp = &K;
+        std::vector<Complex128> Krev;
+        if (k >= 2) { Krev = dm_bit_reverse_matrix(K, k); Kp = &Krev; }
+
+        dm_ket_apply(orig, scratch.data(), *Kp, sub_off, bg, sub_dim, dim);   // scratch = K·rho
+        dm_bra_apply_inplace(scratch.data(), *Kp, sub_off, bg, sub_dim, dim); // scratch = scratch·K†
+
+        const size_t total = dim * dim;
+        #pragma omp parallel for schedule(static) if(total >= DM_PAR_THRESHOLD)
+        for (int i = 0; i < static_cast<int>(total); ++i) result[static_cast<size_t>(i)] += scratch[static_cast<size_t>(i)];
     }
 
-    data = std::move(result_data);
+    data = std::move(result);
+}
+
+void DensityMatrix::apply_permutation(const std::vector<int>& full_perm) {
+    // new_rho[full_perm[a], full_perm[b]] = rho[a, b].
+    std::vector<Complex128> out(dim * dim, Complex128(0.0, 0.0));
+    #pragma omp parallel for schedule(static) if(dim * dim >= DM_PAR_THRESHOLD)
+    for (long long a = 0; a < static_cast<long long>(dim); ++a) {
+        const size_t fa = static_cast<size_t>(full_perm[static_cast<size_t>(a)]);
+        const Complex128* __restrict src = data.data() + static_cast<size_t>(a) * dim;
+        Complex128* __restrict drow = out.data() + fa * dim;
+        for (size_t b = 0; b < dim; ++b)
+            drow[static_cast<size_t>(full_perm[b])] = src[b];
+    }
+    data = std::move(out);
+}
+
+void DensityMatrix::apply_mcp_phase(size_t mask, double lambda) {
+    // phase(a) = e^{i*lambda} iff (a & mask) == mask, else 1.
+    // new_rho[a,b] = phase(a) * conj(phase(b)) * rho[a,b]. Only entries where
+    // exactly one of a,b satisfies the mask acquire a net +-lambda phase.
+    const double c = std::cos(lambda), s = std::sin(lambda);
+    #pragma omp parallel for schedule(static) if(dim * dim >= DM_PAR_THRESHOLD)
+    for (long long al = 0; al < static_cast<long long>(dim); ++al) {
+        const size_t a = static_cast<size_t>(al);
+        const bool pa = (a & mask) == mask;
+        Complex128* __restrict row = data.data() + a * dim;
+        for (size_t b = 0; b < dim; ++b) {
+            const bool pb = (b & mask) == mask;
+            if (pa == pb) continue;               // net phase 1
+            const double ss = pa ? s : -s;        // pa&&!pb: +lambda; !pa&&pb: -lambda
+            const double r = row[b].real, im = row[b].imag;
+            row[b].real = r * c - im * ss;
+            row[b].imag = r * ss + im * c;
+        }
+    }
 }
 
 std::vector<double> DensityMatrix::probabilities() const {
@@ -242,50 +371,56 @@ double DensityMatrix::expectation_value_sparse(const SparsePauliOp& hamiltonian)
     }
 
     // Tr(ρH) = Σ_terms coeff · Tr(ρ · P_term)
-    // For each Pauli string, P[col, row] ≠ 0 only when col = row ⊕ flip_mask,
-    // where flip_mask covers X and Y qubit positions.
-    // phase(row) = Π_{Z qubits} (-1)^{bit} · Π_{Y qubits} i·(-1)^{bit}
+    // For each Pauli string, P[k, row] ≠ 0 only when k = row ⊕ flip_mask
+    // (flip_mask covers X and Y positions). The per-row phase is
+    // i^{#Y} · (-1)^{popcount(row & sign_mask)} where sign_mask covers Z and Y
+    // positions. R.1.13 (audit F-14): the i^{#Y} factor is a per-term constant
+    // folded into the coefficient (same trick as SparsePauliOp to_matrix), the
+    // per-row sign is one popcount parity, and the row loop is an OpenMP
+    // reduction — replacing the per-row z_bits/y_bits vector walks.
     double result = 0.0;
     for (const auto& term : hamiltonian.terms) {
         // Project convention (docs/Architecture.md "Conventions"): Pauli
         // strings are LSB-first, pauli[q] acts on qubit q = bit q.
-        size_t flip_mask = 0;
-        std::vector<int> z_bits, y_bits;
+        size_t flip_mask = 0, sign_mask = 0;
+        int y_count = 0;
         for (int q = 0; q < nq; ++q) {
             const char p = term.pauli[q];
-            const int bit = q;
             if (p == 'X' || p == 'x') {
-                flip_mask |= (1ULL << bit);
+                flip_mask |= (1ULL << q);
             } else if (p == 'Y' || p == 'y') {
-                flip_mask |= (1ULL << bit);
-                y_bits.push_back(bit);
+                flip_mask |= (1ULL << q);
+                sign_mask |= (1ULL << q);
+                ++y_count;
             } else if (p == 'Z' || p == 'z') {
-                z_bits.push_back(bit);
+                sign_mask |= (1ULL << q);
             }
         }
+
+        // c = coeff · i^{#Y} (constant per term).
+        double ty_r = 1.0, ty_i = 0.0;
+        switch (y_count & 3) {
+            case 1: ty_r = 0.0; ty_i = 1.0; break;
+            case 2: ty_r = -1.0; ty_i = 0.0; break;
+            case 3: ty_r = 0.0; ty_i = -1.0; break;
+            default: break;
+        }
+        const double c_re = term.coeff.real * ty_r - term.coeff.imag * ty_i;
+        const double c_im = term.coeff.real * ty_i + term.coeff.imag * ty_r;
 
         double tr_re = 0.0, tr_im = 0.0;
-        for (size_t row = 0; row < dim; ++row) {
-            const size_t col = row ^ flip_mask;
-
-            // Build phase from Z and Y qubits.
-            double ph_re = 1.0, ph_im = 0.0;
-            for (int b : z_bits) {
-                if ((row >> b) & 1) { ph_re = -ph_re; ph_im = -ph_im; }
+        #pragma omp parallel for reduction(+:tr_re,tr_im) schedule(static) if(dim >= (1u << 12))
+        for (long long r = 0; r < static_cast<long long>(dim); ++r) {
+            const size_t row = static_cast<size_t>(r);
+            const Complex128& rho_rc = data[row * dim + (row ^ flip_mask)];
+            if (LINDBLAD_POPCOUNT64(row & sign_mask) & 1) {
+                tr_re -= rho_rc.real; tr_im -= rho_rc.imag;
+            } else {
+                tr_re += rho_rc.real; tr_im += rho_rc.imag;
             }
-            for (int b : y_bits) {
-                // multiply by i: (re,im) → (-im, re)
-                double t = ph_re; ph_re = -ph_im; ph_im = t;
-                // then by (-1)^{bit}
-                if ((row >> b) & 1) { ph_re = -ph_re; ph_im = -ph_im; }
-            }
-
-            const Complex128& rho_rc = data[row * dim + col];
-            tr_re += rho_rc.real * ph_re - rho_rc.imag * ph_im;
-            tr_im += rho_rc.real * ph_im + rho_rc.imag * ph_re;
         }
 
-        result += term.coeff.real * tr_re - term.coeff.imag * tr_im;
+        result += c_re * tr_re - c_im * tr_im;
     }
 
     return result;
@@ -546,39 +681,114 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             Complex128(0,0), Complex128(0,0)
         };
 
-        // Helper: apply a single instruction (except MEASURE/BARRIER) to a DM.
-        auto apply_inst = [&](DensityMatrix& dm, const Instruction& inst) {
+        // Per-instruction plan, resolved ONCE (audit F-12/F-13). Previously
+        // apply_inst deep-copied every Kraus matrix (errors_for_gate returns by
+        // value) and rebuilt the gate matrix on every call — i.e. per shot per
+        // gate. Both are constant across shots, so precompute here: gate
+        // matrices, and noise as pointers into the (immutable) NoiseModel with
+        // the effective qubit list resolved (empty error.qubits -> inst.qubits).
+        struct ResolvedError {
+            const std::vector<std::vector<Complex128>>* ops;
+            std::vector<int> qubits;
+            bool after_gate;
+        };
+        const size_t n_inst = circuit.instructions.size();
+        std::vector<std::vector<Complex128>> gate_mats(n_inst);
+        std::vector<std::vector<ResolvedError>> inst_errors(n_inst);
+        // Structured ops applied without a dense matrix (audit F-7/F-9):
+        //   op_kind 0 = matrix gate, 1 = permutation, 2 = mcp phase.
+        std::vector<char> op_kind(n_inst, 0);
+        std::vector<std::vector<int>> op_perm(n_inst);
+        std::vector<size_t> op_mask(n_inst, 0);
+        std::vector<double> op_lambda(n_inst, 0.0);
+        const size_t dim = size_t(1) << circuit.n_qubits;  // full-register dim
+        const bool ideal = noise_model.is_ideal();
+        {
             using GT = Instruction::GateType;
-            if (inst.type == GT::RESET) {
+            for (size_t ii = 0; ii < n_inst; ++ii) {
+                const auto& inst = circuit.instructions[ii];
+                if (inst.type == GT::MEASURE || inst.type == GT::BARRIER ||
+                    inst.type == GT::RESET)
+                    continue;
+                if (inst.type == GT::PARAM_RX || inst.type == GT::PARAM_RY ||
+                    inst.type == GT::PARAM_RZ || inst.type == GT::PARAM_P ||
+                    inst.type == GT::PARAM_U) {
+                    throw std::runtime_error(
+                        "Unresolved parameterised gate: call assign_parameters() first.");
+                }
+                // Structured ops: precompute the full-register permutation
+                // (MCX/PERMUTATION) or phase mask (MCP) once.
+                if (inst.type == GT::MCX || inst.type == GT::PERMUTATION) {
+                    op_kind[ii] = 1;
+                    std::vector<int> fp(dim);
+                    if (inst.type == GT::MCX) {
+                        size_t ctrl_mask = 0;
+                        for (size_t c = 0; c + 1 < inst.qubits.size(); ++c)
+                            ctrl_mask |= (1ULL << inst.qubits[c]);
+                        const size_t tbit = 1ULL << inst.qubits.back();
+                        for (size_t a = 0; a < dim; ++a)
+                            fp[a] = static_cast<int>(
+                                ((a & ctrl_mask) == ctrl_mask) ? (a ^ tbit) : a);
+                    } else {
+                        const int k = static_cast<int>(inst.qubits.size());
+                        const size_t sub_dim = size_t(1) << k;
+                        size_t tgt_mask = 0;
+                        std::vector<size_t> sub_off(sub_dim, 0);
+                        for (int q : inst.qubits) tgt_mask |= (1ULL << q);
+                        for (size_t x = 0; x < sub_dim; ++x)
+                            for (int b = 0; b < k; ++b)
+                                if ((x >> b) & 1)
+                                    sub_off[x] |= (1ULL << inst.qubits[static_cast<size_t>(b)]);
+                        for (size_t a = 0; a < dim; ++a) {
+                            size_t x = 0;
+                            for (int b = 0; b < k; ++b)
+                                if ((a >> inst.qubits[static_cast<size_t>(b)]) & 1) x |= (size_t(1) << b);
+                            fp[a] = static_cast<int>(
+                                (a & ~tgt_mask) | sub_off[static_cast<size_t>(inst.permutation[x])]);
+                        }
+                    }
+                    op_perm[ii] = std::move(fp);
+                } else if (inst.type == GT::MCP) {
+                    op_kind[ii] = 2;
+                    size_t mask = 0;
+                    for (int q : inst.qubits) mask |= (1ULL << q);
+                    op_mask[ii] = mask;
+                    op_lambda[ii] = inst.params[0];
+                } else {
+                    gate_mats[ii] = gate_matrix_for_dm(inst);
+                }
+                if (!ideal) {
+                    const auto* bucket =
+                        noise_model.errors_for_gate_ref(inst.gate_name());
+                    if (bucket) {
+                        for (const auto& ge : *bucket) {
+                            if (!ge.qubits.empty() && ge.qubits != inst.qubits)
+                                continue;
+                            inst_errors[ii].push_back(ResolvedError{
+                                &ge.channel.operators,
+                                ge.qubits.empty() ? inst.qubits : ge.qubits,
+                                ge.after_gate});
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply instruction `ii` (except MEASURE/BARRIER) to a DM, using the
+        // pre-resolved plan (no per-call Kraus copy or gate-matrix rebuild).
+        auto apply_inst = [&](DensityMatrix& dm, size_t ii) {
+            const auto& inst = circuit.instructions[ii];
+            if (inst.type == Instruction::GateType::RESET) {
                 dm.apply_kraus({K0_reset, K1_reset}, inst.qubits);
                 return;
             }
-            if (inst.type == GT::PARAM_RX || inst.type == GT::PARAM_RY ||
-                inst.type == GT::PARAM_RZ || inst.type == GT::PARAM_P ||
-                inst.type == GT::PARAM_U) {
-                throw std::runtime_error("Unresolved parameterised gate: call assign_parameters() first.");
-            }
-            auto gate_mat = gate_matrix_for_dm(inst);
-            if (!noise_model.is_ideal()) {
-                auto gate_errors = noise_model.errors_for_gate(inst.gate_name(), inst.qubits);
-                for (const auto& error : gate_errors) {
-                    if (!error.after_gate) {
-                        std::vector<int> noise_qubits =
-                            error.qubits.empty() ? inst.qubits : error.qubits;
-                        dm.apply_kraus(error.channel.operators, noise_qubits);
-                    }
-                }
-                dm.apply_gate(gate_mat, inst.qubits);
-                for (const auto& error : gate_errors) {
-                    if (error.after_gate) {
-                        std::vector<int> noise_qubits =
-                            error.qubits.empty() ? inst.qubits : error.qubits;
-                        dm.apply_kraus(error.channel.operators, noise_qubits);
-                    }
-                }
-            } else {
-                dm.apply_gate(gate_mat, inst.qubits);
-            }
+            for (const auto& re : inst_errors[ii])
+                if (!re.after_gate) dm.apply_kraus(*re.ops, re.qubits);
+            if (op_kind[ii] == 1)      dm.apply_permutation(op_perm[ii]);
+            else if (op_kind[ii] == 2) dm.apply_mcp_phase(op_mask[ii], op_lambda[ii]);
+            else                       dm.apply_gate(gate_mats[ii], inst.qubits);
+            for (const auto& re : inst_errors[ii])
+                if (re.after_gate) dm.apply_kraus(*re.ops, re.qubits);
         };
 
         if (needs_per_shot) {
@@ -591,13 +801,18 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             std::vector<int> clreg(n_clbits, 0);
 
             const int n_shots = std::max(1, shots);
-            DensityMatrix dm_last(circuit.n_qubits);
+            // Reuse ONE density-matrix buffer across shots (audit F-13):
+            // re-initialise to |0><0| per shot instead of allocating a fresh
+            // 4^N matrix each time. After the loop `dm` holds the last shot's
+            // (collapsed) state, which becomes final_state.
+            DensityMatrix dm(circuit.n_qubits);
 
             for (int shot = 0; shot < n_shots; ++shot) {
-                DensityMatrix dm(circuit.n_qubits);
+                if (shot > 0) dm.initialize();
                 clreg.assign(n_clbits, 0);
 
-                for (const auto& inst : circuit.instructions) {
+                for (size_t ii = 0; ii < n_inst; ++ii) {
+                    const auto& inst = circuit.instructions[ii];
                     using GT = Instruction::GateType;
                     if (inst.type == GT::BARRIER) continue;
 
@@ -656,7 +871,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                         continue;
                     }
 
-                    apply_inst(dm, inst);
+                    apply_inst(dm, ii);
                 }
 
                 // Record shot result
@@ -667,23 +882,21 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                     }
                     result.counts[bits]++;
                 }
-
-                // Keep only the last trajectory's state (moved, not copied:
-                // a full 4^N copy per shot is pure overhead otherwise).
-                if (shot == n_shots - 1) dm_last = std::move(dm);
             }
 
-            result.final_state = std::move(dm_last);
+            // `dm` is the last shot's final (collapsed) state.
+            result.final_state = std::move(dm);
 
         } else {
             // Standard single-pass mode: gates applied once, MEASURE deferred.
             DensityMatrix dm(circuit.n_qubits);
 
-            for (const auto& inst : circuit.instructions) {
+            for (size_t ii = 0; ii < n_inst; ++ii) {
+                const auto& inst = circuit.instructions[ii];
                 using GT = Instruction::GateType;
                 if (inst.type == GT::BARRIER) continue;
                 if (inst.type == GT::MEASURE) continue;  // deferred to sampling below
-                apply_inst(dm, inst);
+                apply_inst(dm, ii);
             }
 
             // Sample measurements from the diagonal of the density matrix.

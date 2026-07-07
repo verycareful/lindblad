@@ -44,36 +44,16 @@ QuantumCircuit Grover::build_circuit(
         for (int q = 0; q < nq; ++q) qc.x(q);
 
         if (nq >= 2) {
+            // Diffusion phase flip: H-wrapped multi-controlled X on qubit nq-1,
+            // controlled on qubits 0..nq-2. R.1.13 (audit F-7): a native MCX
+            // (a two-amplitude swap) instead of a dense 2^n x 2^n matrix built
+            // per iteration. mcx with 1 control reduces to CX, 2 to CCX, so
+            // this covers every nq >= 2 uniformly.
             qc.h(nq - 1);
-            if (nq == 2) {
-                qc.cx(0, 1);
-            } else if (nq == 3) {
-                qc.ccx(0, 1, 2);
-            } else {
-                // MCX targeting qubit nq-1 (the H-wrapped qubit below),
-                // controlled on qubits 0..nq-2. Under the apply_unitary
-                // convention (matrix-index bit i = qubits[i] = qubit i) the
-                // swapped pair is "all controls 1, target 0/1":
-                //   lo = 2^(nq-1) - 1  (controls 1, target 0)
-                //   hi = 2^nq - 1      (controls 1, target 1)
-                // The previous pair (2^nq - 2, 2^nq - 1) differed in bit 0 and
-                // therefore targeted qubit 0 while H wrapped qubit nq-1,
-                // breaking the diffusion operator for every nq >= 4.
-                size_t mcu = 1ULL << nq;
-                const size_t lo = (mcu >> 1) - 1;
-                const size_t hi = mcu - 1;
-                std::vector<Complex128> mcx_mat(mcu * mcu, Complex128(0.0, 0.0));
-                for (size_t idx = 0; idx < mcu; ++idx) {
-                    if (idx == lo)      mcx_mat[idx * mcu + hi]  = Complex128(1.0, 0.0);
-                    else if (idx == hi) mcx_mat[idx * mcu + lo]  = Complex128(1.0, 0.0);
-                    else                mcx_mat[idx * mcu + idx] = Complex128(1.0, 0.0);
-                }
-                Instruction mcx_inst;
-                mcx_inst.type = Instruction::GateType::UNITARY;
-                for (int mq = 0; mq < nq; ++mq) mcx_inst.qubits.push_back(mq);
-                mcx_inst.matrix = mcx_mat;
-                qc.instructions.push_back(mcx_inst);
-            }
+            std::vector<int> controls;
+            controls.reserve(static_cast<size_t>(nq - 1));
+            for (int c = 0; c < nq - 1; ++c) controls.push_back(c);
+            qc.mcx(controls, nq - 1);
             qc.h(nq - 1);
         }
 

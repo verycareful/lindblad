@@ -884,8 +884,15 @@ public:
 
     // oracle: circuit on 2n qubits (n query + n output)
     static QuantumCircuit build_circuit(const QuantumCircuit& oracle, int n);
+    // batch_shots (audit F-21, default true): draw all equation samples from ONE
+    // batched simulation and harvest the distinct outcomes, instead of one
+    // single-shot simulation per equation. Statistically equivalent but faster;
+    // set false to restore the pre-R.1.13 per-sample loop (which reproduces old
+    // seeded equation streams byte-for-byte -- batching consumes the RNG stream
+    // in a different order).
     static Result solve(const QuantumCircuit& oracle, int n,
-                        uint64_t seed = 0, int extra_samples = 2);
+                        uint64_t seed = 0, int extra_samples = 2,
+                        bool batch_shots = true);
 
 private:
     static std::string gaussian_eliminate(

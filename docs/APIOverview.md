@@ -201,6 +201,10 @@ Gate operations on `Statevector`:
 - **Two-qubit gates**: Controlled gates (CX, CY, CZ, CH), swap operations (SWAP, iSWAP), controlled rotations (CRX, CRY, CRZ, CP, CU), Ising interactions (RXX, RYY, RZZ, RZX), echoed cross-resonance (ECR)
 - **Three-qubit gates**: Toffoli (CCX), CCZ, Fredkin (CSWAP), Margolus (RCCX)
 - **N-qubit unitary**: Arbitrary unitary matrices via `apply_unitary`
+- **Multi-controlled and permutation (R.1.13)**: `MCX` (multi-controlled X),
+  `MCP` (multi-controlled phase), and `PERMUTATION` (basis-index map) applied
+  natively without a dense matrix; used by Grover's diffusion and Shor's
+  modular multiplication. See [gates API](api/gates.md).
 
 Performance features:
 

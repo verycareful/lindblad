@@ -60,24 +60,31 @@ std::vector<int> CouplingMap::shortest_path(int q1, int q2) const {
 }
 
 std::vector<std::vector<int>> CouplingMap::distance_matrix() const {
-    std::vector<std::vector<int>> dist(
-        n_physical_qubits,
-        std::vector<int>(n_physical_qubits, std::numeric_limits<int>::max() / 2)
-    );
+    const int n = n_physical_qubits;
+    const int INF = std::numeric_limits<int>::max() / 2;
+    std::vector<std::vector<int>> dist(n, std::vector<int>(n, INF));
 
-    for (int i = 0; i < n_physical_qubits; ++i) dist[i][i] = 0;
-
+    // BFS from each source (audit F-25): O(V·(V+E)) beats Floyd-Warshall's
+    // O(V^3) for the sparse device graphs this is used on (e.g. a 127-qubit
+    // heavy-hex has ~144 edges, not ~8000). Build the adjacency list once.
+    std::vector<std::vector<int>> adj(n);
     for (const auto& [a, b] : edges) {
-        dist[a][b] = 1;
-        dist[b][a] = 1;
+        adj[a].push_back(b);
+        adj[b].push_back(a);
     }
 
-    // Floyd-Warshall
-    for (int k = 0; k < n_physical_qubits; ++k) {
-        for (int i = 0; i < n_physical_qubits; ++i) {
-            for (int j = 0; j < n_physical_qubits; ++j) {
-                if (dist[i][k] + dist[k][j] < dist[i][j]) {
-                    dist[i][j] = dist[i][k] + dist[k][j];
+    std::queue<int> bfs;
+    for (int src = 0; src < n; ++src) {
+        auto& d = dist[src];
+        d[src] = 0;
+        bfs.push(src);
+        while (!bfs.empty()) {
+            const int u = bfs.front();
+            bfs.pop();
+            for (int v : adj[u]) {
+                if (d[v] > d[u] + 1) {
+                    d[v] = d[u] + 1;
+                    bfs.push(v);
                 }
             }
         }

@@ -87,6 +87,9 @@ If `LINDBLAD_BUILD_BENCHMARKS=ON`, benchmark executables are generated from:
 - `benchmarks/bench_gates.cpp`
 - `benchmarks/bench_statevector.cpp`
 - `benchmarks/bench_maqaoa.cpp`
+- `benchmarks/bench_qudit_sv.cpp` (R.1.13: qudit statevector kernels, d=2-7)
+- `benchmarks/bench_qudit_dm.cpp` (R.1.13: qudit density-matrix kernels)
+- `benchmarks/bench_scaling.cpp` (R.1.13: standard circuit across all four backends)
 
 Run from the build output directory, for example:
 
@@ -94,6 +97,7 @@ Run from the build output directory, for example:
 .\bench_gates
 .\bench_statevector
 .\bench_maqaoa
+.\bench_scaling
 ```
 
 ## Python Binding Build
@@ -128,3 +132,20 @@ cmake -S . -B build
 
 - Verify `enable_testing()` and `gtest_discover_tests()` completed during configure.
 - Re-run CMake configure before running CTest.
+
+### Only `lindblad_core` builds; no test / benchmark / app targets
+
+- A clean configure that produces only the static library and no
+  `lindblad_tests` / benchmark / app executables means the top-level
+  `CMakeLists.txt` is missing its `add_subdirectory(tests|benchmarks|apps)`
+  blocks (this happened in the R.1.12.2 release; fixed in R.1.13.0). Confirm
+  those blocks are present near the end of `CMakeLists.txt`, then reconfigure.
+
+### Test output shows an unexpected version
+
+- The runner prints `Thank you for using Lindblad Quantum Toolkit R.X.X.X` at
+  the end. If that label does not match `LINDBLAD_VERSION_LABEL` in
+  `CMakeLists.txt`, you are running a STALE binary from an old, separately
+  configured build directory, and the results do not reflect your current
+  changes. Rebuild the intended directory (or remove it and reconfigure) before
+  trusting a run.

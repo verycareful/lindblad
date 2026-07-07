@@ -71,6 +71,13 @@ std::vector<NoiseModel::GateError> NoiseModel::errors_for_gate(
     return result;
 }
 
+const std::vector<NoiseModel::GateError>* NoiseModel::errors_for_gate_ref(
+    const std::string& gate_name
+) const {
+    auto it = basis_gate_errors.find(gate_name);
+    return it == basis_gate_errors.end() ? nullptr : &it->second;
+}
+
 bool NoiseModel::is_ideal() const {
     return basis_gate_errors.empty() && readout_errors.empty();
 }
