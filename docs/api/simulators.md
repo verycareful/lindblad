@@ -563,6 +563,16 @@ auto result = sim.run(large_circuit, 100);  // 100 shots
 - Non-trivial configuration (choosing $\chi$, `cutoff` for target accuracy)
 - Slower than statevector for small systems (overhead of SVD)
 - Two-qubit gates require adjacency (need SWAPs for non-local gates)
+- **Known accuracy gap at scale (targeted R.1.13.2)**: some high-entanglement
+  circuits lose accuracy even when the bond dimension is theoretically exact for
+  the register size. Concretely, Shor's 13-qubit period-finding circuit for
+  $N = 15$ does not recover the order on the MPS backend at `max_bond_dim = 64`
+  (which is the *exact* bond dimension for any 13-qubit state, since the maximum
+  Schmidt rank across any cut is $2^6 = 64$), whereas the statevector backend
+  does. The wide-`PERMUTATION` oracle fallback is verified exact at 4 and 8
+  qubits, so this is a scale-specific defect under investigation, not a
+  truncation limit. Until it is fixed, use the statevector or density-matrix
+  backend for exact results on deep, highly-entangling circuits.
 
 ### Parameters
 

@@ -4,6 +4,70 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.13.1] - 2026-07-08
+
+Test-suite release for the R.1.13.0 performance wave (`.1` slot: tests only; no
+feature or fix code beyond two stale test assertions). Ten new suites assert the
+R.1.13.0 changes against independent brute-force references over non-symmetric
+inputs, so a convention or index bug cannot hide behind a symmetric test.
+
+### Tests
+
+- `test_r1131_structured_ops.cpp` — MCX/MCP/PERMUTATION: statevector kernels vs
+  brute force, simulator dispatch, density-matrix native path, MPS fallback and
+  the <= 2-control gate ladder, builder field population, validation throws,
+  inverse (MCX self-inverse, MCP phase negation, PERMUTATION map inversion),
+  `control()` of MCX equals CCX, and the QASM2/QASM3/JSON export loud-throw contract.
+- `test_r1131_cow_matrix.cpp` — CowMatrix: read API, implicit const-vector view,
+  copies share one buffer, assignment rebinds without touching other handles,
+  value equality across distinct buffers, and that copying a circuit does not
+  deep-copy the gate matrix.
+- `test_r1131_estimator_grouping.cpp` — `group_pauli_terms`: grouped and ungrouped
+  both converge to the exact expectation, each path is seed-deterministic, and a
+  diagonal observable is exact under grouping.
+- `test_r1131_mps.cpp` — `svd_method` defaults to Jacobi, the two-site GEMM
+  contraction (adjacent and SWAP-chained) matches the statevector, GHZ sampling
+  distribution, and BDC selection emits the broken-BDCSVD warning.
+- `test_r1131_dm.cpp` — density-matrix rework: `apply_kraus` out-of-place vs an
+  embedded sum-of-Kraus reference, per-shot buffer-reuse determinism, folded-phase
+  `expectation_value_sparse` (including Y terms), `apply_permutation`, and
+  `apply_mcp_phase`.
+- `test_r1131_kernels.cpp` — RCCX single-pass vs the density-matrix dense matrix,
+  RESET and MEASURE collapse, and both `apply_unitary` work-shape dispatch branches.
+- `test_r1131_clifford.cpp` — terminal-measurement fast path vs the statevector
+  sampler, `is_clifford` classification, and the reset general path.
+- `test_r1131_qudit.cpp` — parallel `apply_1qudit` / `apply_2qudit` / `apply_kqudit`
+  vs a serial reference above the OpenMP threshold, `QuditMPS::measure` sampler vs
+  the dense distribution, and the qudit BDC warning.
+- `test_r1131_algorithms.cpp` — Simon batch and per-sample recovery plus seed
+  determinism, Grover MCX diffusion, and Shor's PERMUTATION oracle on the MPS
+  fallback backend (8-qubit exact) plus `factorize(15)`.
+- `test_r1131_transpiler.cpp` — `CouplingMap::distance_matrix` (BFS) vs known and
+  shortest-path distances, and SABRE routing legality on line and grid maps.
+
+### Fixed
+
+- `tests/test_shor.cpp`: the two oracle tests still asserted the pre-R.1.13.0
+  dense UNITARY oracle. `CircuitContainsUnitaryGates` becomes
+  `CircuitContainsPermutationOracles` (exactly `n_eval` PERMUTATION and zero
+  UNITARY instructions), and the now-vacuous `UnitaryGatesAreUnitary` becomes
+  `PermutationOraclesAreBijections` (each oracle map is a size-`2^(1+n_target)`
+  bijection with control-off sub-states fixed). Closes the single failure carried
+  over from R.1.13.0.
+
+### Known Issues
+
+- The MPS backend does not recover Shor's order for N=15 on the 13-qubit
+  period-finding circuit, even though bond dimension 64 is mathematically exact
+  for any 13-qubit state (maximum Schmidt rank `2^6 = 64`, so no truncation can
+  occur). The statevector backend recovers it. This is an accuracy gap in the MPS
+  path, not a truncation limit; the PERMUTATION-oracle fallback is verified exact
+  at 4 and 8 qubits. Targeted for R.1.13.2.
+
+### Results
+
+- 1849 tests across 143 suites, all passed (23.4 s, WSL / Clang, `-march=native`).
+
 ## [R.1.13.0] - 2026-07-07
 
 Performance wave over the entire shipping library (audit

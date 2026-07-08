@@ -100,6 +100,21 @@ set(LINDBLAD_TEST_SOURCES
     test_r1122_fill_transpiler.cpp
     test_r1122_fill_algorithms.cpp
     test_r1122_fill_frontends.cpp
+    # R.1.13.1 test suite — R.1.13.0 performance-wave coverage: structured ops
+    # (MCX/MCP/PERMUTATION), CowMatrix, estimator QWC grouping, MPS SVD toggle +
+    # BDC broken-warning, density-matrix rework, shared kernels, Clifford
+    # terminal fast path, qudit OpenMP kernels + MPS sampler, algorithm e2e,
+    # transpiler BFS distance + SABRE routing legality.
+    test_r1131_structured_ops.cpp
+    test_r1131_cow_matrix.cpp
+    test_r1131_estimator_grouping.cpp
+    test_r1131_mps.cpp
+    test_r1131_dm.cpp
+    test_r1131_kernels.cpp
+    test_r1131_clifford.cpp
+    test_r1131_qudit.cpp
+    test_r1131_algorithms.cpp
+    test_r1131_transpiler.cpp
 )
 
 # Create test executable

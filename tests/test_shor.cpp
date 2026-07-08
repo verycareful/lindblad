@@ -189,11 +189,13 @@ TEST(ShorTest, CircuitQubitCountN21) {
 }
 
 TEST(ShorTest, CircuitHasInstructions) {
-    // The circuit must have H gates + X gate + UNITARY gates + IQFT gates
+    // The circuit must have H gates + X gate + PERMUTATION oracles + IQFT gates.
+    // (R.1.13: the controlled modular multiplication is emitted as a PERMUTATION
+    // over (control, target) rather than a dense UNITARY — audit F-9.)
     int n_target = 4;
     int n_eval = 9;
     auto qc = Shor::build_period_finding_circuit(2, 15, n_eval, n_target);
-    // At minimum: n_eval H + 1 X + n_eval UNITARY + IQFT gates
+    // At minimum: n_eval H + 1 X + n_eval PERMUTATION + IQFT gates
     EXPECT_GT(qc.instructions.size(), static_cast<size_t>(n_eval + 1 + n_eval));
 }
 
@@ -208,16 +210,24 @@ TEST(ShorTest, CircuitNoMeasurements) {
     }
 }
 
-TEST(ShorTest, CircuitContainsUnitaryGates) {
-    // Must contain exactly n_eval UNITARY instructions (one per eval qubit)
+TEST(ShorTest, CircuitContainsPermutationOracles) {
+    // R.1.13 (audit F-9): the controlled modular multiplication is a
+    // permutation, so build_period_finding_circuit emits exactly n_eval
+    // PERMUTATION instructions (one per eval qubit) instead of the dense
+    // UNITARY gates the pre-R.1.13 path used. Guard against a silent revert
+    // to the dense oracle (which would blow memory back up to O(4^n_target)).
     int n_target = 4;
     int n_eval = 9;
     auto qc = Shor::build_period_finding_circuit(2, 15, n_eval, n_target);
+    int perm_count = 0;
     int unitary_count = 0;
     for (const auto& inst : qc.instructions) {
-        if (inst.type == Instruction::GateType::UNITARY) ++unitary_count;
+        if (inst.type == Instruction::GateType::PERMUTATION) ++perm_count;
+        if (inst.type == Instruction::GateType::UNITARY)     ++unitary_count;
     }
-    EXPECT_EQ(unitary_count, n_eval);
+    EXPECT_EQ(perm_count, n_eval);
+    EXPECT_EQ(unitary_count, 0)
+        << "oracle regressed to a dense UNITARY gate";
 }
 
 TEST(ShorTest, CircuitStartsWithHadamards) {
@@ -513,37 +523,40 @@ TEST(ShorTest, CfConvergentsNearOne) {
 }
 
 // =============================================================================
-// build_period_finding_circuit — UNITARY gate unitarity
+// build_period_finding_circuit — PERMUTATION oracle is a valid bijection
 // =============================================================================
 
-TEST(ShorTest, UnitaryGatesAreUnitary) {
-    // Every UNITARY instruction's matrix U must satisfy U†U = I (to 1e-10).
-    // Unitarity is a required invariant — if violated, the simulation is wrong.
+TEST(ShorTest, PermutationOraclesAreBijections) {
+    // A PERMUTATION is unitary iff its index map is a bijection. Each Shor
+    // oracle acts on (control, target) = 1 + n_target qubits, so the map has
+    // size 2^(1+n_target). Verify: correct size, every image hit exactly once
+    // (bijection), and the interleaved-control layout — control is bit 0, so
+    // every even sub-state (control = 0) is a fixed point (identity branch).
     int n_target = 4;
     int n_eval   = 9;
     auto qc = Shor::build_period_finding_circuit(2, 15, n_eval, n_target);
 
-    const double tol = 1e-10;
+    const size_t expected_size = size_t(1) << (1 + n_target);
+    int perm_seen = 0;
     for (const auto& inst : qc.instructions) {
-        if (inst.type != Instruction::GateType::UNITARY) continue;
-        const auto& U = inst.matrix;
-        const size_t dim = static_cast<size_t>(
-            std::round(std::sqrt(static_cast<double>(U.size()))));
-        ASSERT_EQ(dim * dim, U.size()) << "Matrix size is not a perfect square";
+        if (inst.type != Instruction::GateType::PERMUTATION) continue;
+        ++perm_seen;
+        const auto& perm = inst.permutation;
+        ASSERT_EQ(perm.size(), expected_size)
+            << "permutation acts on 1 control + " << n_target << " target qubits";
 
-        for (size_t r = 0; r < dim; ++r) {
-            for (size_t c = 0; c < dim; ++c) {
-                Complex128 sum(0.0, 0.0);
-                for (size_t k = 0; k < dim; ++k) {
-                    Complex128 conj_ki(U[k * dim + r].real, -U[k * dim + r].imag);
-                    sum += conj_ki * U[k * dim + c];
-                }
-                double expected_re = (r == c) ? 1.0 : 0.0;
-                EXPECT_NEAR(sum.real, expected_re, tol)
-                    << "U†U[" << r << "," << c << "].re out of tolerance";
-                EXPECT_NEAR(sum.imag, 0.0, tol)
-                    << "U†U[" << r << "," << c << "].im out of tolerance";
-            }
+        std::vector<int> hit(expected_size, 0);
+        for (size_t sub = 0; sub < expected_size; ++sub) {
+            const int img = perm[sub];
+            ASSERT_GE(img, 0);
+            ASSERT_LT(static_cast<size_t>(img), expected_size);
+            ++hit[img];
+            if ((sub & 1u) == 0)  // control = 0 → identity branch
+                EXPECT_EQ(static_cast<size_t>(img), sub)
+                    << "control-off sub-state " << sub << " must be a fixed point";
         }
+        for (size_t v = 0; v < expected_size; ++v)
+            EXPECT_EQ(hit[v], 1) << "image " << v << " is not hit exactly once";
     }
+    EXPECT_EQ(perm_seen, n_eval);
 }
