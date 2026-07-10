@@ -1,0 +1,4 @@
+# Python side of the Lindblad vs Qiskit/Aer comparison suite.
+# pip install -r requirements.txt
+qiskit>=1.2
+qiskit-aer>=0.15

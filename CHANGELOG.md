@@ -4,6 +4,64 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.14.0] - 2026-07-10
+
+Head-to-head comparison benchmark suite: Lindblad vs Qiskit / Qiskit Aer on a
+shared QASM2 corpus, with a generated, correctness-gated results page. Both
+engines run natively (Google Benchmark vs a mirrored-protocol Python harness)
+at out-of-box settings; no timing table is published unless both engines
+provably compute the same answers.
+
+### Added
+
+- `benchmarks/compare/` -- the shared corpus and the Qiskit half of the suite:
+  `gen_circuits.py` (deterministic, seeded generator) plus 47 committed
+  gate-only QASM2 circuits (layered scaling, QFT, QV-style random, ccx-lowered
+  Grover with a non-symmetric marked state, Clifford ladders, measure-free
+  ansatz), Heisenberg observable files (Lindblad LSB-first Pauli order,
+  documented for Qiskit label reversal), coupling-graph edge lists (27-qubit
+  line, 5x5 grid, 27-qubit heavy-hex) consumed by BOTH engines, and
+  `aer_bench.py` (mirrored warmup/repetition/median protocol, validation mode,
+  per-domain filters) with `requirements.txt`.
+- `benchmarks/bench_compare_{sv,dm,mps,clifford,transpiler,estimator}.cpp` --
+  the Lindblad half (Google Benchmark, JSON output, corpus path baked in via
+  `LINDBLAD_BENCH_QASM_DIR`); registered in `benchmarks/CMakeLists.txt`.
+- `benchmarks/bench_validate.cpp` -- cross-engine result-parity gate:
+  8192-shot count distributions compared by total-variation distance against
+  a sampling-noise-aware threshold, estimator expectation agreement to 1e-6,
+  and a `LINDBLAD_VERSION_LABEL` stamp so stale binaries are refused. The
+  Grover entry peaks on a non-symmetric marked state, so the gate doubles as
+  an end-to-end qubit-ordering convention check between the engines.
+- `tools/bench_report.py` -- merges both engines' JSON into
+  `docs/Benchmarks.md` with per-workload speedups and environment capture;
+  exits nonzero and stamps a warning banner on any parity failure.
+- `docs/Benchmarks.md` -- generated results page. First recorded run: 49/49
+  workloads paired, parity all-PASS (Ryzen 9 7900X, WSL/Clang,
+  `-march=native`; qiskit 2.5.0, qiskit-aer 0.17.2).
+
+### Changed
+
+- `docs/BuildAndTest.md` -- new "Comparison Benchmarks (vs Qiskit / Qiskit
+  Aer)" section with the full command sequence; benchmark inventory updated.
+- `README.md` -- `docs/Benchmarks.md` added to the documentation table.
+
+### Known Issues
+
+- The transpiler comparison is constrained to circuits sized exactly to their
+  coupling map, compared routing-only (no basis translation on either side):
+  routing circuits SMALLER than the map trips a SABRE swap-candidate defect
+  (the occupied physical set is frozen at the initial layout, and the distance
+  heuristic thrashes on sparse maps until the SWAP-budget guard throws), and
+  `transpile()` currently does not apply `basis_gates` (`BasisTranslator` is
+  not composed into any preset level). Filed as GitHub issues; both target a
+  dedicated fix release with a routing regression suite, after which the
+  benchmark constraints will be lifted.
+
+### Results
+
+- 1849 tests across 143 suites -- all passed (22.2 s, WSL/Clang
+  `-march=native`). No test changes in this release.
+
 ## [R.1.13.1] - 2026-07-08
 
 Test-suite release for the R.1.13.0 performance wave (`.1` slot: tests only; no

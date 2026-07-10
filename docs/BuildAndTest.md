@@ -100,6 +100,59 @@ Run from the build output directory, for example:
 .\bench_scaling
 ```
 
+## Comparison Benchmarks (vs Qiskit / Qiskit Aer)
+
+R.1.14 adds a head-to-head suite comparing Lindblad against Qiskit and Qiskit
+Aer on a shared, committed QASM2 corpus. Results are published in
+[`Benchmarks.md`](Benchmarks.md).
+
+Components:
+
+- `benchmarks/compare/circuits/` — the shared gate-only QASM2 corpus plus
+  observable and coupling-graph files (regenerable via `gen_circuits.py`;
+  committed for reproducibility)
+- `benchmarks/bench_compare_{sv,dm,mps,clifford,transpiler,estimator}.cpp` —
+  the Lindblad half (Google Benchmark)
+- `benchmarks/bench_validate.cpp` — the Lindblad half of the cross-engine
+  result-parity gate
+- `benchmarks/compare/aer_bench.py` — the Qiskit/Aer half (mirrored protocol)
+- `tools/bench_report.py` — merges both JSON outputs into `docs/Benchmarks.md`
+  and enforces the parity gate
+
+Full sequence (Linux/WSL, from the repo root, build directory `build`):
+
+```bash
+# 0. one-time: Python side dependencies
+pip install -r benchmarks/compare/requirements.txt
+
+# 1. Lindblad timings (one JSON per domain binary)
+for b in sv dm mps clifford transpiler estimator; do
+  ./build/benchmarks/bench_compare_$b \
+    --benchmark_repetitions=5 --benchmark_report_aggregates_only=true \
+    --benchmark_format=json --benchmark_out=lb_$b.json
+done
+
+# 2. Result-parity halves
+./build/benchmarks/bench_validate lindblad_validation.json
+python3 benchmarks/compare/aer_bench.py --validate --out aer_validation.json
+
+# 3. Qiskit/Aer timings
+python3 benchmarks/compare/aer_bench.py --out aer_results.json
+
+# 4. Merge into docs/Benchmarks.md (refuses stale binaries and parity failures)
+python3 tools/bench_report.py \
+  --lindblad lb_*.json --aer aer_results.json \
+  --validate-lindblad lindblad_validation.json --validate-aer aer_validation.json \
+  --expect-version R.<current> --note "<compiler, flags, machine>" \
+  --out docs/Benchmarks.md
+```
+
+Protocol constants (shots, seed, repetitions) and the twin-built DM noise model
+must stay identical between `benchmarks/compare_common.hpp`,
+`bench_compare_dm.cpp`, and `aer_bench.py`; each file cross-references the
+others. Both engines run out of the box: Aer keeps gate fusion and its own
+threading, Lindblad keeps its compiled flags.
+
 ## Python Binding Build
 
 Enable bindings:
