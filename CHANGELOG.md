@@ -4,6 +4,55 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.14.1] - 2026-07-10
+
+Test-suite release for the R.1.14.0 comparison benchmark suite (`.1` slot:
+tests only). Guards the committed corpus, the loaders every benchmark binary
+depends on, and the report generator, so a regression in any of them fails in
+ctest instead of silently invalidating published numbers. Also corrects a
+figure in the R.1.14.0 entry below: the committed corpus holds 40 gate-only
+QASM2 circuits (47 files in total, including the observable and
+coupling-graph files).
+
+### Tests
+
+- `tests/test_r1141_corpus.cpp` -- structural: every committed corpus circuit
+  parses via `from_qasm2`, is gate-only (measurement is appended by each
+  engine at run time, never stored), and declares the qubit count its
+  filename names (grover files declare 2s-3 for search width s); the
+  benchmark-registered file inventory exists; `measure_all` appends exactly
+  one measurement per qubit; missing corpus files fail loudly with the
+  regeneration hint; coupling edge lists load symmetrised and connected with
+  exact node and edge counts; Heisenberg observable files carry the exact
+  3(n-1)+n term structure and reproduce the analytic ground-state expectation.
+- `tests/test_r1141_corpus_semantics.cpp` -- behavioural anchors against
+  independent references: grover_n8 concentrates above 90% on its
+  NON-symmetric marked state with all v-chain ancillas restored to |0> (the
+  same anchor the cross-engine parity gate relies on); qft_n8 matches its
+  closed-form product state on a non-symmetric input, computed from first
+  principles in the test (the corpus QFT is the ascending-loop variant,
+  deliberately anchored to its own closed form rather than to
+  `QFT::build_circuit`, a different operator); clifford_n8 runs on the
+  tableau backend and agrees with the statevector backend within the
+  sampling-noise total-variation bound.
+- `tests/tools/test_bench_report.py` -- nine cases for `tools/bench_report.py`
+  against synthetic fixtures: end-to-end exit codes (clean run, parity
+  failure exits 2 and stamps the warning banner, stale version exits 1
+  without a report), iteration-fallback median, unpaired-workload
+  placeholders, and direct unit tests of the total-variation distance and
+  the PASS/WARN/FAIL threshold bands.
+- `tests/CMakeLists.txt` -- registers the two gtest suites (benchmarks
+  include dir + corpus path definition for the test target) plus two new
+  ctest entries: `bench_report_tools` (whenever a Python3 interpreter is
+  found) and `bench_validate_smoke` (runs the result-parity validator when
+  benchmarks are enabled).
+
+### Results
+
+- 1859 tests across 145 suites -- all passed (22.0 s, WSL/Clang
+  `-march=native`), plus `bench_report_tools` (9 Python cases) and
+  `bench_validate_smoke` at the ctest level.
+
 ## [R.1.14.0] - 2026-07-10
 
 Head-to-head comparison benchmark suite: Lindblad vs Qiskit / Qiskit Aer on a
@@ -15,7 +64,7 @@ provably compute the same answers.
 ### Added
 
 - `benchmarks/compare/` -- the shared corpus and the Qiskit half of the suite:
-  `gen_circuits.py` (deterministic, seeded generator) plus 47 committed
+  `gen_circuits.py` (deterministic, seeded generator) plus **40(edited in R.1.14.1)** committed
   gate-only QASM2 circuits (layered scaling, QFT, QV-style random, ccx-lowered
   Grover with a non-symmetric marked state, Clifford ladders, measure-free
   ansatz), Heisenberg observable files (Lindblad LSB-first Pauli order,

@@ -115,6 +115,13 @@ set(LINDBLAD_TEST_SOURCES
     test_r1131_qudit.cpp
     test_r1131_algorithms.cpp
     test_r1131_transpiler.cpp
+    # R.1.14.1 test suite — comparison-benchmark corpus and tooling: every
+    # committed QASM2 corpus file parses gate-only with the named qubit count,
+    # coupling/observable loaders (structure + failure modes), and behavioural
+    # anchors (Grover non-symmetric marked state with restored ancillas, QFT
+    # closed-form product state, Clifford-vs-statevector agreement).
+    test_r1141_corpus.cpp
+    test_r1141_corpus_semantics.cpp
 )
 
 # Create test executable
@@ -131,13 +138,17 @@ target_include_directories(lindblad_tests
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${PROJECT_SOURCE_DIR}/benchmarks  # compare_common.hpp (R.1.14.1)
 )
 
 # R.1.10.1 : path to the visualiser golden-file tree (absolute, set at
 # configure time so the test binary finds the files regardless of cwd).
+# R.1.14.1 : path to the committed comparison-benchmark corpus, mirroring the
+# definition the bench_compare_* targets receive (benchmarks/CMakeLists.txt).
 target_compile_definitions(lindblad_tests
     PRIVATE
         LINDBLAD_TEST_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
+        LINDBLAD_BENCH_QASM_DIR="${PROJECT_SOURCE_DIR}/benchmarks/compare/circuits"
 )
 
 # Register tests with CTest
@@ -160,6 +171,36 @@ if(LINDBLAD_BUILD_PYTHON)
             LABELS "lindblad"
             ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:lindblad_python>")
     endif()
+endif()
+
+# R.1.14.1 : tools/bench_report.py unit + end-to-end tests. Pure stdlib;
+# registered whenever a Python3 interpreter exists (independent of
+# LINDBLAD_BUILD_PYTHON, which gates the bindings test above).
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME bench_report_tools
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+                -s "${CMAKE_CURRENT_SOURCE_DIR}/tools" -p "test_*.py"
+    )
+    set_tests_properties(bench_report_tools PROPERTIES
+        LABELS "lindblad"
+        ENVIRONMENT "LINDBLAD_REPO_ROOT=${PROJECT_SOURCE_DIR}")
+endif()
+
+# R.1.14.1 : bench_validate smoke test -- runs the result-parity validator and
+# checks it reports a written output. Guarded on the benchmarks option (the
+# benchmarks directory is added after tests/, so if(TARGET ...) would be false
+# here at configure time); $<TARGET_FILE:...> resolves at generation time.
+if(LINDBLAD_BUILD_BENCHMARKS)
+    add_test(
+        NAME bench_validate_smoke
+        COMMAND $<TARGET_FILE:bench_validate>
+                "${CMAKE_CURRENT_BINARY_DIR}/bench_validate_smoke.json"
+    )
+    set_tests_properties(bench_validate_smoke PROPERTIES
+        LABELS "lindblad"
+        PASS_REGULAR_EXPRESSION "wrote")
 endif()
 
 # Standalone diagnostic executable (no gtest)
