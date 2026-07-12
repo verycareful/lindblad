@@ -4,6 +4,95 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.15.0] - 2026-07-12
+
+Transpiler correctness wave: fixes the three defects surfaced by the R.1.14
+comparison suite -- SABRE frozen-slot (#47), cumulative preset routing order
+(#48), silently ignored `basis_gates` (#49) -- plus the fail-loud gaps found
+in their blast radius.
+The comparison benchmark drops its R.1.14 workarounds, so the transpiler
+domain now measures the full pipeline end-to-end against Qiskit.
+
+### Fixed
+
+- SABRE frozen-slot defect (#47): both layout passes now expand the circuit
+  to device width by identity embedding (`TrivialLayout` and `SabreLayout`
+  share the same output invariant, `n_qubits == n_physical_qubits`), so
+  circuits SMALLER than the coupling map are routable -- every physical slot
+  holds a (possibly idle) logical wire and idle-wire SWAPs are legal, as in
+  Qiskit after ancilla allocation. Previously the occupied slot set was
+  frozen at the initial layout image while the heuristic scored distances
+  through slots that could never be entered; on degree-sparse maps
+  (heavy-hex) routing thrashed until the SWAP-budget guard threw a
+  misleading "disconnected components" error.
+- `transpile()` / the preset pipelines honour `basis_gates` (#49):
+  `BasisTranslator` is composed as the FINAL stage of every level when
+  `basis_gates` is non-empty (it was composed into no level, making the
+  parameter a silent no-op). The translator now verifies its output -- every returned gate is in
+  the target basis or `std::invalid_argument` is thrown naming the offending
+  gate (`MCX`/`MCP`/`PERMUTATION` until their lowering ships, `UNITARY`,
+  unbound parameterised gates, and bases that omit the cx+u3 targets).
+- `BasisTranslator` silently DROPPED classical conditions when decomposing a
+  conditioned gate (latent until composition). Conditions are now propagated
+  onto every emitted instruction -- exact, since the decompositions are
+  unitary-only and never modify clbits.
+- `SabreLayout` could loop forever on unroutable input: its internal SABRE
+  search lacked the SWAP-budget guard `SabreSwap` already had. It matters now
+  that `SabreLayout` runs first at level >= 2; unroutable circuits throw
+  `std::runtime_error` on both paths.
+- Undefined behaviour on circuits wider than the device (out-of-range
+  distance-matrix indexing) in both layout passes and `SabreSwap`: now a
+  `std::invalid_argument` with the circuit and device sizes.
+- `preset_pass_manager` accepted any level: -1 returned an EMPTY manager
+  (silent identity transpile) and >= 4 silently behaved as 3; levels outside
+  0..3 now throw `std::invalid_argument`.
+- `SabreSwap` silently ignored a wrong-sized `ctx.initial_layout` and
+  produced undefined behaviour on out-of-range or duplicate entries; layouts
+  are now validated (throws) and a partial layout is completed
+  deterministically with the unused physical slots in ascending order.
+- `tools/bench_report.py` is now tracked. R.1.14.0 shipped public
+  documentation (`docs/BuildAndTest.md`, the generated `docs/Benchmarks.md`)
+  and R.1.14.1 a committed test suite (`tests/tools/test_bench_report.py`
+  plus its ctest registration) that reference the script, but the entire
+  `tools/` directory was gitignored -- public clones could not regenerate
+  the benchmark report and the referenced script did not exist for them.
+  That was a mistake; the report generator is part of the published
+  benchmark workflow and now ships with it. The rest of `tools/` remains
+  maintainer-local by design.
+
+### Changed
+
+- Preset levels compose per STAGE, non-cumulatively (#48): one layout choice,
+  one routing pass per level. Level >= 2 uses `SabreLayout` in the layout slot
+  instead of appending after the level-0 `TrivialLayout` + `SabreSwap` block,
+  which had routed the unexpanded DAG first and forced SABRE layout to
+  re-route an already-SWAP-laden circuit. Basis translation, when composed,
+  is always last -- the optimisation passes are basis-oblivious
+  (`Optimize1qGates` emits U/RY/RZ, `ConsolidateBlocks` emits RXX/RYY/RZZ),
+  so any earlier slot would break the basis guarantee they follow.
+- Transpiled output width now equals the device width when a coupling map is
+  present (Qiskit parity); measurement/clbit mapping is unaffected.
+- `BasisTranslator` emits the `u` gate type when the basis names `u` without
+  `u3` (same 3-parameter gate, caller's naming).
+- `PassManager`, `preset_pass_manager`, and `transpile()` moved from
+  `optimize_1q.cpp` to the new `src/transpiler/preset_pass_manager.cpp`
+  (pipeline composition is not a 1-qubit-optimisation concern); no behaviour
+  change from the move itself.
+- `benchmarks/bench_compare_transpiler.cpp` / `aer_bench.py`: the R.1.14
+  workarounds are reverted -- the transpiler domain now routes n=22 circuits
+  onto the 25/27-slot maps (exercising the expansion path) and both engines
+  translate into the same `{cx, u3}` basis, so the quality counters compare
+  CX against CX across the full pipeline.
+- `docs/api/transpiler.md` -- affected sections rewritten: stage-table preset
+  composition, shared layout invariant, the `BasisTranslator` contract with
+  the real supported/throwing decomposition lists (the old text wrongly
+  claimed MCX support), `transpile()` output-width and basis semantics,
+  `initial_layout` validation, and pitfalls.
+- `docs/BuildAndTest.md` -- documented the benchmark cadence policy: the
+  comparison suite is NOT rerun for every release; `docs/Benchmarks.md`
+  carries the version stamp of the run that produced it, which may lag the
+  current release.
+
 ## [R.1.14.1] - 2026-07-10
 
 Test-suite release for the R.1.14.0 comparison benchmark suite (`.1` slot:

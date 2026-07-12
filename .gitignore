@@ -46,5 +46,24 @@ CLAUDE.md
 #Website - different repo
 /lindblad-page/
 
-# Maintainer-local tooling (version bump script, etc.)
-/tools/
+# Maintainer-local tooling (version bump script, etc.). EXCEPTION:
+# bench_report.py is PUBLIC — docs/BuildAndTest.md, the generated
+# docs/Benchmarks.md, and the committed tests/tools/test_bench_report.py all
+# reference it, so it must ship (R.1.14.0/R.1.14.1 gitignored it by mistake;
+# see the R.1.15.0 CHANGELOG entry). Directory ignores cannot be re-included
+# below, hence /tools/* + negation instead of /tools/.
+/tools/*
+!/tools/bench_report.py
+
+# Comparison-benchmark working outputs (repo root during a run; archive to
+# local/outputs/ with a date prefix afterwards)
+/lb_*.json
+/aer_results.json
+/aer_trans.json
+/aer_combined.json
+/aer_validation.json
+/lindblad_validation.json
+
+# Python virtual environments
+/.venv/
+/venv/

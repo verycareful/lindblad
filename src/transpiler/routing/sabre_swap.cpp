@@ -204,6 +204,11 @@ static SabreRoutingResult sabre_route(
         }
 
         // Collect candidate SWAPs from edges adjacent to blocked logical qubits.
+        // The `other_l >= 0` filter admits only occupied neighbour slots. In
+        // the preset pipeline every slot IS occupied because the layout stage
+        // expands the DAG to device width (layout_expansion.hpp), so idle-wire
+        // SWAPs are available; standalone SabreSwap on an unexpanded n < P DAG
+        // remains restricted to the occupied induced subgraph by construction.
         // build_inv() is hoisted out of the per-blocked-qubit loop (audit F-16):
         // the layout is unchanged until a SWAP is applied at the end of this
         // iteration, so one inverse map serves the whole candidate scan.
@@ -314,16 +319,61 @@ static SabreRoutingResult sabre_route(
 DAGCircuit SabreSwap::run(const DAGCircuit& dag, const TranspilationContext& ctx) const {
     if (ctx.coupling_map.n_physical_qubits == 0) return dag;
 
-    int N = dag.n_qubits;
+    const int N = dag.n_qubits;
+    const int P = ctx.coupling_map.n_physical_qubits;
+    if (N > P) {
+        // Previously undefined behaviour: layout values >= P indexed the
+        // distance matrix out of range.
+        throw std::invalid_argument(
+            "lindblad::SabreSwap: circuit has " + std::to_string(N) +
+            " qubits but the coupling map has only " + std::to_string(P) +
+            " physical qubits");
+    }
     auto dist = ctx.coupling_map.distance_matrix();
 
-    // Use the initial_layout from context if provided, else trivial
-    std::vector<int> layout;
-    if (!ctx.initial_layout.empty() && static_cast<int>(ctx.initial_layout.size()) >= N) {
-        layout = std::vector<int>(ctx.initial_layout.begin(), ctx.initial_layout.begin() + N);
-    } else {
-        layout.resize(N);
-        std::iota(layout.begin(), layout.end(), 0);
+    // Initial layout from the context, validated (R.1.15.0 — previously a
+    // wrong-sized layout was silently ignored, and out-of-range or duplicate
+    // entries indexed the distance matrix out of bounds):
+    //  - empty     → identity
+    //  - size <= N → used as given; remaining wires (e.g. idle wires added by
+    //                layout expansion) take the unused physical slots in
+    //                ascending order (deterministic completion)
+    //  - size >  N → std::invalid_argument (more entries than qubit wires)
+    // Every entry must be a distinct in-range physical qubit index.
+    std::vector<int> layout(N);
+    std::iota(layout.begin(), layout.end(), 0);
+    if (!ctx.initial_layout.empty()) {
+        const auto& init = ctx.initial_layout;
+        if (static_cast<int>(init.size()) > N) {
+            throw std::invalid_argument(
+                "lindblad::SabreSwap: initial_layout has " +
+                std::to_string(init.size()) + " entries but the circuit has only " +
+                std::to_string(N) + " qubit wires");
+        }
+        std::vector<bool> used(static_cast<size_t>(P), false);
+        for (size_t l = 0; l < init.size(); ++l) {
+            const int p = init[l];
+            if (p < 0 || p >= P) {
+                throw std::invalid_argument(
+                    "lindblad::SabreSwap: initial_layout entry " + std::to_string(l) +
+                    " maps to physical qubit " + std::to_string(p) +
+                    " which is out of range (coupling map has " + std::to_string(P) +
+                    " physical qubits)");
+            }
+            if (used[static_cast<size_t>(p)]) {
+                throw std::invalid_argument(
+                    "lindblad::SabreSwap: initial_layout maps two logical qubits "
+                    "to physical qubit " + std::to_string(p));
+            }
+            used[static_cast<size_t>(p)] = true;
+            layout[l] = p;
+        }
+        int next_free = 0;
+        for (int l = static_cast<int>(init.size()); l < N; ++l) {
+            while (used[static_cast<size_t>(next_free)]) ++next_free;
+            used[static_cast<size_t>(next_free)] = true;
+            layout[l] = next_free;
+        }
     }
 
     auto result = sabre_route(dag, layout, ctx.coupling_map, dist, 0.5);

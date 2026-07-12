@@ -11,13 +11,14 @@ The Transpiler provides circuit optimization, layout assignment, and routing pas
 The transpiler pipeline follows a modular pass architecture:
 
 1. **Input**: `QuantumCircuit` or `DAGCircuit`
-2. **Passes** (in sequence):
-   - Layout assignment (logical → physical qubit mapping)
+2. **Passes** (preset stage order, R.1.15.0):
+   - Layout assignment (logical → physical qubit mapping, expanded to device width)
    - Routing (insert SWAP gates to satisfy coupling constraints)
-   - Basis translation (decompose gates into hardware-native basis)
    - Optimization (eliminate redundant gates, consolidate blocks)
-   - Scheduling (assign time slots to instructions)
-3. **Output**: Optimized `QuantumCircuit` with physical qubit indices
+   - Basis translation (decompose gates into the hardware-native basis; always the final stage so the basis contract holds on the output)
+3. **Output**: Optimized `QuantumCircuit` with physical qubit indices; when a coupling map is present the output width equals `n_physical_qubits`
+
+Scheduling passes (`ASAPSchedule`, `ALAPSchedule`) exist but are not composed into any preset level; append them to a custom `PassManager` when needed.
 
 All pass types inherit from `TranspilationPass` and implement:
 ```cpp
@@ -163,13 +164,9 @@ struct TranspilationContext {
 
 **Fields**:
 - **coupling_map**: Hardware connectivity constraints
-- **basis_gates**: Gate set native to the target hardware (e.g., `{"cx", "u3", "rz"}` for IBM systems)
-- **initial_layout**: Optional initial assignment (default: identity mapping)
-- **optimization_level**: Control pass selection and aggressiveness
-  - 0: Minimal (only layout + routing + basis translation)
-  - 1: Standard (add single-qubit optimization)
-  - 2: Aggressive (add two-qubit consolidation, commutative cancellation)
-  - 3: Maximum (add scheduling, gate removal optimizations)
+- **basis_gates**: Target gate set. Non-empty: the preset pipelines compose `BasisTranslator` as the final stage and the transpiled output contains ONLY these gates, or `std::invalid_argument` is thrown. Empty: no basis translation. The equivalence library targets `cx` + `u3`, so a practical basis includes both (plus any gates to keep native).
+- **initial_layout**: Optional logical → physical assignment, honoured by `SabreSwap` at optimization levels 0–1 (default: identity). Validated in R.1.15.0: entries must be distinct in-range physical indices, and a partial layout (fewer entries than wires) is completed deterministically with the unused physical slots in ascending order; malformed layouts throw `std::invalid_argument`. Leave it empty at levels ≥ 2 — `SabreLayout` chooses the layout and its output must be routed with an identity layout.
+- **optimization_level**: Pass selection, 0–3 (see the preset stage table below). Out-of-range values throw `std::invalid_argument` from `preset_pass_manager` (before R.1.15.0, level −1 silently returned an empty manager and levels ≥ 4 silently behaved as 3).
 
 ## TranspilationPass: The Pass Interface
 
@@ -190,17 +187,23 @@ public:
 
 ## Layout Passes: Assign Logical Qubits to Physical Qubits
 
+### Shared layout invariant (R.1.15.0)
+
+When a coupling map is present, both layout passes return a DAG with `n_qubits == coupling_map.n_physical_qubits`: the circuit is expanded by identity embedding so every physical slot holds a (possibly idle) logical wire. This is what makes circuits smaller than the device routable — SABRE SWAP candidates require both slots of an edge to be occupied, and before the expansion the occupied set was frozen at the initial layout image while the scoring heuristic used full-graph distances through slots that could never be entered (the frozen-slot defect: on degree-sparse maps such as heavy-hex, routing thrashed until the SWAP-budget guard threw a misleading "disconnected components" error). Idle-wire SWAPs are legal; Qiskit emits the same after ancilla allocation.
+
+Circuits with more qubits than the device throw `std::invalid_argument` from either pass (previously undefined behaviour: out-of-range distance-matrix indexing). With no coupling map (`n_physical == 0`), both passes return the DAG unchanged.
+
 ### TrivialLayout
 
 ```cpp
 class TrivialLayout : public TranspilationPass { ... };
 ```
 
-**Behavior**: Map logical qubit $i$ to physical qubit $i$ (identity mapping).
+**Behavior**: Map logical qubit $i$ to physical qubit $i$ (identity mapping), expanded to device width per the shared invariant above.
 
 **Use**: Baseline for testing or when the circuit already respects the coupling map.
 
-**Complexity**: $O(1)$
+**Complexity**: $O(N)$ when expansion rebuilds the DAG; $O(1)$ when the width already matches or no map is present
 
 ### SabreLayout
 
@@ -211,11 +214,13 @@ class SabreLayout : public TranspilationPass { ... };
 **Behavior**: Heuristic layout assignment via the SABRE forward-backward-forward pass sequence (Li et al. 2019, arXiv:1809.02573).
 
 Algorithm:
-1. Start with trivial (identity) layout
+1. Expand the input to device width (identity embedding, shared invariant above) — the internal SABRE search requires every physical slot to hold a logical wire
 2. **Forward pass**: run SABRE routing, record the final logical→physical mapping and SWAP count
 3. **Backward pass**: seed from the forward final mapping; run SABRE routing again; update best if fewer SWAPs
 4. **Second forward pass**: seed from best result so far; run SABRE routing a final time
 5. Apply the winning layout by rebuilding the DAG — qubit indices in every instruction are remapped to physical indices and the DAG is reconstructed from scratch so that all edge `wire` fields and adjacency metadata remain consistent
+
+The internal search carries the same SWAP-budget guard as `SabreSwap` (R.1.15.0): a gate spanning disconnected coupling-map components throws `std::runtime_error` instead of looping forever. This matters because at levels ≥ 2 `SabreLayout` is the first pass and no longer has a routing pass in front of it to throw first.
 
 **Output DAG invariant**: `dag.n_qubits == coupling_map.n_physical_qubits` after this pass. All qubit indices are physical. `SabreSwap` must use an identity `initial_layout` on the output (or read it from `ctx.initial_layout`, which should be identity at this stage).
 
@@ -278,21 +283,27 @@ private:
 class BasisTranslator : public TranspilationPass { ... };
 ```
 
-**Behavior**: Decompose any gate not in `basis_gates` into a sequence of native gates.
+**Behavior**: Decompose any gate not in `ctx.basis_gates` into a sequence of gates from a fixed equivalence library targeting `cx` + `u3`. Default basis when `ctx.basis_gates` is empty: `{"cx", "u3"}`.
 
-**Supported decompositions**:
-- **RX, RY, RZ → U3** (parameterized rotations)
-- **H → U3** (Hadamard via U3)
-- **T, S, Tdg, Sdg → U1** (phase gates)
-- **CX, CY, CZ** → CX + single-qubit basis (if CX in basis)
-- **MCX, CNOT variants** → native CX decomposition
-- **SWAP, iSWAP** → CX decomposition (typically 3 CNOTs for SWAP)
+**Contract (R.1.15.0)**: the output is verified — every returned gate is in the target basis, or `std::invalid_argument` is thrown naming the offending gate. `MEASURE`/`RESET`/`BARRIER` are exempt (not gates). Before R.1.15.0, anything the library could not reach passed through silently, violating the caller's basis.
 
-**Code path**: Look up decomposition in a table or compute via unitary synthesis (Qiskit's `one_qubit_decompose` pattern).
+**Supported decompositions** (all emit `u3` and `cx` only):
+- Every fixed single-qubit gate and numeric rotation (`h`, `x`, `y`, `z`, `s`, `sdg`, `t`, `tdg`, `sx`, `sxdg`, `rx`, `ry`, `rz`, `p`, `u1`, `u2`, `u`/`u3`) → one `u3`
+- Two-qubit gates (`cy`, `cz`, `ch`, `swap`, `iswap`, `crx`, `cry`, `crz`, `cp`, `cu`, `ecr`, `rzx`, `rxx`, `ryy`, `rzz`) → `cx` + `u3` ladders on the same qubit pair
+- Three-qubit gates (`ccx`, `ccz`, `cswap`, `rccx`) → `cx` + `u3` ladders on the same wire pairs
 
-**Complexity**: $O(k)$ per gate where $k$ = decomposition size (typically $k \leq 5$)
+**No decomposition path (throws when outside the basis)**:
+- `MCX`, `MCP`, `PERMUTATION` — first-class R.1.13 instructions; lowering is planned but not implemented. Include the gate itself in `basis_gates` or decompose before transpiling.
+- `UNITARY` — no synthesis path in the translator.
+- Symbolic `PARAM_*` gates — parameters are unbound, so numeric decomposition is impossible; bind parameters first.
 
-**Use**: Right before execution on hardware to ensure all gates are executable.
+**Classical conditions**: a conditioned gate decomposes into the same sequence with the condition propagated onto every emitted instruction — exact, because the decompositions are unitary-only and never modify clbits. (Before R.1.15.0 the condition was silently dropped on decomposition.)
+
+**Routing interaction**: every decomposition stays on the original qubit pair(s), so a post-routing circuit remains hardware-legal. The preset pipelines compose this pass as the final stage; the optimisation passes are basis-oblivious (`Optimize1qGates` emits `U`/`RY`/`RZ`, `ConsolidateBlocks` emits `RXX`/`RYY`/`RZZ`), so any earlier position would let them re-introduce non-basis gates.
+
+**Complexity**: $O(k)$ per gate where $k$ = decomposition size (largest: ECR at 11 instructions), plus an $O(n)$ output verification sweep.
+
+**Use**: Composed automatically by `transpile()` / `preset_pass_manager` when `basis_gates` is non-empty; usable standalone before hardware execution.
 
 ## Optimization Passes: Eliminate Redundancy and Consolidate Gates
 
@@ -430,34 +441,26 @@ DAGCircuit optimized = pm.run(dag, ctx);
 
 ```cpp
 PassManager preset_pass_manager(
-    int optimization_level,                  // 0–3
+    int optimization_level,                  // 0–3; out of range throws std::invalid_argument
     const CouplingMap& coupling_map,
     const std::vector<std::string>& basis_gates
 );
 ```
 
-**Level 0** (Minimal):
-- Layout (Trivial)
-- Routing (SABRE)
-- Basis Translation
+Levels compose per **stage**, non-cumulatively (R.1.15.0). Before R.1.15.0 the levels composed cumulatively, so level ≥ 2 first ran the level-0 `TrivialLayout` + `SabreSwap` block: the initial routing pass executed on the unexpanded DAG (frozen-slot defect) and `SabreLayout` then had to re-route an already-SWAP-laden circuit whose pass-1 SWAPs it could not undo. Now every level makes one layout choice and runs one routing pass.
 
-**Level 1** (Standard):
-- Layout (Trivial or SABRE)
-- Routing (SABRE)
-- Basis Translation
-- Optimize1qGates
-- CXCancellation
+Stage 1 — layout + routing:
+- Levels 0–1: `TrivialLayout` → `SabreSwap`
+- Levels 2–3: `SabreLayout` → `SabreSwap`
 
-**Level 2** (Aggressive):
-- Level 1 passes
-- ConsolidateBlocks
-- CommutativeCancellation
+Stage 2 — optimisation:
+- Level 0: none
+- Level 1: `RemoveResetInZeroState` → `Optimize1qGates` → `CXCancellation` → `RemoveDiagonalGatesBeforeMeasure`
+- Level 2: level-1 chain with `CommutativeCancellation` inserted before the diagonal removal
+- Level 3: level-2 chain, then `ConsolidateBlocks` (KAK) followed by a second cleanup sweep (`Optimize1qGates` → `CXCancellation` → `CommutativeCancellation` → `RemoveDiagonalGatesBeforeMeasure`)
 
-**Level 3** (Maximum):
-- Level 2 passes
-- Scheduling (ASAP)
-- RemoveDiagonalGatesBeforeMeasure
-- RemoveResetInZeroState
+Stage 3 — basis translation:
+- Composed if and only if `basis_gates` is non-empty; always the final stage, so the "output contains only basis gates" guarantee holds on the returned circuit. `transpile()` passes the same `basis_gates` into both the composition and the context, so they always agree; when building a preset manager by hand, pass the same vector you place in `ctx.basis_gates`.
 
 ## Convenience Function: Direct Transpilation
 
@@ -473,10 +476,14 @@ QuantumCircuit transpile(
 **Workflow**:
 1. Convert `circuit` → DAG
 2. Build `TranspilationContext` from arguments
-3. Get preset `PassManager` for the level
+3. Get preset `PassManager` for the level (throws on level outside 0–3)
 4. Run manager to get optimized DAG
 5. Convert DAG → `QuantumCircuit` (with physical qubit indices)
 6. Return result
+
+**Output width**: when a coupling map is present, the returned circuit has `n_qubits == n_physical_qubits` (device width); circuits larger than the device throw `std::invalid_argument`.
+
+**basis_gates**: non-empty means the output contains only those gates or `std::invalid_argument` is thrown (see `BasisTranslator`). Before R.1.15.0 this parameter was silently ignored — `BasisTranslator` was composed into no preset level.
 
 **Use**: Quick transpilation without manual pass construction.
 
@@ -489,7 +496,7 @@ lindblad::QuantumCircuit circuit = ...;  // Your circuit
 
 // Target: IBM 27-qubit heavy-hex
 lindblad::CouplingMap coupling = lindblad::CouplingMap::heavy_hex(27);
-std::vector<std::string> basis = {"cx", "u3", "rz"};
+std::vector<std::string> basis = {"cx", "u3", "rz"};  // must cover the library's cx+u3 targets
 
 lindblad::QuantumCircuit optimized = lindblad::transpile(
     circuit,
@@ -497,6 +504,8 @@ lindblad::QuantumCircuit optimized = lindblad::transpile(
     basis,
     2  // optimization_level=2
 );
+// optimized.n_qubits == 27 (device width) even if `circuit` is smaller;
+// every gate in `optimized` is cx, u3, or rz.
 ```
 
 ## Integration with Simulators and Primitives
@@ -516,35 +525,31 @@ lindblad::QuantumCircuit optimized = lindblad::transpile(
 
 ### Pass Ordering Matters
 
-Order passes to minimize redundant work:
-1. **Layout first**: Determine logical→physical mapping early
-2. **Routing**: Insert SWAPs using determined layout
-3. **Basis translation**: Decompose remaining gates
-4. **Optimization**: Clean up inserted gates and canonical forms
-5. **Scheduling (optional)**: Final timing assignment
+The preset stage order is deliberate:
+1. **Layout first**: determine the logical→physical mapping (and device-width expansion) early
+2. **Routing**: insert SWAPs using the determined layout
+3. **Optimization**: clean up inserted gates and canonical forms
+4. **Basis translation last**: the optimisation passes are basis-oblivious and would re-introduce non-basis gates after an earlier translation; the final position is what makes the basis contract hold on the output
 
-Reordering can increase optimization time without benefit (e.g., routing after optimization may undo savings).
+When composing a custom `PassManager`, keep translation after any pass that synthesises gates (`Optimize1qGates`, `ConsolidateBlocks`), or its output guarantee will not survive.
 
 ### Optimization Level Trade-offs
 
-| Level | SWAPs (avg) | Depth (avg) | Time (s) | Use Case |
-|---|---|---|---|---|
-| 0 | ~40% excess | ↓ minimal | ↓ <1s | Testing, simulation |
-| 1 | ~20% excess | ↓ moderate | 1–5s | Production default |
-| 2 | ~10% excess | ↓ good | 5–30s | Quality-critical |
-| 3 | ~5% excess | ↓ excellent | 30–300s | Research, offline prep |
+Higher levels spend more transpile time for fewer SWAPs and lower depth: level 0 is routing-only (testing, simulation), level 1 adds cheap linear-time cleanup (the default), level 2 adds SABRE layout and commutative cancellation (quality-critical circuits), and level 3 adds KAK block consolidation with a second cleanup sweep (offline preparation of hot circuits). Measured wall-time and quality comparisons against Qiskit live in `docs/Benchmarks.md` (transpiler domain).
 
 ## Common Pitfalls
 
-1. **Wrong basis gates**: If `basis_gates` doesn't include CX, routing may fail. Always include all hardware-native gates.
+1. **Basis without `cx` + `u3`**: the equivalence library targets `cx` + `u3`, so a basis that includes neither the source gate nor both targets makes `BasisTranslator` throw `std::invalid_argument`. Include `cx` and `u3` (plus any gates you want kept native).
 
-2. **Disconnected layout**: If `initial_layout` violates coupling map (e.g., maps adjacent logical qubits to non-adjacent physical qubits), routing cannot fix it; use SabreLayout or TrivialLayout instead.
+2. **Malformed `initial_layout`**: out-of-range or duplicate entries, or more entries than circuit wires, throw `std::invalid_argument` from `SabreSwap` (R.1.15.0; previously silently ignored or undefined behaviour). A layout that maps interacting logical qubits far apart is legal but costs SWAPs.
 
-3. **Mutating DAG nodes directly after layout**: Do not remap `DAGNode::qubit_wires` or `Instruction::qubits` in-place on a DAG. `DAGEdge::wire` fields store qubit indices independently; partial mutation leaves the DAG in an inconsistent state. Always rebuild via `dag.to_circuit()` → remap instructions → `DAGCircuit::from_circuit()`.
+3. **`initial_layout` at levels ≥ 2**: `SabreLayout` chooses the layout and returns a physically-indexed DAG; a non-empty `initial_layout` would be applied on top of it by the subsequent routing pass. Leave it empty at levels ≥ 2.
 
-3. **Over-optimization**: Level 3 can be slower than execution; use only for pre-computed circuits, not for repeated transpilation in tight loops.
+4. **Mutating DAG nodes directly after layout**: Do not remap `DAGNode::qubit_wires` or `Instruction::qubits` in-place on a DAG. `DAGEdge::wire` fields store qubit indices independently; partial mutation leaves the DAG in an inconsistent state. Always rebuild via `dag.to_circuit()` → remap instructions → `DAGCircuit::from_circuit()`.
 
-4. **DAG caching**: DAGCircuit is not cached by default; convert once and reuse across multiple passes if possible.
+5. **Over-optimization**: Level 3 can be slower than execution; use only for pre-computed circuits, not for repeated transpilation in tight loops.
+
+6. **DAG caching**: DAGCircuit is not cached by default; convert once and reuse across multiple passes if possible.
 
 ## See Also
 

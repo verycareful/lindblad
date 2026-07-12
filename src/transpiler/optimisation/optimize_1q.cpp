@@ -9,6 +9,10 @@
 //
 // ConsolidateBlocks: Identify maximal 2Q gate blocks (on the same pair of qubits),
 //   compose their 4x4 unitaries, then KAK-decompose to ≤3 CNOTs + 1Q corrections.
+//
+// PassManager, preset_pass_manager, and transpile() moved to
+// preset_pass_manager.cpp in R.1.15.0 (SRP: pipeline composition is not a
+// 1-qubit-optimisation concern).
 
 #include "lindblad/transpiler.hpp"
 #include "lindblad/gates.hpp"
@@ -704,95 +708,6 @@ DAGCircuit ConsolidateBlocks::run(const DAGCircuit& dag, const TranspilationCont
     }
 
     return DAGCircuit::from_circuit(optimized);
-}
-
-// =============================================================================
-// PassManager
-// =============================================================================
-
-void PassManager::append(std::unique_ptr<TranspilationPass> pass) {
-    passes.push_back(std::move(pass));
-}
-
-DAGCircuit PassManager::run(const DAGCircuit& dag, const TranspilationContext& ctx) const {
-    DAGCircuit current = dag;
-    for (const auto& pass : passes) {
-        current = pass->run(current, ctx);
-    }
-    return current;
-}
-
-// =============================================================================
-// Preset pass managers
-// =============================================================================
-
-PassManager preset_pass_manager(
-    int optimization_level,
-    const CouplingMap& /*coupling_map*/,
-    const std::vector<std::string>& /*basis_gates*/
-) {
-    // The coupling map and basis gates are intentionally not consumed here:
-    // pass COMPOSITION depends only on the optimisation level, and every
-    // composed pass reads the coupling map / basis from the
-    // TranspilationContext handed to run(). The parameters stay in the
-    // signature so callers hold one uniform entry point (see transpile()).
-    PassManager pm;
-
-    if (optimization_level >= 0) {
-        // Level 0: Trivial layout, basic SABRE routing, no optimisation
-        pm.append(std::make_unique<TrivialLayout>());
-        pm.append(std::make_unique<SabreSwap>());
-    }
-
-    if (optimization_level >= 1) {
-        // Level 1: 1Q gate compression + CX cancellation + diagonal removal + reset cleanup
-        pm.append(std::make_unique<RemoveResetInZeroState>());
-        pm.append(std::make_unique<Optimize1qGates>());
-        pm.append(std::make_unique<CXCancellation>());
-        pm.append(std::make_unique<RemoveDiagonalGatesBeforeMeasure>());
-    }
-
-    if (optimization_level >= 2) {
-        // Level 2: SABRE layout (iterate), then re-route and re-optimise
-        pm.append(std::make_unique<SabreLayout>());
-        pm.append(std::make_unique<SabreSwap>());
-        pm.append(std::make_unique<Optimize1qGates>());
-        pm.append(std::make_unique<CXCancellation>());
-        pm.append(std::make_unique<CommutativeCancellation>());
-        pm.append(std::make_unique<RemoveDiagonalGatesBeforeMeasure>());
-    }
-
-    if (optimization_level >= 3) {
-        // Level 3: Block consolidation with KAK + commutative + repeat passes
-        pm.append(std::make_unique<ConsolidateBlocks>());
-        pm.append(std::make_unique<Optimize1qGates>());
-        pm.append(std::make_unique<CXCancellation>());
-        pm.append(std::make_unique<CommutativeCancellation>());
-        pm.append(std::make_unique<RemoveDiagonalGatesBeforeMeasure>());
-    }
-
-    return pm;
-}
-
-// =============================================================================
-// Convenience transpile function
-// =============================================================================
-
-QuantumCircuit transpile(
-    const QuantumCircuit& circuit,
-    const CouplingMap& coupling_map,
-    const std::vector<std::string>& basis_gates,
-    int optimization_level
-) {
-    auto dag = DAGCircuit::from_circuit(circuit);
-    TranspilationContext ctx;
-    ctx.coupling_map = coupling_map;
-    ctx.basis_gates = basis_gates;
-    ctx.optimization_level = optimization_level;
-
-    auto pm = preset_pass_manager(optimization_level, coupling_map, basis_gates);
-    auto result_dag = pm.run(dag, ctx);
-    return result_dag.to_circuit();
 }
 
 } // namespace lindblad

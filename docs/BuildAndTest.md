@@ -106,6 +106,13 @@ R.1.14 adds a head-to-head suite comparing Lindblad against Qiskit and Qiskit
 Aer on a shared, committed QASM2 corpus. Results are published in
 [`Benchmarks.md`](Benchmarks.md).
 
+Cadence policy: the suite is NOT rerun for every release. Benchmark runs are
+refreshed when performance-relevant code changes or on maintainer demand, and
+[`Benchmarks.md`](Benchmarks.md) always displays the library version stamped
+by the run that produced it (`bench_report.py --expect-version` guards
+against stale binaries at generation time). That stamp may therefore lag the
+current release version; the numbers remain valid for the version they name.
+
 Components:
 
 - `benchmarks/compare/circuits/` — the shared gate-only QASM2 corpus plus

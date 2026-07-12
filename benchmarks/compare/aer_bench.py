@@ -66,18 +66,21 @@ MPS_N_SWEEP = [16, 24, 32, 40]          # at chi = 32
 MPS_CHI_SWEEP = [8, 16, 64]             # at n = 24 (chi = 32 comes from above)
 CLIFFORD_SIZES = [20, 40, 80, 160]
 # Transpiler workloads: (qasm file, circuit key, coupling map). Circuits are
-# sized EXACTLY to their map, and both engines route WITHOUT basis translation
-# (see bench_compare_transpiler.cpp header for the tracked Lindblad defects
-# behind both constraints).
+# SMALLER than their maps (n = 22 on 25/27-slot devices) and both engines
+# translate into the same {cx, u3} basis: the full pipeline (layout + routing
+# + optimisation + translation) is compared end-to-end. The R.1.14 workarounds
+# (map-sized circuits, routing-only) were reverted in R.1.15.0 with the
+# frozen-slot and silent-basis_gates fixes; see bench_compare_transpiler.cpp.
 TRANS_WORK = [
-    ("qv_n27.qasm",  "qv27",  "linear27"),
-    ("qv_n25.qasm",  "qv25",  "grid25"),
-    ("qv_n27.qasm",  "qv27",  "heavyhex27"),
-    ("qft_n27.qasm", "qft27", "linear27"),
-    ("qft_n25.qasm", "qft25", "grid25"),
-    ("qft_n27.qasm", "qft27", "heavyhex27"),
+    ("qv_n22.qasm",  "qv22",  "linear27"),
+    ("qv_n22.qasm",  "qv22",  "grid25"),
+    ("qv_n22.qasm",  "qv22",  "heavyhex27"),
+    ("qft_n22.qasm", "qft22", "linear27"),
+    ("qft_n22.qasm", "qft22", "grid25"),
+    ("qft_n22.qasm", "qft22", "heavyhex27"),
 ]
 TRANS_OPT_LEVELS = [2, 3]
+TRANS_BASIS = ["cx", "u3"]  # mirrored in bench_compare_transpiler.cpp
 EST_SIZES = [12, 16, 20]
 EST_SHOTS = 4096
 
@@ -225,10 +228,11 @@ def domain_trans(results):
             out_holder = {}
 
             def run():
-                # basis_gates=None: routing-only, mirroring the Lindblad side
-                # (its transpile() currently performs no basis translation).
+                # Same {cx, u3} target basis as the Lindblad side: both
+                # engines run the full pipeline including basis translation,
+                # so twoq_out counts CX against CX.
                 out_holder["qc"] = transpile(
-                    qc, coupling_map=cmap, basis_gates=None,
+                    qc, coupling_map=cmap, basis_gates=TRANS_BASIS,
                     optimization_level=opt, seed_transpiler=SEED)
 
             timing = timed(run)

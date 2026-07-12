@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.14.1 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.15.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.14.1")
+set(LINDBLAD_VERSION_LABEL "R.1.15.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -176,6 +176,7 @@ add_library(lindblad_core STATIC
     src/quantum_info/states.cpp
     src/quantum_info/metrics.cpp
     src/transpiler/basis_translator.cpp
+    src/transpiler/preset_pass_manager.cpp
     src/transpiler/layout/sabre_layout.cpp
     src/transpiler/layout/trivial_layout.cpp
     src/transpiler/routing/sabre_swap.cpp

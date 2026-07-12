@@ -4,6 +4,8 @@
 #include <cmath>
 #include <queue>
 #include <limits>
+#include <stdexcept>
+#include <string>
 #include <unordered_set>
 
 namespace lindblad {
@@ -292,8 +294,28 @@ CouplingMap CouplingMap::all_to_all(int n) {
 // textbook / Qiskit-equivalent decompositions. Single-qubit gates are mapped
 // to U3. Two-qubit non-CX gates are decomposed into CX + U3 sequences.
 //
-// Parametrized gates (PARAM_RX etc.) are passed through if already in target
-// or decomposed using the same U3 equivalences.
+// Contract (R.1.15.0): the OUTPUT is verified — every gate in the returned
+// circuit is in the target basis, or std::invalid_argument is thrown naming
+// the offending gate. Anything the equivalence library cannot reach (MCX,
+// MCP, PERMUTATION until their lowering ships; UNITARY; symbolic PARAM_*
+// gates, whose parameters are unbound) previously passed through SILENTLY,
+// violating the caller's basis. MEASURE/RESET/BARRIER are not gates and are
+// exempt. Since the library targets cx+u3, a basis that includes neither
+// the source gate nor cx+u3 also throws.
+//
+// Classical conditions: a conditioned gate decomposes into the same sequence
+// with the condition propagated onto EVERY emitted instruction. This is
+// exact — the decompositions are unitary-only (no measurement), so all
+// emitted gates fire under the same runtime clbit state, which the sequence
+// never modifies. (Before R.1.15.0 decomposition silently DROPPED the
+// condition; the pass was never composed into a preset pipeline, so the bug
+// was latent.)
+//
+// Routing interaction: every decomposition maps a gate to 1q gates + CX on
+// the SAME qubit pair(s), so a post-routing circuit stays hardware-legal.
+// This pass is composed as the FINAL stage of the preset pipelines (see
+// preset_pass_manager.cpp for why it must come after the basis-oblivious
+// optimisation passes).
 // =============================================================================
 
 namespace {
@@ -648,6 +670,13 @@ DAGCircuit BasisTranslator::run(
         basis_set = {"cx", "u3"};
     }
 
+    // Emitted 1q gate type follows the basis: the library synthesises the
+    // 3-parameter U gate, which this codebase carries as both U3 ("u3") and
+    // U ("u") with identical semantics (see instruction_to_2x2 /
+    // decompose_to_cx_u3's U/U3 case). Emit the variant the caller's basis
+    // names; prefer u3 when both (or neither) are present.
+    const bool emit_u = basis_set.count("u") > 0 && basis_set.count("u3") == 0;
+
     for (const auto& inst : qc.instructions) {
         if (inst.type == Instruction::GateType::MEASURE ||
             inst.type == Instruction::GateType::RESET  ||
@@ -662,9 +691,55 @@ DAGCircuit BasisTranslator::run(
             out.instructions.push_back(inst);
         } else {
             for (auto& d : decomposed) {
+                // Propagate the classical condition onto every emitted gate:
+                // exact for these unitary-only decompositions (see header).
+                d.condition_clbit = inst.condition_clbit;
+                d.condition_value = inst.condition_value;
+                if (emit_u && d.type == Instruction::GateType::U3) {
+                    d.type = Instruction::GateType::U;  // same gate, basis's name
+                }
                 out.instructions.push_back(std::move(d));
             }
         }
+    }
+
+    // Verify the basis contract on the final output (R.1.15.0): anything the
+    // equivalence library could not reach passed through decompose_to_cx_u3
+    // unchanged — catch it loudly here instead of silently violating the
+    // caller's basis_gates. Deterministic message: basis listed in the
+    // caller's order (or the cx+u3 default).
+    for (const auto& inst : out.instructions) {
+        if (inst.type == Instruction::GateType::MEASURE ||
+            inst.type == Instruction::GateType::RESET  ||
+            inst.type == Instruction::GateType::BARRIER) {
+            continue;
+        }
+        const std::string name = inst.gate_name();
+        if (in_basis(name, basis_set)) continue;
+
+        std::string basis_str;
+        if (!bg.empty()) {
+            for (const auto& b : bg) basis_str += (basis_str.empty() ? "" : ", ") + b;
+        } else {
+            basis_str = "cx, u3";
+        }
+        std::string msg = "lindblad::BasisTranslator: cannot translate gate '" +
+            name + "' into the requested basis {" + basis_str + "}";
+        if (inst.type == Instruction::GateType::MCX ||
+            inst.type == Instruction::GateType::MCP ||
+            inst.type == Instruction::GateType::PERMUTATION) {
+            msg += "; MCX/MCP/PERMUTATION lowering is not implemented yet: "
+                   "include the gate itself in basis_gates or decompose it "
+                   "before transpiling";
+        } else if (inst.is_parameterised()) {
+            msg += "; symbolic parameterised gates cannot be numerically "
+                   "decomposed: bind parameters first or include the gate "
+                   "in basis_gates";
+        } else {
+            msg += "; the equivalence library targets cx+u3: include 'cx' "
+                   "and 'u3' (or the gate itself) in basis_gates";
+        }
+        throw std::invalid_argument(msg);
     }
 
     return DAGCircuit::from_circuit(out);

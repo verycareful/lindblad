@@ -8,12 +8,21 @@
 //   Output DAG invariant: n_qubits == coupling_map.n_physical_qubits.
 //   All qubit indices in instructions and edges refer to physical qubits.
 //   SabreSwap must use an identity initial_layout on this output.
+//
+//   Input expansion (R.1.15.0): the DAG is expanded to n_physical_qubits by
+//   identity embedding BEFORE the SABRE search (layout_expansion.hpp — see
+//   there for the frozen-slot defect this prevents). Circuits larger than
+//   the device throw std::invalid_argument instead of indexing the distance
+//   matrix out of range (previously undefined behaviour).
 
 #include "lindblad/transpiler.hpp"
+
+#include "layout_expansion.hpp"
 
 #include <algorithm>
 #include <limits>
 #include <numeric>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -119,6 +128,18 @@ static SABRERunResult sabre_run(
 
     int swap_count = 0;
 
+    // Termination guard (mirrors sabre_swap.cpp): a gate spanning
+    // disconnected coupling-map components never becomes adjacent, yet SWAP
+    // candidates keep existing inside one component — without a budget this
+    // loop cannot terminate on unroutable input. Routing any gate needs at
+    // most n_physical SWAPs, so the budget is generous for every routable
+    // circuit. This matters from R.1.15.0 on because SabreLayout is the
+    // FIRST pass at level >= 2 and no longer has a SabreSwap run in front of
+    // it to throw first.
+    const long long swap_budget =
+        static_cast<long long>(dag.nodes.size() + 16) *
+        static_cast<long long>(std::max(1, coupling_map.n_physical_qubits));
+
     while (!front_layer.empty()) {
         std::vector<int> executable;
         std::vector<int> blocked;
@@ -198,6 +219,12 @@ static SABRERunResult sabre_run(
         if (best_l0 >= 0) {
             std::swap(layout[best_l0], layout[best_l1]);
             swap_count++;
+            if (swap_count > swap_budget) {
+                throw std::runtime_error(
+                    "SABRE layout exceeded its SWAP budget: a 2-qubit gate "
+                    "appears to span disconnected coupling-map components and "
+                    "can never be made adjacent.");
+            }
         } else {
             break;  // No valid SWAP found (disconnected circuit?)
         }
@@ -213,7 +240,13 @@ static SABRERunResult sabre_run(
 DAGCircuit SabreLayout::run(const DAGCircuit& dag, const TranspilationContext& ctx) const {
     if (ctx.coupling_map.n_physical_qubits == 0) return dag;
 
-    int N = dag.n_qubits;
+    // Expand to device width first (identity embedding): the SABRE search
+    // requires every physical slot to hold a logical wire, otherwise SWAP
+    // candidates freeze at the initial layout image (see layout_expansion.hpp).
+    const DAGCircuit expanded =
+        transpiler_detail::expand_to_physical(dag, ctx, "SabreLayout");
+
+    int N = expanded.n_qubits;  // == n_physical_qubits after expansion
     auto dist = ctx.coupling_map.distance_matrix();
 
     std::vector<int> best_layout(N);
@@ -221,7 +254,7 @@ DAGCircuit SabreLayout::run(const DAGCircuit& dag, const TranspilationContext& c
     int best_swaps = std::numeric_limits<int>::max();
 
     // Forward pass
-    auto result_fwd = sabre_run(dag, best_layout, dist, ctx.coupling_map);
+    auto result_fwd = sabre_run(expanded, best_layout, dist, ctx.coupling_map);
     if (result_fwd.swap_count < best_swaps) {
         best_swaps = result_fwd.swap_count;
         best_layout = result_fwd.final_layout;
@@ -232,14 +265,14 @@ DAGCircuit SabreLayout::run(const DAGCircuit& dag, const TranspilationContext& c
     // without requiring a reversed DAG; it typically finds a better initial
     // mapping that reduces SWAPs in the subsequent forward pass.
     std::vector<int> reversed_layout = result_fwd.final_layout;
-    auto result_bwd = sabre_run(dag, reversed_layout, dist, ctx.coupling_map);
+    auto result_bwd = sabre_run(expanded, reversed_layout, dist, ctx.coupling_map);
     if (result_bwd.swap_count < best_swaps) {
         best_swaps = result_bwd.swap_count;
         best_layout = result_bwd.final_layout;
     }
 
     // Final forward pass from the best result so far
-    auto result_final = sabre_run(dag, best_layout, dist, ctx.coupling_map);
+    auto result_final = sabre_run(expanded, best_layout, dist, ctx.coupling_map);
     if (result_final.swap_count < best_swaps) {
         best_swaps = result_final.swap_count;
         best_layout = result_final.final_layout;
@@ -249,9 +282,10 @@ DAGCircuit SabreLayout::run(const DAGCircuit& dag, const TranspilationContext& c
     // Mutating node.qubit_wires/op.qubits in place would leave DAGEdge::wire fields
     // referencing stale logical indices, corrupting substitute_node, remove_node,
     // and wire-based successor matching in the subsequent SabreSwap routing pass.
-    // n_qubits is expanded to n_physical_qubits so from_circuit correctly sizes
-    // the IN-node array and last_qubit_node lookup for physical qubit indices.
-    QuantumCircuit mapped_qc = dag.to_circuit();
+    // n_qubits already equals n_physical_qubits (input expansion above); the
+    // assignment restates the output invariant explicitly so from_circuit
+    // sizes the IN-node array for physical qubit indices.
+    QuantumCircuit mapped_qc = expanded.to_circuit();
     mapped_qc.n_qubits = ctx.coupling_map.n_physical_qubits;
     for (auto& inst : mapped_qc.instructions) {
         for (auto& q : inst.qubits) {

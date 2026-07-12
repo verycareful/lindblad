@@ -60,6 +60,15 @@ public:
 };
 
 // Layout passes
+//
+// Shared output invariant (R.1.15.0): when a coupling map is present, both
+// passes return a DAG with n_qubits == coupling_map.n_physical_qubits — every
+// physical slot holds a (possibly idle) logical wire, so circuits smaller
+// than the device stay routable (idle-wire SWAPs are legal). TrivialLayout is
+// the identity embedding; SabreLayout additionally remaps wires to the
+// SABRE-chosen layout (Li et al. 2019). Circuits with more qubits than the
+// device throw std::invalid_argument. With no coupling map (n_physical == 0),
+// both passes return the DAG unchanged.
 class TrivialLayout : public TranspilationPass {
 public:
     DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const override;
@@ -87,7 +96,12 @@ public:
     std::string name() const override { return "StochasticSwap"; }
 };
 
-// Basis translation
+// Basis translation — decompose gates into ctx.basis_gates (default: cx+u3).
+// The output is VERIFIED (R.1.15.0): every returned gate is in the target
+// basis, or std::invalid_argument is thrown naming the offending gate.
+// Gates without a decomposition path (MCX/MCP/PERMUTATION until their
+// lowering ships, UNITARY, unbound PARAM_* gates) previously passed through
+// silently. Classical conditions are propagated onto every emitted gate.
 class BasisTranslator : public TranspilationPass {
 public:
     DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const override;
@@ -159,14 +173,34 @@ public:
     DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const;
 };
 
-// Preset pass managers
+// Preset pass managers — per-STAGE composition (non-cumulative, R.1.15.0):
+//   layout+routing   levels 0-1: TrivialLayout → SabreSwap
+//                    levels 2-3: SabreLayout → SabreSwap  (one routing pass)
+//   optimisation     level-dependent chain (see preset_pass_manager.cpp)
+//   translation      BasisTranslator, composed iff basis_gates is non-empty;
+//                    always the FINAL stage, so the basis contract holds on
+//                    the returned circuit.
+// optimization_level outside [0, 3] throws std::invalid_argument (level -1
+// previously returned an empty manager = silent identity transpile).
+// ctx.initial_layout is honoured at levels 0-1 only; leave it empty at
+// levels >= 2 (SabreLayout chooses the layout).
 PassManager preset_pass_manager(
     int optimization_level,
     const CouplingMap& coupling_map,
     const std::vector<std::string>& basis_gates
 );
 
-// Convenience: transpile a circuit directly
+// Convenience: transpile a circuit directly.
+//   coupling_map — routing constraint. When present, the output circuit has
+//     n_qubits == n_physical_qubits (device width; smaller circuits are
+//     identity-embedded, larger ones throw std::invalid_argument).
+//     CouplingMap() (n = 0) means unconstrained; an edgeless CouplingMap(n)
+//     is literal (unroutable for any 2q gate: SABRE throws).
+//   basis_gates — target basis. Non-empty: the output contains ONLY these
+//     gates or std::invalid_argument is thrown (see BasisTranslator).
+//     Empty: no basis translation. (Before R.1.15.0 this parameter was
+//     silently ignored.)
+//   optimization_level — 0..3; out of range throws std::invalid_argument.
 QuantumCircuit transpile(
     const QuantumCircuit& circuit,
     const CouplingMap& coupling_map = CouplingMap(),
