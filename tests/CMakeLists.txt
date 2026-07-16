@@ -131,7 +131,25 @@ set(LINDBLAD_TEST_SOURCES
     # output, u/u3 alias, untranslatable throws, condition propagation,
     # feedforward end-to-end), run-to-run determinism.
     test_r1151_routing_regression.cpp
+    # TEMPORARY DIAGNOSTIC (R.1.16.0 / issue #44) — MPS Shor 13-qubit probe.
+    # Stays committed per maintainer decision; at the .1 release the probe
+    # code gets commented out and regression tests written below it. Run
+    # directly for the report (ctest hides passing stdout):
+    #   ./build-clang/tests/lindblad_tests --gtest_filter='DiagR1160*'
+    # The strictfp twin compiles WITHOUT fast-math (see below): identical
+    # inputs + identical Eigen, only the FP model differs across the pair.
+    test_diag_r1160_mps_shor.cpp
+    test_diag_r1160_strictfp.cpp
 )
+
+# Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this
+# TU's JacobiSVD/BDCSVD instantiations get IEEE semantics while the rest of
+# the suite keeps the project-wide -ffast-math. Mirrors the vendored-NLopt
+# precedent (see the nlopt target_compile_options in the top CMakeLists).
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set_source_files_properties(test_diag_r1160_strictfp.cpp PROPERTIES
+        COMPILE_OPTIONS "-fno-fast-math")
+endif()
 
 # Create test executable
 add_executable(lindblad_tests ${LINDBLAD_TEST_SOURCES} $<TARGET_OBJECTS:lindblad_banner_obj>)

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.15.1 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.16.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.15.1")
+set(LINDBLAD_VERSION_LABEL "R.1.16.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -120,6 +120,23 @@ option(LINDBLAD_BUILD_APPS       "Build user-facing CLI apps (lindblad_draw, ...
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(nlopt eigen)
+
+# Strict FP for the MPS simulator TU (R.1.16.0, issue #44). Eigen is
+# header-only, so mps_sim.cpp's JacobiSVD instantiation inherits this
+# directory's -ffast-math; under that codegen, on degenerate rank-deficient
+# MPS thetas (13-qubit Shor IQFT), Eigen 3.4.0 returned internally
+# inconsistent factorizations whose damage reached the KEPT singular
+# channels as finite-but-wrong data — undetectable by any truncation-side
+# check. Under strict FP the same input yields an exact kept slice with
+# garbage confined to discardable null-space columns (proven by the
+# DiagR1160StrictFP suite), which svd_truncate's hardened selection then
+# handles. Same pattern as the NLopt -fno-fast-math quarantine below:
+# numerical ALGORITHMS need IEEE semantics; kernel arithmetic keeps
+# fast-math. Later flags override earlier ones, so this TU keeps -O3/-march.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set_source_files_properties(src/simulators/mps_sim.cpp PROPERTIES
+        COMPILE_OPTIONS "-fno-fast-math")
+endif()
 
 # Third-party hygiene for the vendored NLopt build:
 #   -w              its own sources (stogo) trip warnings; the project's

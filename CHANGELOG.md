@@ -4,6 +4,90 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.16.0] - 2026-07-16
+
+MPS accuracy fix (#44): the MPS backend failed to recover Shor's order at
+13 qubits even though bond dimension 64 is mathematically exact there. Eight
+instrumented diagnostic runs located the root cause far from the original
+suspects: **Eigen 3.4.0's SVD routines return corrupt factorisations on
+degenerate rank-deficient complex matrices** (the two-site tensors Shor-style
+circuits produce), in failure shapes that morph with tiny input and codegen
+perturbations. The fix makes MPS truncation verify everything and never
+trust the SVD backend. The full diagnostic instrumentation ships in-tree as
+tests -- deliberately visible, since most of this release's testing was
+internal; the probes will be commented out (not removed) in R.1.16.1 with
+the regression suite written below them in the same files.
+
+### Fixed
+
+- MPS Shor order recovery at 13 qubits (#44): `find_order(2, 15, 9, mps)`
+  now returns r = 4 on every seed with state fidelity 1.0 at every circuit
+  cut (previously NaN states and garbage counts with no error). Root cause,
+  established by strict-FP/fast-math twin experiments over identical
+  matrices: two distinct Eigen 3.4.0 defects, both reproduced under strict
+  IEEE floating point, i.e. genuine Eigen bugs, not compiler-flag artifacts
+  -- (1) JacobiSVD emits garbage on degenerate rank-deficient inputs (NaN
+  null-space singular vectors in both FP models; with fast-math codegen the
+  corruption can reach the KEPT channels as wrong-but-finite data), and
+  (2) the BDCSVD inaccuracy first found in R.1.11.2 reproduces
+  bit-identically under strict FP (spectrum/norm violation on a 36x36
+  degenerate complex matrix). Standalone reproducers for both now live in
+  `tests/diag_r1160_matrices.hpp`.
+- `MPSState::svd_truncate` rewritten as SELECT -> VERIFY -> FALLBACK ->
+  THROW: singular values selected by bit-level-finite comparison (immune to
+  ordering corruption; fast-math folds NaN comparisons), the kept
+  factorisation verified against the Frobenius identity
+  `|M - U_k S_k V_k^H|_F^2 = sum(discarded sigma^2)` (one rank-slice GEMM;
+  every observed failure mode violates it, including the wrong-but-finite
+  kept vector that no finiteness check can see), a Gram-route
+  eigendecomposition fallback (`M^H M` / `M M^H` + SelfAdjointEigenSolver,
+  partner factor built only for kept sigmas) verified the same way, and a
+  loud `std::runtime_error` if both routes fail. An MPS run can no longer
+  silently propagate a corrupt tensor.
+- `MPSState::truncation_error()` is no longer poisoned into NaN by
+  non-finite discarded singular values, now includes finite below-cutoff
+  discarded weight, and is committed only after verification succeeds.
+
+### Added
+
+- `tests/diag_r1160_matrices.hpp` plus the `DiagR1160MpsShor` and
+  `DiagR1160StrictFP` suites (10 tests, 2 suites): permanent standalone
+  reproducers for both Eigen defects and the full diagnostic
+  instrumentation (stage-sweep fidelity/truncation probe, per-instruction
+  NaN bisection with swap-chain zoom, sampler-vs-own-state check, a d=2
+  qudit-MPS twin of the exact failing scenario, end-to-end order recovery
+  across seeds, and fast-math vs strict-FP SVD twins over identical
+  matrices).
+- `tests/CMakeLists.txt`: the strict-FP twin TU is compiled
+  `-fno-fast-math` via a per-source property -- Eigen is header-only, so
+  each translation unit's flags govern its own SVD instantiation; this
+  mechanism is what let the diagnosis separate Eigen defects from
+  compiler-flag effects.
+
+### Changed
+
+- `src/simulators/mps_sim.cpp` is compiled `-fno-fast-math` (per-source
+  CMake property, following the vendored-NLopt precedent): numerical
+  algorithms with convergence and degeneracy logic need IEEE semantics,
+  while the simulator kernel TUs keep fast-math. Under fast-math codegen
+  the Eigen corruption could reach the kept singular channels as
+  finite-but-wrong data, which no output check can detect.
+- Measured cost of the verified truncation (bench_compare_mps spot run vs
+  the published 2026-07-12 numbers): 28-42% added wall time on the MPS
+  benchmark domain; the MPS advantage over Qiskit Aer compresses from
+  10-23x to roughly 10-16x, still ahead on every workload. Accepted
+  deliberately -- correctness outranks performance -- with a verification-
+  cheapening design (cheap screens plus randomised residual probes) queued
+  for the R.1.17 performance wave.
+- `docs/api/simulators.md`: the MPS section documents the verified
+  truncation contract (selection, Frobenius-identity verification, Gram
+  fallback, fail-loud throw, `truncation_error()` semantics, strict-FP TU).
+- Qudit MPS is intentionally UNCHANGED: it carries the same unguarded
+  truncation pattern, but a d=2, 13-site twin probe running the exact
+  failing scenario stays at fidelity 1.0, and no qudit test exhibits the
+  defect. It is tracked as a latent-pattern item rather than fixed
+  speculatively.
+
 ## [R.1.15.1] - 2026-07-12
 
 Test-suite release for the R.1.15.0 transpiler correctness wave (`.1` slot:

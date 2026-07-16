@@ -1,7 +1,14 @@
 // mps_sim.cpp — Matrix Product State simulator
 // SVD truncation defaults to Eigen JacobiSVD (accurate). BDCSVD is a faster
-// opt-in but is CURRENTLY BROKEN for complex/degenerate inputs (R.1.11.2, see
-// docs/plans/eigen-bdcsvd-bug.md); selecting it emits a loud runtime warning.
+// opt-in but is CURRENTLY BROKEN for complex/degenerate inputs (R.1.11.2:
+// on a 36x36 degenerate complex matrix it violates U·S·V† = M and Frobenius
+// norm preservation, under strict FP too — a genuine Eigen 3.4.0 defect);
+// selecting it emits a loud runtime warning.
+// JacobiSVD itself has a narrower Eigen 3.4.0 defect (R.1.16.0, issue #44):
+// on degenerate rank-deficient inputs it can emit NaN inside NULL-SPACE
+// singular vectors. svd_truncate below is hardened against it (the garbage
+// is discardable by construction; anything non-finite in the KEPT slice
+// throws). Reproducers for both defects: tests/diag_r1160_matrices.hpp.
 // Non-adjacent two-qubit gates are handled via SWAP chains (correct MPS-native approach).
 // Single-qubit marginals use efficient left/right boundary contraction — O(N chi^3).
 
@@ -17,10 +24,13 @@
 #include <cassert>
 #include <cmath>
 #include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <numeric>
 #include <random>
 #include <stdexcept>
+#include <string>
 
 namespace lindblad {
 
@@ -97,34 +107,188 @@ void MPSState::svd_truncate(
         V_eigen = svd.matrixV();
     }
 
-    const int min_dim = static_cast<int>(S_eigen.size());
+    // Bit-level finite check — immune to -ffast-math, which folds
+    // std::isnan to false and makes NaN comparisons unreliable in this TU
+    // (diagnosed in R.1.16.0: a NaN sigma passed 'S > cutoff' here and got
+    // KEPT, growing chi with garbage).
+    auto finite_bits = [](double x) {
+        std::uint64_t b;
+        std::memcpy(&b, &x, sizeof(b));
+        return ((b >> 52) & 0x7FFu) != 0x7FFu;
+    };
 
-    // Determine truncation rank
-    new_rank = 0;
-    for (int i = 0; i < min_dim; ++i) {
-        if (S_eigen(i) > cutoff && new_rank < max_bond_dim) new_rank++;
-        else break;
+    // ------------------------------------------------------------------
+    // SELECT -> VERIFY -> FALLBACK -> THROW  (R.1.16.0, issue #44, v3)
+    //
+    // Eigen 3.4.0's SVD on degenerate rank-deficient inputs (the 13-qubit
+    // Shor IQFT two-site thetas, spectrum {1,1,1,1,0,...}) returns broken
+    // factorisations whose SHAPE MORPHS with tiny input and codegen
+    // perturbations — observed across seven diagnostic runs: NaN inside
+    // null-space singular vectors (both FP models), non-finite entries
+    // interleaved into S displacing real sigmas, a KEPT singular vector
+    // that is wrong but perfectly finite (fidelity fell to (3/4)^2 with
+    // zero truncation error), and an all-non-finite S. Unmarked garbage
+    // cannot be pattern-matched away, so this routine TRUSTS NOTHING:
+    //   1. SELECT: all bit-level-finite sigmas above the cutoff, wherever
+    //      they sit in S (immune to ordering corruption); keep the largest
+    //      max_bond_dim of them; gather matching U/V columns individually.
+    //   2. VERIFY: kept slice bit-finite AND the Frobenius identity
+    //        ||M - U_k S_k V_k^H||_F^2 <= discarded + 1e-12*||M||_F^2
+    //      which holds with equality for any true truncated SVD; every
+    //      failure mode observed so far trips it. Costs one rank-slice
+    //      GEMM — small next to the SVD itself, and correctness outranks
+    //      it (golden rule #1 over #2).
+    //   3. FALLBACK on failure: recompute via the Gram route (M^H M or
+    //      M M^H, whichever is smaller, SelfAdjointEigenSolver — robust on
+    //      exactly-degenerate Hermitian input), sigma = sqrt(max(lambda,0)),
+    //      partner factor built only for kept sigmas (no tiny divisions).
+    //      Effective floor sqrt(eps)*sigma_max: Gram squares the condition
+    //      number, so smaller sigmas are noise there; the extra discarded
+    //      weight is honestly accounted in truncation_error().
+    //   4. THROW if the fallback fails verification too — never continue
+    //      with a corrupt tensor (silent NaN propagation is exactly how
+    //      issue #44 originally manifested).
+    // Reproducers + the full seven-run diagnosis: tests/diag_r1160_matrices.hpp
+    // and the DiagR1160* suites.
+    // ------------------------------------------------------------------
+
+    double m_fro_sq = 0.0;
+    for (const auto& c : M) m_fro_sq += c.real * c.real + c.imag * c.imag;
+
+    double pending_discarded = 0.0;
+
+    auto attempt = [&](const Eigen::VectorXd& S_try,
+                       const Eigen::MatrixXcd& U_try,
+                       const Eigen::MatrixXcd& V_try,
+                       double sigma_floor) -> bool {
+        const int md = static_cast<int>(S_try.size());
+        std::vector<std::pair<double, int>> fs;  // (sigma, source index)
+        fs.reserve(static_cast<size_t>(md));
+        for (int i = 0; i < md; ++i) {
+            const double s = S_try(i);
+            if (finite_bits(s) && s > sigma_floor) fs.push_back({s, i});
+        }
+        std::stable_sort(fs.begin(), fs.end(), [](const auto& a, const auto& b) {
+            return a.first > b.first;
+        });
+        int k = std::min<int>(static_cast<int>(fs.size()), max_bond_dim);
+        if (k == 0) {
+            // Numerically-zero matrix or fully corrupt spectrum: keep the
+            // single largest finite sigma if one exists at all.
+            int best = -1;
+            double best_val = -1.0;
+            for (int i = 0; i < md; ++i) {
+                const double s = S_try(i);
+                if (finite_bits(s) && s > best_val) {
+                    best_val = s;
+                    best = i;
+                }
+            }
+            if (best < 0) return false;
+            fs.assign(1, {best_val, best});
+            k = 1;
+        }
+
+        // Discarded weight = every finite sigma NOT kept (beyond-rank AND
+        // below-floor; non-finite entries are artifacts, not weight).
+        double discarded = 0.0;
+        for (size_t i = static_cast<size_t>(k); i < fs.size(); ++i)
+            discarded += fs[i].first * fs[i].first;
+        for (int i = 0; i < md; ++i) {
+            const double s = S_try(i);
+            if (finite_bits(s) && !(s > sigma_floor)) discarded += s * s;
+        }
+
+        // Gather (descending sigma order: downstream conventions unchanged).
+        S_out.resize(static_cast<size_t>(k));
+        U_out.resize(static_cast<size_t>(rows) * k);
+        Vt_out.resize(static_cast<size_t>(k) * cols);
+        for (int r = 0; r < k; ++r) {
+            const int src = fs[static_cast<size_t>(r)].second;
+            S_out[static_cast<size_t>(r)] = fs[static_cast<size_t>(r)].first;
+            for (int row = 0; row < rows; ++row) {
+                const auto u = U_try(row, src);
+                U_out[static_cast<size_t>(row) * k + r] =
+                    Complex128(u.real(), u.imag());
+            }
+            for (int c = 0; c < cols; ++c) {
+                const auto v = std::conj(V_try(c, src));  // row r of V^dagger
+                Vt_out[static_cast<size_t>(r) * cols + c] =
+                    Complex128(v.real(), v.imag());
+            }
+        }
+
+        // Verify 1: kept slice bit-finite.
+        for (int i = 0; i < k; ++i)
+            if (!finite_bits(S_out[static_cast<size_t>(i)])) return false;
+        for (const auto& c : U_out)
+            if (!finite_bits(c.real) || !finite_bits(c.imag)) return false;
+        for (const auto& c : Vt_out)
+            if (!finite_bits(c.real) || !finite_bits(c.imag)) return false;
+
+        // Verify 2: Frobenius identity of the truncated factorisation.
+        Eigen::Map<const EigenCMatrix> Um(
+            reinterpret_cast<const std::complex<double>*>(U_out.data()), rows, k);
+        Eigen::Map<const EigenCMatrix> Vtm(
+            reinterpret_cast<const std::complex<double>*>(Vt_out.data()), k, cols);
+        Eigen::Map<const Eigen::VectorXd> Sm(S_out.data(), k);
+        const double resid =
+            (mat - Um * Sm.asDiagonal() * Vtm).squaredNorm();
+        if (!finite_bits(resid)) return false;
+        if (resid > discarded + 1e-12 * m_fro_sq + 1e-18) return false;
+
+        new_rank = k;
+        pending_discarded = discarded;
+        return true;
+    };
+
+    if (!attempt(S_eigen, U_eigen, V_eigen, cutoff)) {
+        // Gram-route fallback.
+        const bool tall = rows >= cols;
+        const Eigen::MatrixXcd G =
+            tall ? Eigen::MatrixXcd(mat.adjoint() * mat)
+                 : Eigen::MatrixXcd(mat * mat.adjoint());
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(G);
+        if (es.info() != Eigen::Success) {
+            throw std::runtime_error(
+                "MPS svd_truncate: Gram-route eigendecomposition failed on a " +
+                std::to_string(rows) + "x" + std::to_string(cols) + " matrix");
+        }
+        const int gd = static_cast<int>(es.eigenvalues().size());
+        Eigen::VectorXd Sg(gd);
+        for (int i = 0; i < gd; ++i) {
+            // Eigenvalues ascend; emit sigmas descending.
+            Sg(i) = std::sqrt(std::max(0.0, es.eigenvalues()(gd - 1 - i)));
+        }
+        const double smax = (gd > 0) ? Sg(0) : 0.0;
+        const double floor_g = std::max(cutoff, 1.5e-8 * smax);
+
+        Eigen::MatrixXcd Ug(rows, gd), Vg(cols, gd);
+        if (tall) {
+            for (int i = 0; i < gd; ++i) Vg.col(i) = es.eigenvectors().col(gd - 1 - i);
+            for (int i = 0; i < gd; ++i) {
+                if (Sg(i) > floor_g) Ug.col(i) = (mat * Vg.col(i)) / Sg(i);
+                else Ug.col(i).setZero();  // never selected: below the floor
+            }
+        } else {
+            for (int i = 0; i < gd; ++i) Ug.col(i) = es.eigenvectors().col(gd - 1 - i);
+            for (int i = 0; i < gd; ++i) {
+                if (Sg(i) > floor_g) Vg.col(i) = (mat.adjoint() * Ug.col(i)) / Sg(i);
+                else Vg.col(i).setZero();
+            }
+        }
+
+        if (!attempt(Sg, Ug, Vg, floor_g)) {
+            throw std::runtime_error(
+                "MPS svd_truncate: both the SVD backend and the "
+                "Gram-eigendecomposition fallback failed verification on a " +
+                std::to_string(rows) + "x" + std::to_string(cols) +
+                " matrix (non-finite or non-reconstructing factorisation); "
+                "refusing to continue with a corrupt tensor");
+        }
     }
-    if (new_rank == 0) new_rank = 1;
 
-    // Accumulate truncation error = sum of discarded singular values squared
-    for (int i = new_rank; i < min_dim; ++i)
-        total_truncation_error += S_eigen(i) * S_eigen(i);
-
-    // Copy S (no layout issue — S is real and contiguous)
-    S_out.assign(S_eigen.data(), S_eigen.data() + new_rank);
-
-    // Write U_out (rows × new_rank, row-major) via Eigen assignment — avoids manual loop
-    U_out.resize(rows * new_rank);
-    Eigen::Map<EigenCMatrix>(
-        reinterpret_cast<std::complex<double>*>(U_out.data()), rows, new_rank
-    ) = U_eigen.leftCols(new_rank);
-
-    // Write Vt_out (new_rank × cols, row-major) = conj-transpose of V.leftCols(new_rank)
-    Vt_out.resize(new_rank * cols);
-    Eigen::Map<EigenCMatrix>(
-        reinterpret_cast<std::complex<double>*>(Vt_out.data()), new_rank, cols
-    ) = V_eigen.leftCols(new_rank).adjoint();
+    total_truncation_error += pending_discarded;
 }
 
 // =============================================================================

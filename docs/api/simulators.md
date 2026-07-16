@@ -455,6 +455,23 @@ wrong results, so it should not be used until the upstream Eigen bug is fixed.
 The qubit-MPS default changed from BDC to Jacobi in R.1.13 (a breaking numeric
 shift in truncation values versus R.1.12).
 
+**Verified truncation (R.1.16.0)**: the SVD output is no longer trusted
+blindly. Eigen 3.4.0's SVDs were found to return corrupt factorisations on
+degenerate rank-deficient inputs (the class of two-site tensors Shor-style
+circuits produce), in failure shapes ranging from NaN singular vectors to a
+wrong-but-finite kept vector. Every truncation therefore now: selects the
+kept singular values by bit-level-finite comparison (immune to ordering
+corruption), verifies the kept factorisation against the Frobenius identity
+`‖M − U·S·V†‖²_F = Σ(discarded σ²)`, recomputes via a Gram-matrix
+eigendecomposition if verification fails, and throws `std::runtime_error`
+rather than continue if both routes fail — an MPS run can no longer produce
+a silently corrupted state from a bad SVD. `truncation_error()` counts only
+finite discarded weight (including below-cutoff values) and is committed
+only after verification. The verification costs roughly one extra
+rank-slice matrix multiply per two-qubit gate (measured at 28–42% on the
+MPS benchmark domain), and `mps_sim.cpp` is compiled under strict IEEE
+floating-point (no fast-math) to keep the SVD input path well-behaved.
+
 **Complexity**:
 - **Space**: $O(n \cdot \chi^2)$ where $\chi$ = max bond dimension (typically 16–256)
 - **Time per gate**: $O(\chi^4)$ for single-qubit, $O(\chi^6)$ for two-qubit
