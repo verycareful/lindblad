@@ -122,6 +122,15 @@ set(LINDBLAD_TEST_SOURCES
     # closed-form product state, Clifford-vs-statevector agreement).
     test_r1141_corpus.cpp
     test_r1141_corpus_semantics.cpp
+    # R.1.15.1 test suite — routing regression for the R.1.15.0 transpiler
+    # correctness wave (#47/#48/#49): smaller-than-map expansion (legality,
+    # unitary-level permutation contract at levels 0-1, state relabeling at
+    # all levels, non-symmetric end-to-end clbit keys), per-stage preset
+    # composition + level validation, unroutable-throws-from-the-right-stage,
+    # initial_layout validation/completion, basis contract (basis-only
+    # output, u/u3 alias, untranslatable throws, condition propagation,
+    # feedforward end-to-end), run-to-run determinism.
+    test_r1151_routing_regression.cpp
 )
 
 # Create test executable

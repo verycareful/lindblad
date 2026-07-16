@@ -4,6 +4,70 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.15.1] - 2026-07-12
+
+Test-suite release for the R.1.15.0 transpiler correctness wave (`.1` slot:
+tests only). Pins the contracts behind #47/#48/#49 so any future routing,
+preset-composition, or basis-translation change that breaks them fails in
+ctest. Also corrects one stale doc comment: `QuantumCircuit::mcx()` claimed
+the transpiler decomposes MCX to a CX/CCX ladder, which is not implemented --
+`BasisTranslator` throws on MCX under a non-empty basis and SABRE routes it
+only when every wire pair is already adjacent.
+
+### Tests
+
+- `tests/test_r1151_routing_regression.cpp` -- 21 tests across five suites:
+  - Expansion (#47): circuits SMALLER than the coupling map route on
+    line/grid/heavy-hex(27) at every optimisation level with output width
+    equal to the device width and coupling-legal 2q gates. At levels 0-1
+    the contract is pinned EXACTLY at the unitary level:
+    `U_routed x U_original^dagger` must be a phase-times-permutation matrix
+    (routing only inserts SWAPs; it never changes physics). At all levels a
+    sorted-probability-spectrum relabeling check covers SabreLayout, which
+    conjugates by its wire relabeling rather than left-multiplying. A
+    NON-symmetric basis state (K=5) prepared behind routing-forcing
+    DIAGONAL cz gates keeps its exact clbit key "0101" end-to-end at every
+    level (per the project convention rule, symmetric outcomes would mask
+    ordering bugs), a GHZ superposition samples only its two keys, and
+    circuits wider than the device throw from `transpile()` and from each
+    layout/routing pass individually.
+  - Determinism: transpiling the same input twice yields field-identical
+    instruction streams across three topologies and all four levels.
+  - Presets (#48): the stage table is pinned by pass names -- exactly one
+    layout pass and ONE routing pass per level, `SabreLayout` first at
+    level >= 2, `BasisTranslator` composed iff `basis_gates` is non-empty
+    and always last; `optimization_level` outside 0..3 throws from both
+    `preset_pass_manager` and `transpile()`; an unroutable circuit
+    (disconnected coupling islands) throws instead of hanging, and at
+    level >= 2 the error message's "SABRE layout" prefix proves the layout
+    stage now runs first.
+  - initial_layout: a valid layout is honoured (zero SWAPs when the
+    interaction is adjacent under it); a PARTIAL layout on an expanded DAG
+    is completed deterministically with the unused physical slots in
+    ascending order (exact CX placement pinned); out-of-range, negative,
+    duplicate, and oversized layouts throw.
+  - Basis (#49): with a non-empty basis the transpiled output contains
+    ONLY basis gates at every level, stays hardware-legal after
+    translation, and preserves semantics; the emitted 1q type follows the
+    caller's u/u3 naming; native gates pass through untouched;
+    untranslatable inputs throw naming the gate (`mcx` -- with the
+    empty-basis no-throw counterpart pinning "translation is composed iff
+    basis_gates is non-empty" -- `unitary`, an unbound symbolic `rx`, and
+    a basis from which cx+u3 are unreachable); classical conditions are
+    propagated onto every decomposed instruction, and a feedforward
+    circuit (measure + conditional X) samples its deterministic key
+    through the full pipeline at every level.
+  Deliberately NO hardcoded golden SWAP counts: determinism is asserted by
+  double-run stream equality and correctness by unitary/measurement
+  semantics; golden counts would pin heuristic scores that are not part of
+  the public contract.
+- `tests/CMakeLists.txt` -- suite registered in `LINDBLAD_TEST_SOURCES`.
+
+### Results
+
+- 1880 tests across 150 suites -- all passed (23.7 s, WSL/Clang
+  `-march=native`).
+
 ## [R.1.15.0] - 2026-07-12
 
 Transpiler correctness wave: fixes the three defects surfaced by the R.1.14

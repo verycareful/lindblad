@@ -304,8 +304,10 @@ public:
 
     // Multi-controlled X: flip `target` when every control qubit is |1>.
     // Any number of controls (0 controls == plain X). Applied natively by the
-    // statevector and density-matrix backends (no dense 2^n matrix); the
-    // transpiler decomposes it to a CX/CCX ladder for routed/basis targets.
+    // statevector and density-matrix backends (no dense 2^n matrix). The
+    // transpiler does NOT yet lower it: BasisTranslator throws on MCX under a
+    // non-empty basis_gates, and SABRE routes it only if all wire pairs are
+    // already adjacent (CX/CCX ladder decomposition is planned).
     QuantumCircuit& mcx(const std::vector<int>& controls, int target);
 
     // Multi-controlled phase: multiply by exp(i*lambda) when every listed
