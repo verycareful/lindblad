@@ -221,13 +221,13 @@ struct SvdReport {
                                    // (-1 if the kept slice is corrupt)
 };
 
-template <typename SVD>
-SvdReport run_svd_report(const Eigen::MatrixXcd& M) {
-    SVD svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
+// Shared report builder over explicit factors, so the Eigen-SVD wrapper and
+// the in-test Gram-route replication produce comparable diagnostics.
+inline SvdReport report_from_factors(const Eigen::MatrixXcd& M,
+                                     const Eigen::VectorXd& S,
+                                     const Eigen::MatrixXcd& U,
+                                     const Eigen::MatrixXcd& V) {
     SvdReport r;
-    const auto& S = svd.singularValues();
-    const auto& U = svd.matrixU();
-    const auto& V = svd.matrixV();
     r.s_bad = vector_bad(S);
     for (Eigen::Index c = 0; c < U.cols(); ++c) {
         for (Eigen::Index i = 0; i < U.rows(); ++i) {
@@ -279,6 +279,55 @@ SvdReport run_svd_report(const Eigen::MatrixXcd& M) {
                                 .maxCoeff();
     }
     return r;
+}
+
+template <typename SVD>
+SvdReport run_svd_report(const Eigen::MatrixXcd& M) {
+    SVD svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    return report_from_factors(M, svd.singularValues(), svd.matrixU(),
+                               svd.matrixV());
+}
+
+// In-test replication of the R.1.16.0 svd_truncate Gram fallback route
+// (G = M^H M or M M^H on the smaller side, SelfAdjointEigenSolver, sigmas
+// descending from sqrt(max(lambda, 0)), partner factor built only above the
+// sqrt(eps)-scaled floor). Validates the rescue MATH standalone under each
+// including TU's FP flags; the library WIRING (engagement counter + direct
+// seam) is tracked as follow-up work in the plans.
+inline SvdReport run_gram_route_report(const Eigen::MatrixXcd& M) {
+    const auto rows = M.rows();
+    const auto cols = M.cols();
+    const bool tall = rows >= cols;
+    const Eigen::MatrixXcd G =
+        tall ? Eigen::MatrixXcd(M.adjoint() * M)
+             : Eigen::MatrixXcd(M * M.adjoint());
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(G);
+    SvdReport fail;  // default report reads as failure: rank 0, kept_slice_bad
+    if (es.info() != Eigen::Success) return fail;
+
+    const int gd = static_cast<int>(es.eigenvalues().size());
+    Eigen::VectorXd S(gd);
+    for (int i = 0; i < gd; ++i) {
+        S(i) = std::sqrt(std::max(0.0, es.eigenvalues()(gd - 1 - i)));
+    }
+    const double smax = (gd > 0) ? S(0) : 0.0;
+    const double floor_g = std::max(1e-12, 1.5e-8 * smax);
+
+    Eigen::MatrixXcd U(rows, gd), V(cols, gd);
+    if (tall) {
+        for (int i = 0; i < gd; ++i) V.col(i) = es.eigenvectors().col(gd - 1 - i);
+        for (int i = 0; i < gd; ++i) {
+            if (S(i) > floor_g) U.col(i) = (M * V.col(i)) / S(i);
+            else U.col(i).setZero();
+        }
+    } else {
+        for (int i = 0; i < gd; ++i) U.col(i) = es.eigenvectors().col(gd - 1 - i);
+        for (int i = 0; i < gd; ++i) {
+            if (S(i) > floor_g) V.col(i) = (M.adjoint() * U.col(i)) / S(i);
+            else V.col(i).setZero();
+        }
+    }
+    return report_from_factors(M, S, U, V);
 }
 
 inline void print_svd_report_line(std::ostream& os, const char* tag,

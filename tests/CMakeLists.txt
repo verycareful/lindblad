@@ -131,15 +131,27 @@ set(LINDBLAD_TEST_SOURCES
     # output, u/u3 alias, untranslatable throws, condition propagation,
     # feedforward end-to-end), run-to-run determinism.
     test_r1151_routing_regression.cpp
-    # TEMPORARY DIAGNOSTIC (R.1.16.0 / issue #44) — MPS Shor 13-qubit probe.
-    # Stays committed per maintainer decision; at the .1 release the probe
-    # code gets commented out and regression tests written below it. Run
-    # directly for the report (ctest hides passing stdout):
-    #   ./build-clang/tests/lindblad_tests --gtest_filter='DiagR1160*'
+    # R.1.16.0/R.1.16.1 — MPS SVD accuracy (issue #44). The R.1.16.0
+    # diagnostic probes are retired IN PLACE (#if 0, visible audit trail);
+    # the live content is the R.1.16.1 regression suite written below them
+    # in the same files (R1161MpsShor / R1161StrictFP + the still-active
+    # fix-aware NaN-bisect probe): state exactness at every pipeline stage,
+    # order recovery on both backends, the 13-qubit sampler bound, the
+    # qudit latent-pattern canary, both Eigen-defect reproducers as
+    # standing assertions (fast-math AND strict-FP legs), and
+    # svd_truncate's fail-loud throw contract.
     # The strictfp twin compiles WITHOUT fast-math (see below): identical
     # inputs + identical Eigen, only the FP model differs across the pair.
     test_diag_r1160_mps_shor.cpp
     test_diag_r1160_strictfp.cpp
+    # R.1.16.1 qudit MPS stress (gap 3): flat-spectrum states at scale, the
+    # chi = 64 bond edge, and LONG gate chains through the qudit two-site
+    # SVD path — the coverage class the R.1.16.0 audit found missing
+    # (existing qudit MPS tests all sit at n <= 6 with short sequences).
+    # Tier R1161QuditStress asserts exactness in the exact-bond regime;
+    # tier R1161QuditFrontier probes at/beyond the regime with print
+    # verdicts (manifestation => port the R.1.16.0 hardening to qudit_mps).
+    test_r1161_qudit_mps_stress.cpp
 )
 
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this

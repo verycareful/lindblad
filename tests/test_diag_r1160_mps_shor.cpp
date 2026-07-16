@@ -44,6 +44,7 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -107,6 +108,9 @@ std::vector<double> eval_marginal(const std::vector<std::complex<double>>& psi) 
 // -----------------------------------------------------------------------------
 // Probe 1 — stage sweep: fidelity + truncation + bond at every stage boundary
 // -----------------------------------------------------------------------------
+// R.1.16.1: probe retired (kept verbatim for the R.1.16.0 audit trail).
+// Assertion form: R1161MpsShor.StateExactAtEveryStage below.
+#if 0
 TEST(DiagR1160MpsShor, StageSweepFidelityAndTruncation) {
     const auto qc = Shor::build_period_finding_circuit(kA, kN, kEval, kTarget);
     ASSERT_EQ(qc.n_qubits, kQubits);
@@ -175,10 +179,14 @@ TEST(DiagR1160MpsShor, StageSweepFidelityAndTruncation) {
             << " even though chi=64 is mathematically sufficient";
     }
 }
+#endif  // retired probe 1
 
 // -----------------------------------------------------------------------------
 // Probe 2 — sampler vs the MPS's OWN state (separates S2 from S1/S3)
 // -----------------------------------------------------------------------------
+// R.1.16.1: probe retired. Assertion form:
+// R1161MpsShor.SamplerWithinNoiseAt13Qubits below.
+#if 0
 TEST(DiagR1160MpsShor, SamplerMatchesItsOwnState) {
     auto qc = Shor::build_period_finding_circuit(kA, kN, kEval, kTarget);
     qc.n_clbits = kQubits;
@@ -233,9 +241,12 @@ TEST(DiagR1160MpsShor, SamplerMatchesItsOwnState) {
         << "sampler disagrees with its OWN state beyond sampling noise: "
            "measure_sequential (S2) is implicated";
 }
+#endif  // retired probe 2
 
 // -----------------------------------------------------------------------------
-// Probe 4 (added after run 1) — NaN bisection.
+// Probe 4 (added after run 1) — NaN bisection. KEPT ACTIVE in R.1.16.1: it
+// is already assertion-shaped (fix-aware early return; baseline and
+// per-step corruption checks) and doubles as the mirror-path regression.
 //
 // Run-1 verdict: all 9 PERMUTATION round-trips are EXACT (fid 1.0, terr 0,
 // chi 4) — S1 exonerated. The state goes NaN somewhere in instructions
@@ -464,6 +475,9 @@ void print_svd_report(const char* tag, const diag_r1160::SvdReport& r) {
 
 }  // namespace
 
+// R.1.16.1: probes retired. Assertion forms:
+// R1161MpsShor.PoisonThetaKeptSliceContract / .Simon36JacobiReference below.
+#if 0
 TEST(DiagR1160MpsShor, FastMathSvdOnPoisonTheta) {
     const auto theta = diag_r1160::build_poison_theta();
     ASSERT_FALSE(diag_r1160::matrix_bad(theta))
@@ -491,6 +505,7 @@ TEST(DiagR1160MpsShor, FastMathSvdOnR1112BugMatrix) {
     // subnormal tell). Reproduction here re-validates the bug note's data
     // point on the current Eigen pin before the strict twin reinterprets it.
 }
+#endif  // retired probe 5
 
 // -----------------------------------------------------------------------------
 // Probe 6 (added after run 4) — does QUDIT MPS share the manifestation?
@@ -510,6 +525,9 @@ TEST(DiagR1160MpsShor, FastMathSvdOnR1112BugMatrix) {
 #include "lindblad/qudit/qudit_mps.hpp"
 #include "lindblad/qudit/qudit_statevector.hpp"
 
+// R.1.16.1: probe retired. Assertion form (a latent-pattern CANARY for the
+// unguarded qudit truncation loops): R1161MpsShor.QuditTwinStaysExact below.
+#if 0
 TEST(DiagR1160MpsShor, QuditMpsTwinOnSameIqftTail) {
     const auto qc = Shor::build_period_finding_circuit(kA, kN, kEval, kTarget);
 
@@ -597,10 +615,14 @@ TEST(DiagR1160MpsShor, QuditMpsTwinOnSameIqftTail) {
               << "\n";
     // No hard assertion: this probe IS the owner's decision input.
 }
+#endif  // retired probe 6
 
 // -----------------------------------------------------------------------------
 // Probe 3 — the user-visible symptom, both backends, five seeds
 // -----------------------------------------------------------------------------
+// R.1.16.1: probe retired. Assertion form:
+// R1161MpsShor.OrderRecoveredOnBothBackends below.
+#if 0
 TEST(DiagR1160MpsShor, EndToEndFindOrderBothBackends) {
     LocalBackend::Config sv_cfg;
     sv_cfg.simulator = LocalBackend::SimType::STATEVECTOR;
@@ -627,4 +649,350 @@ TEST(DiagR1160MpsShor, EndToEndFindOrderBothBackends) {
     EXPECT_GE(sv_ok, 4) << "statevector reference itself failing: the defect "
                            "is upstream of the MPS layer";
     // No assertion on mps_ok: capturing the symptom is this probe's job.
+}
+#endif  // retired probe 3
+
+// =============================================================================
+// =============================================================================
+// R.1.16.1 REGRESSION SUITE — assertion forms of the retired probes above.
+//
+// The R.1.16.0 investigation's central lesson (diagnostic run 5): a
+// rank-3-DAMAGED state still recovered Shor's order on 5/5 seeds, so order
+// recovery alone is a worthless acceptance criterion. This suite pins STATE
+// EXACTNESS — fidelity against the statevector reference, accumulated
+// truncation error, and reached bond dimension — at every pipeline stage,
+// plus the sampler bound, the qudit latent-pattern canary, the two Eigen-
+// defect reproducers as standing assertions, and svd_truncate's fail-loud
+// contract. Reuses the probe helpers and tests/diag_r1160_matrices.hpp.
+// =============================================================================
+// =============================================================================
+
+// State exactness at every stage boundary of the 13-qubit period-finding
+// circuit: prep, after each of the 9 PERMUTATIONs, and the IQFT in quarters.
+// Bond 64 is mathematically exact at 13 qubits, so fidelity must be 1 and
+// truncation error must be numerical dust at EVERY cut (observed post-fix:
+// fid 1.000000000000, terr <= 4.3e-30, chi == 4 throughout).
+TEST(R1161MpsShor, StateExactAtEveryStage) {
+    const auto qc = Shor::build_period_finding_circuit(kA, kN, kEval, kTarget);
+    ASSERT_EQ(qc.n_qubits, kQubits);
+
+    std::vector<size_t> cuts;
+    std::vector<size_t> perm_ends;
+    for (size_t i = 0; i < qc.instructions.size(); ++i) {
+        if (qc.instructions[i].type == Instruction::GateType::PERMUTATION) {
+            perm_ends.push_back(i + 1);
+        }
+    }
+    ASSERT_EQ(perm_ends.size(), 9u) << "circuit shape changed; update suite";
+    cuts.push_back(perm_ends.front() - 1);
+    for (size_t e : perm_ends) cuts.push_back(e);
+    const size_t tail_start = perm_ends.back();
+    const size_t tail = qc.instructions.size() - tail_start;
+    for (int q = 1; q <= 4; ++q) {
+        cuts.push_back(tail_start + (tail * static_cast<size_t>(q)) / 4);
+    }
+
+    for (size_t k : cuts) {
+        SCOPED_TRACE("prefix k=" + std::to_string(k));
+        const auto pre = prefix_of(qc, k);
+        MPSSimulator mps;
+        auto res = mps.run(pre, kBond, /*shots=*/0, /*seed=*/42);
+
+        const double fid =
+            fidelity(sv_state_of(pre), mps_state_to_vec(res.final_state));
+        EXPECT_NEAR(fid, 1.0, 1e-9)
+            << "MPS state diverged from the statevector reference";
+        EXPECT_LT(res.final_state.truncation_error(), 1e-24)
+            << "real weight was truncated even though chi=64 is exact here";
+        EXPECT_LE(res.final_state.current_max_bond_dim(), 8);
+
+        const auto scan = scan_tensors(res.final_state);
+        EXPECT_FALSE(scan.corrupt) << "non-finite tensor entry";
+    }
+
+    // Final state: the exact Schmidt structure of this circuit.
+    {
+        MPSSimulator mps;
+        auto res = mps.run(qc, kBond, /*shots=*/0, /*seed=*/42);
+        EXPECT_EQ(res.final_state.current_max_bond_dim(), 4)
+            << "final bond must equal the exact Schmidt rank";
+    }
+}
+
+// The upgraded R.1.13.1 anchor: order recovery on BOTH backends, per seed —
+// meaningful only in combination with StateExactAtEveryStage (run-5 lesson).
+TEST(R1161MpsShor, OrderRecoveredOnBothBackends) {
+    LocalBackend::Config sv_cfg;
+    sv_cfg.simulator = LocalBackend::SimType::STATEVECTOR;
+    LocalBackend::Config mps_cfg;
+    mps_cfg.simulator = LocalBackend::SimType::MPS;
+    mps_cfg.mps_bond_dim = kBond;
+
+    for (uint64_t seed = 1; seed <= 5; ++seed) {
+        SCOPED_TRACE("seed " + std::to_string(seed));
+        LocalBackend sv_backend(sv_cfg);
+        LocalBackend mps_backend(mps_cfg);
+        EXPECT_EQ(Shor::find_order(kA, kN, kEval, sv_backend, seed),
+                  kExpectedOrder);
+        EXPECT_EQ(Shor::find_order(kA, kN, kEval, mps_backend, seed),
+                  kExpectedOrder)
+            << "MPS order recovery regressed (issue #44)";
+    }
+}
+
+// Sampler agreement with its own (now exact) state at 13 qubits, on the
+// eval-register marginal. Post-fix observation: TVD 0.0027 at 4096 shots
+// against ideal 0.25 peaks at {0, 128, 256, 384}.
+TEST(R1161MpsShor, SamplerWithinNoiseAt13Qubits) {
+    auto qc = Shor::build_period_finding_circuit(kA, kN, kEval, kTarget);
+    qc.n_clbits = kQubits;
+    qc.measure_all();
+
+    MPSSimulator mps;
+    const int shots = 4096;
+    auto res = mps.run(qc, kBond, shots, /*seed=*/42);
+
+    const auto own = eval_marginal(mps_state_to_vec(res.final_state));
+    std::vector<double> sampled(size_t{1} << kEval, 0.0);
+    int total = 0;
+    for (const auto& [bits, count] : res.counts) {
+        ASSERT_EQ(bits.size(), static_cast<size_t>(kQubits));
+        sampled[std::stoul(bits.substr(bits.size() - kEval), nullptr, 2)] +=
+            count;
+        total += count;
+    }
+    ASSERT_EQ(total, shots);
+    for (auto& p : sampled) p /= shots;
+
+    double tvd = 0.0;
+    int support = 0;
+    for (size_t i = 0; i < own.size(); ++i) {
+        tvd += std::abs(own[i] - sampled[i]);
+        support += (own[i] > 1.0 / (10.0 * shots)) ? 1 : 0;
+    }
+    tvd /= 2.0;
+
+    EXPECT_EQ(support, 4) << "the exact state has exactly four eval peaks";
+    for (size_t peak : {size_t{0}, size_t{128}, size_t{256}, size_t{384}}) {
+        EXPECT_NEAR(own[peak], 0.25, 1e-9) << "peak " << peak;
+    }
+    const double noise_scale =
+        std::sqrt(static_cast<double>(std::max(support, 1)) /
+                  (3.14159265358979 * shots));
+    EXPECT_LT(tvd, 2.5 * noise_scale + 0.02);
+}
+
+// Latent-pattern CANARY: qudit MPS carries the same unguarded truncation
+// loops the qubit MPS had (owner ruling: untouched until it misbehaves).
+// This drives QuditMPS at d=2, 13 sites through the exact R.1.16.0 failing
+// scenario and must stay exact — if this ever goes red, port the
+// select-verify-fallback hardening to qudit_mps.cpp.
+TEST(R1161MpsShor, QuditTwinStaysExact) {
+    const auto qc = Shor::build_period_finding_circuit(kA, kN, kEval, kTarget);
+    const auto prefix19 = prefix_of(qc, 19);
+    const auto psi19 = sv_state_of(prefix19);
+    QuditStatevector qsv(kQubits, /*d=*/2);
+    for (size_t i = 0; i < psi19.size(); ++i) {
+        qsv.amplitudes[i] = Complex128(psi19[i].real(), psi19[i].imag());
+    }
+    QuditMPS qm(qsv, /*max_bond_dim=*/kBond);
+
+    constexpr double s2 = 0.7071067811865475;
+    const std::vector<Complex128> H2 = {
+        Complex128(s2, 0), Complex128(s2, 0),
+        Complex128(s2, 0), Complex128(-s2, 0)};
+    std::vector<Complex128> SW(16, Complex128(0, 0));
+    SW[0] = SW[6] = SW[9] = SW[15] = Complex128(1, 0);
+
+    for (size_t i = 19; i < qc.instructions.size(); ++i) {
+        const auto& inst = qc.instructions[i];
+        if (inst.type == Instruction::GateType::H) {
+            qm.apply_1qudit(inst.qubits[0], H2);
+        } else if (inst.type == Instruction::GateType::CP) {
+            std::vector<Complex128> CP(16, Complex128(0, 0));
+            CP[0] = CP[5] = CP[10] = Complex128(1, 0);
+            CP[15] = Complex128(std::cos(inst.params[0]),
+                                std::sin(inst.params[0]));
+            qm.apply_2qudit(inst.qubits[0], inst.qubits[1], CP);
+        } else if (inst.type == Instruction::GateType::SWAP) {
+            qm.apply_2qudit(inst.qubits[0], inst.qubits[1], SW);
+        } else {
+            FAIL() << "unexpected gate in IQFT tail: " << inst.gate_name();
+        }
+    }
+
+    const auto psi_ref = sv_state_of(prefix_of(qc, qc.instructions.size()));
+    const auto qfinal = qm.to_statevector();
+    std::complex<double> ov(0, 0);
+    for (size_t i = 0; i < psi_ref.size(); ++i) {
+        const auto& a = qfinal.amplitudes[i];
+        ASSERT_FALSE(diag_r1160::fp_bad(a.real) || diag_r1160::fp_bad(a.imag))
+            << "qudit MPS produced a non-finite amplitude at index " << i
+            << ": the latent pattern manifested — port the R.1.16.0 fix";
+        ov += std::conj(psi_ref[i]) * std::complex<double>(a.real, a.imag);
+    }
+    EXPECT_NEAR(std::norm(ov), 1.0, 1e-9)
+        << "qudit MPS diverged on the R.1.16.0 scenario";
+}
+
+// Eigen-defect reproducer 1 as a standing assertion (fast-math TU leg; the
+// strict-FP twin lives in R1161StrictFP): whatever garbage Eigen emits in
+// the null space, the KEPT rank-4 slice of the poison theta must be finite
+// and reconstruct it exactly. This is precisely the contract the R.1.16.0
+// svd_truncate hardening relies on.
+TEST(R1161MpsShor, PoisonThetaKeptSliceContract) {
+    const auto theta = diag_r1160::build_poison_theta();
+    ASSERT_FALSE(diag_r1160::matrix_bad(theta));
+    const auto r =
+        diag_r1160::run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(theta);
+    print_svd_report("r1161/jacobi/poison", r);
+    EXPECT_EQ(r.rank_1e12, 4) << "poison theta has exact Schmidt rank 4";
+    EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-12);
+    EXPECT_FALSE(r.kept_slice_bad);
+    EXPECT_GE(r.trunc_recon_err, 0.0);
+    EXPECT_LT(r.trunc_recon_err, 1e-12);
+}
+
+// Eigen-defect reproducer 2 as a standing assertion: JacobiSVD is the
+// correct reference on the R.1.11.2 Simon matrix (twelve-fold degenerate
+// spectrum). The BDCSVD leg stays PRINT-ONLY documentation — it is the
+// known-broken upstream path; if Eigen ever fixes it, the printout is how
+// we notice.
+TEST(R1161MpsShor, Simon36JacobiReference) {
+    const auto M = diag_r1160::build_bdcsvd_bug_matrix();
+    ASSERT_FALSE(diag_r1160::matrix_bad(M));
+    const auto rj =
+        diag_r1160::run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(M);
+    const auto rb =
+        diag_r1160::run_svd_report<Eigen::BDCSVD<Eigen::MatrixXcd>>(M);
+    print_svd_report("r1161/jacobi/simon36", rj);
+    print_svd_report("r1161/bdc/simon36", rb);  // documentation only
+    EXPECT_FALSE(rj.corrupt);
+    EXPECT_EQ(rj.rank_1e12, 12);
+    EXPECT_NEAR(rj.sum_sq, rj.frob_sq, 1e-10);
+    EXPECT_LT(rj.recon_err, 1e-10);
+}
+
+// svd_truncate's fail-loud contract: an MPS whose tensors already carry
+// non-finite data (injected via the public tensors member) must make the
+// next two-qubit gate THROW — never continue with a corrupt tensor. Both
+// the SVD path and the Gram fallback receive garbage, so the double-failure
+// branch is exercised.
+TEST(R1161MpsShor, SvdTruncateThrowsOnUnrecoverableInput) {
+    MPSState st(2, kBond);
+    st.tensors[0].data[0] = Complex128(
+        std::numeric_limits<double>::quiet_NaN(), 0.0);
+
+    std::array<Complex128, 16> CZ{};
+    CZ[0 * 4 + 0] = CZ[1 * 4 + 1] = CZ[2 * 4 + 2] = Complex128(1, 0);
+    CZ[3 * 4 + 3] = Complex128(-1, 0);
+    EXPECT_THROW(st.apply_two_qubit_gate(CZ, 0, 1), std::runtime_error)
+        << "a non-finite theta must fail loud, not propagate";
+}
+
+// -----------------------------------------------------------------------------
+// Breadth sweep (R.1.16.1 gap 1): the Eigen trigger family is flat
+// degenerate Schmidt spectra with exact zeros — which GHZ and stabilizer
+// states are made of — plus dense generic spectra. At n = 12 with chi = 64
+// = 2^(n/2), NO 12-qubit state can exceed the bond cap, so every circuit
+// below must be simulated EXACTLY regardless of what its spectrum looks
+// like. Turns "the fix works on Shor" into "the fix works on the family".
+// -----------------------------------------------------------------------------
+
+namespace {
+
+void expect_exact_at_bond64(const QuantumCircuit& qc, const char* what,
+                            int expected_final_chi = -1) {
+    ASSERT_LE(qc.n_qubits, 12) << "exact-regime guarantee needs n <= 12";
+    MPSSimulator mps;
+    auto res = mps.run(qc, /*max_bond_dim=*/64, /*shots=*/0, /*seed=*/42);
+    const double fid =
+        fidelity(sv_state_of(qc), mps_state_to_vec(res.final_state));
+    EXPECT_NEAR(fid, 1.0, 1e-9) << what << ": MPS diverged from statevector";
+    EXPECT_LT(res.final_state.truncation_error(), 1e-18)
+        << what << ": truncated in the exact regime";
+    EXPECT_FALSE(scan_tensors(res.final_state).corrupt) << what;
+    EXPECT_LE(res.final_state.current_max_bond_dim(), 64) << what;
+    if (expected_final_chi > 0) {
+        EXPECT_EQ(res.final_state.current_max_bond_dim(), expected_final_chi)
+            << what << ": final Schmidt rank is analytic";
+    }
+}
+
+}  // namespace
+
+// GHZ-12 over a deliberately long-range CX chain (every gate swap-routed):
+// flat rank-2 spectrum with exact zeros — the smallest member of the
+// trigger family.
+TEST(R1161MpsShor, BreadthGhz12LongRangeExact) {
+    QuantumCircuit qc(12);
+    qc.h(0);
+    qc.cx(0, 11).cx(11, 5).cx(5, 8).cx(8, 2).cx(2, 9).cx(9, 4);
+    qc.cx(4, 10).cx(10, 1).cx(1, 6).cx(6, 3).cx(3, 7);
+    expect_exact_at_bond64(qc, "GHZ-12", /*expected_final_chi=*/2);
+}
+
+// Stabilizer ladder at n = 12: stabilizer states have exactly FLAT Schmidt
+// spectra (all kept sigmas equal, rest exact zeros) — the degenerate
+// pattern that broke Eigen's SVDs in R.1.16.0, at every cut, layer after
+// layer.
+TEST(R1161MpsShor, BreadthCliffordLadder12Exact) {
+    QuantumCircuit qc(12);
+    for (int layer = 0; layer < 10; ++layer) {
+        for (int i = 0; i < 12; ++i) qc.h(i);
+        for (int i = layer % 2; i + 1 < 12; i += 2) qc.cx(i, i + 1);
+        for (int i = 0; i < 12; ++i) {
+            if ((i + layer) % 3 == 0) qc.s(i);
+        }
+    }
+    expect_exact_at_bond64(qc, "Clifford ladder-12");
+}
+
+// Dense brickwork at n = 12, depth 16, deterministic angles: generic
+// non-degenerate spectra that saturate chi toward the 64 cap — the
+// complementary stress to the flat-spectrum cases.
+TEST(R1161MpsShor, BreadthBrickwork12Exact) {
+    QuantumCircuit qc(12);
+    for (int layer = 0; layer < 16; ++layer) {
+        for (int i = 0; i < 12; ++i) {
+            switch ((i + layer) % 3) {
+                case 0: qc.h(i); break;
+                case 1: qc.t(i); break;
+                default: qc.rz(0.31 + 0.07 * layer + 0.011 * i, i); break;
+            }
+        }
+        for (int i = layer % 2; i + 1 < 12; i += 2) qc.cx(i, i + 1);
+    }
+    expect_exact_at_bond64(qc, "brickwork-12");
+}
+
+// -----------------------------------------------------------------------------
+// Gram fallback route (R.1.16.1 gap 2): the rescue MATH validated
+// standalone on both reproducer matrices (this TU = fast-math leg; the
+// strict-FP twin lives in R1161StrictFP). Direct wiring coverage of the
+// library's fallback (engagement counter + seam) is queued follow-up work —
+// it needs a src change and cannot ship in a tests-only release.
+// -----------------------------------------------------------------------------
+
+TEST(R1161MpsShor, GramRouteReconstructsPoisonTheta) {
+    const auto theta = diag_r1160::build_poison_theta();
+    const auto r = diag_r1160::run_gram_route_report(theta);
+    print_svd_report("r1161/gram/poison", r);
+    EXPECT_EQ(r.rank_1e12, 4);
+    EXPECT_FALSE(r.kept_slice_bad);
+    EXPECT_GE(r.trunc_recon_err, 0.0);
+    EXPECT_LT(r.trunc_recon_err, 1e-10);
+    EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-10);
+}
+
+TEST(R1161MpsShor, GramRouteReconstructsSimon36) {
+    const auto M = diag_r1160::build_bdcsvd_bug_matrix();
+    const auto r = diag_r1160::run_gram_route_report(M);
+    print_svd_report("r1161/gram/simon36", r);
+    EXPECT_EQ(r.rank_1e12, 12);
+    EXPECT_FALSE(r.kept_slice_bad);
+    EXPECT_GE(r.trunc_recon_err, 0.0);
+    EXPECT_LT(r.trunc_recon_err, 1e-8);
+    EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-8)
+        << "the Gram route must preserve the Frobenius norm BDCSVD violates";
 }

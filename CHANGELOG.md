@@ -4,6 +4,76 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.16.1] - 2026-07-16
+
+Test-suite release closing out the R.1.16.0 MPS accuracy fix (`.1` slot:
+tests only). The R.1.16.0 diagnostic probes are retired IN PLACE (visible
+`#if 0` blocks preserving the investigation verbatim -- most of that
+release's validation was internal, and none of it is obfuscated) with the
+regression suites written below them in the same files, plus a qudit MPS
+stress pack covering the coverage class the investigation found missing.
+
+### Tests
+
+- `tests/test_diag_r1160_mps_shor.cpp` -- suite `R1161MpsShor` (12 tests)
+  below the retired probes:
+  - state exactness at EVERY stage of the 13-qubit period-finding circuit
+    (fidelity 1.0 against the statevector reference at prep, after each of
+    the nine PERMUTATIONs, and through the IQFT in quarters; truncation
+    error below 1e-24; final bond dimension exactly the analytic Schmidt
+    rank 4). This encodes the investigation's central lesson: a
+    rank-3-damaged state still recovered Shor's order on 5/5 seeds, so
+    order recovery alone is not an acceptance criterion.
+  - order recovery r = 4 on BOTH backends across five seeds (the upgraded
+    R.1.13.1 anchor), the 13-qubit sampler pinned against its own state's
+    exact eval-register marginal (support exactly 4, peaks exactly 0.25,
+    TVD within the sampling-noise bound), and a d=2 qudit-MPS twin of the
+    exact failing scenario asserted at fidelity 1.0 as a canary for the
+    unguarded qudit truncation pattern.
+  - both Eigen 3.4.0 defect reproducers as standing assertions (the poison
+    theta's kept rank-4 slice must stay clean and reconstruct exactly; the
+    36x36 Simon matrix's JacobiSVD reference spectrum); BDCSVD legs stay
+    print-only so an upstream fix becomes visible instead of silently
+    passing.
+  - `svd_truncate`'s fail-loud contract: NaN injected through the public
+    tensors member must make the next two-qubit gate throw, never
+    propagate.
+  - breadth exactness at the n=12 unconditional regime (chi = 64 = 2^(n/2),
+    so NO state can exceed the cap): a fully swap-routed long-range GHZ
+    (flat rank-2 spectrum, final chi asserted == 2), a 10-layer Clifford
+    ladder (stabilizer states: exactly the flat degenerate spectra that
+    broke Eigen, at every cut), and a 16-layer dense brickwork.
+  - the Gram fallback route's mathematics validated standalone on both
+    reproducer matrices (rank, kept-slice cleanliness, truncated
+    reconstruction, and the Frobenius-norm identity BDCSVD violates).
+- `tests/test_diag_r1160_strictfp.cpp` -- suite `R1161StrictFP` (5 tests):
+  strict-FP twins of the reproducer and Gram-route assertions, pinning all
+  of the above as flag-independent facts (a future Eigen or flag change
+  diverging the fast/strict pair is the first warning), plus the library's
+  own evolution through the original poison region asserted by FIDELITY --
+  finiteness-only checking is precisely what a finite-but-wrong state
+  slipped past during the diagnosis.
+- `tests/test_r1161_qudit_mps_stress.cpp` (NEW) -- suites
+  `R1161QuditStress` / `R1161QuditFrontier` (5 tests): the missing qudit
+  coverage class, driven entirely through the gate-path two-site SVD split
+  (never the dense constructor). Asserted in the exact-bond regime:
+  flat-spectrum GHZ chains at d=3/n=8, d=5/n=7, d=6/n=6 over long-range
+  SUM gates; QFT-style ladders including the chi = 64 bond EDGE (d=2,
+  n=12); and a 168-gate deterministic chain at d=3/n=7. Frontier probes
+  with printed verdicts: a Simon-family state one size beyond the R.1.11.2
+  case (clean round trip, fidelity 1.0) and a deliberately beyond-regime
+  run (chi_max 81 > cap 64) that reports truncation's fidelity cost (0.38,
+  legitimate) while asserting truncation never produces non-finite
+  garbage. Verdict: no qudit manifestation of the Eigen defect family was
+  found; the latent-pattern tracking note is now backed by targeted
+  evidence rather than absence of testing.
+- `tests/CMakeLists.txt` -- new file registered; diagnostic block comments
+  updated to describe the retired-probes + live-suites layout.
+
+### Results
+
+- 1903 tests across 155 suites -- all passed (WSL/Clang).
+
 ## [R.1.16.0] - 2026-07-16
 
 MPS accuracy fix (#44): the MPS backend failed to recover Shor's order at
@@ -87,6 +157,12 @@ the regression suite written below them in the same files.
   failing scenario stays at fidelity 1.0, and no qudit test exhibits the
   defect. It is tracked as a latent-pattern item rather than fixed
   speculatively.
+
+### Results
+
+- 1890 tests across 152 suites -- all passed (20.7 s, WSL/Clang
+  `-march=native`, R.1.16.0 banner). (Section added in the R.1.16.1
+  commit)
 
 ## [R.1.15.1] - 2026-07-12
 

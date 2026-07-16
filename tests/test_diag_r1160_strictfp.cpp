@@ -25,6 +25,8 @@
 
 #include "diag_r1160_matrices.hpp"
 
+#include "lindblad/simulators/statevector_sim.hpp"
+
 #include <iomanip>
 #include <iostream>
 
@@ -48,6 +50,10 @@ void print_report(const char* tag, const SvdReport& r) {
 // leading rank columns — if that kept slice is finite and reconstructs M,
 // a hardened truncation (fast-math-immune rank loop + fail-loud corrupt-
 // slice check) fixes #44 without touching Eigen or the flags.
+//
+// R.1.16.1: probe retired (kept for the audit trail). Assertion form:
+// R1161StrictFP.PoisonThetaKeptSliceContract below.
+#if 0
 TEST(DiagR1160StrictFP, JacobiPoisonKeptSliceIsCleanAndExact) {
     const auto theta = build_poison_theta();
     ASSERT_FALSE(matrix_bad(theta)) << "poison theta reconstruction corrupt "
@@ -108,4 +114,104 @@ TEST(DiagR1160StrictFP, LibraryGateApplicationStillCorruptsUnderItsOwnFlags) {
               << (corrupt ? "YES (expected while mps_sim.cpp is fast-math)"
                           : "no (library flags already fixed?)")
               << "\n";
+}
+#endif  // retired probes (all three; audit trail for the R.1.16.0 saga)
+
+// =============================================================================
+// R.1.16.1 REGRESSION SUITE — strict-FP twins of the R1161MpsShor Eigen
+// reproducers, plus the library-evolution exactness check. This TU compiles
+// -fno-fast-math (per-source property in tests/CMakeLists.txt), so these
+// assertions pin the defects-and-contracts as FLAG-INDEPENDENT facts: if a
+// future Eigen upgrade or flag change alters the picture, the fast/strict
+// pair diverging is the first signal.
+// =============================================================================
+
+// Strict-FP twin of R1161MpsShor.PoisonThetaKeptSliceContract: whatever
+// Eigen emits in the null space, the kept rank-4 slice must be finite and
+// reconstruct the poison theta exactly — the contract svd_truncate's
+// hardening relies on, proven under IEEE semantics.
+TEST(R1161StrictFP, PoisonThetaKeptSliceContract) {
+    const auto theta = build_poison_theta();
+    ASSERT_FALSE(matrix_bad(theta));
+    const auto r = run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(theta);
+    print_report("r1161-strict/jacobi/poison", r);
+    EXPECT_EQ(r.rank_1e12, 4);
+    EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-12);
+    EXPECT_FALSE(r.kept_slice_bad);
+    EXPECT_GE(r.trunc_recon_err, 0.0);
+    EXPECT_LT(r.trunc_recon_err, 1e-12);
+}
+
+// Strict-FP twin of R1161MpsShor.Simon36JacobiReference. The BDCSVD leg
+// stays print-only: the R.1.16.0 diagnosis showed it bit-identically wrong
+// under strict FP (a genuine Eigen 3.4.0 defect, tracked for upstream
+// reporting); if a future Eigen fixes it, this printout is how we notice.
+TEST(R1161StrictFP, Simon36JacobiReference) {
+    const auto M = build_bdcsvd_bug_matrix();
+    ASSERT_FALSE(matrix_bad(M));
+    const auto rj = run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(M);
+    const auto rb = run_svd_report<Eigen::BDCSVD<Eigen::MatrixXcd>>(M);
+    print_report("r1161-strict/jacobi/simon36", rj);
+    print_report("r1161-strict/bdc/simon36", rb);  // documentation only
+    EXPECT_FALSE(rj.corrupt);
+    EXPECT_EQ(rj.rank_1e12, 12);
+    EXPECT_NEAR(rj.sum_sq, rj.frob_sq, 1e-10);
+    EXPECT_LT(rj.recon_err, 1e-10);
+}
+
+// The library's own evolution through the original poison region must now
+// be EXACT (the retired probe merely checked for non-finite entries; a
+// finite-but-wrong state slipped past that in diagnostic run 6 — fidelity
+// is the honest criterion).
+TEST(R1161StrictFP, LibraryEvolutionExactThroughPoisonRegion) {
+    const auto qc = lindblad::algorithms::Shor::build_period_finding_circuit(
+        2, 15, 9, 4);
+    lindblad::QuantumCircuit prefix(qc.n_qubits, qc.n_clbits);
+    prefix.instructions.assign(qc.instructions.begin(),
+                               qc.instructions.begin() + 27);  // incl. i=26
+    lindblad::MPSSimulator sim;
+    auto res = sim.run(prefix, 64, /*shots=*/0, /*seed=*/42);
+
+    // Statevector reference for the same prefix.
+    lindblad::Statevector sv(prefix.n_qubits);
+    sv.initialize_basis(0);
+    lindblad::StatevectorSimulator ssim;
+    for (const auto& inst : prefix.instructions) ssim.apply_instruction(sv, inst);
+
+    const lindblad::Statevector mps_sv = res.final_state.to_statevector();
+    std::complex<double> ov(0, 0);
+    const size_t dim = size_t{1} << prefix.n_qubits;
+    for (size_t i = 0; i < dim; ++i) {
+        ASSERT_FALSE(fp_bad(mps_sv.real_parts[i]) || fp_bad(mps_sv.imag_parts[i]))
+            << "non-finite amplitude at " << i;
+        ov += std::conj(std::complex<double>(sv.real_parts[i], sv.imag_parts[i])) *
+              std::complex<double>(mps_sv.real_parts[i], mps_sv.imag_parts[i]);
+    }
+    EXPECT_NEAR(std::norm(ov), 1.0, 1e-9)
+        << "library MPS evolution diverged in the poison region";
+    EXPECT_LT(res.final_state.truncation_error(), 1e-24);
+}
+
+// Strict-FP twins of the Gram-route validation (R.1.16.1 gap 2): the rescue
+// math must be exact under IEEE semantics on both reproducer matrices.
+TEST(R1161StrictFP, GramRouteReconstructsPoisonTheta) {
+    const auto theta = build_poison_theta();
+    const auto r = run_gram_route_report(theta);
+    print_report("r1161-strict/gram/poison", r);
+    EXPECT_EQ(r.rank_1e12, 4);
+    EXPECT_FALSE(r.kept_slice_bad);
+    EXPECT_GE(r.trunc_recon_err, 0.0);
+    EXPECT_LT(r.trunc_recon_err, 1e-10);
+    EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-10);
+}
+
+TEST(R1161StrictFP, GramRouteReconstructsSimon36) {
+    const auto M = build_bdcsvd_bug_matrix();
+    const auto r = run_gram_route_report(M);
+    print_report("r1161-strict/gram/simon36", r);
+    EXPECT_EQ(r.rank_1e12, 12);
+    EXPECT_FALSE(r.kept_slice_bad);
+    EXPECT_GE(r.trunc_recon_err, 0.0);
+    EXPECT_LT(r.trunc_recon_err, 1e-8);
+    EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-8);
 }
