@@ -4,6 +4,76 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.17.0] - 2026-07-17
+
+Simulator performance wave (#50, #51): statevector gate fusion with a
+hardware-derived engagement point, and density-matrix Kraus channels applied
+as fused superoperators. Headline movements on the published comparison run
+(`docs/Benchmarks.md`, 2026-07-17, parity 7/7 PASS): noisy DM at n=10 is
+16x faster than R.1.16.1 (961 ms -> 59 ms) and now ahead of Aer; the
+large-n statevector gap narrows materially (qv n=22 is 3.3x faster than
+R.1.16.1); circuits below the fusion engagement point execute bit-identically
+to earlier releases.
+
+### Added
+
+- Statevector gate fusion (#50): a `run()` pre-pass greedily merges
+  consecutive fusable gates while their support union stays within
+  `fusion_max_qubit`, composes each block into a dense 2^k x 2^k unitary
+  through the simulator's own dispatch (every gate type composes exactly),
+  and applies it as one `apply_unitary` stride pass. `MEASURE` / `RESET` /
+  `BARRIER`, conditioned instructions, unresolved parameterised gates, and
+  the structured fast-path ops (`MCX` / `MCP` / `PERMUTATION`) are never
+  fused -- they flush the block and pass through verbatim, so semantics and
+  the execution-strategy classification are untouched by construction. The
+  per-shot trajectory path builds the fused plan once and reuses it across
+  shots.
+- Hardware-derived fusion engagement: fusion trades sweep count for
+  arithmetic per amplitude, which pays only once the statevector outgrows
+  one last-level-cache instance (measured on a 32 MiB-L3 part: fusing a
+  state equal to the LLC instance ran 3.3x slower, twice the LLC 2.7x
+  faster, cache-resident sizes up to 15x slower). The engagement point is
+  therefore the first n with 16*2^n bytes above one L3 instance, detected
+  at runtime; 32 MiB is assumed when undetectable, erring toward engaging
+  later. New `StatevectorSimulator::Options` fields with Qiskit Aer parity
+  names: `fusion_enable` (default true), `fusion_threshold` (0 = the
+  hardware-derived auto point; explicit values pin it), `fusion_max_qubit`
+  (default 5, validated in [2, 6]). Invalid values produce an error
+  `Result`, never silent clamping.
+- `lindblad::hw::llc_bytes()` (`include/lindblad/hw_info.hpp`,
+  `src/hw_info.cpp`): best-effort runtime detection of one L3 instance's
+  size (Linux `sysconf` with sysfs fallback, Windows
+  `GetLogicalProcessorInformation`, macOS `sysctl`), returning an explicit
+  0 for unknown. Per-instance rather than package total by design: on
+  multi-CCD parts a thread's working set lives in its own CCD's L3 slice.
+- `DensityMatrix::apply_channel_superop(S, qubits)`: public single-sweep
+  application of a k-qubit channel given as a 4^k x 4^k superoperator in
+  the external LSB-first convention (size-validated, bridged internally by
+  four-sub-index bit reversal).
+
+### Changed
+
+- `DensityMatrix::apply_kraus` (#51) now builds the channel's superoperator
+  S = sum_k conj(K_k) (x) K_k once and applies it in a single pass over
+  vectorised k-qubit sub-blocks of rho -- cost independent of the operator
+  count m (previously m ket + bra sweeps of the full rho and two dim^2
+  scratch allocations per call; a 16-operator 2-qubit depolarizing channel
+  cost ~48 sweeps per noisy cx). The noisy-simulation plan in
+  `DensityMatrixSimulator::run()` precomputes each instruction's
+  superoperator at plan time, so both execution paths (evolve-once and
+  per-shot trajectories) pay zero per-call setup. Seeded sampling paths are
+  unchanged: identical seeds produce identical counts.
+- `docs/api/simulators.md`: statevector Gate Fusion section (engagement
+  rule, options, override semantics) and the density-matrix Kraus/
+  superoperator sections rewritten to match; Options field references
+  updated.
+- `docs/Benchmarks.md`: regenerated from the 2026-07-17 comparison run
+  (49 paired workloads, result parity 7/7 PASS).
+
+### Results
+
+- 1903 tests across 155 suites -- all passed (22.8 s, WSL/Clang).
+
 ## [R.1.16.1] - 2026-07-16
 
 Test-suite release closing out the R.1.16.0 MPS accuracy fix (`.1` slot:

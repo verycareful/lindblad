@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.16.1 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.17.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.16.1")
+set(LINDBLAD_VERSION_LABEL "R.1.17.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -176,6 +176,7 @@ target_compile_definitions(lindblad_banner_obj PRIVATE
 # Core library
 # ==============================================================================
 add_library(lindblad_core STATIC
+    src/hw_info.cpp
     src/statevector.cpp
     src/gates/single_qubit.cpp
     src/gates/two_qubit.cpp

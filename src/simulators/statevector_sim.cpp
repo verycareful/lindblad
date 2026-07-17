@@ -1,5 +1,6 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/gates.hpp"
+#include "lindblad/hw_info.hpp"
 #include "lindblad/operators.hpp"
 #include <algorithm>
 #include <cmath>
@@ -285,6 +286,181 @@ double StatevectorSimulator::eval_expectation(
 // run
 // =============================================================================
 
+// =============================================================================
+// Gate fusion (R.1.17) — fuse runs of small gates into dense k-qubit blocks
+//
+// At large n every gate application is a full sweep of 2^n amplitudes and
+// the simulation is memory-bound: k gates on overlapping supports cost k
+// sweeps but could cost one. This pre-pass greedily merges consecutive
+// FUSABLE gates while the union of their supports stays within
+// Options::fusion_max_qubit, composes each block into a dense 2^k x 2^k unitary
+// (by applying the member gates to basis columns through the simulator's own
+// dispatch, so every gate type composes exactly), and emits it as an
+// ordinary UNITARY instruction handled by the existing gates::apply_unitary
+// stride kernel. Blocks with a single member emit the original instruction.
+//
+// Semantics are untouched by construction: MEASURE / RESET / BARRIER,
+// classically-conditioned instructions, unresolved parameterised gates, and
+// the structured ops (MCX / MCP / PERMUTATION, which already have fast
+// native paths) are never fused — they flush the current block and pass
+// through verbatim. The result is a plain QuantumCircuit, so all execution
+// paths (including per-shot trajectories, which then reuse the fused plan
+// across every shot) consume it unchanged.
+//
+// Fusion engages when the statevector stops fitting in one last-level
+// cache instance (16·2^n bytes vs hw::llc_bytes(), per-instance by design;
+// 32 MiB assumed when detection fails). Cache-resident states are
+// compute-bound -- the specialised per-gate kernels win there and a dense
+// 32x32 block would ADD arithmetic -- while DRAM-resident states are
+// bandwidth-bound and the sweep count is all that matters. Measured on a
+// 32 MiB-L3 part: fusing a 32 MiB state ran 3.3x SLOWER, fusing a 64 MiB
+// state ran 2.7x faster, and cache-resident sizes regressed up to 15x when
+// fused -- so the boundary is "strictly larger than one LLC instance".
+// Options::fusion_enable / fusion_threshold / fusion_max_qubit (Aer-parity
+// names) override the automatics; below the engagement point execution is
+// bit-identical to the unfused path by construction.
+// =============================================================================
+
+namespace {
+
+constexpr int SV_FUSION_MAX_QUBIT_LIMIT = 6;  // block scratch is 2^k x 2^k; 6 -> 64x64
+constexpr std::size_t SV_BYTES_PER_AMP = 16;  // SoA double re + im per amplitude
+
+// Bounds for the auto engagement point. The fallback applies when the OS
+// reports no L3 (containers, exotic platforms); the clamp guards the
+// formula against garbage detection values, and both err toward engaging
+// LATER (a missed fusion win costs far less than a mid-range regression).
+constexpr std::size_t SV_FUSION_LLC_FALLBACK = std::size_t(32) << 20;  // 32 MiB
+constexpr std::size_t SV_FUSION_LLC_MIN = std::size_t(1) << 20;        // 1 MiB
+constexpr std::size_t SV_FUSION_LLC_MAX = std::size_t(1) << 30;        // 1 GiB
+
+// Smallest n whose statevector exceeds one LLC instance -- the point where
+// simulation turns bandwidth-bound and fusion starts paying (see the block
+// comment above). Detected once, cached thread-safely.
+int sv_fusion_auto_threshold() {
+    static const int cached = [] {
+        std::size_t llc = hw::llc_bytes();
+        if (llc == 0) llc = SV_FUSION_LLC_FALLBACK;
+        llc = std::clamp(llc, SV_FUSION_LLC_MIN, SV_FUSION_LLC_MAX);
+        int n = 1;
+        while ((SV_BYTES_PER_AMP << n) <= llc) ++n;  // first n: 16·2^n > llc
+        return n;
+    }();
+    return cached;
+}
+
+bool sv_gate_is_fusable(const Instruction& inst, int max_qubit) {
+    using GT = Instruction::GateType;
+    if (inst.condition_clbit >= 0) return false;
+    switch (inst.type) {
+        case GT::MEASURE: case GT::RESET: case GT::BARRIER:
+        case GT::MCX: case GT::MCP: case GT::PERMUTATION:
+        case GT::PARAM_RX: case GT::PARAM_RY: case GT::PARAM_RZ:
+        case GT::PARAM_P: case GT::PARAM_U:
+            return false;
+        default:
+            return static_cast<int>(inst.qubits.size()) <= max_qubit;
+    }
+}
+
+QuantumCircuit sv_fuse_circuit(StatevectorSimulator& sim,
+                               const QuantumCircuit& circuit,
+                               int max_qubit) {
+    QuantumCircuit out(circuit.n_qubits, circuit.n_clbits);
+    out.name = circuit.name;
+
+    std::vector<int> support;               // global qubit of each local slot
+    std::vector<Complex128> colM;           // block unitary, COLUMN-major
+    std::vector<Instruction> members;       // originals, for 1-gate blocks
+
+    auto flush = [&]() {
+        if (members.empty()) return;
+        if (members.size() == 1) {
+            out.instructions.push_back(members.front());
+        } else {
+            const size_t d = size_t(1) << support.size();
+            Instruction fused;
+            fused.type = Instruction::GateType::UNITARY;
+            fused.qubits = support;
+            std::vector<Complex128> rowM(d * d);
+            for (size_t r = 0; r < d; ++r)          // row-major = transpose of
+                for (size_t c = 0; c < d; ++c)      // the column-major store
+                    rowM[r * d + c] = colM[c * d + r];
+            fused.matrix = std::move(rowM);
+            out.instructions.push_back(std::move(fused));
+        }
+        support.clear();
+        colM.clear();
+        members.clear();
+    };
+
+    for (const auto& inst : circuit.instructions) {
+        if (!sv_gate_is_fusable(inst, max_qubit)) {
+            flush();
+            out.instructions.push_back(inst);
+            continue;
+        }
+
+        // Local slots for this gate's qubits; grow the support (and embed the
+        // existing block as identity on the new slots) as needed. LSB-first
+        // throughout: local slot b of the block addresses support[b].
+        std::vector<int> new_qubits;
+        for (int q : inst.qubits) {
+            if (std::find(support.begin(), support.end(), q) == support.end())
+                new_qubits.push_back(q);
+        }
+        if (static_cast<int>(support.size() + new_qubits.size()) > max_qubit) {
+            flush();
+            new_qubits = inst.qubits;  // fresh block: all qubits are new
+        }
+        if (support.empty()) {
+            colM.assign(1, Complex128(1.0, 0.0));  // 1x1 identity seed
+        }
+        for (int q : new_qubits) {
+            // Tensor an identity slot at the TOP local index: the new
+            // column-major matrix is block-diagonal with the old one
+            // replicated on the new qubit's 0/1 branches.
+            const size_t d_old = size_t(1) << support.size();
+            const size_t d_new = d_old << 1;
+            std::vector<Complex128> grown(d_new * d_new, Complex128(0.0, 0.0));
+            for (size_t h = 0; h < 2; ++h)
+                for (size_t c = 0; c < d_old; ++c)
+                    for (size_t r = 0; r < d_old; ++r)
+                        grown[(h * d_old + c) * d_new + (h * d_old + r)] =
+                            colM[c * d_old + r];
+            colM = std::move(grown);
+            support.push_back(q);
+        }
+
+        // Compose the gate into the block: apply it (qubits remapped to
+        // local slots) to every column of the block unitary through the
+        // simulator's own dispatch, so all gate types compose exactly.
+        Instruction local = inst;
+        for (auto& q : local.qubits) {
+            q = static_cast<int>(
+                std::find(support.begin(), support.end(), q) - support.begin());
+        }
+        const int k = static_cast<int>(support.size());
+        const size_t d = size_t(1) << k;
+        Statevector col(k);
+        for (size_t c = 0; c < d; ++c) {
+            for (size_t r = 0; r < d; ++r) {
+                col.real_parts[r] = colM[c * d + r].real;
+                col.imag_parts[r] = colM[c * d + r].imag;
+            }
+            sim.apply_instruction(col, local);
+            for (size_t r = 0; r < d; ++r)
+                colM[c * d + r] = Complex128(col.real_parts[r],
+                                             col.imag_parts[r]);
+        }
+        members.push_back(inst);
+    }
+    flush();
+    return out;
+}
+
+}  // namespace
+
 StatevectorSimulator::Result StatevectorSimulator::run(
     const QuantumCircuit& circuit,
     int shots,
@@ -295,6 +471,15 @@ StatevectorSimulator::Result StatevectorSimulator::run(
     try {
         if (circuit.n_qubits < 1) {
             throw std::invalid_argument("Circuit must have at least 1 qubit");
+        }
+        if (options.fusion_max_qubit < 2 ||
+            options.fusion_max_qubit > SV_FUSION_MAX_QUBIT_LIMIT) {
+            throw std::invalid_argument(
+                "Options::fusion_max_qubit must be in [2, 6]");
+        }
+        if (options.fusion_threshold < 0) {
+            throw std::invalid_argument(
+                "Options::fusion_threshold must be >= 0 (0 = auto)");
         }
 
         auto t_start = std::chrono::high_resolution_clock::now();
@@ -327,6 +512,28 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         };
         sv_sim_rng.seed(seq);
 
+        // Gate fusion (R.1.17): at bandwidth-bound sizes, execute a fused
+        // equivalent of the circuit (see sv_fuse_circuit above). The
+        // engagement point is Options::fusion_threshold when set, else the
+        // hardware-derived auto value (statevector > one LLC instance).
+        // All three strategy paths below consume `exec`; the per-shot
+        // trajectory path therefore builds the fused plan ONCE and reuses
+        // it every shot. Strategy detection stays on the original circuit —
+        // fusion preserves measures, conditions, and their ordering by
+        // construction, so the classification is identical.
+        QuantumCircuit fused_storage;
+        const QuantumCircuit* exec = &circuit;
+        if (options.fusion_enable) {
+            const int fusion_min = options.fusion_threshold > 0
+                ? options.fusion_threshold
+                : sv_fusion_auto_threshold();
+            if (circuit.n_qubits >= fusion_min) {
+                fused_storage =
+                    sv_fuse_circuit(*this, circuit, options.fusion_max_qubit);
+                exec = &fused_storage;
+            }
+        }
+
         // Execution strategy (docs/api/simulators.md, Execution semantics):
         //   1. Terminal-only measurements (no feedforward, nothing acting on
         //      a qubit after it was measured): ONE forward pass, then sample
@@ -355,7 +562,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             for (int shot = 0; shot < shots; ++shot) {
                 sv_work->initialize();
                 clreg.assign(n_clbits, 0);
-                sv_run_trajectory(*this, *sv_work, circuit, clreg, n_clbits,
+                sv_run_trajectory(*this, *sv_work, *exec, clreg, n_clbits,
                                   sv_sim_rng);
 
                 // Build bitstring: clbit 0 is LSB (rightmost), highest clbit is MSB.
@@ -369,14 +576,14 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             // Terminal-measurement fast path: a single evolution with MEASURE
             // skipped (the pre-measurement state is deterministic), then
             // multinomial sampling keyed by the qubit -> clbit mapping.
-            for (const auto& inst : circuit.instructions) {
+            for (const auto& inst : exec->instructions) {
                 if (inst.type == Instruction::GateType::MEASURE ||
                     inst.type == Instruction::GateType::BARRIER) continue;
                 apply_instruction(*sv_work, inst);
             }
 
             std::vector<std::pair<int, int>> meas;  // (qubit, clbit)
-            for (const auto& inst : circuit.instructions)
+            for (const auto& inst : exec->instructions)
                 if (inst.type == Instruction::GateType::MEASURE)
                     meas.emplace_back(inst.qubits[0],
                                       inst.clbits.empty() ? inst.qubits[0]
@@ -417,7 +624,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             // Single seeded trajectory (shots == 0 semantics; also the plain
             // forward pass for measurement-free circuits with shots > 0).
             std::vector<int> clreg(n_clbits, 0);
-            sv_run_trajectory(*this, *sv_work, circuit, clreg, n_clbits,
+            sv_run_trajectory(*this, *sv_work, *exec, clreg, n_clbits,
                               sv_sim_rng);
             if (shots > 0) {
                 result.counts = sv_work->sample_counts(shots, seed);

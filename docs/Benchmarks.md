@@ -27,8 +27,8 @@ and may lag the current release version.
 
 ## Environment
 
-- Date: 2026-07-12
-- Lindblad version: R.1.14.1
+- Date: 2026-07-17
+- Lindblad version: R.1.17.0
 - Host CPUs: 24 (Google Benchmark context)
 - CPU model: AMD Ryzen 9 7900X 12-Core Processor
 - Python 3.12.3, qiskit 2.5.0, qiskit-aer 0.17.2
@@ -61,22 +61,22 @@ Layered scaling circuit, QFT, QV-style random circuits, and a ccx-lowered Grover
 ```text
 workload                            lindblad (ms)       aer (ms)   speedup
 --------------------------------------------------------------------------
-sv__grover__s10                            67.007        119.971     1.79x
-sv__grover__s12                          1192.645       2154.919     1.81x
-sv__grover__s8                              1.998         10.661     5.34x
-sv__qft__n10                                0.047          3.398    71.91x
-sv__qft__n14                                0.312         10.624    34.02x
-sv__qft__n18                                8.144         13.933     1.71x
-sv__qft__n22                              513.524        130.912     0.25x
-sv__qv__n10                                 0.327          5.026    15.35x
-sv__qv__n14                                 5.320         23.692     4.45x
-sv__qv__n18                               126.644         37.860     0.30x
-sv__qv__n22                              2184.907        490.335     0.22x
-sv__scaling__n10                            0.069          2.858    41.49x
-sv__scaling__n14                            0.605          9.643    15.93x
-sv__scaling__n18                           12.207         20.745     1.70x
-sv__scaling__n22                          275.278        145.374     0.53x
-sv__scaling__n26                        10085.514       2632.363     0.26x
+sv__grover__s10                            66.202         73.557     1.11x
+sv__grover__s12                          1136.473       1895.068     1.67x
+sv__grover__s8                              1.920          8.893     4.63x
+sv__qft__n10                                0.046          3.314    71.77x
+sv__qft__n14                                0.305          8.889    29.17x
+sv__qft__n18                                7.947         12.764     1.61x
+sv__qft__n22                              344.913        128.113     0.37x
+sv__qv__n10                                 0.321          4.865    15.15x
+sv__qv__n14                                 5.079         21.293     4.19x
+sv__qv__n18                               122.111         34.144     0.28x
+sv__qv__n22                               514.905        411.607     0.80x
+sv__scaling__n10                            0.068          2.703    39.88x
+sv__scaling__n14                            0.626          9.151    14.62x
+sv__scaling__n18                           11.511         18.505     1.61x
+sv__scaling__n22                          246.161        150.100     0.61x
+sv__scaling__n26                         6312.427       2431.845     0.39x
 ```
 
 ## Density Matrix with Noise
@@ -86,10 +86,10 @@ Twin noise model on both engines: 2-qubit depolarizing p=0.01 after every cx, am
 ```text
 workload                            lindblad (ms)       aer (ms)   speedup
 --------------------------------------------------------------------------
-dm__scaling__n10                          960.610         32.846     0.03x
-dm__scaling__n4                             0.273          1.907     6.97x
-dm__scaling__n6                             3.908          3.817     0.98x
-dm__scaling__n8                           161.731          7.704     0.05x
+dm__scaling__n10                           59.273         28.393     0.48x
+dm__scaling__n4                             0.083          1.506    18.23x
+dm__scaling__n6                             1.146          3.403     2.97x
+dm__scaling__n8                           169.504          4.118     0.02x
 ```
 
 ## Matrix Product State
@@ -99,13 +99,13 @@ Layered scaling circuit; chi is the bond-dimension cap on both engines (Aer matr
 ```text
 workload                            lindblad (ms)       aer (ms)   speedup
 --------------------------------------------------------------------------
-mps__scaling__n16__chi32                    1.177         11.748     9.98x
-mps__scaling__n24__chi16                    0.746         17.239    23.09x
-mps__scaling__n24__chi32                    0.830         17.076    20.58x
-mps__scaling__n24__chi64                    0.770         17.030    22.11x
-mps__scaling__n24__chi8                     0.793         16.970    21.40x
-mps__scaling__n32__chi32                    1.017         23.127    22.75x
-mps__scaling__n40__chi32                    1.335         28.475    21.33x
+mps__scaling__n16__chi32                    1.114         11.612    10.43x
+mps__scaling__n24__chi16                    1.092         16.873    15.46x
+mps__scaling__n24__chi32                    1.094         16.853    15.41x
+mps__scaling__n24__chi64                    1.092         16.880    15.45x
+mps__scaling__n24__chi8                     1.091         16.815    15.42x
+mps__scaling__n32__chi32                    1.464         22.239    15.19x
+mps__scaling__n40__chi32                    1.847         27.508    14.89x
 ```
 
 ## Clifford / Stabilizer
@@ -115,10 +115,10 @@ H/CX/S ladder circuits versus Aer method=stabilizer; sizes beyond statevector re
 ```text
 workload                            lindblad (ms)       aer (ms)   speedup
 --------------------------------------------------------------------------
-clifford__ladder__n160                    211.419         95.782     0.45x
-clifford__ladder__n20                       1.162          6.329     5.45x
-clifford__ladder__n40                       5.795         18.573     3.21x
-clifford__ladder__n80                      32.613         33.096     1.01x
+clifford__ladder__n160                    204.797         91.861     0.45x
+clifford__ladder__n20                       1.121          9.056     8.08x
+clifford__ladder__n40                       5.723         18.044     3.15x
+clifford__ladder__n80                      32.421         32.071     0.99x
 ```
 
 ## Transpiler
@@ -128,18 +128,18 @@ Full pipeline on both engines: layout, routing, optimization, and {cx, u3} basis
 ```text
 workload                            lindblad (ms)       aer (ms)   speedup         lb twoq/depth      aer twoq/depth
 --------------------------------------------------------------------------------------------------------------------
-trans__qft22__grid25__o2                    4.619         20.469     4.43x            1257 / 683           708 / 352
-trans__qft22__grid25__o3                    7.432         21.597     2.91x            1257 / 683           750 / 394
-trans__qft22__heavyhex27__o2                5.613         21.165     3.77x            1704 / 781           742 / 335
-trans__qft22__heavyhex27__o3                9.207         34.886     3.79x            1704 / 781           791 / 375
-trans__qft22__linear27__o2                  6.029         20.371     3.38x            2091 / 644           729 / 319
-trans__qft22__linear27__o3                  9.611         22.979     2.39x            2091 / 644           729 / 319
-trans__qv22__grid25__o2                    15.578         27.692     1.78x            1888 / 710          1175 / 516
-trans__qv22__grid25__o3                    22.169         30.441     1.37x            1888 / 710          1169 / 517
-trans__qv22__heavyhex27__o2                17.817         29.087     1.63x            2653 / 933          1682 / 621
-trans__qv22__heavyhex27__o3                25.656         32.248     1.26x            2653 / 933          1661 / 586
-trans__qv22__linear27__o2                  22.617         45.345     2.00x           4291 / 1192          2926 / 738
-trans__qv22__linear27__o3                  33.151         44.021     1.33x           4291 / 1192          2926 / 797
+trans__qft22__grid25__o2                    4.682         19.587     4.18x            1257 / 683           708 / 352
+trans__qft22__grid25__o3                    7.260         20.833     2.87x            1257 / 683           750 / 394
+trans__qft22__heavyhex27__o2                5.643         20.697     3.67x            1704 / 781           742 / 335
+trans__qft22__heavyhex27__o3                8.887         33.445     3.76x            1704 / 781           791 / 375
+trans__qft22__linear27__o2                  5.747         18.768     3.27x            2091 / 644           729 / 319
+trans__qft22__linear27__o3                  9.622         20.666     2.15x            2091 / 644           729 / 319
+trans__qv22__grid25__o2                    13.392         26.645     1.99x            1888 / 710          1175 / 516
+trans__qv22__grid25__o3                    20.074         29.397     1.46x            1888 / 710          1169 / 517
+trans__qv22__heavyhex27__o2                15.531         28.791     1.85x            2653 / 933          1682 / 621
+trans__qv22__heavyhex27__o3                23.529         30.417     1.29x            2653 / 933          1661 / 586
+trans__qv22__linear27__o2                  21.890         44.769     2.05x           4291 / 1192          2926 / 738
+trans__qv22__linear27__o3                  32.201         43.248     1.34x           4291 / 1192          2926 / 797
 ```
 
 ## Estimator
@@ -149,12 +149,12 @@ Heisenberg-chain observable on a measure-free ansatz. exact = Lindblad Estimator
 ```text
 workload                            lindblad (ms)       aer (ms)   speedup
 --------------------------------------------------------------------------
-est__heisenberg__n12__exact                 0.480          3.182     6.63x
-est__heisenberg__n12__shots4096             2.208          6.813     3.08x
-est__heisenberg__n16__exact                 8.987         25.777     2.87x
-est__heisenberg__n16__shots4096            12.690         16.384     1.29x
-est__heisenberg__n20__exact                44.266       1668.425    37.69x
-est__heisenberg__n20__shots4096           156.687        121.871     0.78x
+est__heisenberg__n12__exact                 0.469          3.094     6.60x
+est__heisenberg__n12__shots4096             2.180          6.768     3.10x
+est__heisenberg__n16__exact                 8.903         25.089     2.82x
+est__heisenberg__n16__shots4096            12.260         40.591     3.31x
+est__heisenberg__n20__exact                45.972       1217.280    26.48x
+est__heisenberg__n20__shots4096           168.137         66.209     0.39x
 ```
 
 ## Reproducing

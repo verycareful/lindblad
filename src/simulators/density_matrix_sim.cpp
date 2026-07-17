@@ -79,14 +79,17 @@ bool DensityMatrix::is_valid(double atol) const {
 }
 
 // =============================================================================
-// Localized sub-block application helpers (R.1.13, audit F-1/F-2)
+// Localized sub-block application helpers (R.1.13, audit F-1/F-2; channel
+// path reworked in R.1.17)
 //
-// Rewrite of the previous serial, column-strided apply_gate. rho is row-major
-// dim×dim, so a full row is contiguous. The ket (left) multiply therefore
-// becomes a complex AXPY over contiguous dim-length rows, parallelised over
-// background groups; the bra (right) multiply stays row-local and parallelises
-// over rows. An out-of-place ket variant lets apply_kraus avoid the per-Kraus
-// full-matrix restore copy entirely.
+// rho is row-major dim×dim, so a full row is contiguous. Gates: the ket
+// (left) multiply is a complex AXPY over contiguous dim-length rows,
+// parallelised over background groups; the bra (right) multiply stays
+// row-local and parallelises over rows. Channels: applied as ONE fused
+// superoperator pass over vectorized sub-blocks (see
+// dm_superop_apply_inplace) instead of two sweeps + an accumulate per Kraus
+// operator — a 16-operator two-qubit depolarizing channel previously cost
+// ~48 full-rho sweeps and two dim² scratch allocations per call.
 // =============================================================================
 
 namespace {
@@ -128,29 +131,52 @@ void dm_build_tables(int n_qubits, size_t dim, const std::vector<int>& qubits,
     }
 }
 
-// Ket (left) multiply, out-of-place: dst = U·rho on the row index.
-// Reads `src`, writes `dst` (must NOT alias). Every row is written exactly
-// once, so `dst` needs no pre-zeroing. Inner loop streams two contiguous
-// complex arrays (a complex AXPY) and vectorises.
-void dm_ket_apply(const Complex128* __restrict src, Complex128* __restrict dst,
-                  const std::vector<Complex128>& U,
-                  const std::vector<size_t>& sub_off,
-                  const std::vector<size_t>& bg,
-                  size_t sub_dim, size_t dim) {
+// Single-pass channel application (R.1.17): for every (row-background,
+// col-background) pair, vec(rho_block)' = S · vec(rho_block), where the
+// block is the sub_dim × sub_dim sub-matrix addressed by sub_off on both
+// indices and S is the (sub_dim² × sub_dim²) channel superoperator in the
+// INTERNAL (MSB-first) sub-index convention,
+//   S[(ro·sd + co)·sd² + (ri·sd + ci)] = Σ_k K[ro,ri] · conj(K[co,ci]).
+// Every rho element is read and written exactly once: ONE memory sweep for
+// the whole channel regardless of its Kraus-operator count.
+void dm_superop_apply_inplace(Complex128* __restrict data,
+                              const std::vector<Complex128>& S,
+                              const std::vector<size_t>& sub_off,
+                              const std::vector<size_t>& bg,
+                              size_t sub_dim, size_t dim) {
     const int n_bg = static_cast<int>(bg.size());
-    #pragma omp parallel for schedule(static) if(bg.size() * dim >= DM_PAR_THRESHOLD)
-    for (int bi = 0; bi < n_bg; ++bi) {
-        const size_t base = bg[static_cast<size_t>(bi)];
-        for (size_t ro = 0; ro < sub_dim; ++ro) {
-            Complex128* __restrict d = dst + (base + sub_off[ro]) * dim;
-            const Complex128 u0 = U[ro * sub_dim];
-            const Complex128* __restrict s0 = src + (base + sub_off[0]) * dim;
-            for (size_t c = 0; c < dim; ++c) d[c] = u0 * s0[c];
-            for (size_t ri = 1; ri < sub_dim; ++ri) {
-                const Complex128 u = U[ro * sub_dim + ri];
-                if (u.real == 0.0 && u.imag == 0.0) continue;
-                const Complex128* __restrict s = src + (base + sub_off[ri]) * dim;
-                for (size_t c = 0; c < dim; ++c) d[c] += u * s[c];
+    const size_t sd2 = sub_dim * sub_dim;
+    #pragma omp parallel if(bg.size() * bg.size() * sd2 >= DM_PAR_THRESHOLD)
+    {
+        thread_local std::vector<Complex128> vin, vout;
+        if (vin.size() < sd2) { vin.resize(sd2); vout.resize(sd2); }
+        #pragma omp for schedule(static) collapse(2)
+        for (int rb = 0; rb < n_bg; ++rb) {
+            for (int cb = 0; cb < n_bg; ++cb) {
+                const size_t base_r = bg[static_cast<size_t>(rb)];
+                const size_t base_c = bg[static_cast<size_t>(cb)];
+                for (size_t ri = 0; ri < sub_dim; ++ri) {
+                    const Complex128* __restrict row =
+                        data + (base_r + sub_off[ri]) * dim + base_c;
+                    for (size_t ci = 0; ci < sub_dim; ++ci)
+                        vin[ri * sub_dim + ci] = row[sub_off[ci]];
+                }
+                for (size_t o = 0; o < sd2; ++o) {
+                    Complex128 sum(0.0, 0.0);
+                    const Complex128* __restrict srow = S.data() + o * sd2;
+                    for (size_t i = 0; i < sd2; ++i) {
+                        const Complex128 s = srow[i];
+                        if (s.real == 0.0 && s.imag == 0.0) continue;
+                        sum += s * vin[i];
+                    }
+                    vout[o] = sum;
+                }
+                for (size_t ro = 0; ro < sub_dim; ++ro) {
+                    Complex128* __restrict row =
+                        data + (base_r + sub_off[ro]) * dim + base_c;
+                    for (size_t co = 0; co < sub_dim; ++co)
+                        row[sub_off[co]] = vout[ro * sub_dim + co];
+                }
             }
         }
     }
@@ -274,43 +300,110 @@ static std::vector<Complex128> dm_bit_reverse_matrix(
     return out;
 }
 
+// Build the channel superoperator from Kraus operators:
+//   S[(ro·sd + co)·sd² + (ri·sd + ci)] = Σ_k K[ro,ri] · conj(K[co,ci]).
+// `internal_convention` selects the index addressing of the RESULT: true
+// bit-reverses each K first (external qubits[0]-is-LSB contract -> internal
+// MSB-first sub-block addressing; a no-op for k <= 1), false keeps the
+// external convention (used for precomputed plans that go through the
+// public apply_channel_superop, which performs the bridge itself).
+static std::vector<Complex128> dm_channel_superop(
+    const std::vector<std::vector<Complex128>>& kraus_ops, int k,
+    bool internal_convention
+) {
+    const size_t sd = size_t(1) << k;
+    const size_t sd2 = sd * sd;
+    std::vector<Complex128> S(sd2 * sd2, Complex128(0.0, 0.0));
+    for (const auto& K : kraus_ops) {
+        const std::vector<Complex128>* Kp = &K;
+        std::vector<Complex128> Krev;
+        if (internal_convention && k >= 2) {
+            Krev = dm_bit_reverse_matrix(K, k);
+            Kp = &Krev;
+        }
+        const auto& M = *Kp;
+        for (size_t ro = 0; ro < sd; ++ro)
+            for (size_t co = 0; co < sd; ++co)
+                for (size_t ri = 0; ri < sd; ++ri) {
+                    const Complex128 a = M[ro * sd + ri];
+                    if (a.real == 0.0 && a.imag == 0.0) continue;
+                    for (size_t ci = 0; ci < sd; ++ci)
+                        S[(ro * sd + co) * sd2 + (ri * sd + ci)] +=
+                            a * M[co * sd + ci].conj();
+                }
+    }
+    return S;
+}
+
 void DensityMatrix::apply_kraus(
     const std::vector<std::vector<Complex128>>& kraus_ops,
     const std::vector<int>& qubits
 ) {
-    // Out-of-place accumulation (R.1.13, audit F-2): the previous loop did
-    // `data = original` (a full 4^N copy) before each in-place K application.
-    // Here `data` is left untouched as the source and each K's contribution is
-    // built in `scratch` via the out-of-place ket multiply (no restore copy),
-    // then accumulated into `result`. Peak memory is unchanged (result +
-    // scratch), but the per-operator full-matrix copy is gone.
+    // R.1.17 (see the benchmark-driven findings tracked in TODO): the whole
+    // channel is fused into one superoperator and applied in a SINGLE pass
+    // over rho. The previous implementation (R.1.13, audit F-2) performed a
+    // ket sweep + bra sweep + accumulate per Kraus operator and allocated
+    // two dim² scratch buffers per call — a 16-operator two-qubit
+    // depolarizing channel cost ~48 full-rho sweeps per noisy gate. The
+    // superoperator build is O(ops · sub_dim⁴) on at-most-16×16 blocks for
+    // the 1q/2q channels noise models attach: negligible next to one sweep.
     const int k = static_cast<int>(qubits.size());
     const size_t sub_dim = size_t(1) << k;
 
     std::vector<size_t> sub_off, bg;
     dm_build_tables(n_qubits, dim, qubits, sub_off, bg);
 
-    std::vector<Complex128> result(dim * dim, Complex128(0.0, 0.0));
-    std::vector<Complex128> scratch(dim * dim);
-    const Complex128* orig = data.data();  // untouched until the final move
+    const auto S = dm_channel_superop(kraus_ops, k, /*internal_convention=*/true);
+    dm_superop_apply_inplace(data.data(), S, sub_off, bg, sub_dim, dim);
+}
 
-    // Convention bridge: KrausChannel operator matrices follow the external
-    // qubits[0]-is-LSB contract; the internal sub-block addressing here treats
-    // qubits[0] as the MSB, so bit-reverse for k >= 2 (a no-op for k <= 1).
-    for (const auto& K : kraus_ops) {
-        const std::vector<Complex128>* Kp = &K;
-        std::vector<Complex128> Krev;
-        if (k >= 2) { Krev = dm_bit_reverse_matrix(K, k); Kp = &Krev; }
-
-        dm_ket_apply(orig, scratch.data(), *Kp, sub_off, bg, sub_dim, dim);   // scratch = K·rho
-        dm_bra_apply_inplace(scratch.data(), *Kp, sub_off, bg, sub_dim, dim); // scratch = scratch·K†
-
-        const size_t total = dim * dim;
-        #pragma omp parallel for schedule(static) if(total >= DM_PAR_THRESHOLD)
-        for (int i = 0; i < static_cast<int>(total); ++i) result[static_cast<size_t>(i)] += scratch[static_cast<size_t>(i)];
+void DensityMatrix::apply_channel_superop(
+    const std::vector<Complex128>& S_ext,
+    const std::vector<int>& qubits
+) {
+    // Public contract (external convention, matching KrausChannel and
+    // apply_unitary): S is (4^k × 4^k) row-major with
+    //   S[(r_out·2^k + c_out)·4^k + (r_in·2^k + c_in)],
+    // bit b of every sub-index addressing qubits[b] (LSB-first), and
+    //   rho'_block = S · vec(rho_block)
+    // on each background-pair sub-block, identity elsewhere. For a Kraus
+    // channel, S[(ro,co),(ri,ci)] = Σ_k K[ro,ri]·conj(K[co,ci]); the caller
+    // is responsible for trace preservation (Σ K†K = I) — no validation is
+    // performed here (is_valid() exists for checking states).
+    const int k = static_cast<int>(qubits.size());
+    const size_t sd = size_t(1) << k;
+    const size_t sd2 = sd * sd;
+    if (S_ext.size() != sd2 * sd2) {
+        throw std::invalid_argument("Channel superoperator size mismatch");
     }
 
-    data = std::move(result);
+    std::vector<size_t> sub_off, bg;
+    dm_build_tables(n_qubits, dim, qubits, sub_off, bg);
+
+    // Bridge to the internal MSB-first addressing by bit-reversing all four
+    // sub-indices (a no-op permutation for k <= 1). At most 256×256 entries
+    // for the channels noise models attach — negligible next to the sweep.
+    const std::vector<Complex128>* Sp = &S_ext;
+    std::vector<Complex128> S_int;
+    if (k >= 2) {
+        auto rev = [k](size_t idx) {
+            size_t r = 0;
+            for (int b = 0; b < k; ++b)
+                if ((idx >> b) & 1) r |= (size_t(1) << (k - 1 - b));
+            return r;
+        };
+        S_int.assign(sd2 * sd2, Complex128(0.0, 0.0));
+        for (size_t ro = 0; ro < sd; ++ro)
+            for (size_t co = 0; co < sd; ++co)
+                for (size_t ri = 0; ri < sd; ++ri)
+                    for (size_t ci = 0; ci < sd; ++ci)
+                        S_int[(rev(ro) * sd + rev(co)) * sd2 +
+                              (rev(ri) * sd + rev(ci))] =
+                            S_ext[(ro * sd + co) * sd2 + (ri * sd + ci)];
+        Sp = &S_int;
+    }
+
+    dm_superop_apply_inplace(data.data(), *Sp, sub_off, bg, sd, dim);
 }
 
 void DensityMatrix::apply_permutation(const std::vector<int>& full_perm) {
@@ -681,15 +774,18 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             Complex128(0,0), Complex128(0,0)
         };
 
-        // Per-instruction plan, resolved ONCE (audit F-12/F-13). Previously
-        // apply_inst deep-copied every Kraus matrix (errors_for_gate returns by
-        // value) and rebuilt the gate matrix on every call — i.e. per shot per
-        // gate. Both are constant across shots, so precompute here: gate
-        // matrices, and noise as pointers into the (immutable) NoiseModel with
-        // the effective qubit list resolved (empty error.qubits -> inst.qubits).
+        // Per-instruction plan, resolved ONCE (audit F-12/F-13; channel
+        // superoperators fused in R.1.17). Previously apply_inst deep-copied
+        // every Kraus matrix and rebuilt the gate matrix on every call — i.e.
+        // per shot per gate. All of it is constant across shots, so
+        // precompute here: gate matrices, and each attached channel FUSED
+        // into its internal-convention superoperator with its stride tables,
+        // so application is one dm_superop_apply_inplace sweep with zero
+        // per-call setup (matters most on the per-shot trajectory path).
         struct ResolvedError {
-            const std::vector<std::vector<Complex128>>* ops;
-            std::vector<int> qubits;
+            std::vector<Complex128> superop;   // internal-convention channel superop
+            std::vector<size_t> sub_off, bg;   // stride tables for its qubit set
+            size_t sub_dim;
             bool after_gate;
         };
         const size_t n_inst = circuit.instructions.size();
@@ -764,10 +860,18 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                         for (const auto& ge : *bucket) {
                             if (!ge.qubits.empty() && ge.qubits != inst.qubits)
                                 continue;
-                            inst_errors[ii].push_back(ResolvedError{
-                                &ge.channel.operators,
-                                ge.qubits.empty() ? inst.qubits : ge.qubits,
-                                ge.after_gate});
+                            const std::vector<int>& eq =
+                                ge.qubits.empty() ? inst.qubits : ge.qubits;
+                            const int ek = static_cast<int>(eq.size());
+                            ResolvedError re;
+                            re.superop = dm_channel_superop(
+                                ge.channel.operators, ek,
+                                /*internal_convention=*/true);
+                            dm_build_tables(circuit.n_qubits, dim, eq,
+                                            re.sub_off, re.bg);
+                            re.sub_dim = size_t(1) << ek;
+                            re.after_gate = ge.after_gate;
+                            inst_errors[ii].push_back(std::move(re));
                         }
                     }
                 }
@@ -783,12 +887,18 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 return;
             }
             for (const auto& re : inst_errors[ii])
-                if (!re.after_gate) dm.apply_kraus(*re.ops, re.qubits);
+                if (!re.after_gate)
+                    dm_superop_apply_inplace(dm.data.data(), re.superop,
+                                             re.sub_off, re.bg, re.sub_dim,
+                                             dm.dim);
             if (op_kind[ii] == 1)      dm.apply_permutation(op_perm[ii]);
             else if (op_kind[ii] == 2) dm.apply_mcp_phase(op_mask[ii], op_lambda[ii]);
             else                       dm.apply_gate(gate_mats[ii], inst.qubits);
             for (const auto& re : inst_errors[ii])
-                if (re.after_gate) dm.apply_kraus(*re.ops, re.qubits);
+                if (re.after_gate)
+                    dm_superop_apply_inplace(dm.data.data(), re.superop,
+                                             re.sub_off, re.bg, re.sub_dim,
+                                             dm.dim);
         };
 
         if (needs_per_shot) {

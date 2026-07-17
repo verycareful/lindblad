@@ -68,6 +68,9 @@ struct Options {
     int precision = 64;            // 32 or 64 bit (not yet used)
     bool zero_threshold = true;
     double threshold = 1e-10;      // Unused; for API compatibility
+    bool fusion_enable = true;     // master switch for gate fusion
+    int fusion_threshold = 0;      // min qubits to engage fusion; 0 = auto
+    int fusion_max_qubit = 5;      // max fused-block width, 2..6
 };
 ```
 
@@ -75,6 +78,9 @@ struct Options {
 - **max_memory_mb**: Memory budget (0 = no limit); used for preemptive error checking
 - **precision**: Reserved for future 32-bit float variants
 - **zero_threshold**, **threshold**: Legacy fields; may be removed in future versions
+- **fusion_enable**: Master switch for the gate-fusion pre-pass (see Gate Fusion below); `false` runs every circuit unfused
+- **fusion_threshold**: Minimum circuit qubit count at which fusion engages. `0` (the default) derives the point from the hardware at runtime: the first $n$ whose statevector ($16 \cdot 2^n$ bytes) exceeds one last-level-cache instance. An explicit value pins the point verbatim; values below the auto point can regress cache-resident circuits, so overriding downward is for experimentation, not production. `run()` rejects negative values.
+- **fusion_max_qubit**: Maximum width of a fused block in qubits, valid range 2 to 6. Follows the Qiskit Aer option name; Aer's default width (5) is also the default here.
 
 ### Result Structure
 
@@ -122,6 +128,12 @@ std::unordered_map<std::string, int> counts = result.counts;
 ### Fast Expectation Values
 
 For variational inner loops, `StatevectorSimulator::eval_expectation(circuit, observable)` simulates the circuit and computes the expectation value in-place, bypassing the `Result` struct and avoiding an $O(2^n)$ allocation of the final state vector. This is used by the `Estimator` ideal path.
+
+### Gate Fusion (R.1.17)
+
+When the statevector outgrows one last-level-cache instance, `run()` executes a fused equivalent of the circuit: consecutive fusable gates are greedily merged while the union of their supports stays within `fusion_max_qubit` qubits, each block is composed into a dense $2^k \times 2^k$ unitary (by applying the member gates to basis columns through the simulator's own dispatch, so every gate type composes exactly), and the block is applied as a single `apply_unitary` stride pass. Bandwidth-bound simulation is where fusion pays — $k$ gates cost $k$ full sweeps of $2^n$ amplitudes unfused, one sweep fused — while cache-resident states are compute-bound: there the specialised per-gate kernels win and a dense block would only add arithmetic. Measurements on a 32 MiB-L3 machine put the boundary exactly at the cache size (fusing a state equal to the LLC instance ran 3.3x slower; twice the LLC, 2.7x faster), so the engagement point is the first $n$ whose state exceeds one LLC instance — detected at runtime, per L3 instance rather than package total because on multi-CCD parts a thread's working set lives in its own CCD's slice. When the cache size cannot be detected, 32 MiB is assumed (engaging at $n \geq 22$), which errs toward engaging later: a missed fusion win costs far less than a mid-range regression. `fusion_threshold` pins the point explicitly; `fusion_enable = false` disables the pre-pass entirely. Below the engagement point circuits execute unfused and bit-identically to earlier releases.
+
+Semantics are untouched by construction: `MEASURE` / `RESET` / `BARRIER`, classically-conditioned instructions, unresolved parameterised gates, and the structured ops (`MCX` / `MCP` / `PERMUTATION`, which already have fast native paths) are never fused — they flush the current block and pass through verbatim. Single-gate blocks emit the original instruction. The fused plan is built once per `run()` and, on the per-shot trajectory path, reused across every shot.
 
 ### Complexity Analysis
 
@@ -222,28 +234,34 @@ For noise channels with $m$ Kraus operators $\{K_1, \ldots, K_m\}$ satisfying $\
 
 $$\rho \to \sum_{i=1}^{m} K_i \rho K_i^\dagger$$
 
-**Implementation (R.1.13, audit F-1/F-2)**: `apply_gate` is an OpenMP row-block
-AXPY over contiguous rows (`rho = U rho U†` via an in-place ket multiply plus a
-row-local bra multiply, parallel over background groups / rows) rather than the
-old serial column-strided loop. `apply_kraus` is **out of place**: the input
-`rho` is left untouched as the source, each operator's contribution
-`K rho K†` is built in a scratch buffer via an out-of-place ket multiply, and
-accumulated into a result buffer:
+**Implementation (R.1.13 gates; R.1.17 channels)**: `apply_gate` is an OpenMP
+row-block AXPY over contiguous rows (`rho = U rho U†` via an in-place ket
+multiply plus a row-local bra multiply, parallel over background groups /
+rows). `apply_kraus` fuses the **whole channel into one superoperator** and
+applies it in a **single pass** over $\rho$:
 
-```cpp
-// per Kraus operator K: scratch = K·rho (out of place), scratch = scratch·K†,
-// result += scratch.  No per-operator full 4^N restore copy (the previous loop
-// did `data = original` once per K).
-```
+$$S_{(r_o c_o),(r_i c_i)} = \sum_k K_k[r_o, r_i] \cdot \overline{K_k[c_o, c_i]}, \qquad \text{vec}(\rho'_{\text{block}}) = S \cdot \text{vec}(\rho_{\text{block}})$$
 
-**Complexity**: $O(m \cdot 4^n \cdot 2^k)$ where $m$ = number of Kraus operators,
-now parallelised and without the per-operator matrix copy.
+per background pair, identity elsewhere. Every $\rho$ element is read and
+written exactly once regardless of the operator count $m$ — previously each
+operator cost a ket sweep, a bra sweep, and an accumulate pass plus two
+$4^n$ scratch allocations per call, so a 16-operator two-qubit depolarizing
+channel swept the full matrix ~48 times per noisy gate. The superoperator is
+at most $4^k \times 4^k$ ($16 \times 16$ for the 1–2 qubit channels noise
+models attach) and costs $O(m \cdot 16^k)$ to build, negligible next to one
+sweep. `apply_channel_superop(S, qubits)` exposes the single-pass path
+directly for callers that already hold a superoperator (external LSB-first
+convention, matching `KrausChannel`; trace preservation is the caller's
+responsibility).
 
-The `DensityMatrixSimulator` also pre-resolves each instruction's gate matrix
-and noise **once per circuit** into a plan (pointers into the immutable
-`NoiseModel`, no per-call Kraus deep-copy), reuses one density-matrix buffer
-across shots, and applies the structured `MCX`/`MCP`/`PERMUTATION` ops as a
-full-register row/column relabel or diagonal phase (no dense matrix).
+**Complexity**: $O(4^n \cdot 4^k)$ per channel — independent of $m$.
+
+The `DensityMatrixSimulator` also pre-resolves each instruction **once per
+circuit** into a plan: gate matrices, and every attached channel fused into
+its superoperator with its stride tables, so per-shot trajectory execution
+pays zero per-call setup. One density-matrix buffer is reused across shots,
+and the structured `MCX`/`MCP`/`PERMUTATION` ops apply as a full-register
+row/column relabel or diagonal phase (no dense matrix).
 
 ### DensityMatrixSimulator Workflow
 
