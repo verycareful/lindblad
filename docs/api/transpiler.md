@@ -11,7 +11,8 @@ The Transpiler provides circuit optimization, layout assignment, and routing pas
 The transpiler pipeline follows a modular pass architecture:
 
 1. **Input**: `QuantumCircuit` or `DAGCircuit`
-2. **Passes** (preset stage order, R.1.15.0):
+2. **Passes** (preset stage order):
+   - High-level decomposition (lower `MCX` / `MCP` / `PERMUTATION` into routable, translatable gates; composed only when a constrained coupling map or a basis is present)
    - Layout assignment (logical → physical qubit mapping, expanded to device width)
    - Routing (insert SWAP gates to satisfy coupling constraints)
    - Optimization (eliminate redundant gates, consolidate blocks)
@@ -185,6 +186,28 @@ public:
 
 **Pattern**: Each pass reads the DAG, applies transformations (gate reordering, insertion, decomposition, or removal), and returns an updated DAG. All passes are **read-only** with respect to the input DAG (const input).
 
+## High-Level Decomposition: Lower MCX / MCP / PERMUTATION
+
+### HighLevelDecompose
+
+```cpp
+class HighLevelDecompose : public TranspilationPass { ... };
+```
+
+**Behavior**: Replaces every `MCX`, `MCP`, and `PERMUTATION` instruction with an exact standard-gate realization; all other instructions pass through unchanged. A circuit containing none of the three ops is returned as-is (single scan, no rebuild).
+
+Lowering rules (all exact — no approximation anywhere):
+
+- `MCX` with k ≤ 2 controls → `X` / `CX` / `CCX` directly; k ≥ 3 → `H`-conjugated multi-controlled phase (Barenco-style λ/2 recursion with borrowed-wire halving), output alphabet `{X, H, P, CP, CX, CCX}`
+- `MCP` → the same λ/2 recursion directly
+- `PERMUTATION` whose basis map is a pure wire relabeling → at most k−1 `SWAP`s; a general basis map → cycle decomposition into transpositions, each realized as a CX-fan conjugated, pattern-controlled MCX (then flattened by the MCX rule)
+
+The construction is ancilla-free and self-contained on the instruction's own operands; worst-case emitted gate count is cubic in the control count for wide `MCX` / `MCP`. Classical conditions (`condition_clbit` / `condition_value`) are propagated onto every emitted gate, preserving feedforward semantics.
+
+**Composition rule**: the preset pipelines compose this pass as stage 0 (ahead of layout and routing) at EVERY optimization level, but only when the transpile target actually requires the lowering — a constrained coupling map (`n_physical_qubits > 0`; routing handles at most 3-qubit gates) or a non-empty `basis_gates` list (the equivalence library cannot reach the three ops). With neither constraint the ops stay native: every backend executes `MCX` / `MCP` / `PERMUTATION` directly, and unconditional lowering would only pessimize. Append the pass to a custom `PassManager` for unconditional lowering.
+
+**Complexity**: $O(G)$ scan when no high-level op is present; otherwise one circuit rebuild plus the per-op synthesis cost above.
+
 ## Layout Passes: Assign Logical Qubits to Physical Qubits
 
 ### Shared layout invariant (R.1.15.0)
@@ -293,7 +316,7 @@ class BasisTranslator : public TranspilationPass { ... };
 - Three-qubit gates (`ccx`, `ccz`, `cswap`, `rccx`) → `cx` + `u3` ladders on the same wire pairs
 
 **No decomposition path (throws when outside the basis)**:
-- `MCX`, `MCP`, `PERMUTATION` — first-class R.1.13 instructions; lowering is planned but not implemented. Include the gate itself in `basis_gates` or decompose before transpiling.
+- `MCX`, `MCP`, `PERMUTATION` — lowered by the stage-0 `HighLevelDecompose` pass, which the preset pipelines compose ahead of routing whenever a basis is requested, so these never reach the translator in a preset run. They throw only in hand-built pipelines that skip the stage-0 pass: run `HighLevelDecompose` first or include the gate itself in `basis_gates`.
 - `UNITARY` — no synthesis path in the translator.
 - Symbolic `PARAM_*` gates — parameters are unbound, so numeric decomposition is impossible; bind parameters first.
 
@@ -448,6 +471,9 @@ PassManager preset_pass_manager(
 ```
 
 Levels compose per **stage**, non-cumulatively (R.1.15.0). Before R.1.15.0 the levels composed cumulatively, so level ≥ 2 first ran the level-0 `TrivialLayout` + `SabreSwap` block: the initial routing pass executed on the unexpanded DAG (frozen-slot defect) and `SabreLayout` then had to re-route an already-SWAP-laden circuit whose pass-1 SWAPs it could not undo. Now every level makes one layout choice and runs one routing pass.
+
+Stage 0 — high-level decomposition:
+- `HighLevelDecompose`, composed at every level if and only if the coupling map is constrained (`n_physical_qubits > 0`) or `basis_gates` is non-empty — the two situations that require `MCX` / `MCP` / `PERMUTATION` to be lowered. With neither, the ops stay native for the backends (see the pass's section above). `preset_pass_manager` therefore consumes its `coupling_map` argument (previously composition ignored it).
 
 Stage 1 — layout + routing:
 - Levels 0–1: `TrivialLayout` → `SabreSwap`

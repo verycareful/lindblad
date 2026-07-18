@@ -837,6 +837,23 @@ private:
         gate_defs_[name] = std::move(def);
     }
 
+    // Shared tail of a `ctrl` modifier: both spec forms are accepted —
+    // bare `ctrl @` adds one control, `ctrl(n) @` (R.1.18.0) adds n. Returns
+    // the number of controls contributed by this modifier occurrence.
+    int parse_ctrl_count() {
+        int count = 1;
+        if (accept(TT::LPAREN)) {
+            auto& n = expect(TT::INT, "integer control count");
+            count = std::stoi(std::string(n.text));
+            if (count < 1) {
+                fail("ctrl(" + std::to_string(count) + "): control count must be >= 1");
+            }
+            expect(TT::RPAREN, "')'");
+        }
+        expect(TT::AT, "'@'");
+        return count;
+    }
+
     // Parse a single statement inside a gate body and return a PreCall.
     // Modifier chains and parameter expressions are captured symbolically so
     // they can be evaluated later at the call site with substituted bindings.
@@ -845,7 +862,7 @@ private:
         pc.line = peek().line;
 
         while (true) {
-            if (accept_kw("ctrl"))      { expect(TT::AT, "'@'"); ++pc.n_ctrl; continue; }
+            if (accept_kw("ctrl"))      { pc.n_ctrl += parse_ctrl_count(); continue; }
             if (accept_kw("inv"))       { expect(TT::AT, "'@'"); pc.inv = !pc.inv; continue; }
             if (accept_kw("pow")) {
                 expect(TT::LPAREN, "'('");
@@ -1168,7 +1185,7 @@ private:
         int line = peek().line;
 
         while (true) {
-            if (accept_kw("ctrl"))      { expect(TT::AT, "'@'"); ++n_ctrl; continue; }
+            if (accept_kw("ctrl"))      { n_ctrl += parse_ctrl_count(); continue; }
             if (accept_kw("inv"))       { expect(TT::AT, "'@'"); inv = !inv; continue; }
             if (accept_kw("pow")) {
                 expect(TT::LPAREN, "'('");
@@ -1427,10 +1444,13 @@ private:
         };
 
         // pow-fold self-inverse ctrl gates first.
-        // ctrl @ x with pow(n): if n even → identity, n odd → keep.
+        // ctrl @ x with pow(n): if n even → identity, n odd → keep. Any
+        // control count over x stays self-inverse (R.1.18.0: enables the
+        // wide-stack MCX fast path below to see eff_pow == 1).
         bool self_inv_base = (n_ctrl == 1 && (name == "x" || name == "y" || name == "z" ||
                                               name == "h" || name == "swap")) ||
-                             (n_ctrl == 2 && (name == "x" || name == "z"));
+                             (n_ctrl == 2 && (name == "x" || name == "z")) ||
+                             (n_ctrl >= 3 && name == "x");
         if (self_inv_base && params.empty()) {
             if ((eff_pow % 2) == 0) return true;
             eff_pow = 1;
@@ -1456,6 +1476,29 @@ private:
                 emit_params = params;
             }
             return emit_concrete(spec.type, emit_params, qubits);
+        }
+
+        // ============== Path 3: wide control stacks (R.1.18.0) ==============
+        // Resolve to the first-class MCX / MCP instructions instead of the
+        // matrix fallback, which would materialise a dense 2^(k+1) matrix —
+        // exactly the object these instructions exist to avoid. This is also
+        // what makes the to_qasm3() `ctrl(k) @` emission round-trip.
+        //
+        // ctrl^k @ x, k ≥ 3 → MCX. x is self-inverse, so inv is free and
+        // eff_pow was folded to 1 above. (k ≤ 2 stays cx/ccx via the table:
+        // the canonical named forms.)
+        if (n_ctrl >= 3 && name == "x" && params.empty()) {
+            if (static_cast<int>(qubits.size()) != n_ctrl + 1) return false;
+            return emit_concrete(Instruction::GateType::MCX, {}, qubits);
+        }
+        // ctrl^k @ p(λ), k ≥ 2 → MCP over all k+1 operands (the phase is
+        // symmetric). inv negates λ and pow scales it — both exact for a
+        // phase gate — via the shared angle-folding helper.
+        if (n_ctrl >= 2 && (name == "p" || name == "phase") && params.size() == 1) {
+            if (static_cast<int>(qubits.size()) != n_ctrl + 1) return false;
+            double sign = inv ? -1.0 : 1.0;
+            return emit_concrete(Instruction::GateType::MCP,
+                                 fold_angle_params(sign), qubits);
         }
 
         return false;

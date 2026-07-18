@@ -297,7 +297,8 @@ CouplingMap CouplingMap::all_to_all(int n) {
 // Contract (R.1.15.0): the OUTPUT is verified — every gate in the returned
 // circuit is in the target basis, or std::invalid_argument is thrown naming
 // the offending gate. Anything the equivalence library cannot reach (MCX,
-// MCP, PERMUTATION until their lowering ships; UNITARY; symbolic PARAM_*
+// MCP, PERMUTATION when the stage-0 HighLevelDecompose pass was not run
+// ahead of translation; UNITARY; symbolic PARAM_*
 // gates, whose parameters are unbound) previously passed through SILENTLY,
 // violating the caller's basis. MEASURE/RESET/BARRIER are not gates and are
 // exempt. Since the library targets cx+u3, a basis that includes neither
@@ -728,9 +729,11 @@ DAGCircuit BasisTranslator::run(
         if (inst.type == Instruction::GateType::MCX ||
             inst.type == Instruction::GateType::MCP ||
             inst.type == Instruction::GateType::PERMUTATION) {
-            msg += "; MCX/MCP/PERMUTATION lowering is not implemented yet: "
-                   "include the gate itself in basis_gates or decompose it "
-                   "before transpiling";
+            msg += "; MCX/MCP/PERMUTATION reach the translator only outside "
+                   "the preset pipelines (R.1.18.0 composes HighLevelDecompose "
+                   "ahead of routing whenever a basis is requested): run "
+                   "HighLevelDecompose first or include the gate itself in "
+                   "basis_gates";
         } else if (inst.is_parameterised()) {
             msg += "; symbolic parameterised gates cannot be numerically "
                    "decomposed: bind parameters first or include the gate "

@@ -228,6 +228,23 @@ struct DrawOptions {
 };
 
 // =============================================================================
+// QasmExportOptions : per-call QASM export configuration
+// =============================================================================
+// R.1.18.0. OpenQASM 2.0 has no gate-modifier syntax, so MCX / MCP /
+// PERMUTATION have no faithful representation there; by default to_qasm2()
+// refuses them loudly. Setting decompose_unrepresentable lowers the three ops
+// to standard gates at export time via the shared exact decompositions
+// (MCX / MCP to X, H, P, CP, CX, CCX; PERMUTATION to SWAPs for wire
+// relabelings, transposition networks for general basis maps). The circuit
+// object is never modified; only the emitted text is decomposed. General
+// PERMUTATION maps produce one multi-controlled network per displaced basis
+// state, so the output can be large — that cost is inherent to the format.
+
+struct QasmExportOptions {
+    bool decompose_unrepresentable = false; // lower MCX/MCP/PERMUTATION at export
+};
+
+// =============================================================================
 // QuantumCircuit
 // =============================================================================
 
@@ -382,7 +399,12 @@ public:
     // Export / Import
     // =========================================================================
 
-    std::string to_qasm2() const;
+    // QASM 2.0: MCX/MCP/PERMUTATION throw by default (no faithful QASM 2
+    // encoding exists); opts.decompose_unrepresentable lowers them at export.
+    std::string to_qasm2(const QasmExportOptions& opts = {}) const;
+    // QASM 3.0: MCX/MCP emit natively via the `ctrl @` modifier; PERMUTATION
+    // is always lowered at export (SWAPs for wire relabelings, exact
+    // transposition networks otherwise) — QASM 3 has no permutation primitive.
     std::string to_qasm3() const;
     static QuantumCircuit from_qasm2(const std::string& qasm);
     static QuantumCircuit from_qasm3(const std::string& qasm);

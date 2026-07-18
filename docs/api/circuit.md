@@ -90,9 +90,14 @@ qc.permute(perm, {0, 1});      // |x> -> |perm[x]> on the target subspace
   throws `std::invalid_argument`).
 - These are native in the statevector and density-matrix backends (no dense
   $2^k$ matrix). The MPS backend reduces small MCX to X/CX/CCX and uses the
-  bounded statevector fallback for wider MCX / MCP / PERMUTATION. QASM/JSON
-  export and transpiler decomposition of these ops are not yet implemented and
-  throw (decompose before export/routing). See [Gates API](gates.md).
+  bounded statevector fallback for wider MCX / MCP / PERMUTATION. The
+  peripheral tooling covers them too: QASM 3 export emits `ctrl(k) @` forms
+  (PERMUTATION lowers to gates at export), QASM 2 export throws unless
+  `QasmExportOptions::decompose_unrepresentable` is set, JSON round-trips all
+  three natively, and the stage-0 `HighLevelDecompose` transpiler pass lowers
+  them for routing / basis translation. See
+  [Gates API](gates.md), [QASM API](qasm.md), and
+  [Transpiler API](transpiler.md).
 
 ### Special Operations
 
@@ -161,15 +166,21 @@ Behavior:
 
 ### Export and Import
 
-- `to_qasm2()` and `to_qasm3()` emit OpenQASM strings
+- `to_qasm2(opts)` and `to_qasm3()` emit OpenQASM strings
   - Parameters are emitted only when `inst.params` is populated
   - Param gates should be bound before export to avoid missing parameters
   - `UNITARY` and `PARAM_*` gates have no QASM 2.0 representation; they are
     emitted as `// gate '...' omitted` comments so the output remains valid QASM
+  - `MCX` / `MCP` / `PERMUTATION`: QASM 3 emits `ctrl(k) @ x` /
+    `ctrl(m-1) @ p(λ)` and always lowers `PERMUTATION` to gates; QASM 2 throws
+    by default, or lowers all three when
+    `QasmExportOptions::decompose_unrepresentable` is set (see
+    [QASM API](qasm.md))
 - `from_qasm2()` uses the internal QASM2 parser
 - `from_qasm3()` uses the internal QASM3 parser (`QASM3Lexer` + `QASM3Parser`)
-  - Covers multi-register declarations, gate modifiers (`ctrl @`, `inv @`,
-    `pow(n) @`, chained), `stdgates.inc`, user-defined `gate` bodies, classical
+  - Covers multi-register declarations, gate modifiers (`ctrl @`, `ctrl(n) @`,
+    `inv @`, `pow(n) @`, chained; wide control stacks resolve to first-class
+    `MCX` / `MCP`), `stdgates.inc`, user-defined `gate` bodies, classical
     `if`/`else` conditioning, `measure`/`reset`/`barrier`, and symbolic
     `input float` parameters
   - Symbolic parameters are stored as `Instruction::param_exprs` and resolved
@@ -186,6 +197,10 @@ Behavior:
 - `to_json()` and `from_json()` provide a minimal, zero-dependency format
 - Gate strings are stored using `gate_name()`; custom unitaries include matrix
 - Conditioning metadata is serialized when present
+- `MCX` / `MCP` / `PERMUTATION` round-trip natively (the `permutation`
+  basis-index map is a first-class JSON field); JSON is the lossless
+  structural format for these ops, whereas QASM 3 lowers `PERMUTATION` to
+  gates at export
 
 ### Visualisation
 

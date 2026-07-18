@@ -4,6 +4,68 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.18.0] - 2026-07-18
+
+Feature release: the first-class `MCX` / `MCP` / `PERMUTATION` instructions
+become representable in QASM 3, JSON, and the transpiler (previously every
+affected path failed loud). Closes #52. Also ships the first increment of the
+CI track (#62).
+
+### Added
+
+- Exact gate-level lowering core for the three structured ops (internal,
+  shared by the transpiler pass and the exporters): `MCP` via the
+  Barenco-style lambda/2 recursion; `MCX` with k >= 3 controls via an
+  H-conjugated multi-controlled phase with borrowed-wire halving (k <= 2
+  stays X / CX / CCX); `PERMUTATION` via a SWAP network when the basis map
+  is a pure wire relabeling and via exact transposition synthesis
+  (CX-fan-conjugated pattern-controlled MCX) for general maps. All
+  constructions are ancilla-free, algebraically exact, and propagate
+  classical conditions onto every emitted gate.
+- `HighLevelDecompose` transpiler pass (stage 0, ahead of layout/routing).
+  Preset pipelines compose it at every optimization level exactly when the
+  lowering is required: a constrained coupling map or a non-empty
+  `basis_gates` list. Unconstrained, basis-free transpiles keep the ops
+  native for the backends; compose the pass manually for unconditional
+  lowering.
+- QASM 3 export: `MCX` emits `ctrl(k) @ x`, `MCP` emits `ctrl(m-1) @ p`
+  (degenerate forms fall back to `x` / `p`); `PERMUTATION` is always lowered
+  at export (QASM 3 has no permutation primitive). The QASM 3 parser now
+  accepts the `ctrl(n) @` counted-modifier form (composing with bare
+  `ctrl @`) and resolves wide control stacks to first-class instructions
+  instead of dense fallback matrices: `ctrl^k @ x -> MCX` (k >= 3),
+  `ctrl^k @ p -> MCP` (k >= 2, `inv` / `pow` folded into the angle).
+- QASM 2 export: new `QasmExportOptions` parameter on `to_qasm2()`. Default
+  behaviour is unchanged (the three ops throw: OpenQASM 2.0 has no faithful
+  encoding); setting `decompose_unrepresentable` lowers them to standard
+  gates at export time without modifying the circuit.
+- JSON: lossless round-trip for all three ops. The `permutation` basis-index
+  map is a first-class field, and `mcx` / `mcp` / `permutation` reverse-map
+  entries restore the exact instruction types on import.
+- GitHub Actions CI (first increment): build + test matrix
+  `[GCC 13, Clang 18] x [Debug, Release]` on Ubuntu 24.04 with a dependency
+  cache, running the full suite; README status badge added. Later increments
+  (more platforms, coverage, lint, release automation) tracked in #62.
+
+### Changed
+
+- `preset_pass_manager` now consumes its coupling-map argument (previously
+  composition ignored it): together with `basis_gates` it decides the
+  stage-0 composition above.
+- `BasisTranslator` error hints for the three ops now point at
+  `HighLevelDecompose`; in preset pipelines the ops no longer reach the
+  translator at all.
+- Docs: QASM, transpiler, circuit, and gates pages updated for the new
+  behaviour; project docs no longer carry release-number annotations.
+
+### Results
+
+- 1944 tests across 158 suites, 1941 passed (22.4 s, WSL/Clang). The 3
+  failures pin contracts this release deliberately changed (export /
+  serialisation throws for the three ops, preset stage composition, and
+  translator reachability); those tests are updated in the R.1.18.1 test
+  release alongside its new suites.
+
 ## [R.1.17.2] - 2026-07-18
 
 Patch release fixing uncompilable LaTeX circuit drawings.

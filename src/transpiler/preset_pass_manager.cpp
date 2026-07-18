@@ -5,6 +5,15 @@
 //
 // Preset levels compose per STAGE (non-cumulative) since R.1.15.0:
 //
+//   stage 0  high-level decomposition (R.1.18.0)
+//                               HighLevelDecompose, composed at EVERY level
+//                               iff the target needs it: constrained coupling
+//                               map (routing handles at most 3q gates) OR
+//                               non-empty basis_gates (the equivalence library
+//                               cannot reach MCX/MCP/PERMUTATION). With
+//                               neither, the ops stay native for the backends
+//                               (lowering would only pessimize) — compose the
+//                               pass manually for unconditional lowering.
 //   stage 1  layout + routing   L0/L1: TrivialLayout → SabreSwap
 //                               L2/L3: SabreLayout → SabreSwap
 //   stage 2  optimisation       L0: none
@@ -72,15 +81,16 @@ DAGCircuit PassManager::run(const DAGCircuit& dag, const TranspilationContext& c
 
 PassManager preset_pass_manager(
     int optimization_level,
-    const CouplingMap& /*coupling_map*/,
+    const CouplingMap& coupling_map,
     const std::vector<std::string>& basis_gates
 ) {
-    // The coupling map is intentionally not consumed here: pass COMPOSITION
-    // does not depend on it (every composed pass reads it from the
-    // TranspilationContext handed to run()). basis_gates IS consumed since
-    // R.1.15.0: it decides whether the translation stage is composed.
-    // transpile() passes the same vector into both this function and the
-    // context, so composition and execution always agree.
+    // Since R.1.18.0 the coupling map IS consumed here (before that it was
+    // intentionally unused): together with basis_gates it decides whether the
+    // stage-0 HighLevelDecompose pass is composed. basis_gates additionally
+    // decides the translation stage (R.1.15.0). Every composed pass still
+    // reads both from the TranspilationContext handed to run(); transpile()
+    // passes the same values into this function and the context, so
+    // composition and execution always agree.
     if (optimization_level < 0 || optimization_level > 3) {
         // Fail loud: level -1 previously returned an EMPTY manager (silent
         // identity transpile) and level >= 4 silently behaved as level 3.
@@ -91,6 +101,11 @@ PassManager preset_pass_manager(
     }
 
     PassManager pm;
+
+    // ---- Stage 0: high-level decomposition (composition rule in header) ----
+    if (coupling_map.n_physical_qubits > 0 || !basis_gates.empty()) {
+        pm.append(std::make_unique<HighLevelDecompose>());
+    }
 
     // ---- Stage 1: layout + routing (one layout choice, one routing pass) ---
     if (optimization_level <= 1) {

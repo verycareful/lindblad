@@ -396,8 +396,12 @@ Backend support: native in the statevector and density-matrix backends. The MPS
 backend reduces `MCX` with `<= 2` controls to X/CX/CCX natively; wider MCX and
 MCP/PERMUTATION take the bounded statevector fallback (`to_statevector` ->
 apply -> `mps_from_sv`, same as a 3+ qubit UNITARY, capped at
-`MPS_SV_MAX_QUBITS`). QASM/JSON export and transpiler decomposition of these ops
-are not yet implemented and fail loud (decompose before export/routing).
+`MPS_SV_MAX_QUBITS`). Peripheral tooling: QASM 3 export emits `ctrl(k) @`
+forms and lowers `PERMUTATION` to gates; QASM 2 export throws unless
+`QasmExportOptions::decompose_unrepresentable` is set; JSON round-trips all
+three natively; the stage-0 `HighLevelDecompose` transpiler pass lowers them
+for routing and basis translation (see the [QASM](qasm.md) and
+[Transpiler](transpiler.md) pages).
 
 ## Performance Optimizations
 

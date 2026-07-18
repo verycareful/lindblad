@@ -7,6 +7,8 @@
 #include "visualisation/render_latex.hpp"
 #include "visualisation/render_html.hpp"
 
+#include "transpiler/high_level_decompose.hpp"
+
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -1145,7 +1147,7 @@ int QuantumCircuit::num_parameters() const {
 // QASM Export (basic QASM 2.0)
 // =============================================================================
 
-std::string QuantumCircuit::to_qasm2() const {
+std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
     std::ostringstream oss;
     oss << "OPENQASM 2.0;\n";
     oss << "include \"qelib1.inc\";\n";
@@ -1154,12 +1156,38 @@ std::string QuantumCircuit::to_qasm2() const {
         oss << "creg c[" << n_clbits << "];\n";
     }
 
+    // R.1.18.0: opt-in export-time lowering of MCX/MCP/PERMUTATION. The
+    // lowered alphabet ({X, H, P, CP, CX, CCX, SWAP}) is fully covered by the
+    // generic emission paths below, so pre-expanding the instruction list is
+    // all that is needed. The circuit object itself is never modified.
+    std::vector<Instruction> expanded;
+    const std::vector<Instruction>* insts = &instructions;
+    if (opts.decompose_unrepresentable) {
+        bool any = false;
+        for (const auto& inst : instructions) {
+            if (hld::is_high_level(inst)) { any = true; break; }
+        }
+        if (any) {
+            for (const auto& inst : instructions) {
+                if (hld::is_high_level(inst)) {
+                    std::vector<Instruction> low = hld::lower_fully(inst);
+                    expanded.insert(expanded.end(),
+                                    std::make_move_iterator(low.begin()),
+                                    std::make_move_iterator(low.end()));
+                } else {
+                    expanded.push_back(inst);
+                }
+            }
+            insts = &expanded;
+        }
+    }
+
     // Emit custom gate block definitions for multi-qubit UNITARYs.
     // Each unique label gets one definition; the body uses cx q0,q1 so the
     // gate call inlines to exactly one instruction on round-trip.
     {
         std::set<std::string> emitted_gate_defs;
-        for (const auto& inst : instructions) {
+        for (const auto& inst : *insts) {
             if (inst.type == Instruction::GateType::UNITARY && inst.qubits.size() >= 2) {
                 std::string gdef_name = inst.gate_name();
                 if (emitted_gate_defs.insert(gdef_name).second) {
@@ -1172,7 +1200,7 @@ std::string QuantumCircuit::to_qasm2() const {
         }
     }
 
-    for (const auto& inst : instructions) {
+    for (const auto& inst : *insts) {
         std::string gname = inst.gate_name();
 
         if (inst.type == Instruction::GateType::BARRIER) {
@@ -1195,15 +1223,17 @@ std::string QuantumCircuit::to_qasm2() const {
             continue;
         }
 
-        // MCX/MCP/PERMUTATION have no faithful qelib1 representation (the
-        // permutation map in particular cannot be encoded); refuse rather than
-        // emit silently-wrong QASM. Decompose to 1/2-qubit gates before export.
+        // MCX/MCP/PERMUTATION have no faithful qelib1 representation (QASM 2
+        // has no gate modifiers and no permutation encoding); refuse rather
+        // than emit silently-wrong QASM. Reachable only on the default path:
+        // decompose_unrepresentable pre-expanded these above.
         if (inst.type == Instruction::GateType::MCX ||
             inst.type == Instruction::GateType::MCP ||
             inst.type == Instruction::GateType::PERMUTATION) {
             throw std::runtime_error(
                 "to_qasm2: " + gname + " is not representable in OpenQASM 2.0; "
-                "decompose it to 1/2-qubit gates before export");
+                "set QasmExportOptions::decompose_unrepresentable to lower it "
+                "at export, or use to_qasm3()");
         }
 
         // 1-qubit UNITARY: Euler-angle decomposition → U(theta, phi, lambda).
@@ -1310,7 +1340,41 @@ std::string QuantumCircuit::to_qasm3() const {
         oss << "bit[" << n_clbits << "] c;\n";
     }
 
-    for (const auto& inst : instructions) {
+    // R.1.18.0: PERMUTATION has no QASM 3 primitive, so it is ALWAYS lowered
+    // at export — to SWAPs when the basis map is a pure wire relabeling, to an
+    // exact transposition synthesis otherwise. The one-level lowering keeps
+    // MCX nodes, which the loop below emits compactly via `ctrl @`. MCX / MCP
+    // themselves are representable and are NOT pre-expanded.
+    std::vector<Instruction> expanded;
+    const std::vector<Instruction>* insts = &instructions;
+    {
+        bool any_perm = false;
+        for (const auto& inst : instructions) {
+            if (inst.type == Instruction::GateType::PERMUTATION) { any_perm = true; break; }
+        }
+        if (any_perm) {
+            for (const auto& inst : instructions) {
+                if (inst.type == Instruction::GateType::PERMUTATION) {
+                    std::vector<Instruction> low =
+                        hld::lower_permutation(inst.permutation, inst.qubits);
+                    if (inst.condition_clbit >= 0) {
+                        for (Instruction& g : low) {
+                            g.condition_clbit = inst.condition_clbit;
+                            g.condition_value = inst.condition_value;
+                        }
+                    }
+                    expanded.insert(expanded.end(),
+                                    std::make_move_iterator(low.begin()),
+                                    std::make_move_iterator(low.end()));
+                } else {
+                    expanded.push_back(inst);
+                }
+            }
+            insts = &expanded;
+        }
+    }
+
+    for (const auto& inst : *insts) {
         std::string gname = inst.gate_name();
 
         if (inst.type == Instruction::GateType::BARRIER) {
@@ -1333,14 +1397,43 @@ std::string QuantumCircuit::to_qasm3() const {
             continue;
         }
 
-        // MCX/MCP/PERMUTATION are not yet lowered to QASM 3 (`ctrl @` / a
-        // permutation encoding); refuse rather than emit an unknown gate call.
-        if (inst.type == Instruction::GateType::MCX ||
-            inst.type == Instruction::GateType::MCP ||
-            inst.type == Instruction::GateType::PERMUTATION) {
-            throw std::runtime_error(
-                "to_qasm3: " + gname + " is not yet representable in OpenQASM 3.0; "
-                "decompose it to 1/2-qubit gates before export");
+        // MCX: `ctrl(k) @ x` with the controls listed first, matching the
+        // instruction's [controls..., target] operand order. Round-trip: the
+        // parser's ctrl-stack fast path restores MCX for k ≥ 3; k ≤ 2
+        // canonicalises to the named cx / ccx forms (identical unitaries).
+        // A control-free mcx degenerates to a plain x.
+        if (inst.type == Instruction::GateType::MCX) {
+            const size_t k = inst.qubits.size() - 1;
+            if (k == 0) {
+                oss << "x q[" << inst.qubits[0] << "];\n";
+                continue;
+            }
+            oss << "ctrl(" << k << ") @ x";
+            for (size_t i = 0; i < inst.qubits.size(); ++i) {
+                oss << (i == 0 ? " " : ", ") << "q[" << inst.qubits[i] << "]";
+            }
+            oss << ";\n";
+            continue;
+        }
+
+        // MCP: the phase lands on the all-ones subspace, so any operand can
+        // serve as the modifier's base target; the last one is chosen. A
+        // single-qubit MCP degenerates to a plain p(λ).
+        if (inst.type == Instruction::GateType::MCP) {
+            const double lambda = inst.params.empty() ? 0.0 : inst.params[0];
+            const size_t m = inst.qubits.size();
+            if (m == 1) {
+                oss << "p(" << std::setprecision(15) << lambda << ") q["
+                    << inst.qubits[0] << "];\n";
+                continue;
+            }
+            oss << "ctrl(" << (m - 1) << ") @ p("
+                << std::setprecision(15) << lambda << ")";
+            for (size_t i = 0; i < m; ++i) {
+                oss << (i == 0 ? " " : ", ") << "q[" << inst.qubits[i] << "]";
+            }
+            oss << ";\n";
+            continue;
         }
 
         // 1-qubit UNITARY: Euler-angle decomposition + lossless global phase
@@ -1453,6 +1546,7 @@ static Instruction::GateType str_to_gate_type(const std::string& s) {
         {"ccx", GT::CCX}, {"ccz", GT::CCZ}, {"cswap", GT::CSWAP}, {"rccx", GT::RCCX},
         {"measure", GT::MEASURE}, {"reset", GT::RESET}, {"barrier", GT::BARRIER},
         {"unitary", GT::UNITARY},
+        {"mcx", GT::MCX}, {"mcp", GT::MCP}, {"permutation", GT::PERMUTATION},
         {"param_rx", GT::PARAM_RX}, {"param_ry", GT::PARAM_RY},
         {"param_rz", GT::PARAM_RZ}, {"param_p", GT::PARAM_P}, {"param_u", GT::PARAM_U}
     };
@@ -1471,17 +1565,6 @@ std::string QuantumCircuit::to_json() const {
                 "QuantumCircuit::to_json: instruction '" + inst.gate_name() +
                 "' carries unbound symbolic parameter expressions; call "
                 "bind_parameters() before serialising");
-        }
-        // The permutation index-map has no JSON field yet, and MCX/MCP would
-        // reverse-map to UNITARY on import (str_to_gate_type has no entry),
-        // silently corrupting the round-trip. Refuse until first-class support
-        // lands; decompose these before serialising.
-        if (inst.type == Instruction::GateType::MCX ||
-            inst.type == Instruction::GateType::MCP ||
-            inst.type == Instruction::GateType::PERMUTATION) {
-            throw std::runtime_error(
-                "QuantumCircuit::to_json: MCX/MCP/PERMUTATION serialisation is "
-                "not yet supported; decompose them before serialising");
         }
     }
 
@@ -1547,6 +1630,18 @@ std::string QuantumCircuit::to_json() const {
         // Label
         if (!inst.label.empty()) {
             o << ",\"label\":" << json_escape(inst.label);
+        }
+
+        // Permutation basis-index map (R.1.18.0): serialised natively so JSON
+        // is the lossless round-trip format for PERMUTATION (QASM 3 lowers it
+        // to gates at export instead).
+        if (inst.type == Instruction::GateType::PERMUTATION && !inst.permutation.empty()) {
+            o << ",\"permutation\":[";
+            for (size_t j = 0; j < inst.permutation.size(); ++j) {
+                if (j > 0) o << ",";
+                o << inst.permutation[j];
+            }
+            o << "]";
         }
 
         // Custom unitary matrix
@@ -1735,6 +1830,13 @@ QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
                         r.expect(']');
                     } else if (ikey == "label") {
                         inst.label = r.read_string();
+                    } else if (ikey == "permutation") {
+                        r.expect('[');
+                        while (r.peek() != ']') {
+                            if (r.peek() == ',') r.next();
+                            inst.permutation.push_back(r.read_int());
+                        }
+                        r.expect(']');
                     } else if (ikey == "matrix") {
                         // Accumulate into a local vector, then assign once:
                         // Instruction::matrix is copy-on-write (immutable), so

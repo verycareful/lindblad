@@ -59,6 +59,28 @@ public:
     virtual ~TranspilationPass() = default;
 };
 
+// High-level decomposition (R.1.18.0) — pre-routing stage-0 pass.
+//
+// Lowers the three high-level instructions to routable, translatable gates:
+// MCX / MCP to { X, H, P, CP, CX, CCX } (ancilla-free, exact) and PERMUTATION
+// to a SWAP network when the basis map is a pure wire relabeling, otherwise to
+// an exact transposition synthesis. Classical conditions are propagated onto
+// every emitted gate. Instructions other than the three pass through
+// unchanged; a circuit containing none of them is returned as-is.
+//
+// Composition rule (preset pipelines): composed only when the transpile
+// target actually requires the lowering — a constrained coupling map (routing
+// handles at most 3-qubit gates) or a non-empty basis_gates list (the
+// equivalence library cannot reach the three ops). An unconstrained,
+// basis-free transpile() keeps them native: the backends execute MCX / MCP /
+// PERMUTATION directly, and unconditional lowering would only pessimize.
+// Compose the pass manually for unconditional lowering.
+class HighLevelDecompose : public TranspilationPass {
+public:
+    DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const override;
+    std::string name() const override { return "HighLevelDecompose"; }
+};
+
 // Layout passes
 //
 // Shared output invariant (R.1.15.0): when a coupling map is present, both
@@ -99,9 +121,10 @@ public:
 // Basis translation — decompose gates into ctx.basis_gates (default: cx+u3).
 // The output is VERIFIED (R.1.15.0): every returned gate is in the target
 // basis, or std::invalid_argument is thrown naming the offending gate.
-// Gates without a decomposition path (MCX/MCP/PERMUTATION until their
-// lowering ships, UNITARY, unbound PARAM_* gates) previously passed through
-// silently. Classical conditions are propagated onto every emitted gate.
+// Gates without a decomposition path (MCX/MCP/PERMUTATION when the stage-0
+// HighLevelDecompose pass was not run first, UNITARY, unbound PARAM_* gates)
+// previously passed through silently. Classical conditions are propagated
+// onto every emitted gate.
 class BasisTranslator : public TranspilationPass {
 public:
     DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const override;

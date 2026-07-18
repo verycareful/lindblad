@@ -19,11 +19,18 @@ surface stays minimal.
 The four methods are part of the `QuantumCircuit` class:
 
 ```cpp
-std::string to_qasm2() const;
+std::string to_qasm2(const QasmExportOptions& opts = {}) const;
 std::string to_qasm3() const;
 static QuantumCircuit from_qasm2(const std::string& qasm);
 static QuantumCircuit from_qasm3(const std::string& qasm);
 ```
+
+`QasmExportOptions` carries one knob:
+
+- `decompose_unrepresentable` (default `false`) — when set, `to_qasm2()`
+  lowers `MCX` / `MCP` / `PERMUTATION` to standard gates at export time via
+  the shared exact decompositions instead of throwing. The circuit object is
+  never modified; only the emitted text is decomposed.
 
 ## QASM 2.0 Round-Trip
 
@@ -35,6 +42,14 @@ static QuantumCircuit from_qasm3(const std::string& qasm);
 - `UNITARY` and `PARAM_*` instructions are rendered as `gate '<label>' omitted`
   comments because QASM 2.0 has no native representation for them; the output
   remains valid QASM 2.0
+- `MCX` / `MCP` / `PERMUTATION` throw `std::runtime_error` by default: QASM 2.0
+  has no gate modifiers and no permutation encoding, so no faithful
+  representation exists. Setting `QasmExportOptions::decompose_unrepresentable`
+  lowers them at export instead (`MCX` / `MCP` to `X`/`H`/`P`/`CP`/`CX`/`CCX`,
+  `PERMUTATION` to SWAPs for wire relabelings and exact transposition networks
+  for general basis maps). General maps emit one multi-controlled network per
+  displaced basis state, so the output can be large — inherent to the format,
+  not an approximation
 
 ### Import — `from_qasm2()`
 
@@ -77,6 +92,18 @@ static QuantumCircuit from_qasm3(const std::string& qasm);
 - Each gate becomes `name(params)? q[i] (, q[j])* ;`
 - Measurements are emitted in the `c[i] = measure q[j];` form
 - `barrier` and `reset` are emitted with their natural syntax
+- `MCX` emits natively as `ctrl(k) @ x q[c0], …, q[t];` (controls first,
+  matching the instruction's operand order; a control-free `mcx` degenerates
+  to `x`). `MCP` emits as `ctrl(m-1) @ p(λ)` over its m operands (the phase is
+  symmetric, so the last operand serves as the base target; `m == 1`
+  degenerates to `p(λ)`). Round-trip: the parser restores `MCX` for `k ≥ 3`
+  and `MCP` for `m ≥ 3`; smaller stacks canonicalise to the named
+  `cx` / `ccx` / `cp` forms (identical unitaries)
+- `PERMUTATION` has no QASM 3 primitive and is ALWAYS lowered at export:
+  wire-relabeling maps become at most k−1 `swap`s; general basis maps lower
+  by exact transposition synthesis whose multi-controlled steps are emitted
+  compactly via `ctrl(k) @ x`. Re-import yields the lowered gate sequence,
+  not a `PERMUTATION` node — use JSON for the lossless structural round-trip
 
 ### Import — `from_qasm3()`
 
@@ -109,8 +136,10 @@ Qiskit-exportable subset of QASM 3.
 
 - Multiple named registers: `qubit[N] name;`, `bit[N] name;`. Legacy
   `qreg name[N];` and `creg name[N];` are also accepted
-- Gate modifiers — `ctrl @`, `inv @`, `pow(n) @` — with arbitrary chaining
-  before the base gate name
+- Gate modifiers — `ctrl @`, `ctrl(n) @`, `inv @`, `pow(n) @` — with
+  arbitrary chaining before the base gate name. Both spec forms of the
+  control modifier are accepted and compose: bare `ctrl @` adds one control,
+  `ctrl(n) @` adds n (n ≥ 1; zero or negative counts throw)
 - The full `stdgates.inc` library plus QASM 3 native names (`U`, `CX`,
   `phase`, `cphase`, `toffoli`, `fredkin`, …)
 - User-defined gates: `gate name(params) qargs { body }`. Bodies are stored
@@ -140,6 +169,11 @@ Named fast paths:
 - `ctrl @ ctrl @ x → ccx`, `ctrl @ ctrl @ z → ccz`
 - `ctrl @ rx(θ) → crx(θ)`, `ctrl @ ry(θ) → cry(θ)`, `ctrl @ rz(θ) → crz(θ)`,
   `ctrl @ p(λ) → cp(λ)`
+- Wide control stacks resolve to the first-class multi-controlled
+  instructions instead of the dense matrix fallback: `ctrl^k @ x → MCX` for
+  `k ≥ 3` (`inv` is free — X is self-inverse — and `pow` folds by parity),
+  `ctrl^k @ p(λ) → MCP` for `k ≥ 2` (`inv` negates λ, `pow(n)` scales it).
+  The count form composes: `ctrl(2) @ ctrl @ x` is a 3-control stack
 - `inv @ s → sdg`, `inv @ sdg → s`, similarly `t ↔ tdg`, `sx ↔ sxdg`
 - `inv @ <self-inverse> → <self-inverse>` (H, X, Y, Z, CX, CZ, SWAP, …)
 - `inv @ rx(θ) → rx(-θ)`, `inv @ ry(θ) → ry(-θ)`, `inv @ rz(θ) → rz(-θ)`
