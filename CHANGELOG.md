@@ -6,7 +6,25 @@ The format is based on Keep a Changelog and this project uses semantic versionin
 
 ## [R.1.17.2] - 2026-07-18
 
-<!-- TODO: document substantive changes (Added / Changed / Fixed). Do NOT log routine version-string bumps. -->
+Patch release fixing uncompilable LaTeX circuit drawings.
+
+### Fixed
+
+- LaTeX (Quantikz) circuit drawings now compile under pdflatex. The pretty
+  parameter formatter emits the UTF-8 glyphs pi (U+03C0) and middle dot
+  (U+00B7); the LaTeX renderer previously wrapped those raw bytes in
+  `\text{...}`, which pdflatex rejects ("Unicode character not set up for use
+  with LaTeX"). The renderer now translates the known glyphs to math-mode
+  control sequences (pi -> `\pi`, middle dot -> `\cdot`, dagger U+2020 ->
+  `^\dagger`) and emits them in math mode. Pure-ASCII parameter suffixes (the
+  raw `%.4f` format) keep the prior `\text{...}` path, so their output is
+  unchanged; the ASCII, SVG, and HTML renderers keep the literal glyph. A
+  regression suite asserts `\pi` / `\cdot` appear and that no raw non-ASCII
+  byte survives in the LaTeX output. Closes #65.
+
+### Results
+
+- 1944 tests across 158 suites, all passed (23.6 s, WSL/Clang).
 
 ## [R.1.17.1] - 2026-07-18
 
