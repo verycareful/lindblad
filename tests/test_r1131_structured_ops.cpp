@@ -2,7 +2,9 @@
 // Covers the R.1.13.0 feature (audit F-7 / F-9): the MCX / MCP / PERMUTATION
 // instruction family and its native (statevector, density-matrix) and
 // fallback (MPS) execution, plus the circuit-level builders, inverse(),
-// control(), gate_name, and the loud-throw export contract.
+// control(), gate_name, and the export contract (updated when the ops became
+// representable: QASM 2 throws by default with an explicit opt-out, QASM 3
+// and JSON succeed; see the R1181 suites for the deep coverage).
 //
 // Reference strategy: every structured op is compared against an independent,
 // hand-written brute-force reference over an arbitrary NON-symmetric input
@@ -387,30 +389,38 @@ TEST(R1131StructuredOps, ControlOfMcxEqualsCcx) {
 }
 
 // =============================================================================
-// Export contract: MCX/MCP/PERMUTATION are not yet representable and MUST throw
-// (loud failure) rather than emit a wrong or silent-dropped serialisation.
+// Export contract (updated for the MCX/MCP/PERMUTATION representability
+// feature): QASM 2 still throws by DEFAULT (no faithful encoding exists) but
+// lowers on the explicit opt-out; QASM 3 and JSON now succeed. Deep coverage
+// of the new behaviour lives in the R1181Export suite; this pin holds the
+// contract shape.
 // =============================================================================
 
-TEST(R1131StructuredOps, QasmAndJsonExportThrow) {
+TEST(R1131StructuredOps, QasmAndJsonExportContract) {
+    QasmExportOptions decompose;
+    decompose.decompose_unrepresentable = true;
     {
         QuantumCircuit qc(3);
         qc.mcx({0, 1}, 2);
         EXPECT_THROW(qc.to_qasm2(), std::runtime_error);
-        EXPECT_THROW(qc.to_qasm3(), std::runtime_error);
-        EXPECT_THROW(qc.to_json(), std::runtime_error);
+        EXPECT_NO_THROW(qc.to_qasm2(decompose));
+        EXPECT_NO_THROW(qc.to_qasm3());
+        EXPECT_NO_THROW(qc.to_json());
     }
     {
         QuantumCircuit qc(2);
         qc.mcp(0.5, {0, 1});
         EXPECT_THROW(qc.to_qasm2(), std::runtime_error);
-        EXPECT_THROW(qc.to_qasm3(), std::runtime_error);
-        EXPECT_THROW(qc.to_json(), std::runtime_error);
+        EXPECT_NO_THROW(qc.to_qasm2(decompose));
+        EXPECT_NO_THROW(qc.to_qasm3());
+        EXPECT_NO_THROW(qc.to_json());
     }
     {
         QuantumCircuit qc(2);
         qc.permute({1, 0, 3, 2}, {0, 1});
         EXPECT_THROW(qc.to_qasm2(), std::runtime_error);
-        EXPECT_THROW(qc.to_qasm3(), std::runtime_error);
-        EXPECT_THROW(qc.to_json(), std::runtime_error);
+        EXPECT_NO_THROW(qc.to_qasm2(decompose));
+        EXPECT_NO_THROW(qc.to_qasm3());
+        EXPECT_NO_THROW(qc.to_json());
     }
 }

@@ -13,16 +13,20 @@
 //     every convention bug);
 //   - preset composition is per-stage: exactly one routing pass at every
 //     level, SabreLayout first at level >= 2, BasisTranslator last iff
-//     basis_gates is non-empty; levels outside 0..3 throw;
+//     basis_gates is non-empty; levels outside 0..3 throw. Updated when the
+//     stage-0 HighLevelDecompose pass shipped: it leads the pipeline iff the
+//     coupling map is constrained or a basis is requested, and is absent
+//     otherwise (structured ops stay native);
 //   - unroutable input throws (never hangs), from the LAYOUT stage at
 //     level >= 2 and from routing at level <= 1;
 //   - initial_layout is validated (range/duplicates/size) and a partial
 //     layout is completed deterministically;
 //   - with a non-empty basis the output contains ONLY basis gates or the
-//     translator throws naming the gate (MCX / UNITARY / unbound PARAM_*,
-//     cx+u3-unreachable bases); u/u3 alias emission follows the basis;
-//     classical conditions survive decomposition, structurally and
-//     behaviourally.
+//     translator throws naming the gate (UNITARY / unbound PARAM_*,
+//     cx+u3-unreachable bases; MCX now lowers via stage-0 in presets and
+//     throws only when the translator is driven directly without it);
+//     u/u3 alias emission follows the basis; classical conditions survive
+//     decomposition, structurally and behaviourally.
 //
 // Deliberate choice: no hardcoded golden SWAP counts. The pipeline is
 // deterministic, so determinism is asserted by running twice and requiring
@@ -405,38 +409,60 @@ TEST(R1151Determinism, TranspileDeterministicAcrossLevelsAndMaps) {
 // =============================================================================
 
 TEST(R1151Presets, StageTableCompositionPinned) {
+    // Updated when the stage-0 HighLevelDecompose pass shipped: with a
+    // CONSTRAINED coupling map (or a non-empty basis) it is composed FIRST at
+    // every level; with neither it is absent (the structured ops stay native
+    // for the backends). Layout/routing/translation pins are unchanged
+    // otherwise.
+    auto count_named = [](const PassManager& pm, const std::string& name) {
+        int n = 0;
+        for (const auto& p : pm.passes) n += (p->name() == name) ? 1 : 0;
+        return n;
+    };
+
     auto cm = CouplingMap::linear(4);
     for (int level = 0; level <= 3; ++level) {
         SCOPED_TRACE("level " + std::to_string(level));
         auto pm = preset_pass_manager(level, cm, {});
-        ASSERT_GE(pm.passes.size(), 2u);
+        ASSERT_GE(pm.passes.size(), 3u);
 
-        // Layout slot: Trivial at 0-1, SABRE at 2-3; routing follows.
+        // Stage 0 first (constrained map), then layout, then routing.
         const std::string expected_layout =
             (level <= 1) ? "TrivialLayout" : "SabreLayout";
-        EXPECT_EQ(pm.passes[0]->name(), expected_layout);
-        EXPECT_EQ(pm.passes[1]->name(), "SabreSwap");
+        EXPECT_EQ(pm.passes[0]->name(), "HighLevelDecompose");
+        EXPECT_EQ(pm.passes[1]->name(), expected_layout);
+        EXPECT_EQ(pm.passes[2]->name(), "SabreSwap");
 
-        // Exactly ONE routing pass per level (the cumulative composition ran
-        // TrivialLayout+SabreSwap in front of SabreLayout at level >= 2).
-        int routing_passes = 0, layout_passes = 0, translators = 0;
-        for (const auto& p : pm.passes) {
-            const auto n = p->name();
-            routing_passes += (n == "SabreSwap") ? 1 : 0;
-            layout_passes += (n == "TrivialLayout" || n == "SabreLayout") ? 1 : 0;
-            translators += (n == "BasisTranslator") ? 1 : 0;
-        }
-        EXPECT_EQ(routing_passes, 1) << "one routing pass per level";
-        EXPECT_EQ(layout_passes, 1) << "one layout choice per level";
-        EXPECT_EQ(translators, 0) << "no translator with empty basis_gates";
+        // Exactly ONE of each structural pass per level (the cumulative
+        // composition ran TrivialLayout+SabreSwap in front of SabreLayout at
+        // level >= 2).
+        EXPECT_EQ(count_named(pm, "SabreSwap"), 1) << "one routing pass";
+        EXPECT_EQ(count_named(pm, "TrivialLayout")
+                      + count_named(pm, "SabreLayout"), 1) << "one layout";
+        EXPECT_EQ(count_named(pm, "HighLevelDecompose"), 1) << "one stage-0";
+        EXPECT_EQ(count_named(pm, "BasisTranslator"), 0)
+            << "no translator with empty basis_gates";
 
         // With a basis, BasisTranslator exists and is the FINAL stage.
         auto pmb = preset_pass_manager(level, cm, {"cx", "u3"});
         ASSERT_FALSE(pmb.passes.empty());
         EXPECT_EQ(pmb.passes.back()->name(), "BasisTranslator");
-        int tb = 0;
-        for (const auto& p : pmb.passes) tb += (p->name() == "BasisTranslator");
-        EXPECT_EQ(tb, 1);
+        EXPECT_EQ(count_named(pmb, "BasisTranslator"), 1);
+        EXPECT_EQ(count_named(pmb, "HighLevelDecompose"), 1);
+
+        // Composition rule, negative half: unconstrained map + empty basis
+        // composes NO stage-0 pass and the layout choice leads.
+        auto pmu = preset_pass_manager(level, CouplingMap(), {});
+        ASSERT_FALSE(pmu.passes.empty());
+        EXPECT_EQ(count_named(pmu, "HighLevelDecompose"), 0);
+        EXPECT_EQ(pmu.passes[0]->name(), expected_layout);
+
+        // Composition rule, basis-only half: a basis alone (no coupling
+        // constraint) still requires the lowering for the translator.
+        auto pmub = preset_pass_manager(level, CouplingMap(), {"cx", "u3"});
+        EXPECT_EQ(count_named(pmub, "HighLevelDecompose"), 1);
+        EXPECT_EQ(pmub.passes[0]->name(), "HighLevelDecompose");
+        EXPECT_EQ(pmub.passes.back()->name(), "BasisTranslator");
     }
 }
 
@@ -603,16 +629,34 @@ TEST(R1151Basis, NativeGatesPassThrough) {
 TEST(R1151Basis, UntranslatableGatesThrowLoudlyAndNameTheGate) {
     const std::vector<std::string> basis = {"cx", "u3"};
 
-    {   // MCX has no lowering yet: must throw, naming the gate.
+    {   // MCX in a PRESET pipeline no longer reaches the translator: the
+        // stage-0 HighLevelDecompose pass (composed whenever a basis is
+        // requested) lowers it first, and the output honours the basis.
         QuantumCircuit qc(4);
         qc.mcx({0, 1, 2}, 3);
+        QuantumCircuit out;
+        ASSERT_NO_THROW(out = transpile(qc, CouplingMap(), basis, 1));
+        for (const auto& inst : out.instructions) {
+            const auto n = inst.gate_name();
+            EXPECT_TRUE(n == "cx" || n == "u3") << "non-basis gate: " << n;
+        }
+
+        // The TRANSLATOR ITSELF still fails loud, naming the gate, when a
+        // hand-built pipeline skips the stage-0 pass (the fail-loud pin this
+        // test has always held; only the reachable path moved).
         try {
-            transpile(qc, CouplingMap(), basis, 1);
-            FAIL() << "mcx under a non-empty basis must throw";
+            TranspilationContext ctx;
+            ctx.basis_gates = basis;
+            run_pass(BasisTranslator(), qc, ctx);
+            FAIL() << "mcx reaching the translator directly must throw";
         } catch (const std::invalid_argument& e) {
             EXPECT_NE(std::string(e.what()).find("mcx"), std::string::npos)
                 << e.what();
+            EXPECT_NE(std::string(e.what()).find("HighLevelDecompose"),
+                      std::string::npos)
+                << "hint must name the stage-0 pass: " << e.what();
         }
+
         // Empty basis == no translation stage: the same circuit transpiles.
         EXPECT_NO_THROW(transpile(qc, CouplingMap(), {}, 1));
     }

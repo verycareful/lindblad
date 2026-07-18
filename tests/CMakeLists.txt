@@ -167,6 +167,13 @@ set(LINDBLAD_TEST_SOURCES
     test_r1171_sv_fusion.cpp
     test_r1171_hw_info.cpp
     test_r1171_dm_superop.cpp
+    # R.1.18.1 test suite — MCX/MCP/PERMUTATION representability: exact
+    # lowering vs brute-force references (incl. Shor-style modular multiply
+    # and the non-symmetric integer-convention check), stage-0 preset
+    # composition rule, routed end-to-end + feedforward, QASM2 throw/opt-in,
+    # QASM3 ctrl(n) emission + wide-stack round-trip, lossless JSON.
+    test_r1181_structured_lowering.cpp
+    test_r1181_export_roundtrip.cpp
 )
 
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this

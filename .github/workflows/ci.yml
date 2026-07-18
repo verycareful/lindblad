@@ -1,0 +1,62 @@
+# Core CI matrix: [GCC 13, Clang 18] x [Debug, Release] on Ubuntu 24.04.
+# Mirrors the README's standard build settings; every dependency is fetched
+# by CMake (FetchContent), so the runner only needs compilers + ninja.
+# Later increments (tracked in the CI issue): Windows/macOS runners, a gcovr
+# coverage artifact, a clang-format + clang-tidy gate, release automation.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    name: ${{ matrix.compiler }} ${{ matrix.build_type }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc-13, clang-18]
+        build_type: [Debug, Release]
+        include:
+          - compiler: gcc-13
+            cxx: g++-13
+            cxx_flags: ""
+          - compiler: clang-18
+            cxx: clang++-18
+            # Clang-only diagnostic knob from the standard build settings;
+            # GCC has no such flag, so it is scoped to the clang jobs.
+            cxx_flags: "-Wno-nan-infinity-disabled"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build g++-13 clang-18
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}"
+          -DLINDBLAD_MARCH_NATIVE=ON
+          -DLINDBLAD_BUILD_PYTHON=OFF
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

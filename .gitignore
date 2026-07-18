@@ -36,7 +36,11 @@ outputs/
 Audit docs/
 docs/plans
 docs/superpowers/
-.github/
+# GitHub Actions workflows are public CI; everything else under .github/
+# (e.g. local tooling hooks) stays maintainer-local. Directory ignores cannot
+# be re-included below (same trap as /tools/), hence .github/* + negation.
+.github/*
+!.github/workflows/
 local/
 
 # Claude

@@ -4,6 +4,69 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.18.1] - 2026-07-18
+
+Test-suite release covering the R.1.18.0 MCX / MCP / PERMUTATION
+representability feature (`.1` slot: tests only, no feature or fix code in
+the library). Every lowered realization is checked against an independent
+brute-force reference over an all-distinct, non-symmetric input state, so a
+convention bug (LSB ordering, control masks, permutation direction) cannot
+hide behind a symmetric test, and every lowered stream is alphabet-checked so
+a silently-unlowered op cannot pass by executing natively.
+
+### Fixed
+
+- The GitHub Actions CI workflow introduced in R.1.18.0 never reached the
+  repository: an overly broad ignore rule excluded the whole `.github/`
+  directory. The rule now excludes only maintainer-local content and the
+  workflow ships; the README status badge goes live with this release.
+
+### Tests
+
+- `tests/test_r1181_structured_lowering.cpp` — suite `R1181Lowering`
+  (17 tests): lowering vs reference for MCX with 0..6 controls and scrambled
+  non-contiguous wires; MCP over 1..6 qubits including negative angles;
+  PERMUTATION wire-relabel maps pinned to SWAP-only output (at most k-1),
+  general basis maps ({2,0,3,1}, a full-cycle increment, and a Shor-style
+  x -> 3x mod 16), each matched against the brute-force reference; the
+  mandatory non-symmetric integer-convention test (K = 5 -> increment ->
+  counts key `0110` through the full preset pipeline at every level); the
+  composition rule's negative half (unconstrained, basis-free transpiles
+  keep all three ops native at every level); the pass no-op path; routed
+  end-to-end MCX on a linear map; condition propagation onto every lowered
+  gate plus a behavioural feedforward check; and internal checks on the
+  relabel detector and the bijection validation throws.
+- `tests/test_r1181_export_roundtrip.cpp` — suite `R1181Export` (15 tests):
+  QASM 2 default-throw for all three ops with the opt-out named in the error,
+  opt-in decomposition round-tripping equivalently with no high-level names
+  in the text and the circuit object untouched; QASM 3 `ctrl(k) @` emission
+  forms with degenerate fallbacks; round-trip restoring first-class MCX
+  (k >= 3) and MCP (m >= 3) nodes; small-stack canonicalisation to
+  cx / ccx / cp; PERMUTATION always lowering at export (general and
+  relabel-SWAP cases); parser acceptance of the counted `ctrl(n) @` form,
+  its composition with bare `ctrl @`, `inv` / `pow` folding into wide
+  stacks, and rejection of `ctrl(0)`; JSON lossless round-trip of all three
+  ops including a byte-exact non-symmetric permutation map, and a corrupted
+  non-bijective imported map failing loud downstream.
+- Three pre-existing tests were updated to the contracts R.1.18.0
+  deliberately changed: the structured-op export pin (QASM 2 throws by
+  default and lowers on the opt-out; QASM 3 / JSON succeed), the preset
+  stage-composition pin (the stage-0 pass leads exactly when a constrained
+  coupling map or a basis is present, absent otherwise), and the
+  untranslatable-gates pin (preset pipelines now lower the three ops to the
+  basis; the translator itself still throws, naming the gate, when driven
+  directly without the stage-0 pass).
+
+### Results
+
+- 1976 tests across 160 suites, 1973 passed (21.5 s, WSL/Clang). The 3
+  failures are deliberate: they pin the routed end-to-end contract for the
+  lowered ops, which a newly-found transpiler bug breaks (the stage-0
+  lowering emits CCX, and routing can place a 3-qubit gate only when all its
+  wire pairs are adjacent — impossible on triangle-free coupling maps). The
+  bug is tracked for the next patch release; the tests stay red until it
+  ships.
+
 ## [R.1.18.0] - 2026-07-18
 
 Feature release: the first-class `MCX` / `MCP` / `PERMUTATION` instructions
