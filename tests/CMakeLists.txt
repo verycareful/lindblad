@@ -152,6 +152,21 @@ set(LINDBLAD_TEST_SOURCES
     # tier R1161QuditFrontier probes at/beyond the regime with print
     # verdicts (manifestation => port the R.1.16.0 hardening to qudit_mps).
     test_r1161_qudit_mps_stress.cpp
+    # R.1.17.1 test suite — R.1.17.0 performance-wave coverage through the
+    # PUBLIC API only (Options / run() / DensityMatrix methods; no internal is
+    # exposed). Statevector gate fusion: equivalence vs the unfused path under
+    # FORCED thresholds (auto never engages below 17 qubits on any machine),
+    # the LSB convention through the fused path, flush/strategy preservation
+    # (measure/reset/feedforward/structured-op passthrough), and the Options
+    # validation surface. hw::llc_bytes(): determinism, a cross-platform
+    # envelope (no hardcoded sizes), and the auto-threshold clamp arithmetic.
+    # Density-matrix channel superoperators: apply_kraus / apply_channel_superop
+    # against an independent per-operator reference (ρ' = Σ K ρ K†), the
+    # non-symmetric LSB-first convention, operator-count independence, and
+    # noisy run() seeded determinism.
+    test_r1171_sv_fusion.cpp
+    test_r1171_hw_info.cpp
+    test_r1171_dm_superop.cpp
 )
 
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this

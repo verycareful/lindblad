@@ -4,6 +4,55 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.17.1] - 2026-07-18
+
+Test-suite release covering the R.1.17.0 performance wave (`.1` slot: tests
+only, no feature or fix code). All three suites drive the PUBLIC surface only
+(`StatevectorSimulator::Options` / `run()` / `DensityMatrix` methods); the
+fusion pre-pass, the hardware auto engagement point, and the density-matrix
+superoperator builder are observed through behaviour, never exposed. Fused-path
+tests FORCE engagement (`fusion_threshold = 1`) so fusion is exercised at
+n = 3..10 rather than passing vacuously below the auto point, and bit-identity
+is used as the sharp detector of wrongful engagement.
+
+### Tests
+
+- `tests/test_r1171_sv_fusion.cpp` -- suite `R1171SvFusion` (19 tests):
+  fused-vs-unfused equivalence (per-amplitude 1e-12 + fidelity) on a dense
+  6-qubit circuit and across `fusion_max_qubit` {2..6}; disjoint, overlapping,
+  and explicit-`UNITARY`-member support growth; BIT-IDENTITY where it is the
+  contract (single-member blocks, `fusion_enable = false`, the >= 17 auto
+  floor at n = 10, and sub-threshold non-engagement); the LSB convention
+  through the fused path with non-symmetric values (K = 5 giving `amp[5]` and
+  the `"0101"` counts key, and a fused QFT/IQFT round trip peaking at m = 11);
+  flush and strategy preservation (terminal and feedforward seeded counts,
+  mid-circuit `RESET`, `MCX`/`MCP`/`PERMUTATION` passthrough, and the
+  shots == 0 single trajectory); the Options validation surface
+  (`fusion_max_qubit` outside [2, 6] and `fusion_threshold` < 0 yield an error
+  `Result`, not a throw to the caller); and `apply_instruction` being
+  unaffected by any Options fusion setting.
+- `tests/test_r1171_hw_info.cpp` -- suite `R1171HwInfo` (3 tests):
+  `hw::llc_bytes()` determinism and caching, a cross-platform plausibility
+  envelope (no hardcoded sizes; the detected value is printed for the CI log),
+  and the auto-threshold clamp arithmetic computed test-side (the implied
+  engagement point is >= 17 qubits at or above the 1 MiB floor, on any machine).
+- `tests/test_r1171_dm_superop.cpp` -- suite `R1171DmChannelSuperop`
+  (15 tests): `apply_kraus` and `apply_channel_superop` checked against an
+  INDEPENDENT per-operator reference (rho' = sum_k K_k rho K_k^dagger, built
+  from embed/matmul/dagger); the non-symmetric LSB convention (amplitude
+  damping on qubit 0 vs qubit 1); the k = 1 and k = 2 stride / bit-reversal
+  bridge (adjacent, non-adjacent, and top-qubit pairs); reversed-operand
+  asymmetry; trace and Hermiticity preservation across the CPTP channels;
+  empty-operator annihilation (pinning the current contract); the `RESET`
+  channel against an analytic endpoint; superoperator size validation; the
+  identity-superoperator no-op; operator-count independence of the fused
+  superoperator; and noisy `run()` seeded determinism on both the evolve-once
+  and per-shot execution paths.
+
+### Results
+
+- 1940 tests across 158 suites -- all passed (21.2 s, WSL/Clang).
+
 ## [R.1.17.0] - 2026-07-17
 
 Simulator performance wave (#50, #51): statevector gate fusion with a
