@@ -1,4 +1,4 @@
 \begin{quantikz}
-\lstick{$q_{0}$} & \gate[2]{RXX\text{(π/4)}} & \gate[2]{RYY\text{(π/6)}} & \gate[2]{ECR} \\
+\lstick{$q_{0}$} & \gate[2]{RXX(\pi /4)} & \gate[2]{RYY(\pi /6)} & \gate[2]{ECR} \\
 \lstick{$q_{1}$} & \qw & \qw & \qw 
 \end{quantikz}

@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.17.2] - 2026-07-18
+
+<!-- TODO: document substantive changes (Added / Changed / Fixed). Do NOT log routine version-string bumps. -->
+
 ## [R.1.17.1] - 2026-07-18
 
 Test-suite release covering the R.1.17.0 performance wave (`.1` slot: tests

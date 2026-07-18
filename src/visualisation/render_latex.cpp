@@ -22,9 +22,15 @@
 //   ResetPart          -> \push{\ket{0}}
 //   BarrierPart        -> \barrier[\dashed]{N} on the top barrier row
 //
-// Defensive escaping: gate labels containing characters that are not safe in
-// math mode (parens, commas, non-ASCII pi, dagger, etc.) get wrapped in
-// \text{...} so Quantikz does not silently mangle the output.
+// Defensive escaping: gate labels containing ASCII characters that are not
+// safe in math mode (parens, commas, etc.) get wrapped in \text{...} so
+// Quantikz does not silently mangle the output. Labels carrying the known
+// non-ASCII glyphs the formatter emits (UTF-8 pi, middle dot, dagger) are
+// NOT wrapped: their bytes are translated to math-mode control sequences
+// (\pi, \cdot, ^\dagger) and emitted in math mode, because a raw UTF-8
+// codepoint inside \text{...} fails to compile under pdflatex ("Unicode
+// character not set up for use with LaTeX"). The ASCII / SVG / HTML
+// renderers keep the literal glyph; only this LaTeX backend translates.
 
 #include "render_latex.hpp"
 
@@ -41,14 +47,13 @@ namespace lindblad::viz {
 
 namespace {
 
-// Decide whether a label needs \text{} wrapping for safety in math mode.
-// Math mode is safe for ASCII letters, digits, and certain punctuation; the
-// catalogue may produce labels with parens, commas, UTF-8 pi (0xCF 0x80), or
-// the dagger character (UTF-8 0xE2 0x80 0xA0). Wrap when in doubt.
+// Decide whether an all-ASCII label needs \text{} wrapping for safety in
+// math mode. Math mode is safe for ASCII letters, digits, and certain
+// punctuation; the catalogue may produce labels with parens, commas, or
+// arithmetic glyphs that read better upright. Callers gate this behind a
+// has_non_ascii() check, so only the ASCII case reaches here.
 bool label_needs_text_wrap(const std::string& s) {
     for (unsigned char c : s) {
-        // Anything non-ASCII => wrap.
-        if (c >= 128) { return true; }
         // Parens / comma / spaces / arithmetic glyphs => wrap.
         switch (c) {
             case '(': case ')': case ',': case ' ':
@@ -60,6 +65,48 @@ bool label_needs_text_wrap(const std::string& s) {
     return false;
 }
 
+// True when any byte is outside the 7-bit ASCII range. The formatter emits
+// exactly three non-ASCII glyphs (pi, middle dot, dagger); their presence is
+// the signal to translate to math-mode commands rather than \text{}-wrap.
+bool has_non_ascii(const std::string& s) {
+    for (unsigned char c : s) {
+        if (c >= 128) { return true; }
+    }
+    return false;
+}
+
+// Translate the known non-ASCII label glyphs to math-mode LaTeX control
+// sequences so the output compiles under pdflatex instead of leaking raw
+// UTF-8 bytes: U+03C0 pi -> \pi, U+00B7 middle dot -> \cdot, U+2020 dagger
+// -> ^\dagger. A trailing space terminates each control word (ignored in
+// math mode, so spacing is unaffected). Bytes that are not one of the three
+// recognised glyphs pass through unchanged.
+std::string mathify_glyphs(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size();) {
+        const unsigned char c0 = static_cast<unsigned char>(s[i]);
+        const unsigned char c1 = (i + 1 < s.size())
+                                   ? static_cast<unsigned char>(s[i + 1]) : 0;
+        const unsigned char c2 = (i + 2 < s.size())
+                                   ? static_cast<unsigned char>(s[i + 2]) : 0;
+        if (c0 == 0xCF && c1 == 0x80) {                 // U+03C0 GREEK SMALL PI
+            out += "\\pi ";
+            i += 2;
+        } else if (c0 == 0xC2 && c1 == 0xB7) {          // U+00B7 MIDDLE DOT
+            out += "\\cdot ";
+            i += 2;
+        } else if (c0 == 0xE2 && c1 == 0x80 && c2 == 0xA0) { // U+2020 DAGGER
+            out += "^\\dagger ";
+            i += 3;
+        } else {
+            out += s[i];
+            ++i;
+        }
+    }
+    return out;
+}
+
 // Render one BoxPart cell as a Quantikz token. The `rowspan` knob selects
 // between \gate{} and \gate[N]{} (Quantikz multi-wire syntax).
 //
@@ -68,10 +115,10 @@ bool label_needs_text_wrap(const std::string& s) {
 // first '(' if present, or the whole label otherwise) is replaced with the
 // override. This lets the LaTeX backend emit `R_X`, `S^{\dagger}`,
 // `\sqrt{X}` etc. as math-mode tokens while still appending the parameter
-// suffix verbatim. The suffix (everything from the first '(' onwards) is
-// rendered through \text{...} when it carries non-ASCII bytes (UTF-8 pi
-// from the pretty parameter formatter) so Quantikz does not interpret the
-// codepoint as a control sequence.
+// suffix. The suffix (everything from the first '(' onwards) carrying the
+// pretty formatter's non-ASCII glyphs (UTF-8 pi, middle dot) is translated
+// to math-mode commands (\pi, \cdot) and emitted in math mode, so the .tex
+// compiles under pdflatex; pure-ASCII suffixes fall back to \text{...}.
 std::string box_token(const BoxPart& p) {
     std::ostringstream out;
     if (p.rowspan > 1) {
@@ -90,22 +137,29 @@ std::string box_token(const BoxPart& p) {
                                  ? std::string{}
                                  : p.label.substr(paren);
 
-    // Stem: catalogue override wins, else label-as-math when safe, else
-    // \text{...} wrap. The override is always math-mode safe by
+    // Stem: catalogue override wins; else translate known glyphs to math
+    // commands when non-ASCII bytes are present; else \text{...}-wrap unsafe
+    // ASCII; else pass through. The override is always math-mode safe by
     // construction (catalogue authors keep it that way).
     if (!p.latex_macro.empty()) {
         out << p.latex_macro;
+    } else if (has_non_ascii(stem)) {
+        out << mathify_glyphs(stem);
     } else if (label_needs_text_wrap(stem)) {
         out << "\\text{" << stem << "}";
     } else {
         out << stem;
     }
 
-    // Param suffix: render through \text{...} when non-ASCII bytes are
-    // present (UTF-8 pi); pass through otherwise. Empty for gates without
-    // parameters.
+    // Param suffix: when non-ASCII bytes are present (UTF-8 pi / middle dot
+    // from the pretty formatter), translate them to math-mode commands and
+    // emit in math mode -- a raw codepoint inside \text{...} does not compile
+    // under pdflatex. Pure-ASCII suffixes keep the prior \text{...} / pass-
+    // through behaviour. Empty for gates without parameters.
     if (!suffix.empty()) {
-        if (label_needs_text_wrap(suffix)) {
+        if (has_non_ascii(suffix)) {
+            out << mathify_glyphs(suffix);
+        } else if (label_needs_text_wrap(suffix)) {
             out << "\\text{" << suffix << "}";
         } else {
             out << suffix;

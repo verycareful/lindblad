@@ -1,5 +1,5 @@
 \begin{quantikz}
 \lstick{$q_{0}$} & \gate{H} & \meter{} \\
-\lstick{$q_{1}$} & \gate{P\text{(π)}} & \qw \\
+\lstick{$q_{1}$} & \gate{P(\pi )} & \qw \\
 \lstick{$c$} \setwiretype{c} & \cw & \cw 
 \end{quantikz}

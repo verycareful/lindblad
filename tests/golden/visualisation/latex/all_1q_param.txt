@@ -1,3 +1,3 @@
 \begin{quantikz}
-\lstick{$q_{0}$} & \gate{R_X\text{(π/2)}} & \gate{R_Y\text{(π/4)}} & \gate{R_Z\text{(π/8)}} & \gate{P\text{(π/3)}} & \gate{U\text{(π/2, π/4, π/6)}} 
+\lstick{$q_{0}$} & \gate{R_X(\pi /2)} & \gate{R_Y(\pi /4)} & \gate{R_Z(\pi /8)} & \gate{P(\pi /3)} & \gate{U(\pi /2, \pi /4, \pi /6)} 
 \end{quantikz}
