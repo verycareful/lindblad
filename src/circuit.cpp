@@ -203,6 +203,14 @@ void QuantumCircuit::validate_clbit(int clbit) const {
                                 " out of range [0, " + std::to_string(n_clbits) + ")");
 }
 
+void QuantumCircuit::validate_operands() const {
+    for (const auto& inst : instructions) {
+        for (int q : inst.qubits) validate_qubit(q);
+        for (int c : inst.clbits) validate_clbit(c);
+        if (inst.condition_clbit >= 0) validate_clbit(inst.condition_clbit);
+    }
+}
+
 void QuantumCircuit::add_param_name(const std::string& pname) {
     for (const auto& existing : parameter_names) {
         if (existing == pname) return;

@@ -1,5 +1,7 @@
 #include "lindblad/qudit/qudit_mps.hpp"
 
+#include "lindblad/detail/validate.hpp"
+
 #include <Eigen/SVD>
 
 #include <algorithm>
@@ -386,10 +388,9 @@ void QuditMPS::normalize() {
 // =============================================================================
 
 void QuditMPS::apply_1qudit(int q, const std::vector<Complex128>& U) {
-    if (q < 0 || q >= n_qudits)
-        throw std::invalid_argument("apply_1qudit: q out of range");
-    if (U.size() != static_cast<size_t>(d) * static_cast<size_t>(d))
-        throw std::invalid_argument("apply_1qudit: U must have d*d entries");
+    detail::check_qudit(q, n_qudits, "QuditMPS::apply_1qudit");
+    detail::check_size(U.size(), static_cast<size_t>(d) * static_cast<size_t>(d),
+                       "QuditMPS::apply_1qudit", "matrix");
 
     auto& T = tensors[static_cast<size_t>(q)];
     const int chi_L = T.chi_L;
@@ -506,13 +507,11 @@ void QuditMPS::split_two_sites(int q, const Eigen::MatrixXcd& Theta) {
 // =============================================================================
 
 void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U) {
-    if (q < 0 || q + 1 >= n_qudits)
-        throw std::invalid_argument(
-            "apply_2qudit_adjacent: q out of range (need 0 <= q < n_qudits-1)");
+    detail::check_qudit(q, n_qudits, "QuditMPS::apply_2qudit_adjacent");
+    detail::check_qudit(q + 1, n_qudits, "QuditMPS::apply_2qudit_adjacent");
     const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
-    if (U.size() != d2 * d2)
-        throw std::invalid_argument(
-            "apply_2qudit_adjacent: U must have d^2 * d^2 entries");
+    detail::check_size(U.size(), d2 * d2,
+                       "QuditMPS::apply_2qudit_adjacent", "matrix");
 
     Eigen::MatrixXcd Theta = contract_two_sites(q);
     const int chi_L = tensors[static_cast<size_t>(q)].chi_L;
@@ -585,14 +584,11 @@ void QuditMPS::apply_swap(int q) {
 // =============================================================================
 
 void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U) {
-    if (q0 == q1)
-        throw std::invalid_argument("apply_2qudit: q0 must not equal q1");
-    if (q0 < 0 || q1 < 0 || q0 >= n_qudits || q1 >= n_qudits)
-        throw std::invalid_argument("apply_2qudit: qudit index out of range");
-
+    detail::check_qudit(q0, n_qudits, "QuditMPS::apply_2qudit");
+    detail::check_qudit(q1, n_qudits, "QuditMPS::apply_2qudit");
+    detail::check_distinct2(q0, q1, "QuditMPS::apply_2qudit", "qudits");
     const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
-    if (U.size() != d2 * d2)
-        throw std::invalid_argument("apply_2qudit: U must have d^2 * d^2 entries");
+    detail::check_size(U.size(), d2 * d2, "QuditMPS::apply_2qudit", "matrix");
 
     // Normalise so q0 < q1, exchanging the two digit roles of U if necessary
     // (valid in any fixed digit convention: it relabels which operand owns

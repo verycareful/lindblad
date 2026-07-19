@@ -1,5 +1,7 @@
 #include "lindblad/gates.hpp"
 
+#include "lindblad/detail/validate.hpp"
+
 #include <cmath>
 #include <algorithm>
 #include <cassert>
@@ -129,8 +131,10 @@ static inline void apply_controlled_phase(
 // =============================================================================
 // CX (CNOT): ctrl=1 flips target — cache-optimised
 // =============================================================================
-void apply_cx(Statevector& sv, int ctrl, int tgt) noexcept {
-    assert(ctrl != tgt);
+void apply_cx(Statevector& sv, int ctrl, int tgt) {
+    detail::check_qubit(ctrl, sv.n_qubits, "cx");
+    detail::check_qubit(tgt, sv.n_qubits, "cx");
+    detail::check_distinct2(ctrl, tgt, "cx");
     const size_t dim = sv.dim;
     const int lo = std::min(ctrl, tgt);
     const int hi = std::max(ctrl, tgt);
@@ -173,7 +177,10 @@ void apply_cx(Statevector& sv, int ctrl, int tgt) noexcept {
 // CY: ctrl=1, apply Y to target
 // Y = [[0, -i], [i, 0]]
 // =============================================================================
-void apply_cy(Statevector& sv, int ctrl, int tgt) noexcept {
+void apply_cy(Statevector& sv, int ctrl, int tgt) {
+    detail::check_qubit(ctrl, sv.n_qubits, "cy");
+    detail::check_qubit(tgt, sv.n_qubits, "cy");
+    detail::check_distinct2(ctrl, tgt, "cy");
     apply_controlled_matrix(sv, ctrl, tgt,
         0.0, 0.0,    // a = 0
         0.0, -1.0,   // b = -i
@@ -185,8 +192,10 @@ void apply_cy(Statevector& sv, int ctrl, int tgt) noexcept {
 // =============================================================================
 // CZ: ctrl=1, tgt=1 → negate phase — specialised diagonal path
 // =============================================================================
-void apply_cz(Statevector& sv, int ctrl, int tgt) noexcept {
-    assert(ctrl != tgt);
+void apply_cz(Statevector& sv, int ctrl, int tgt) {
+    detail::check_qubit(ctrl, sv.n_qubits, "cz");
+    detail::check_qubit(tgt, sv.n_qubits, "cz");
+    detail::check_distinct2(ctrl, tgt, "cz");
     const size_t dim = sv.dim;
     const int lo = std::min(ctrl, tgt);
     const int hi = std::max(ctrl, tgt);
@@ -215,7 +224,10 @@ void apply_cz(Statevector& sv, int ctrl, int tgt) noexcept {
 // =============================================================================
 // CH: ctrl=1, apply H to target
 // =============================================================================
-void apply_ch(Statevector& sv, int ctrl, int tgt) noexcept {
+void apply_ch(Statevector& sv, int ctrl, int tgt) {
+    detail::check_qubit(ctrl, sv.n_qubits, "ch");
+    detail::check_qubit(tgt, sv.n_qubits, "ch");
+    detail::check_distinct2(ctrl, tgt, "ch");
     apply_controlled_matrix(sv, ctrl, tgt,
         INV_SQRT2, 0.0,   // a = 1/sqrt2
         INV_SQRT2, 0.0,   // b = 1/sqrt2
@@ -228,8 +240,10 @@ void apply_ch(Statevector& sv, int ctrl, int tgt) noexcept {
 // SWAP: exchange q1 and q2 amplitudes — cache-optimised
 // Only swaps |01⟩ <-> |10⟩ pairs
 // =============================================================================
-void apply_swap(Statevector& sv, int q1, int q2) noexcept {
-    assert(q1 != q2);
+void apply_swap(Statevector& sv, int q1, int q2) {
+    detail::check_qubit(q1, sv.n_qubits, "swap");
+    detail::check_qubit(q2, sv.n_qubits, "swap");
+    detail::check_distinct2(q1, q2, "swap");
     const size_t dim = sv.dim;
     const int lo = std::min(q1, q2);
     const int hi = std::max(q1, q2);
@@ -266,8 +280,10 @@ void apply_swap(Statevector& sv, int q1, int q2) noexcept {
 // =============================================================================
 // iSWAP: swap |01⟩ <-> |10⟩ and multiply each by i — cache-optimised
 // =============================================================================
-void apply_iswap(Statevector& sv, int q1, int q2) noexcept {
-    assert(q1 != q2);
+void apply_iswap(Statevector& sv, int q1, int q2) {
+    detail::check_qubit(q1, sv.n_qubits, "iswap");
+    detail::check_qubit(q2, sv.n_qubits, "iswap");
+    detail::check_distinct2(q1, q2, "iswap");
     const size_t dim = sv.dim;
     const int lo = std::min(q1, q2);
     const int hi = std::max(q1, q2);
@@ -307,7 +323,10 @@ void apply_iswap(Statevector& sv, int q1, int q2) noexcept {
 // =============================================================================
 // CRX: controlled RX(theta)
 // =============================================================================
-void apply_crx(Statevector& sv, int ctrl, int tgt, double theta) noexcept {
+void apply_crx(Statevector& sv, int ctrl, int tgt, double theta) {
+    detail::check_qubit(ctrl, sv.n_qubits, "crx");
+    detail::check_qubit(tgt, sv.n_qubits, "crx");
+    detail::check_distinct2(ctrl, tgt, "crx");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
 
@@ -322,7 +341,10 @@ void apply_crx(Statevector& sv, int ctrl, int tgt, double theta) noexcept {
 // =============================================================================
 // CRY: controlled RY(theta)
 // =============================================================================
-void apply_cry(Statevector& sv, int ctrl, int tgt, double theta) noexcept {
+void apply_cry(Statevector& sv, int ctrl, int tgt, double theta) {
+    detail::check_qubit(ctrl, sv.n_qubits, "cry");
+    detail::check_qubit(tgt, sv.n_qubits, "cry");
+    detail::check_distinct2(ctrl, tgt, "cry");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
 
@@ -338,8 +360,10 @@ void apply_cry(Statevector& sv, int ctrl, int tgt, double theta) noexcept {
 // CRZ: controlled RZ(theta) — specialised diagonal path
 // When ctrl=1: diag(exp(-i*t/2), exp(i*t/2)) on target
 // =============================================================================
-void apply_crz(Statevector& sv, int ctrl, int tgt, double theta) noexcept {
-    assert(ctrl != tgt);
+void apply_crz(Statevector& sv, int ctrl, int tgt, double theta) {
+    detail::check_qubit(ctrl, sv.n_qubits, "crz");
+    detail::check_qubit(tgt, sv.n_qubits, "crz");
+    detail::check_distinct2(ctrl, tgt, "crz");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
     const size_t dim = sv.dim;
@@ -392,7 +416,10 @@ void apply_crz(Statevector& sv, int ctrl, int tgt, double theta) noexcept {
 // =============================================================================
 // CP: controlled P(lambda) — uses specialised diagonal path
 // =============================================================================
-void apply_cp(Statevector& sv, int ctrl, int tgt, double lambda) noexcept {
+void apply_cp(Statevector& sv, int ctrl, int tgt, double lambda) {
+    detail::check_qubit(ctrl, sv.n_qubits, "cp");
+    detail::check_qubit(tgt, sv.n_qubits, "cp");
+    detail::check_distinct2(ctrl, tgt, "cp");
     apply_controlled_phase(sv, ctrl, tgt, std::cos(lambda), std::sin(lambda));
 }
 
@@ -400,7 +427,10 @@ void apply_cp(Statevector& sv, int ctrl, int tgt, double lambda) noexcept {
 // CU: controlled U(theta, phi, lambda) with global phase gamma
 // =============================================================================
 void apply_cu(Statevector& sv, int ctrl, int tgt,
-              double theta, double phi, double lambda, double gamma) noexcept {
+              double theta, double phi, double lambda, double gamma) {
+    detail::check_qubit(ctrl, sv.n_qubits, "cu");
+    detail::check_qubit(tgt, sv.n_qubits, "cu");
+    detail::check_distinct2(ctrl, tgt, "cu");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
     const double cos_lam = std::cos(lambda);
@@ -439,8 +469,10 @@ void apply_cu(Statevector& sv, int ctrl, int tgt,
 // ECR: Echoed cross-resonance gate — cache-optimised 4-index group
 // (1/sqrt2) * [[0,0,1,i],[0,0,i,1],[1,-i,0,0],[-i,1,0,0]]
 // =============================================================================
-void apply_ecr(Statevector& sv, int q1, int q2) noexcept {
-    assert(q1 != q2);
+void apply_ecr(Statevector& sv, int q1, int q2) {
+    detail::check_qubit(q1, sv.n_qubits, "ecr");
+    detail::check_qubit(q2, sv.n_qubits, "ecr");
+    detail::check_distinct2(q1, q2, "ecr");
     const size_t dim = sv.dim;
     const int lo = std::min(q1, q2);
     const int hi = std::max(q1, q2);
@@ -505,8 +537,10 @@ void apply_ecr(Statevector& sv, int q1, int q2) noexcept {
 // =============================================================================
 // RZX(theta): exp(-i * theta/2 * Z*X) — cache-optimised
 // =============================================================================
-void apply_rzx(Statevector& sv, int q1, int q2, double theta) noexcept {
-    assert(q1 != q2);
+void apply_rzx(Statevector& sv, int q1, int q2, double theta) {
+    detail::check_qubit(q1, sv.n_qubits, "rzx");
+    detail::check_qubit(q2, sv.n_qubits, "rzx");
+    detail::check_distinct2(q1, q2, "rzx");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
     const size_t dim = sv.dim;
@@ -566,8 +600,10 @@ void apply_rzx(Statevector& sv, int q1, int q2, double theta) noexcept {
 // =============================================================================
 // RXX(theta): exp(-i * theta/2 * X*X) — cache-optimised 4-index group
 // =============================================================================
-void apply_rxx(Statevector& sv, int q1, int q2, double theta) noexcept {
-    assert(q1 != q2);
+void apply_rxx(Statevector& sv, int q1, int q2, double theta) {
+    detail::check_qubit(q1, sv.n_qubits, "rxx");
+    detail::check_qubit(q2, sv.n_qubits, "rxx");
+    detail::check_distinct2(q1, q2, "rxx");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
     const size_t dim = sv.dim;
@@ -621,8 +657,10 @@ void apply_rxx(Statevector& sv, int q1, int q2, double theta) noexcept {
 // =============================================================================
 // RYY(theta): exp(-i * theta/2 * Y*Y) — cache-optimised 4-index group
 // =============================================================================
-void apply_ryy(Statevector& sv, int q1, int q2, double theta) noexcept {
-    assert(q1 != q2);
+void apply_ryy(Statevector& sv, int q1, int q2, double theta) {
+    detail::check_qubit(q1, sv.n_qubits, "ryy");
+    detail::check_qubit(q2, sv.n_qubits, "ryy");
+    detail::check_distinct2(q1, q2, "ryy");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
     const size_t dim = sv.dim;
@@ -678,8 +716,10 @@ void apply_ryy(Statevector& sv, int q1, int q2, double theta) noexcept {
 // diag(e^{-it/2}, e^{it/2}, e^{it/2}, e^{-it/2})
 // Parity-based: same-parity gets exp(-it/2), different-parity gets exp(+it/2)
 // =============================================================================
-void apply_rzz(Statevector& sv, int q1, int q2, double theta) noexcept {
-    assert(q1 != q2);
+void apply_rzz(Statevector& sv, int q1, int q2, double theta) {
+    detail::check_qubit(q1, sv.n_qubits, "rzz");
+    detail::check_qubit(q2, sv.n_qubits, "rzz");
+    detail::check_distinct2(q1, q2, "rzz");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
     const size_t dim = sv.dim;

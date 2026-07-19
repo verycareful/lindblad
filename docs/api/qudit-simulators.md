@@ -405,6 +405,16 @@ The MPS backend implements `apply_phase_oracle` and `apply_function_oracle` via
 a dense statevector round-trip. This is exact but costs O(d^n) memory and time.
 For oracles on large systems use the STATEVECTOR or DENSITY_MATRIX backends instead.
 
+### Operand validation
+
+The qudit apply-primitives across all four backends (`QuditStatevector`,
+`QuditDensityMatrix`, `QuditMPS`, `QuditCliffordSimulator`) fail loud on a
+malformed operand before touching memory. A qudit index outside
+`[0, n_qudits)` throws `std::out_of_range`; a structural violation (the two
+operands of a two-qudit gate not distinct, or a gate/Kraus matrix that is not
+`d^k × d^k`) throws `std::invalid_argument`. Messages carry the primitive name
+and the offending value, matching the qubit-layer contract.
+
 ---
 
 ## Usage examples

@@ -4,6 +4,74 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.19.0] - 2026-07-19
+
+Fail-loud operand validation at every backend primitive. The low-level
+apply-primitives (`gates::apply_*`, the density-matrix, MPS, Clifford, and qudit
+paths) previously trusted a caller-supplied index and strode through the state
+array with it; an out-of-range index was undefined behaviour rather than a
+reported error. They now check their operands first, matching the circuit
+layer's contract.
+
+### Added
+
+- `include/lindblad/detail/validate.hpp`: shared fail-loud operand checkers used
+  by every backend's apply-primitives. Index bounds throw `std::out_of_range`
+  and operand-structure violations throw `std::invalid_argument`, with the same
+  message format as the circuit layer. The throw paths are cold, so the common
+  path is a single branch that predicts not-taken.
+- `QuantumCircuit::validate_operands()`: a per-instruction pre-flight each
+  backend `run()` invokes, validating every qubit and classical-bit index up
+  front so a bad index arriving via `compose` index remapping, `control`, the
+  QASM parsers, or a transpiler pass is reported before it reaches a kernel.
+- Continuous integration: macOS (Homebrew LLVM + libomp) and Windows (Clang
+  under the MSVC environment) Release legs added to the GitHub Actions matrix,
+  alongside the existing Ubuntu GCC 13 / Clang 18 legs, as the first non-Linux
+  builds and groundwork for cross-platform packaging. The workflow runs on
+  manual dispatch (the Actions 'Run workflow' button or 'gh workflow run')
+  rather than automatic push / pull-request triggers.
+
+### Changed
+
+- Every public apply-primitive across all backends now validates its operands
+  before touching memory: `std::out_of_range` for an out-of-range index,
+  `std::invalid_argument` for a bad operand structure (non-distinct qubits where
+  required, wrong matrix / Kraus / permutation size). This spans the statevector
+  gate kernels, the density-matrix `apply_gate` / `apply_kraus` /
+  `apply_channel_superop` / `apply_permutation`, the MPS gates, the Clifford
+  tableau gates, and the qudit statevector / density-matrix / MPS / Clifford
+  primitives. The checks are integer comparisons at the kernel entry, negligible
+  next to the O(2^n) amplitude sweep.
+- The statevector gate functions (`gates::apply_*`) are no longer `noexcept`,
+  because they now throw on an invalid operand (a throw from a `noexcept`
+  function calls `std::terminate`).
+- `gates::apply_permutation` and `DensityMatrix::apply_permutation` now require
+  their permutation to be a genuine bijection of the target range; a repeated or
+  out-of-range image is rejected.
+- Qudit-MPS bounds violations now throw `std::out_of_range` to match the rest of
+  the project, while size and distinctness violations continue to throw
+  `std::invalid_argument`.
+
+### Fixed
+
+- Out-of-range operand indices at the low-level apply-primitives were undefined
+  behaviour (a shift-width overflow on `1 << qubit`, or out-of-bounds strided
+  writes), and the only guards were `assert`s that are compiled out of the
+  shipped Release build. They are now checked and throw.
+- `CliffordSimulator`'s gate dispatch silently ignored an unrecognised gate on a
+  direct run; it now throws.
+- The `Statevector` constructor computed `1 << n_qubits` in its initializer list
+  before the `n_qubits >= 1` guard ran, which was undefined behaviour for a
+  negative count. The count is validated first now.
+
+### Results
+
+- 1984 tests across 161 suites, 1983 passed (22.8 s, WSL/Clang). The single
+  failure, `R1122FillFront.QuditMpsValidationThrows`, pins the previous
+  qudit-MPS bounds exception type and is updated in R.1.19.1. A full
+  AddressSanitizer + UndefinedBehaviorSanitizer run over the suite reported no
+  memory-safety diagnostics.
+
 ## [R.1.18.2] - 2026-07-19
 
 Patch release fixing a routability defect in the stage-0 high-level

@@ -1,5 +1,7 @@
 #include "lindblad/gates.hpp"
 
+#include "lindblad/detail/validate.hpp"
+
 #include <cmath>
 
 namespace lindblad {
@@ -19,7 +21,7 @@ static inline void apply_single_qubit_matrix(
     double br, double bi,  // b = matrix[0][1]
     double cr, double ci,  // c = matrix[1][0]
     double dr, double di   // d = matrix[1][1]
-) noexcept {
+) {
     const size_t step = 1ULL << qubit;
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
@@ -49,7 +51,7 @@ static inline void apply_diagonal_phase(
     Statevector& sv, int qubit,
     double cos0, double sin0,  // cos/sin of phase0
     double cos1, double sin1   // cos/sin of phase1
-) noexcept {
+) {
     const size_t step = 1ULL << qubit;
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
@@ -79,7 +81,8 @@ static inline void apply_diagonal_phase(
 // =============================================================================
 // Pauli X: [[0,1],[1,0]] — swap qubit=0 and qubit=1 amplitudes
 // =============================================================================
-void apply_x(Statevector& sv, int q) noexcept {
+void apply_x(Statevector& sv, int q) {
+    detail::check_qubit(q, sv.n_qubits, "x");
     const size_t step = 1ULL << q;
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
@@ -97,7 +100,8 @@ void apply_x(Statevector& sv, int q) noexcept {
 // =============================================================================
 // Pauli Y: [[0,-i],[i,0]]
 // =============================================================================
-void apply_y(Statevector& sv, int q) noexcept {
+void apply_y(Statevector& sv, int q) {
+    detail::check_qubit(q, sv.n_qubits, "y");
     const size_t step = 1ULL << q;
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
@@ -124,7 +128,8 @@ void apply_y(Statevector& sv, int q) noexcept {
 // =============================================================================
 // Pauli Z: [[1,0],[0,-1]] — negate qubit=1 amplitudes
 // =============================================================================
-void apply_z(Statevector& sv, int q) noexcept {
+void apply_z(Statevector& sv, int q) {
+    detail::check_qubit(q, sv.n_qubits, "z");
     const size_t step = 1ULL << q;
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
@@ -142,7 +147,8 @@ void apply_z(Statevector& sv, int q) noexcept {
 // =============================================================================
 // Hadamard: (1/√2)[[1,1],[1,-1]]
 // =============================================================================
-void apply_h(Statevector& sv, int q) noexcept {
+void apply_h(Statevector& sv, int q) {
+    detail::check_qubit(q, sv.n_qubits, "h");
     const size_t step = 1ULL << q;
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
@@ -167,7 +173,8 @@ void apply_h(Statevector& sv, int q) noexcept {
 // =============================================================================
 // S gate: [[1,0],[0,i]] — phase gate with lambda=pi/2
 // =============================================================================
-void apply_s(Statevector& sv, int q) noexcept {
+void apply_s(Statevector& sv, int q) {
+    detail::check_qubit(q, sv.n_qubits, "s");
     const size_t step = 1ULL << q;
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
@@ -188,7 +195,8 @@ void apply_s(Statevector& sv, int q) noexcept {
 // =============================================================================
 // S† gate: [[1,0],[0,-i]]
 // =============================================================================
-void apply_sdg(Statevector& sv, int q) noexcept {
+void apply_sdg(Statevector& sv, int q) {
+    detail::check_qubit(q, sv.n_qubits, "sdg");
     const size_t step = 1ULL << q;
     double* __restrict__ real_ptr = sv.real_parts;
     double* __restrict__ imag_ptr = sv.imag_parts;
@@ -209,7 +217,8 @@ void apply_sdg(Statevector& sv, int q) noexcept {
 // =============================================================================
 // T gate: [[1,0],[0,exp(i*pi/4)]]
 // =============================================================================
-void apply_t(Statevector& sv, int q) noexcept {
+void apply_t(Statevector& sv, int q) {
+    detail::check_qubit(q, sv.n_qubits, "t");
     // exp(i*pi/4) = cos(pi/4) + i*sin(pi/4) = (1+i)/sqrt(2)
     apply_diagonal_phase(sv, q, 1.0, 0.0, INV_SQRT2, INV_SQRT2);
 }
@@ -217,14 +226,16 @@ void apply_t(Statevector& sv, int q) noexcept {
 // =============================================================================
 // T† gate: [[1,0],[0,exp(-i*pi/4)]]
 // =============================================================================
-void apply_tdg(Statevector& sv, int q) noexcept {
+void apply_tdg(Statevector& sv, int q) {
+    detail::check_qubit(q, sv.n_qubits, "tdg");
     apply_diagonal_phase(sv, q, 1.0, 0.0, INV_SQRT2, -INV_SQRT2);
 }
 
 // =============================================================================
 // SX (sqrt X): 0.5 * [[1+i, 1-i], [1-i, 1+i]]
 // =============================================================================
-void apply_sx(Statevector& sv, int q) noexcept {
+void apply_sx(Statevector& sv, int q) {
+    detail::check_qubit(q, sv.n_qubits, "sx");
     // Matrix: 0.5 * [[1+i, 1-i], [1-i, 1+i]]
     apply_single_qubit_matrix(sv, q,
         0.5,  0.5,   // a = (1+i)/2
@@ -237,7 +248,8 @@ void apply_sx(Statevector& sv, int q) noexcept {
 // =============================================================================
 // SX† (sqrt X dagger): 0.5 * [[1-i, 1+i], [1+i, 1-i]]
 // =============================================================================
-void apply_sxdg(Statevector& sv, int q) noexcept {
+void apply_sxdg(Statevector& sv, int q) {
+    detail::check_qubit(q, sv.n_qubits, "sxdg");
     apply_single_qubit_matrix(sv, q,
         0.5, -0.5,   // a = (1-i)/2
         0.5,  0.5,   // b = (1+i)/2
@@ -249,7 +261,8 @@ void apply_sxdg(Statevector& sv, int q) noexcept {
 // =============================================================================
 // RX(theta): [[cos(t/2), -i*sin(t/2)], [-i*sin(t/2), cos(t/2)]]
 // =============================================================================
-void apply_rx(Statevector& sv, int q, double theta) noexcept {
+void apply_rx(Statevector& sv, int q, double theta) {
+    detail::check_qubit(q, sv.n_qubits, "rx");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
 
@@ -265,7 +278,8 @@ void apply_rx(Statevector& sv, int q, double theta) noexcept {
 // =============================================================================
 // RY(theta): [[cos(t/2), -sin(t/2)], [sin(t/2), cos(t/2)]]
 // =============================================================================
-void apply_ry(Statevector& sv, int q, double theta) noexcept {
+void apply_ry(Statevector& sv, int q, double theta) {
+    detail::check_qubit(q, sv.n_qubits, "ry");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
 
@@ -280,7 +294,8 @@ void apply_ry(Statevector& sv, int q, double theta) noexcept {
 // =============================================================================
 // RZ(theta): [[exp(-i*t/2), 0], [0, exp(i*t/2)]]
 // =============================================================================
-void apply_rz(Statevector& sv, int q, double theta) noexcept {
+void apply_rz(Statevector& sv, int q, double theta) {
+    detail::check_qubit(q, sv.n_qubits, "rz");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
 
@@ -292,7 +307,8 @@ void apply_rz(Statevector& sv, int q, double theta) noexcept {
 // =============================================================================
 // Phase gate P(lambda): [[1, 0], [0, exp(i*lambda)]]
 // =============================================================================
-void apply_p(Statevector& sv, int q, double lambda) noexcept {
+void apply_p(Statevector& sv, int q, double lambda) {
+    detail::check_qubit(q, sv.n_qubits, "p");
     apply_diagonal_phase(sv, q, 1.0, 0.0, std::cos(lambda), std::sin(lambda));
 }
 
@@ -302,7 +318,8 @@ void apply_p(Statevector& sv, int q, double lambda) noexcept {
 //                          [exp(i*phi)*sin(t/2), exp(i*(phi+lam))*cos(t/2)]]
 // =============================================================================
 void apply_u(Statevector& sv, int q,
-             double theta, double phi, double lambda) noexcept {
+             double theta, double phi, double lambda) {
+    detail::check_qubit(q, sv.n_qubits, "u");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
     const double cos_lam = std::cos(lambda);
@@ -328,7 +345,8 @@ void apply_u(Statevector& sv, int q,
 // =============================================================================
 // U1(lambda) = P(lambda) = [[1, 0], [0, exp(i*lambda)]]
 // =============================================================================
-void apply_u1(Statevector& sv, int q, double lambda) noexcept {
+void apply_u1(Statevector& sv, int q, double lambda) {
+    detail::check_qubit(q, sv.n_qubits, "u1");
     apply_p(sv, q, lambda);
 }
 
@@ -336,7 +354,8 @@ void apply_u1(Statevector& sv, int q, double lambda) noexcept {
 // U2(phi, lambda) = U(pi/2, phi, lambda)
 // = (1/sqrt(2)) * [[1, -exp(i*lam)], [exp(i*phi), exp(i*(phi+lam))]]
 // =============================================================================
-void apply_u2(Statevector& sv, int q, double phi, double lambda) noexcept {
+void apply_u2(Statevector& sv, int q, double phi, double lambda) {
+    detail::check_qubit(q, sv.n_qubits, "u2");
     apply_u(sv, q, PI_2, phi, lambda);
 }
 
@@ -344,7 +363,8 @@ void apply_u2(Statevector& sv, int q, double phi, double lambda) noexcept {
 // U3(theta, phi, lambda) = U(theta, phi, lambda)
 // =============================================================================
 void apply_u3(Statevector& sv, int q,
-              double theta, double phi, double lambda) noexcept {
+              double theta, double phi, double lambda) {
+    detail::check_qubit(q, sv.n_qubits, "u3");
     apply_u(sv, q, theta, phi, lambda);
 }
 

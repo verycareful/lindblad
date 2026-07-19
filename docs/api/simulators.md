@@ -34,6 +34,24 @@ void StatevectorSimulator::apply_instruction(Statevector& sv, const Instruction&
 5. **Measurement handling**: see Execution Semantics below
 6. **Result collection**: Extract final state and sampled bitstrings (if shots > 0)
 
+### Operand Validation
+
+Every backend runs a pre-flight over `circuit.instructions` at the start of
+`run()`, checking that each qubit and classical-bit index lies in range. This
+closes the ingress paths that bypass the per-gate circuit builders (`compose`
+index remapping, `control`, the QASM parsers, transpiler passes), so no
+out-of-range index reaches a kernel. The statevector and density-matrix backends
+surface a failure through `Result` (their `run()` wraps execution in a
+try/catch); the MPS and Clifford backends surface it by throwing, consistent with
+their existing error contract.
+
+Beneath the pre-flight, the low-level apply-primitives (`gates::apply_*`,
+`DensityMatrix::apply_gate` / `apply_kraus`, the `StabilizerState` gates, the MPS
+gates, and the qudit apply-primitives) each validate independently: index bounds
+throw `std::out_of_range`, and operand-structure violations (non-distinct qubits,
+wrong matrix / Kraus / permutation size) throw `std::invalid_argument`. Direct
+primitive callers therefore get the same guarantees as circuit callers.
+
 ### Execution Semantics (frozen in R.1.12)
 
 The statevector, density-matrix, and MPS simulators pick one of three

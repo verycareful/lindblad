@@ -15,18 +15,26 @@ namespace lindblad {
 // Construction / Destruction
 // =============================================================================
 
+namespace {
+// Validate the qubit count BEFORE it reaches `1ULL << n` in the initializer
+// list. Computing the shift with a negative or oversized n is undefined
+// behaviour (shift-width overflow), so the guard must run first — a body check
+// after the init list is too late. Called from the n_qubits member initializer,
+// which precedes `dim` in declaration order, so a bad n throws before the shift.
+inline int validated_n_qubits(int n) {
+    if (n < 1 || n > 30)
+        throw std::invalid_argument(
+            "Statevector: n_qubits must be in [1, 30], got " + std::to_string(n));
+    return n;
+}
+} // namespace
+
 Statevector::Statevector(int n_qubits)
-    : n_qubits(n_qubits)
-    , dim(1ULL << n_qubits)
+    : n_qubits(validated_n_qubits(n_qubits))
+    , dim(1ULL << this->n_qubits)   // this->n_qubits is already validated
     , real_parts(nullptr)
     , imag_parts(nullptr)
 {
-    if (n_qubits < 1 || n_qubits > 30) {
-        throw std::invalid_argument(
-            "Statevector: n_qubits must be in [1, 30], got " + std::to_string(n_qubits)
-        );
-    }
-
     real_parts = aligned_alloc_doubles(dim);
     imag_parts = aligned_alloc_doubles(dim);
 

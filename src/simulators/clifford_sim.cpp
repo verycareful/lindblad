@@ -1,5 +1,6 @@
 #include "lindblad/simulators/clifford_sim.hpp"
 #include "lindblad/circuit.hpp"
+#include "lindblad/detail/validate.hpp"
 
 #include <cmath>
 #include <random>
@@ -123,6 +124,7 @@ void StabilizerState::rowmult(int dest, int src) {
 // ----- Clifford gate applications -----
 
 void StabilizerState::apply_h(int qubit) {
+    detail::check_qubit(qubit, n_qubits, "StabilizerState::apply_h");
     const int N = n_qubits;
     for (int i = 0; i < 2 * N; ++i) {
         const bool x = get_xz(i, qubit);
@@ -134,6 +136,7 @@ void StabilizerState::apply_h(int qubit) {
 }
 
 void StabilizerState::apply_s(int qubit) {
+    detail::check_qubit(qubit, n_qubits, "StabilizerState::apply_s");
     const int N = n_qubits;
     for (int i = 0; i < 2 * N; ++i) {
         if (get_xz(i, qubit)) {
@@ -144,6 +147,7 @@ void StabilizerState::apply_s(int qubit) {
 }
 
 void StabilizerState::apply_sdg(int qubit) {
+    detail::check_qubit(qubit, n_qubits, "StabilizerState::apply_sdg");
     const int N = n_qubits;
     for (int i = 0; i < 2 * N; ++i) {
         if (get_xz(i, qubit)) {
@@ -154,6 +158,9 @@ void StabilizerState::apply_sdg(int qubit) {
 }
 
 void StabilizerState::apply_cx(int control, int target) {
+    detail::check_qubit(control, n_qubits, "StabilizerState::apply_cx");
+    detail::check_qubit(target, n_qubits, "StabilizerState::apply_cx");
+    detail::check_distinct2(control, target, "StabilizerState::apply_cx");
     const int N = n_qubits;
     for (int i = 0; i < 2 * N; ++i) {
         const bool xc = get_xz(i, control);
@@ -167,6 +174,7 @@ void StabilizerState::apply_cx(int control, int target) {
 }
 
 void StabilizerState::apply_x(int qubit) {
+    detail::check_qubit(qubit, n_qubits, "StabilizerState::apply_x");
     const int N = n_qubits;
     for (int i = 0; i < 2 * N; ++i) {
         if (get_xz(i, N + qubit)) ph[i] ^= 1;
@@ -174,6 +182,7 @@ void StabilizerState::apply_x(int qubit) {
 }
 
 void StabilizerState::apply_y(int qubit) {
+    detail::check_qubit(qubit, n_qubits, "StabilizerState::apply_y");
     const int N = n_qubits;
     for (int i = 0; i < 2 * N; ++i) {
         if (get_xz(i, qubit) ^ get_xz(i, N + qubit)) ph[i] ^= 1;
@@ -181,6 +190,7 @@ void StabilizerState::apply_y(int qubit) {
 }
 
 void StabilizerState::apply_z(int qubit) {
+    detail::check_qubit(qubit, n_qubits, "StabilizerState::apply_z");
     const int N = n_qubits;
     for (int i = 0; i < 2 * N; ++i) {
         if (get_xz(i, qubit)) ph[i] ^= 1;
@@ -190,6 +200,7 @@ void StabilizerState::apply_z(int qubit) {
 // ----- measurement -----
 
 int StabilizerState::measure(int qubit, bool random, std::mt19937_64& rng) {
+    detail::check_qubit(qubit, n_qubits, "StabilizerState::measure");
     const int N = n_qubits;
 
     // Find a stabilizer (rows N..2N-1) with X bit set on this qubit.
@@ -407,6 +418,10 @@ CliffordSimulator::Result CliffordSimulator::run(
     using GT = Instruction::GateType;
     Result result(circuit.n_qubits);
 
+    // Pre-flight: reject any out-of-range operand index up front (this backend
+    // surfaces errors by throwing).
+    circuit.validate_operands();
+
     const int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
     const double pi = M_PI;
 
@@ -451,7 +466,13 @@ CliffordSimulator::Result CliffordSimulator::run(
                 state.apply_cx(inst.qubits[1], inst.qubits[0]);
                 state.apply_cx(inst.qubits[0], inst.qubits[1]);
                 break;
-            default: break;
+            default:
+                // Fail loud instead of silently no-op'ing. Reachable only by a
+                // DIRECT run() on a non-Clifford circuit; the AUTO dispatch is
+                // gated by is_clifford(), so this never fires on that path.
+                throw std::invalid_argument(
+                    "CliffordSimulator: gate '" + inst.gate_name() +
+                    "' is not supported by the tableau backend");
         }
     };
 

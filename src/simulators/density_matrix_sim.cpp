@@ -6,6 +6,7 @@
 
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/circuit.hpp"
+#include "lindblad/detail/validate.hpp"
 #include "lindblad/noise.hpp"
 #include "lindblad/operators.hpp"
 #include "lindblad/types.hpp"
@@ -261,6 +262,8 @@ void dm_bra_apply_inplace(Complex128* __restrict data,
 
 void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
                                 const std::vector<int>& qubits) {
+    detail::check_qubits(qubits, n_qubits, "DensityMatrix::apply_gate");
+    detail::check_all_distinct(qubits, "DensityMatrix::apply_gate");
     const int k = static_cast<int>(qubits.size());
     const size_t sub_dim = size_t(1) << k;
 
@@ -347,8 +350,13 @@ void DensityMatrix::apply_kraus(
     // depolarizing channel cost ~48 full-rho sweeps per noisy gate. The
     // superoperator build is O(ops · sub_dim⁴) on at-most-16×16 blocks for
     // the 1q/2q channels noise models attach: negligible next to one sweep.
+    detail::check_qubits(qubits, n_qubits, "DensityMatrix::apply_kraus");
+    detail::check_all_distinct(qubits, "DensityMatrix::apply_kraus");
     const int k = static_cast<int>(qubits.size());
     const size_t sub_dim = size_t(1) << k;
+    for (const auto& K : kraus_ops)
+        detail::check_size(K.size(), sub_dim * sub_dim,
+                           "DensityMatrix::apply_kraus", "Kraus operator");
 
     std::vector<size_t> sub_off, bg;
     dm_build_tables(n_qubits, dim, qubits, sub_off, bg);
@@ -376,6 +384,8 @@ void DensityMatrix::apply_channel_superop(
     if (S_ext.size() != sd2 * sd2) {
         throw std::invalid_argument("Channel superoperator size mismatch");
     }
+    detail::check_qubits(qubits, n_qubits, "DensityMatrix::apply_channel_superop");
+    detail::check_all_distinct(qubits, "DensityMatrix::apply_channel_superop");
 
     std::vector<size_t> sub_off, bg;
     dm_build_tables(n_qubits, dim, qubits, sub_off, bg);
@@ -407,6 +417,25 @@ void DensityMatrix::apply_channel_superop(
 }
 
 void DensityMatrix::apply_permutation(const std::vector<int>& full_perm) {
+    // full_perm indexes the whole 2^n basis on both axes; a wrong length or an
+    // out-of-range image would read/write out of `out` (UB), a repeat would
+    // silently drop rows/cols. Require a genuine bijection of [0, dim).
+    detail::check_size(full_perm.size(), dim, "DensityMatrix::apply_permutation",
+                       "permutation");
+    {
+        std::vector<char> seen(dim, 0);
+        for (int v : full_perm) {
+            if (v < 0 || static_cast<size_t>(v) >= dim)
+                detail::throw_structure("DensityMatrix::apply_permutation",
+                    "permutation entry " + std::to_string(v) + " out of range [0, " +
+                    std::to_string(dim) + ")");
+            if (seen[static_cast<size_t>(v)])
+                detail::throw_structure("DensityMatrix::apply_permutation",
+                    "permutation must be a bijection (repeated image " +
+                    std::to_string(v) + ")");
+            seen[static_cast<size_t>(v)] = 1;
+        }
+    }
     // new_rho[full_perm[a], full_perm[b]] = rho[a, b].
     std::vector<Complex128> out(dim * dim, Complex128(0.0, 0.0));
     #pragma omp parallel for schedule(static) if(dim * dim >= DM_PAR_THRESHOLD)
@@ -746,6 +775,10 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
 
     try {
         auto t_start = std::chrono::high_resolution_clock::now();
+
+        // Pre-flight: reject any out-of-range operand index up front so the
+        // failure surfaces through Result rather than reaching a kernel.
+        circuit.validate_operands();
 
         // Execution strategy (see docs/api/simulators.md, Execution semantics):
         // per-shot trajectories whenever a classical condition exists OR a

@@ -1,5 +1,7 @@
 #include "lindblad/qudit/qudit_clifford.hpp"
 
+#include "lindblad/detail/validate.hpp"
+
 #include <algorithm>
 #include <random>
 #include <stdexcept>
@@ -77,6 +79,7 @@ QuditCliffordSimulator::QuditCliffordSimulator(int n_qudits_, int d_)
 // =============================================================================
 
 void QuditCliffordSimulator::apply_X(int q, int m) {
+    detail::check_qudit(q, n_qudits, "QuditCliffordSimulator::apply_X");
     // X^m Z^b X^{-m} = tau^{-2 m b} Z^b  =>  phase -= 2 m * zbits[r][q]
     const int rows = 2 * n_qudits;
     const int two_d = 2 * d;
@@ -88,6 +91,7 @@ void QuditCliffordSimulator::apply_X(int q, int m) {
 }
 
 void QuditCliffordSimulator::apply_Z(int q, int m) {
+    detail::check_qudit(q, n_qudits, "QuditCliffordSimulator::apply_Z");
     // Z^m X^a Z^{-m} = tau^{+2 m a} X^a  =>  phase += 2 m * xbits[r][q]
     const int rows = 2 * n_qudits;
     const int two_d = 2 * d;
@@ -99,6 +103,7 @@ void QuditCliffordSimulator::apply_Z(int q, int m) {
 }
 
 void QuditCliffordSimulator::apply_H(int q) {
+    detail::check_qudit(q, n_qudits, "QuditCliffordSimulator::apply_H");
     // H X H^dag = Z,  H Z H^dag = X^{d-1}.
     // Heisenberg: a row's (x_q, z_q) component
     //   tau^c X^{x_q} Z^{z_q}
@@ -117,6 +122,7 @@ void QuditCliffordSimulator::apply_H(int q) {
 }
 
 void QuditCliffordSimulator::apply_P(int q) {
+    detail::check_qudit(q, n_qudits, "QuditCliffordSimulator::apply_P");
     const int rows = 2 * n_qudits;
     const int two_d = 2 * d;
 
@@ -164,6 +170,10 @@ void QuditCliffordSimulator::apply_P(int q) {
 // =============================================================================
 
 void QuditCliffordSimulator::apply_CSUM(int q_control, int q_target) {
+    detail::check_qudit(q_control, n_qudits, "QuditCliffordSimulator::apply_CSUM");
+    detail::check_qudit(q_target, n_qudits, "QuditCliffordSimulator::apply_CSUM");
+    detail::check_distinct2(q_control, q_target,
+                            "QuditCliffordSimulator::apply_CSUM", "qudits");
     // Conjugation rules under CSUM(c -> t):
     //   X_c -> X_c X_t,   X_t -> X_t
     //   Z_c -> Z_c,       Z_t -> Z_c^{d-1} Z_t
@@ -194,6 +204,10 @@ void QuditCliffordSimulator::apply_CSUM(int q_control, int q_target) {
 }
 
 void QuditCliffordSimulator::apply_CSUM_dag(int q_control, int q_target) {
+    detail::check_qudit(q_control, n_qudits, "QuditCliffordSimulator::apply_CSUM_dag");
+    detail::check_qudit(q_target, n_qudits, "QuditCliffordSimulator::apply_CSUM_dag");
+    detail::check_distinct2(q_control, q_target,
+                            "QuditCliffordSimulator::apply_CSUM_dag", "qudits");
     // CSUM^dag : |x_c, x_t> -> |x_c, (x_t - x_c) mod d>.
     // Conjugation rules:
     //   X_c -> X_c X_t^{d-1},   X_t -> X_t
@@ -257,6 +271,7 @@ void QuditCliffordSimulator::row_multiply(int r, int s) {
 // =============================================================================
 
 int QuditCliffordSimulator::measure_qudit(int q, uint64_t seed) {
+    detail::check_qudit(q, n_qudits, "QuditCliffordSimulator::measure_qudit");
     const int n = n_qudits;
     const int rows = 2 * n;
     const int two_d = 2 * d;

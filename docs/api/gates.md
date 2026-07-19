@@ -455,6 +455,27 @@ circuit.rx(q, theta);    // Parameterized gate
 2. Circuit computes gate parameters and calls appropriate `apply_*` function
 3. Statevector is modified in-place; circuit maintains instruction log (for serialization, inversion, etc.)
 
+## Validation and Error Handling
+
+Every `apply_*` primitive validates its operands before touching memory. The
+checks are a handful of integer comparisons at the kernel entry, negligible next
+to the O(2^n) amplitude sweep:
+
+- **Index bounds** (`0 <= qubit < n_qubits`): a target, control, or list entry
+  outside the register throws `std::out_of_range`. This prevents the shift
+  `1 << qubit` and the strided writes it drives from running out of range.
+- **Operand structure**: two- and three-qubit gates require distinct qubits;
+  `unitary`, `mcx`, `mcp`, and `permutation` require in-range, distinct qubit
+  lists and correctly sized matrices/permutations. A violation throws
+  `std::invalid_argument`. `permutation` additionally requires its image to be a
+  bijection of `[0, 2^k)`.
+
+Messages match the `QuantumCircuit` validators (for example
+`"h: qubit index 9 out of range [0, 3)"`). Because they throw, the `apply_*`
+functions are not `noexcept`. Direct callers receive the exception; when a gate
+is reached through a simulator `run()`, the pre-flight surfaces the same failure
+through `Result`.
+
 ## See Also
 
 - [Statevector API](statevector.md) — Quantum state representation and alignment

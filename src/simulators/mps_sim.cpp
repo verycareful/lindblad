@@ -15,6 +15,7 @@
 #include "lindblad/simulators/mps_sim.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/circuit.hpp"
+#include "lindblad/detail/validate.hpp"
 #include "lindblad/gates.hpp"
 
 #include <Eigen/Dense>
@@ -299,7 +300,7 @@ void MPSState::svd_truncate(
 void MPSState::apply_single_qubit_gate(
     const std::array<Complex128, 4>& U, int qubit
 ) {
-    assert(qubit >= 0 && qubit < n_qubits);
+    detail::check_qubit(qubit, n_qubits, "MPSState::apply_single_qubit_gate");
     auto& T = tensors[qubit];
     MPSTensor result(T.bond_left, T.bond_right);
 
@@ -329,7 +330,8 @@ void MPSState::apply_two_qubit_gate_adjacent(
     const std::array<Complex128, 16>& U, int q1
 ) {
     int q2 = q1 + 1;
-    assert(q1 >= 0 && q2 < n_qubits);
+    detail::check_qubit(q1, n_qubits, "MPSState::apply_two_qubit_gate_adjacent");
+    detail::check_qubit(q2, n_qubits, "MPSState::apply_two_qubit_gate_adjacent");
 
     auto& T1 = tensors[q1];
     auto& T2 = tensors[q2];
@@ -425,7 +427,9 @@ void MPSState::apply_swap_adjacent(int q) {
 void MPSState::apply_two_qubit_gate(
     const std::array<Complex128, 16>& U, int q1, int q2
 ) {
-    if (q1 == q2) return;
+    detail::check_qubit(q1, n_qubits, "MPSState::apply_two_qubit_gate");
+    detail::check_qubit(q2, n_qubits, "MPSState::apply_two_qubit_gate");
+    detail::check_distinct2(q1, q2, "MPSState::apply_two_qubit_gate");
 
     // Ensure q1 < q2
     bool swapped = (q1 > q2);
@@ -476,7 +480,7 @@ int MPSState::current_max_bond_dim() const {
 // =============================================================================
 
 std::vector<double> MPSState::probabilities_single(int qubit) const {
-    assert(qubit >= 0 && qubit < n_qubits);
+    detail::check_qubit(qubit, n_qubits, "MPSState::probabilities_single");
 
     // Left environment: left_env[m1, m2] tensored from sites 0..qubit-1
     // Initialise: left_env = [[1]] (1x1 identity)
@@ -1428,6 +1432,10 @@ MPSSimulator::Result MPSSimulator::run(
 ) {
     Result result(circuit.n_qubits);
     result.final_state = MPSState(circuit.n_qubits, max_bond_dim);
+
+    // Pre-flight: reject any out-of-range operand index up front (this backend
+    // surfaces errors by throwing, consistent with its other run() guards).
+    circuit.validate_operands();
 
     auto t_start = std::chrono::high_resolution_clock::now();
     std::mt19937_64 rng(seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed);

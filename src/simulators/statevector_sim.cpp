@@ -472,6 +472,9 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         if (circuit.n_qubits < 1) {
             throw std::invalid_argument("Circuit must have at least 1 qubit");
         }
+        // Pre-flight: reject any out-of-range operand index up front so the
+        // failure surfaces through Result rather than reaching a kernel.
+        circuit.validate_operands();
         if (options.fusion_max_qubit < 2 ||
             options.fusion_max_qubit > SV_FUSION_MAX_QUBIT_LIMIT) {
             throw std::invalid_argument(

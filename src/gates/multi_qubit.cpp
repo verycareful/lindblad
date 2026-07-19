@@ -1,5 +1,7 @@
 #include "lindblad/gates.hpp"
 
+#include "lindblad/detail/validate.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -13,7 +15,11 @@ namespace gates {
 // =============================================================================
 // Three-level stride pattern: visits only dim/8 pairs that need work instead
 // of dim iterations with 7/8 wasted (no-op) passes.  4–8× faster for large N.
-void apply_ccx(Statevector& sv, int c1, int c2, int tgt) noexcept {
+void apply_ccx(Statevector& sv, int c1, int c2, int tgt) {
+    detail::check_qubit(c1, sv.n_qubits, "ccx");
+    detail::check_qubit(c2, sv.n_qubits, "ccx");
+    detail::check_qubit(tgt, sv.n_qubits, "ccx");
+    detail::check_all_distinct({c1, c2, tgt}, "ccx");
     std::array<int,3> qs = {c1, c2, tgt};
     std::sort(qs.begin(), qs.end());
     const size_t s0  = 1ULL << qs[0];
@@ -44,7 +50,11 @@ void apply_ccx(Statevector& sv, int c1, int c2, int tgt) noexcept {
 // =============================================================================
 // CCZ: negate phase when all three qubits are 1
 // =============================================================================
-void apply_ccz(Statevector& sv, int c1, int c2, int tgt) noexcept {
+void apply_ccz(Statevector& sv, int c1, int c2, int tgt) {
+    detail::check_qubit(c1, sv.n_qubits, "ccz");
+    detail::check_qubit(c2, sv.n_qubits, "ccz");
+    detail::check_qubit(tgt, sv.n_qubits, "ccz");
+    detail::check_all_distinct({c1, c2, tgt}, "ccz");
     std::array<int,3> qs = {c1, c2, tgt};
     std::sort(qs.begin(), qs.end());
     const size_t s0  = 1ULL << qs[0];
@@ -73,7 +83,11 @@ void apply_ccz(Statevector& sv, int c1, int c2, int tgt) noexcept {
 // =============================================================================
 // CSWAP (Fredkin): swap q1, q2 when ctrl=1
 // =============================================================================
-void apply_cswap(Statevector& sv, int ctrl, int q1, int q2) noexcept {
+void apply_cswap(Statevector& sv, int ctrl, int q1, int q2) {
+    detail::check_qubit(ctrl, sv.n_qubits, "cswap");
+    detail::check_qubit(q1, sv.n_qubits, "cswap");
+    detail::check_qubit(q2, sv.n_qubits, "cswap");
+    detail::check_all_distinct({ctrl, q1, q2}, "cswap");
     std::array<int,3> qs = {ctrl, q1, q2};
     std::sort(qs.begin(), qs.end());
     const size_t s0    = 1ULL << qs[0];
@@ -122,7 +136,11 @@ void apply_cswap(Statevector& sv, int ctrl, int q1, int q2) noexcept {
 // 9-kernel ladder that swept the full statevector nine times. The ladder
 // remains the reference decomposition in the transpiler and MPS paths.
 // =============================================================================
-void apply_rccx(Statevector& sv, int c1, int c2, int tgt) noexcept {
+void apply_rccx(Statevector& sv, int c1, int c2, int tgt) {
+    detail::check_qubit(c1, sv.n_qubits, "rccx");
+    detail::check_qubit(c2, sv.n_qubits, "rccx");
+    detail::check_qubit(tgt, sv.n_qubits, "rccx");
+    detail::check_all_distinct({c1, c2, tgt}, "rccx");
     std::array<int,3> qs = {c1, c2, tgt};
     std::sort(qs.begin(), qs.end());
     const size_t s0  = 1ULL << qs[0];
@@ -171,6 +189,8 @@ void apply_unitary(
     const std::vector<int>& targets,
     const std::vector<Complex128>& matrix
 ) {
+    detail::check_qubits(targets, sv.n_qubits, "unitary");
+    detail::check_all_distinct(targets, "unitary");
     const int k = static_cast<int>(targets.size());
     const size_t block_size = 1ULL << k;
 
@@ -327,7 +347,13 @@ void apply_unitary(
 // diffusion matrix with an O(dim) strided pass over disjoint pairs.
 // =============================================================================
 void apply_mcx(Statevector& sv, const std::vector<int>& controls,
-               int target) noexcept {
+               int target) {
+    detail::check_qubits(controls, sv.n_qubits, "mcx");
+    detail::check_qubit(target, sv.n_qubits, "mcx");
+    detail::check_all_distinct(controls, "mcx");
+    detail::check_require(
+        std::find(controls.begin(), controls.end(), target) == controls.end(),
+        "mcx", "target must not be among the controls");
     size_t ctrl_mask = 0;
     for (int c : controls) ctrl_mask |= (1ULL << c);
     const size_t tbit = 1ULL << target;
@@ -353,7 +379,9 @@ void apply_mcx(Statevector& sv, const std::vector<int>& controls,
 // qubit is |1>.
 // =============================================================================
 void apply_mcp(Statevector& sv, const std::vector<int>& qubits,
-               double lambda) noexcept {
+               double lambda) {
+    detail::check_qubits(qubits, sv.n_qubits, "mcp");
+    detail::check_all_distinct(qubits, "mcp");
     size_t mask = 0;
     for (int q : qubits) mask |= (1ULL << q);
     const double c = std::cos(lambda), s = std::sin(lambda);
@@ -379,10 +407,28 @@ void apply_mcp(Statevector& sv, const std::vector<int>& qubits,
 // =============================================================================
 void apply_permutation(Statevector& sv, const std::vector<int>& qubits,
                        const std::vector<int>& perm) {
+    detail::check_qubits(qubits, sv.n_qubits, "permutation");
+    detail::check_all_distinct(qubits, "permutation");
     const int k = static_cast<int>(qubits.size());
     const size_t sub_dim = size_t(1) << k;
     if (perm.size() != sub_dim)
         throw std::invalid_argument("apply_permutation: perm size != 2^k");
+    // perm must be a bijection of [0, 2^k): an out-of-range image indexes
+    // sub_off out of bounds (UB); a repeated image silently drops basis states.
+    {
+        std::vector<char> seen(sub_dim, 0);
+        for (int v : perm) {
+            if (v < 0 || static_cast<size_t>(v) >= sub_dim)
+                detail::throw_structure("permutation",
+                    "perm entry " + std::to_string(v) + " out of range [0, " +
+                    std::to_string(sub_dim) + ")");
+            if (seen[static_cast<size_t>(v)])
+                detail::throw_structure("permutation",
+                    "perm must be a bijection (repeated image " +
+                    std::to_string(v) + ")");
+            seen[static_cast<size_t>(v)] = 1;
+        }
+    }
 
     // Physical offset of each target sub-state (LSB = qubits[0]).
     std::vector<size_t> sub_off(sub_dim);

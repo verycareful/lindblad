@@ -1,71 +1,126 @@
-# Core CI matrix: [GCC 13, Clang 18] x [Debug, Release] on Ubuntu 24.04.
-# Mirrors the README's standard build settings EXCEPT the -march choice:
-# hosted runners span hardware generations, so CI builds the pinned
-# x86-64-v3 baseline (the LINDBLAD_MARCH_NATIVE=OFF default) instead of
-# -march=native — otherwise numerical results would vary run-to-run with
-# the machine the job happens to land on. Every dependency is fetched by
-# CMake (FetchContent), so the runner only needs compilers + ninja + the
-# clang OpenMP runtime (GCC bundles libgomp; clang's libomp is separate).
-# Later increments (tracked in the CI issue): Windows/macOS runners, a gcovr
-# coverage artifact, a clang-format + clang-tidy gate, release automation.
+# CI matrix.
+#   Core Linux legs: [GCC 13, Clang 18] x [Debug, Release] on Ubuntu 24.04.
+#   Cross-platform legs (Release): macOS (Homebrew LLVM + libomp) and Windows
+#   (Clang under the MSVC environment). These two are the first non-Linux builds
+#   the project has ever run and are groundwork for the eventual wheels; the
+#   first runs are expected to surface portability work, handled as it appears.
+# Mirrors the README's standard build settings EXCEPT the -march choice: hosted
+# runners span hardware generations, so CI builds the pinned x86-64-v3 baseline
+# (the LINDBLAD_MARCH_NATIVE=OFF default) instead of -march=native, otherwise
+# numerical results would vary run-to-run with the machine a job lands on. Every
+# dependency is fetched by CMake (FetchContent), so a runner only needs a
+# compiler + ninja + an OpenMP runtime (GCC bundles libgomp; clang's libomp is
+# separate).
+# Later increments (tracked in the CI issue): a gcovr coverage artifact, a
+# clang-format + clang-tidy gate, release automation.
 
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  # Manual-dispatch only by design: run this on demand from the Actions tab
+  # ('Run workflow') or with 'gh workflow run CI'. Automatic push /
+  # pull-request triggers are intentionally left off; uncomment the two blocks
+  # below to opt back in.
+  # push:
+  #   branches: [main]
+  # pull_request:
+  #   branches: [main]
   workflow_dispatch:
 
 jobs:
   build-test:
-    name: ${{ matrix.compiler }} ${{ matrix.build_type }}
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        compiler: [gcc-13, clang-18]
-        build_type: [Debug, Release]
         include:
-          - compiler: gcc-13
+          - name: linux gcc-13 Debug
+            os: ubuntu-24.04
             cxx: g++-13
             cxx_flags: ""
-          - compiler: clang-18
+            build_type: Debug
+          - name: linux gcc-13 Release
+            os: ubuntu-24.04
+            cxx: g++-13
+            cxx_flags: ""
+            build_type: Release
+          - name: linux clang-18 Debug
+            os: ubuntu-24.04
             cxx: clang++-18
-            # Clang-only diagnostic knob from the standard build settings;
-            # GCC has no such flag, so it is scoped to the clang jobs.
+            # Clang-only diagnostic knob from the standard build settings; GCC
+            # has no such flag, so it is scoped to the clang jobs.
             cxx_flags: "-Wno-nan-infinity-disabled"
+            build_type: Debug
+          - name: linux clang-18 Release
+            os: ubuntu-24.04
+            cxx: clang++-18
+            cxx_flags: "-Wno-nan-infinity-disabled"
+            build_type: Release
+          - name: macos clang Release
+            os: macos-14
+            cxx: clang++            # resolved to the Homebrew LLVM clang++ below
+            cxx_flags: "-Wno-nan-infinity-disabled"
+            build_type: Release
+          - name: windows clang Release
+            os: windows-2022
+            cxx: clang++
+            cxx_flags: "-Wno-nan-infinity-disabled"
+            build_type: Release
 
     steps:
-      # v5 majors of checkout/cache are the Node 24 runtime switch (Node 20
-      # is deprecated on runners: default flips 2026-06-16, removed fall
-      # 2026). Deliberately the lowest Node-24 majors, not the newest ones:
-      # their only breaking change is the runtime.
+      # v5 majors of checkout/cache are the Node 24 runtime switch (Node 20 is
+      # deprecated on runners). Deliberately the lowest Node-24 majors.
       - uses: actions/checkout@v5
 
-      - name: Install toolchain
+      - name: Install toolchain (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build g++-13 clang-18 libomp-18-dev
+          echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
+
+      - name: Install toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja libomp llvm
+          echo "CXX=$(brew --prefix llvm)/bin/clang++" >> "$GITHUB_ENV"
+          # Hint find_package(OpenMP) at the separately-kegged libomp.
+          echo "OpenMP_ROOT=$(brew --prefix libomp)" >> "$GITHUB_ENV"
+
+      # Puts MSVC's headers/libs on the environment so the Clang driver
+      # (windows-msvc target) can find them.
+      - name: Set up MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install toolchain (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ninja --no-progress
+          echo "CXX=clang++" >> $env:GITHUB_ENV
 
       - name: Cache FetchContent dependencies
         uses: actions/cache@v5
         with:
           path: build/_deps
-          key: deps-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt') }}
+          key: deps-${{ matrix.os }}-${{ matrix.cxx }}-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Configure
+        shell: bash
         run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DCMAKE_CXX_COMPILER="${{ env.CXX }}"
           -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}"
           -DLINDBLAD_MARCH_NATIVE=OFF
           -DLINDBLAD_BUILD_PYTHON=OFF
 
       - name: Build
-        run: cmake --build build -j"$(nproc)"
+        shell: bash
+        run: cmake --build build --parallel
 
       - name: Test
+        shell: bash
         run: ctest --test-dir build --output-on-failure

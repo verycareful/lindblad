@@ -452,6 +452,15 @@ public:
     // once tests, bindings, and docs migrate to draw(DrawMode::ASCII).
     std::string to_ascii() const;
 
+    // Pre-flight validation for backend run(): checks that every instruction's
+    // qubit and classical-bit indices are in range. The per-gate builders
+    // already validate at construction time, but instructions can also enter a
+    // circuit via compose() index remapping, control(), the QASM parsers, and
+    // transpiler passes; this sweep guarantees no out-of-range index reaches a
+    // kernel regardless of ingress. Throws std::out_of_range on the first bad
+    // index (backends run it inside run()'s try, so it surfaces through Result).
+    void validate_operands() const;
+
 private:
     void validate_qubit(int qubit) const;
     void validate_clbit(int clbit) const;
