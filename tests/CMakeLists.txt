@@ -174,6 +174,10 @@ set(LINDBLAD_TEST_SOURCES
     # QASM3 ctrl(n) emission + wide-stack round-trip, lossless JSON.
     test_r1181_structured_lowering.cpp
     test_r1181_export_roundtrip.cpp
+    # R.1.18.2 — HighLevelDecompose coupling-map floor (issue #67): exact
+    # 6-CX ladder equivalence, pass-level 2q output invariant, routed
+    # grid/linear end-to-end incl. feedforward, ccx-in-basis preservation.
+    test_r1182_ccx_floor.cpp
 )
 
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this

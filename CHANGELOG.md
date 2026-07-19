@@ -4,6 +4,62 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.18.2] - 2026-07-19
+
+Patch release fixing a routability defect in the stage-0 high-level
+decomposition pass (closes #67), hardening the CI workflow after its first
+run, and publishing the contributor issue-reporting guide.
+
+### Fixed
+
+- `HighLevelDecompose` could emit a `CCX`, which the router cannot place on a
+  triangle-free coupling map (`SABRE` executes a three-qubit gate only when
+  all three wire pairs are simultaneously adjacent, and a path, grid, or
+  heavy-hex topology never provides that). Any circuit whose `MCX` / `MCP` /
+  `PERMUTATION` lowering produced a `CCX` therefore threw during routing on
+  exactly the constrained targets the pass exists to serve. The pass now
+  reads its coupling map: when the target is constrained, every `CCX` (whether
+  produced by the lowering or written directly by the user) is flattened into
+  the exact six-`CX` T-ladder, so the output contains no gate wider than two
+  qubits and routes on any connected map. Unconstrained and basis-only
+  targets keep `CCX` native, where the three-qubit form is strictly better.
+  The same fix routes a user-written `CCX` on a triangle-free map, which was
+  independently unroutable before.
+- The CI workflow failed on its first run: the Clang jobs could not configure
+  because the runner lacked Clang's OpenMP runtime, and one strict-floating-
+  point diagnostic over-constrained where a known Eigen 3.4.0 SVD defect
+  places its non-finite output, which is compiler- and optimisation-
+  dependent. The workflow now installs the Clang OpenMP runtime, and the
+  diagnostic asserts the property the truncation routine actually relies on
+  (an accepted factorisation is the exact truncation; a rejected one triggers
+  the verified fallback) rather than a single compiler's corruption layout.
+
+### Changed
+
+- The CI workflow pins the portable `x86-64-v3` instruction baseline instead
+  of `-march=native`, so numerical results are reproducible across the
+  varying hardware generations of hosted runners, and upgrades the
+  `checkout` and `cache` actions to their Node 24 runtime majors ahead of the
+  runner deprecation of Node 20.
+- `CONTRIBUTING.md` gains an "Issues" section documenting the bug and feature
+  report format: title conventions, the label taxonomy, the severity ladder
+  (low / medium / high / critical), and the body checklists.
+
+### Added
+
+- `tests/test_r1182_ccx_floor.cpp` — suite `R1182CcxFloor` (8 tests): the
+  six-`CX` ladder matched against `CCX` on a non-symmetric input across every
+  control / target operand order plus its two-qubit alphabet, duplicate-
+  operand rejection, the constrained-map two-qubit output invariant over a
+  mixed `CCX` / `MCX` / `MCP` circuit, `CCX` preserved on an unconstrained
+  and on a `ccx`-basis target, an `MCX` routed end-to-end on a `2x2` grid,
+  a user-written `CCX` routed end-to-end on a linear map, and a conditioned
+  `CCX` preserving its feedforward through the full pipeline at every level.
+
+### Results
+
+- 1984 tests across 161 suites — all passed (23 s, WSL/Clang).
+
 ## [R.1.18.1] - 2026-07-18
 
 Test-suite release covering the R.1.18.0 MCX / MCP / PERMUTATION

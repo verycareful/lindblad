@@ -194,13 +194,15 @@ public:
 class HighLevelDecompose : public TranspilationPass { ... };
 ```
 
-**Behavior**: Replaces every `MCX`, `MCP`, and `PERMUTATION` instruction with an exact standard-gate realization; all other instructions pass through unchanged. A circuit containing none of the three ops is returned as-is (single scan, no rebuild).
+**Behavior**: Replaces every `MCX`, `MCP`, and `PERMUTATION` instruction with an exact standard-gate realization; all other instructions pass through unchanged. A circuit containing none of the three ops (and no `CCX` when the floor below applies) is returned as-is (single scan, no rebuild).
 
 Lowering rules (all exact — no approximation anywhere):
 
 - `MCX` with k ≤ 2 controls → `X` / `CX` / `CCX` directly; k ≥ 3 → `H`-conjugated multi-controlled phase (Barenco-style λ/2 recursion with borrowed-wire halving), output alphabet `{X, H, P, CP, CX, CCX}`
 - `MCP` → the same λ/2 recursion directly
 - `PERMUTATION` whose basis map is a pure wire relabeling → at most k−1 `SWAP`s; a general basis map → cycle decomposition into transpositions, each realized as a CX-fan conjugated, pattern-controlled MCX (then flattened by the MCX rule)
+
+**Coupling-map floor**: when `ctx.coupling_map` is constrained (`n_physical_qubits > 0`), the output additionally contains no gate wider than two qubits. Every `CCX` — whether produced by the lowering above or written by the user — is flattened into the exact 6-`CX` T-ladder (alphabet `{H, P, CX}`, 15 gates, equal to the Toffoli as a matrix identity with no global-phase slack). Rationale: routing executes a 3-qubit gate only when all three wire pairs are simultaneously adjacent, which triangle-free targets (path, grid, heavy-hex) can never provide, so any `CCX` reaching the router on such a map would throw. The 2-qubit floor routes on any connected map. Unconstrained targets keep `CCX`: with no routing consumer the 3-qubit form is strictly better — a `ccx`-bearing `basis_gates` list keeps it native, and flattening would insert `CX` into streams that never needed it.
 
 The construction is ancilla-free and self-contained on the instruction's own operands; worst-case emitted gate count is cubic in the control count for wide `MCX` / `MCP`. Classical conditions (`condition_clbit` / `condition_value`) are propagated onto every emitted gate, preserving feedforward semantics.
 

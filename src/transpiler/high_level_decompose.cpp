@@ -222,6 +222,31 @@ std::vector<Instruction> lower_mcp(double lambda, const std::vector<int>& qubits
     return out;
 }
 
+std::vector<Instruction> lower_ccx(int a, int b, int target) {
+    validate_distinct({a, b, target}, "lower_ccx");
+    // The standard T-ladder (Nielsen & Chuang §4.3, T = P(π/4)): six CXs,
+    // seven T/T†, two Hs. The identity is EXACT as a matrix equality — no
+    // global-phase discrepancy — so it composes safely under conditions.
+    constexpr double kT = M_PI / 4.0;
+    std::vector<Instruction> out;
+    emit_h (out, target);
+    emit_cx(out, b, target);
+    emit_p (out, -kT, target);
+    emit_cx(out, a, target);
+    emit_p (out,  kT, target);
+    emit_cx(out, b, target);
+    emit_p (out, -kT, target);
+    emit_cx(out, a, target);
+    emit_p (out,  kT, b);
+    emit_p (out,  kT, target);
+    emit_h (out, target);
+    emit_cx(out, a, b);
+    emit_p (out,  kT, a);
+    emit_p (out, -kT, b);
+    emit_cx(out, a, b);
+    return out;
+}
+
 std::optional<std::vector<int>> as_qubit_relabel(const std::vector<int>& perm) {
     const size_t dim = perm.size();
     // dim = 2^k with k ≥ 0; k = 0 (dim 1) is the empty relabel.
@@ -376,27 +401,55 @@ namespace lindblad {
 // the common case (no high-level ops) allocation-free beyond the round-trip.
 
 DAGCircuit HighLevelDecompose::run(
-    const DAGCircuit& dag, const TranspilationContext& /*ctx*/
+    const DAGCircuit& dag, const TranspilationContext& ctx
 ) const {
+    using GateType = Instruction::GateType;
     QuantumCircuit qc = dag.to_circuit();
+
+    // Routability floor (R.1.18.2, issue #67). SABRE executes a 3-qubit gate
+    // only when all three wire pairs are simultaneously adjacent, and a
+    // triangle-free target (path, grid, heavy-hex — every realistic device
+    // topology) can never provide that. Under a constrained coupling map this
+    // pass therefore guarantees an output with NO gate wider than two qubits:
+    // every CCX — from the lowering above OR written by the user — is
+    // flattened into the exact 6-CX T-ladder, which routes on any connected
+    // map. Unconstrained targets keep CCX: with no routing consumer the
+    // 3-qubit form is strictly better (a ccx-bearing basis keeps it native,
+    // and flattening would force CX into a stream that never needed it).
+    const bool floor_at_2q = ctx.coupling_map.n_physical_qubits > 0;
 
     bool any = false;
     for (const Instruction& inst : qc.instructions) {
-        if (hld::is_high_level(inst)) { any = true; break; }
+        if (hld::is_high_level(inst) ||
+            (floor_at_2q && inst.type == GateType::CCX)) {
+            any = true;
+            break;
+        }
     }
     if (!any) { return dag; }
 
     std::vector<Instruction> out;
     out.reserve(qc.instructions.size());
+    auto push = [&out, floor_at_2q](Instruction&& inst) {
+        if (!(floor_at_2q && inst.type == GateType::CCX)) {
+            out.push_back(std::move(inst));
+            return;
+        }
+        std::vector<Instruction> ladder =
+            hld::lower_ccx(inst.qubits[0], inst.qubits[1], inst.qubits[2]);
+        for (Instruction& g : ladder) {
+            g.condition_clbit = inst.condition_clbit; // uniform block, exactly
+            g.condition_value = inst.condition_value; // like lower_fully
+            out.push_back(std::move(g));
+        }
+    };
     for (const Instruction& inst : qc.instructions) {
         if (!hld::is_high_level(inst)) {
-            out.push_back(inst);
+            push(Instruction(inst));
             continue;
         }
         std::vector<Instruction> lowered = hld::lower_fully(inst);
-        out.insert(out.end(),
-                   std::make_move_iterator(lowered.begin()),
-                   std::make_move_iterator(lowered.end()));
+        for (Instruction& g : lowered) { push(std::move(g)); }
     }
     qc.instructions = std::move(out);
     return DAGCircuit::from_circuit(qc);

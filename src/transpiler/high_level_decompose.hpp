@@ -16,6 +16,11 @@
 //                                  via `ctrl @`; callers needing base gates
 //                                  flatten with lower_fully)
 //   lower_fully                  → { X, H, P, CP, CX, CCX, SWAP }
+//   lower_ccx                    → { H, P, CX }            (the exact 6-CX
+//                                  T-ladder; used by the pass to floor its
+//                                  output at 2-qubit gates under a constrained
+//                                  coupling map, where routing cannot place
+//                                  any 3-qubit gate on triangle-free targets)
 //
 // All emitted instructions inherit the source instruction's classical
 // condition (condition_clbit / condition_value): a conditioned high-level op
@@ -54,6 +59,11 @@ std::vector<Instruction> lower_mcx(const std::vector<int>& controls, int target)
 
 // MCP: symmetric phase λ on the all-ones subspace of `qubits` (≥ 1 qubit).
 std::vector<Instruction> lower_mcp(double lambda, const std::vector<int>& qubits);
+
+// CCX: the standard exact 15-gate / 6-CX T-ladder (T = P(π/4)), equal to the
+// Toffoli WITHOUT global-phase slack. Alphabet { H, P, CX }: routable on any
+// connected coupling map. Throws std::invalid_argument on duplicate operands.
+std::vector<Instruction> lower_ccx(int a, int b, int target);
 
 // PERMUTATION: `perm` is the basis-index map (size 2^k, LSB = qubits[0]).
 // Validates that perm is a bijection over [0, 2^k) and throws

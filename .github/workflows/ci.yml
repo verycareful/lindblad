@@ -1,6 +1,11 @@
 # Core CI matrix: [GCC 13, Clang 18] x [Debug, Release] on Ubuntu 24.04.
-# Mirrors the README's standard build settings; every dependency is fetched
-# by CMake (FetchContent), so the runner only needs compilers + ninja.
+# Mirrors the README's standard build settings EXCEPT the -march choice:
+# hosted runners span hardware generations, so CI builds the pinned
+# x86-64-v3 baseline (the LINDBLAD_MARCH_NATIVE=OFF default) instead of
+# -march=native — otherwise numerical results would vary run-to-run with
+# the machine the job happens to land on. Every dependency is fetched by
+# CMake (FetchContent), so the runner only needs compilers + ninja + the
+# clang OpenMP runtime (GCC bundles libgomp; clang's libomp is separate).
 # Later increments (tracked in the CI issue): Windows/macOS runners, a gcovr
 # coverage artifact, a clang-format + clang-tidy gate, release automation.
 
@@ -33,15 +38,19 @@ jobs:
             cxx_flags: "-Wno-nan-infinity-disabled"
 
     steps:
-      - uses: actions/checkout@v4
+      # v5 majors of checkout/cache are the Node 24 runtime switch (Node 20
+      # is deprecated on runners: default flips 2026-06-16, removed fall
+      # 2026). Deliberately the lowest Node-24 majors, not the newest ones:
+      # their only breaking change is the runtime.
+      - uses: actions/checkout@v5
 
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build g++-13 clang-18
+          sudo apt-get install -y ninja-build g++-13 clang-18 libomp-18-dev
 
       - name: Cache FetchContent dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: build/_deps
           key: deps-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ hashFiles('CMakeLists.txt') }}
@@ -52,7 +61,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
           -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}"
-          -DLINDBLAD_MARCH_NATIVE=ON
+          -DLINDBLAD_MARCH_NATIVE=OFF
           -DLINDBLAD_BUILD_PYTHON=OFF
 
       - name: Build

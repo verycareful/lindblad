@@ -8,12 +8,15 @@
 //   stage 0  high-level decomposition (R.1.18.0)
 //                               HighLevelDecompose, composed at EVERY level
 //                               iff the target needs it: constrained coupling
-//                               map (routing handles at most 3q gates) OR
-//                               non-empty basis_gates (the equivalence library
-//                               cannot reach MCX/MCP/PERMUTATION). With
-//                               neither, the ops stay native for the backends
-//                               (lowering would only pessimize) — compose the
-//                               pass manually for unconditional lowering.
+//                               map (routing handles at most 3q gates, and
+//                               since R.1.18.2 the pass floors its output at
+//                               2q there — triangle-free maps route nothing
+//                               wider) OR non-empty basis_gates (the
+//                               equivalence library cannot reach
+//                               MCX/MCP/PERMUTATION). With neither, the ops
+//                               stay native for the backends (lowering would
+//                               only pessimize) — compose the pass manually
+//                               for unconditional lowering.
 //   stage 1  layout + routing   L0/L1: TrivialLayout → SabreSwap
 //                               L2/L3: SabreLayout → SabreSwap
 //   stage 2  optimisation       L0: none

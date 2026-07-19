@@ -56,16 +56,55 @@ Lindblad follows the conventions described in the source and summarised here:
 - **No unnecessary abstractions**: three similar lines is better than a premature helper. Do not add error handling for scenarios that cannot happen.
 - Match the style of the surrounding code. If in doubt, look at a nearby file in the same subsystem.
 
-## Bug Reports
+## Issues
 
-A good bug report includes:
+One issue per distinct problem or proposal. Titles are symptom-first with the
+component named (no version numbers in titles; versions go in the body).
+Target versions, when stated, are intentions, never promises.
 
-- The version of Lindblad (`lindblad --version` or the `LINDBLAD_VERSION_LABEL` macro).
-- A minimal reproducer — the smallest circuit or call sequence that triggers the bug.
-- Expected vs. actual output, including any relevant statevector amplitudes or measurement counts.
-- Build environment: OS, compiler version, CMake version.
+### Labels
 
-If you are filing a report based on a comparison with Qiskit or another reference simulator, include the reference output too.
+Issues carry one TYPE label (`bug`, `feature`, `docs`, `ci`, `performance`,
+`question`), one or more AREA labels (`transpiler`, `statevector`, `dm`,
+`mps`, `clifford`, `qasm`, `circuit`, `noise`, `dag`, `primitives`,
+`operators`, `algorithms`, `visualization`, and similar), plus `correctness`
+when results are wrong or unavailable. Bugs additionally carry exactly one
+severity label:
+
+- `critical` : silent wrong results, memory corruption, data loss, or a crash
+  on a mainline path
+- `high` : a mainline capability is unavailable with no reasonable workaround
+- `medium` : a loud failure (clean throw, no silent wrongness) of a supported
+  path, with a workaround or a scheduled fix
+- `low` : cosmetic or minor ergonomics
+
+Tie-break: silent wrongness always outranks loud failure. Maintainers may
+adjust labels after triage; suggesting them in the report is welcome but not
+required.
+
+### Bug reports
+
+A good bug report includes, in this order:
+
+- **Summary** — what is wrong, where, and why it happens (when known).
+- **Version** — the release observed (`lindblad --version` or the
+  `LINDBLAD_VERSION_LABEL` macro).
+- **Reproduction** — the smallest circuit or call sequence that triggers the
+  bug. If an existing test pins the behavior, name it.
+- **Expected vs. actual output** — including any relevant statevector
+  amplitudes, measurement counts, or exception text.
+- **Build environment** — OS, compiler version, CMake version.
+
+If you are filing a report based on a comparison with Qiskit or another
+reference simulator, include the reference output too. Reproduce the issue
+yourself before filing (see the AI-assisted contributions section above).
+
+### Feature requests
+
+- **Summary** — the missing capability and who needs it.
+- **Gap** — what currently fails or cannot be expressed (naming the exact
+  throws is ideal: this project fails loud by design).
+- **Proposed approach** — optional sketch; open design choices stated as open.
 
 ## Recognition
 

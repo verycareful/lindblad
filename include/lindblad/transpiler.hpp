@@ -68,6 +68,15 @@ public:
 // every emitted gate. Instructions other than the three pass through
 // unchanged; a circuit containing none of them is returned as-is.
 //
+// Coupling-map floor (R.1.18.2): when ctx.coupling_map is constrained
+// (n_physical_qubits > 0) the output additionally contains NO gate wider than
+// two qubits — every CCX, whether produced by the lowering or written by the
+// user, is flattened into the exact 6-CX T-ladder ({ H, P, CX }). Routing
+// executes a 3-qubit gate only when all three wire pairs are adjacent, which
+// triangle-free targets (path, grid, heavy-hex) never provide; the 2-qubit
+// floor routes on any connected map. Unconstrained targets keep CCX, so a
+// ccx-bearing basis stays native.
+//
 // Composition rule (preset pipelines): composed only when the transpile
 // target actually requires the lowering — a constrained coupling map (routing
 // handles at most 3-qubit gates) or a non-empty basis_gates list (the

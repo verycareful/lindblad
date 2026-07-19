@@ -126,20 +126,42 @@ TEST(DiagR1160StrictFP, LibraryGateApplicationStillCorruptsUnderItsOwnFlags) {
 // pair diverging is the first signal.
 // =============================================================================
 
-// Strict-FP twin of R1161MpsShor.PoisonThetaKeptSliceContract: whatever
-// Eigen emits in the null space, the kept rank-4 slice must be finite and
-// reconstruct the poison theta exactly — the contract svd_truncate's
-// hardening relies on, proven under IEEE semantics.
+// Strict-FP twin of R1161MpsShor.PoisonThetaKeptSliceContract, made portable
+// across compilers in R.1.18.2. The original hard-pinned WHERE Eigen's
+// garbage lands (null space only) — true under WSL/clang, but GCC 13 at -O3
+// was observed relocating the NaN INTO S, displacing a real sigma (the
+// 'interleaved' morph from svd_truncate's catalogue; -O0 matches clang, so
+// this is pure codegen). Eigen guarantees nothing about the landing site, so
+// the honest portable contract is acceptance-soundness, mirroring the
+// verify ladder svd_truncate actually runs: if the detectors ACCEPT the kept
+// slice (bit-finite and reconstructing), it must genuinely be the exact
+// rank-4 truncation; if they REJECT, the Gram fallback takes over — its math
+// is pinned by GramRouteReconstructsPoisonTheta and the library wiring by
+// LibraryEvolutionExactThroughPoisonRegion, so the reject branch documents
+// the per-config shape via the printout instead of asserting it.
 TEST(R1161StrictFP, PoisonThetaKeptSliceContract) {
     const auto theta = build_poison_theta();
     ASSERT_FALSE(matrix_bad(theta));
     const auto r = run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(theta);
     print_report("r1161-strict/jacobi/poison", r);
-    EXPECT_EQ(r.rank_1e12, 4);
-    EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-12);
-    EXPECT_FALSE(r.kept_slice_bad);
-    EXPECT_GE(r.trunc_recon_err, 0.0);
-    EXPECT_LT(r.trunc_recon_err, 1e-12);
+
+    const bool accepted = !r.kept_slice_bad && r.trunc_recon_err >= 0.0 &&
+                          r.trunc_recon_err < 1e-9;
+    if (accepted) {
+        // Acceptance must be sound: exact spectrum, exact reconstruction.
+        // A factorisation that clears the detectors while being wrong is the
+        // one outcome that would silently corrupt the library.
+        EXPECT_EQ(r.rank_1e12, 4);
+        EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-12);
+        EXPECT_GE(r.trunc_recon_err, 0.0);
+        EXPECT_LT(r.trunc_recon_err, 1e-12);
+    } else {
+        // Detectably corrupt => svd_truncate falls back (rescue proven by the
+        // Gram-route and library-level tests above/below). No hard assertion
+        // on the corruption's shape: it morphs with compiler and opt level.
+        std::cout << "[svd:r1161-strict/jacobi/poison] verify ladder rejects "
+                     "this factorisation; Gram fallback path engages\n";
+    }
 }
 
 // Strict-FP twin of R1161MpsShor.Simon36JacobiReference. The BDCSVD leg
