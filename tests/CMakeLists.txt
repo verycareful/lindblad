@@ -178,6 +178,25 @@ set(LINDBLAD_TEST_SOURCES
     # 6-CX ladder equivalence, pass-level 2q output invariant, routed
     # grid/linear end-to-end incl. feedforward, ccx-in-basis preservation.
     test_r1182_ccx_floor.cpp
+    # R.1.19.1 test suite — R.1.19.0 fail-loud operand validation (#53/#54).
+    # One negative-path suite per backend layer plus the run() pre-flight,
+    # driving every public apply-primitive through the whole failure taxonomy:
+    # out-of-range index below/at/above/far-above range (the old 1<<q
+    # shift-overflow class) -> std::out_of_range; non-distinct operands, wrong
+    # matrix/Kraus/superoperator/permutation size, non-bijection permutation,
+    # and mcx target-among-controls -> std::invalid_argument; with positive
+    # controls per primitive and message-format checks matching the circuit
+    # layer. The pre-flight suite covers QuantumCircuit::validate_operands(),
+    # each run()'s reporting style (Result.success=false for SV/DM, throw for
+    # MPS/Clifford), the compose() out-of-range remap ingress, the Clifford
+    # unsupported-gate throw, and the Statevector negative-count ctor guard.
+    # The throwing paths double as ASan/UBSan bait for the sanitiser leg.
+    test_r1191_sv_gate_validation.cpp
+    test_r1191_dm_validation.cpp
+    test_r1191_mps_validation.cpp
+    test_r1191_clifford_validation.cpp
+    test_r1191_qudit_validation.cpp
+    test_r1191_preflight.cpp
 )
 
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this

@@ -4,6 +4,56 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.19.1] - 2026-07-20
+
+Test-only release: negative-path coverage for the R.1.19.0 fail-loud operand
+validation. No library code changes. One suite per backend layer plus a `run()`
+pre-flight suite drive every public apply-primitive through the full failure
+taxonomy, and the intentionally-red qudit-MPS bounds pin from R.1.19.0 is
+realigned to the harmonized bounds contract.
+
+### Tests
+
+- `tests/test_r1191_sv_gate_validation.cpp` (suite `R1191SvGateValidation`):
+  every statevector `gates::apply_*` primitive (all single-, two-, and
+  three-qubit kernels, `apply_unitary`, `apply_mcx`, `apply_mcp`,
+  `apply_permutation`) against an out-of-range index below, at, above, and far
+  above the register (the last covering the former `1 << q` shift-overflow
+  class), non-distinct operands, wrong matrix or permutation size, a
+  non-bijection permutation, and an `mcx` target among its controls, each with
+  a positive control and a message check matching the circuit layer.
+- `tests/test_r1191_dm_validation.cpp` (suite `R1191DmValidation`):
+  `DensityMatrix::apply_gate` / `apply_kraus` / `apply_channel_superop` /
+  `apply_permutation`.
+- `tests/test_r1191_mps_validation.cpp` (suite `R1191MpsValidation`):
+  `MPSState::apply_single_qubit_gate` / `apply_two_qubit_gate` /
+  `probabilities_single`, including the `q1 == q2` case that now throws instead
+  of silently returning.
+- `tests/test_r1191_clifford_validation.cpp` (suite `R1191CliffordValidation`):
+  the `StabilizerState` gates and `measure`, and `CliffordSimulator::run`
+  throwing on a gate the tableau does not support instead of silently skipping
+  it.
+- `tests/test_r1191_qudit_validation.cpp` (suite `R1191QuditValidation`):
+  `QuditStatevector`, `QuditDensityMatrix`, `QuditMPS`, and
+  `QuditCliffordSimulator` primitives at `d = 3`.
+- `tests/test_r1191_preflight.cpp` (suite `R1191Preflight`):
+  `QuantumCircuit::validate_operands()`, each backend `run()`'s reporting style
+  (`Result.success == false` for the statevector and density-matrix backends, a
+  throw for MPS and Clifford), the `compose()` out-of-range qubit remap as a
+  builder-bypassing ingress path, and the `Statevector` negative and oversized
+  count constructor guard.
+- `tests/test_r1122_fill_frontends.cpp`: the qudit-MPS bounds cases
+  `apply_2qudit(0, 3)` and `apply_2qudit(-1, 1)` now expect `std::out_of_range`
+  (were `std::invalid_argument`); the distinctness and wrong-size cases keep
+  `std::invalid_argument`. This clears the one intentionally-red test from
+  R.1.19.0.
+
+### Results
+
+- 2089 tests across 167 suites, all passed (33.6 s, WSL/Clang). A full
+  AddressSanitizer + UndefinedBehaviorSanitizer run over the suite reported no
+  memory-safety diagnostics on any of the negative-path inputs.
+
 ## [R.1.19.0] - 2026-07-19
 
 Fail-loud operand validation at every backend primitive. The low-level
@@ -3576,4 +3626,3 @@ execute end-to-end. No new features.
 ### Changed
 
 - CMake project version updated from `0.1.0` to `1.0.0` for the alpha release line.
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             

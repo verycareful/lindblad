@@ -494,9 +494,14 @@ TEST(R1122FillFront, QuditMpsValidationThrows) {
     QuditMPS mps(3, 3, 9);
     std::vector<Complex128> right_size(81, Complex128(0.0, 0.0));
     std::vector<Complex128> wrong_size(9, Complex128(0.0, 0.0));
+    // Bounds violations throw std::out_of_range; structure violations
+    // (non-distinct qudits, wrong matrix size) throw std::invalid_argument.
+    // This mirrors the circuit layer and the harmonised checker in
+    // include/lindblad/detail/validate.hpp; the qudit-MPS bounds path used to
+    // throw std::invalid_argument and was realigned here (R.1.19.1).
     EXPECT_THROW(mps.apply_2qudit(1, 1, right_size), std::invalid_argument);
-    EXPECT_THROW(mps.apply_2qudit(0, 3, right_size), std::invalid_argument);
-    EXPECT_THROW(mps.apply_2qudit(-1, 1, right_size), std::invalid_argument);
+    EXPECT_THROW(mps.apply_2qudit(0, 3, right_size), std::out_of_range);
+    EXPECT_THROW(mps.apply_2qudit(-1, 1, right_size), std::out_of_range);
     EXPECT_THROW(mps.apply_2qudit(0, 1, wrong_size), std::invalid_argument);
 }
 
