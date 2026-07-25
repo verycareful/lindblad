@@ -4,6 +4,49 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.19.2] - 2026-07-25
+
+Patch release. Lindblad could not be configured at all with CMake 4, and the
+macOS and Windows continuous-integration legs introduced in R.1.19.0 both failed
+their first run, for unrelated reasons. No library or test code changed.
+
+### Fixed
+
+- Configuring the project with CMake 4.0 or newer failed on every platform,
+  reporting `Compatibility with CMake < 3.5 has been removed from CMake` from
+  the fetched NLopt sources. NLopt v2.7.1 declares a minimum of 3.2, and CMake 4
+  removed — rather than deprecated — support for a declared minimum below 3.5,
+  so the dependency could not be added. The dependency block now requests a
+  policy floor of 3.5 for the fetched subprojects; CMake versions predating that
+  setting ignore it, so the same source works across both. Upgrading the NLopt
+  pin is the longer-term fix and is deliberately not bundled here: NLopt is
+  compiled with strict floating point because its COBYLA convergence is
+  sensitive to fast-math, so changing its version needs its own
+  optimiser-focused validation. This surfaced on macOS first only because
+  Homebrew already ships CMake 4.
+- The Windows job selected the Clang bundled with Visual Studio, which carries
+  no OpenMP runtime, while Lindblad requires OpenMP unconditionally. It now
+  installs and explicitly selects the standalone LLVM distribution, and reports
+  the compiler version and whether the OpenMP runtime was found.
+
+### Added
+
+- The CI workflow dumps CMake's configure log when a job fails. A failed
+  configure otherwise reports only its summary message, without the compiler and
+  linker output behind the check that actually failed.
+
+### Known issues
+
+- The Windows job does not yet complete: Eigen's standard-math-library probe
+  fails there, and the underlying compiler diagnostic was absent from the job
+  output, so no speculative fix was applied. The configure-log dump above exists
+  to capture it. The Ubuntu GCC 13, Ubuntu Clang 18, and macOS jobs are
+  unaffected.
+
+### Results
+
+- 2089 tests across 167 suites — all passed (28.7 s, WSL/Clang).
+
 ## [R.1.19.1] - 2026-07-20
 
 Test-only release: negative-path coverage for the R.1.19.0 fail-loud operand

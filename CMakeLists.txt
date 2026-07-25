@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.19.1 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.19.2 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.19.1")
+set(LINDBLAD_VERSION_LABEL "R.1.19.2")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -57,6 +57,22 @@ endif()
 # FetchContent dependencies
 # ==============================================================================
 include(FetchContent)
+
+# CMake 4.0 REMOVED (not deprecated) compatibility with a declared
+# cmake_minimum_required below 3.5, so any dependency still declaring an older
+# floor is a hard configure error there. NLopt v2.7.1 declares VERSION 3.2 and
+# fails outright on a CMake 4 host; Homebrew already ships CMake 4, so this hit
+# the macOS build first. This variable tells cmake_minimum_required to treat a
+# too-old declared floor as 3.5, and is read by the fetched subprojects below.
+# CMake versions before 3.31 ignore it, so the setting is safe everywhere.
+#
+# The variable only has an effect where a declared floor is below 3.5, which
+# here is the fetched dependencies alone; Lindblad declares 3.21 above and is
+# unaffected. The durable fix is upgrading the NLopt pin, deliberately NOT
+# bundled here: NLopt is quarantined with -fno-fast-math below because its
+# COBYLA convergence is numerically fragile, so a version change needs its own
+# optimiser-focused test cycle.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 # Google Test
 FetchContent_Declare(

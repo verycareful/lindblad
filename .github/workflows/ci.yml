@@ -1,9 +1,10 @@
 # CI matrix.
 #   Core Linux legs: [GCC 13, Clang 18] x [Debug, Release] on Ubuntu 24.04.
 #   Cross-platform legs (Release): macOS (Homebrew LLVM + libomp) and Windows
-#   (Clang under the MSVC environment). These two are the first non-Linux builds
-#   the project has ever run and are groundwork for the eventual wheels; the
-#   first runs are expected to surface portability work, handled as it appears.
+#   (standalone LLVM Clang, for its OpenMP runtime, under the MSVC environment).
+#   These two are the first non-Linux builds the project has ever run and are
+#   groundwork for the eventual wheels; the first runs are expected to surface
+#   portability work, handled as it appears.
 # Mirrors the README's standard build settings EXCEPT the -march choice: hosted
 # runners span hardware generations, so CI builds the pinned x86-64-v3 baseline
 # (the LINDBLAD_MARCH_NATIVE=OFF default) instead of -march=native, otherwise
@@ -94,12 +95,33 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      # The MSVC dev environment above prepends Visual Studio's own bundled LLVM
+      # to PATH, so a bare `clang++` resolves there. That toolchain carries no
+      # OpenMP runtime, which this project requires unconditionally
+      # (find_package(OpenMP REQUIRED) plus -fopenmp at compile and link), so
+      # the build is pointed at the standalone LLVM distribution instead: it
+      # ships libomp and makes the compiler choice explicit rather than
+      # PATH-order dependent.
       - name: Install toolchain (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install ninja --no-progress
-          echo "CXX=clang++" >> $env:GITHUB_ENV
+          choco install ninja llvm --no-progress
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          if (-not (Test-Path "$llvmBin\clang++.exe")) {
+            throw "expected clang++ at $llvmBin"
+          }
+          # Forward slashes: this value reaches CMake through a bash step, where
+          # backslashes would be read as escapes.
+          echo "CXX=$($llvmBin -replace '\\','/')/clang++.exe" >> $env:GITHUB_ENV
+          # Ahead of the Visual Studio LLVM directory for any later PATH lookup.
+          echo $llvmBin >> $env:GITHUB_PATH
+          & "$llvmBin\clang++.exe" --version
+          # Report the OpenMP runtime up front: its absence is the difference
+          # between this toolchain and the Visual Studio one, and it would
+          # otherwise only surface as a confusing link error much later.
+          Get-ChildItem "C:\Program Files\LLVM\lib\libomp.lib" -ErrorAction SilentlyContinue |
+            ForEach-Object { "found $($_.FullName)" }
 
       - name: Cache FetchContent dependencies
         uses: actions/cache@v5
@@ -116,6 +138,21 @@ jobs:
           -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}"
           -DLINDBLAD_MARCH_NATIVE=OFF
           -DLINDBLAD_BUILD_PYTHON=OFF
+
+      # A failed configure prints only the message() text, not the compiler and
+      # linker output behind a failed try_compile check, which is what actually
+      # identifies the cause. CMake records that detail in its configure log, so
+      # surface it here rather than re-running the job blind.
+      - name: Dump CMake configure log (on failure)
+        if: failure()
+        shell: bash
+        run: |
+          for f in build/CMakeFiles/CMakeConfigureLog.yaml \
+                   build/CMakeFiles/CMakeError.log \
+                   build/CMakeFiles/CMakeOutput.log; do
+            echo "===================== $f ====================="
+            if [ -f "$f" ]; then cat "$f"; else echo "(not present)"; fi
+          done
 
       - name: Build
         shell: bash
