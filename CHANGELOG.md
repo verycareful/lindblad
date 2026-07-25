@@ -4,6 +4,52 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.19.3] - 2026-07-25
+
+Patch release fixing the two remaining cross-platform build failures. The Linux
+jobs were already passing; macOS and Windows each failed for a distinct reason,
+both now identified from build logs rather than inferred. No library or test code
+changed.
+
+### Fixed
+
+- The build failed outright on any non-x86 target, Apple Silicon included,
+  because `-march=x86-64-v3` (or `-march=native`) was added unconditionally under
+  GCC and Clang. `-march` is an x86 option and a non-x86 toolchain rejects it
+  (`unsupported argument 'x86-64-v3' to option '-march='`), stopping the build at
+  the first compiled file. Both spellings are now probed with
+  `check_cxx_compiler_flag` and added only where the toolchain accepts them,
+  falling back to the compiler's own default otherwise, with a status line
+  reporting the fallback. The flag only ever widened the instruction set, so
+  nothing but the available vector width changes when it is skipped.
+- Configuration failed on Windows reporting `Can't link to the standard math
+  library` from Eigen. That diagnostic is misleading: nothing failed to link.
+  Eigen 3.4.0 adds `-std=c++03` to its own configure checks unless
+  `EIGEN_TEST_CXX11` is set, and Microsoft's standard library headers cannot be
+  parsed as C++03 because they declare `noexcept`. Every Eigen probe that
+  includes `<cmath>` therefore failed to compile, and Eigen attributed the
+  failure to a missing math library. The project now sets `EIGEN_TEST_CXX11`,
+  which stops the obsolete flag being injected. Lindblad is C++23 and never
+  builds Eigen's own tests, so nothing else is affected.
+
+### Changed
+
+- The CI workflow exports `CMAKE_POLICY_VERSION_MINIMUM` for the whole job.
+  NLopt generates its C++ and Fortran bindings by running helper scripts through
+  `cmake -P` as build-time commands, and each is a fresh CMake process that does
+  not inherit the policy floor the project sets for its fetched dependencies. On
+  a CMake 4 host the build otherwise fails even though configuration succeeded.
+
+### Added
+
+- `docs/BuildAndTest.md` gains a troubleshooting entry for that same NLopt
+  failure in local builds, which the workflow setting does not cover: on CMake 4
+  the variable has to be exported into the build environment.
+
+### Results
+
+- 2089 tests across 167 suites — all passed (30.8 s, WSL/Clang).
+
 ## [R.1.19.2] - 2026-07-25
 
 Patch release. Lindblad could not be configured at all with CMake 4, and the

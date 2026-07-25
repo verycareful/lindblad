@@ -183,6 +183,38 @@ Remove-Item -Recurse -Force build
 cmake -S . -B build
 ```
 
+### Build fails inside NLopt with a CMake compatibility error
+
+Seen on CMake 4 and newer, which Homebrew already ships. Configure succeeds and
+the failure appears during the build:
+
+```text
+CMake Error at .../_deps/nlopt-src/cmake/generate-cpp.cmake:1 (cmake_minimum_required):
+  Compatibility with CMake < 3.5 has been removed from CMake.
+```
+
+- Cause: the pinned NLopt release generates its C++ and Fortran bindings by
+  running helper scripts through `cmake -P` as build-time custom commands. Each
+  script is a fresh CMake process, so it does not inherit the policy floor the
+  project sets for its fetched dependencies, and each declares a minimum below
+  3.5 — which CMake 4 rejects outright.
+- Configure-time is already handled inside `CMakeLists.txt`. Only these
+  build-time scripts need the setting, and they read it from the environment:
+
+```bash
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake --build build
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+cmake --build build
+```
+
+Building with CMake 3.x needs none of this.
+
 ### OpenMP link errors
 
 - Confirm compiler OpenMP support is installed/enabled.

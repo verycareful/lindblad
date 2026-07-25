@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.19.2 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.19.3 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.19.2")
+set(LINDBLAD_VERSION_LABEL "R.1.19.3")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,11 +27,28 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
         -Wextra
         -Wpedantic
     )
+    # -march is an x86 option. A non-x86 target (Apple Silicon, and any arm64
+    # host generally) rejects BOTH spellings outright — clang reports
+    # "unsupported argument 'x86-64-v3' to option '-march='" and the build stops
+    # — so the flag is probed rather than assumed. On a target that does not
+    # take it, the baseline is simply the compiler's default, which is correct:
+    # -march only ever widened the instruction set, it was never load-bearing.
+    include(CheckCXXCompilerFlag)
     if(LINDBLAD_MARCH_NATIVE)
-        add_compile_options(-march=native)
+        check_cxx_compiler_flag("-march=native" LINDBLAD_HAS_MARCH_NATIVE)
+        if(LINDBLAD_HAS_MARCH_NATIVE)
+            add_compile_options(-march=native)
+        else()
+            message(STATUS "lindblad: -march=native unsupported here; using compiler default")
+        endif()
     else()
         # AVX2 + FMA baseline (Intel Haswell+ / AMD Zen2+, covers >95% of hardware since 2014)
-        add_compile_options(-march=x86-64-v3)
+        check_cxx_compiler_flag("-march=x86-64-v3" LINDBLAD_HAS_MARCH_X86_64_V3)
+        if(LINDBLAD_HAS_MARCH_X86_64_V3)
+            add_compile_options(-march=x86-64-v3)
+        else()
+            message(STATUS "lindblad: -march=x86-64-v3 unsupported here (non-x86 target); using compiler default")
+        endif()
     endif()
     add_link_options(-fopenmp)
     if(LINDBLAD_BUILD_COVERAGE)
@@ -120,6 +137,15 @@ FetchContent_Declare(
 set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
 set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
+# Unless this is ON, Eigen 3.4.0 injects -std=c++03 into its own configure
+# checks (its CMakeLists.txt adds the flag, then probes for the standard math
+# library). MSVC's standard library headers cannot be parsed as C++03 — they
+# declare `noexcept` — so on a Windows Clang toolchain every Eigen probe that
+# includes <cmath> fails to COMPILE, and Eigen reports the misleading
+# "Can't link to the standard math library" and halts configuration. Turning
+# this ON only stops the stale flag being injected: Lindblad is C++23 and never
+# builds Eigen's own tests (BUILD_TESTING is forced OFF below).
+set(EIGEN_TEST_CXX11 ON CACHE BOOL "" FORCE)
 
 # Options declared before FetchContent_MakeAvailable so each fetch is conditional
 option(LINDBLAD_BUILD_TESTS      "Build test suite (ON when building Lindblad directly, OFF when consumed as a dependency)" ${PROJECT_IS_TOP_LEVEL})

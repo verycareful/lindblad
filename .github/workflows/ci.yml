@@ -32,6 +32,15 @@ jobs:
   build-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    env:
+      # NLopt v2.7.1 generates its C++ and Fortran bindings by running helper
+      # scripts through `cmake -P` as build-time custom commands. Each is a fresh
+      # CMake process, so it does not inherit the policy floor the project sets
+      # for the fetched subprojects, and each script declares a minimum below
+      # 3.5 — which CMake 4 rejects outright. The environment variable is the
+      # one channel those child processes do see. Only runners with CMake 4 are
+      # affected (macOS today, via Homebrew).
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     strategy:
       fail-fast: false
       matrix:
