@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.19.3 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.19.4 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.19.3")
+set(LINDBLAD_VERSION_LABEL "R.1.19.4")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -105,6 +105,16 @@ FetchContent_Declare(
     GIT_TAG        v1.8.3
 )
 set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+# Google Benchmark promotes its own warnings to errors by default
+# (BENCHMARK_ENABLE_WERROR), and it applies that -Werror to its own sources only.
+# The pinned release predates several clang diagnostics, so a sufficiently new
+# compiler fails the dependency build on code we do not own and cannot patch:
+# clang 20 reports -Winvalid-offsetof inside its State cache-line assertions, and
+# clang 22 reports -Wc2y-extensions on its __COUNTER__ probe. Neither is a defect
+# we can act on, and neither says anything about this project's own sources, which
+# keep -Wall -Wextra -Wpedantic. Turning the dependency's -Werror off is the
+# upstream-provided knob for exactly this situation.
+set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
 
 # pybind11
 FetchContent_Declare(

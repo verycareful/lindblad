@@ -163,9 +163,15 @@ jobs:
             if [ -f "$f" ]; then cat "$f"; else echo "(not present)"; fi
           done
 
+      # `-k 0` tells Ninja to keep building after a failure instead of stopping at
+      # the first one, so a failing job reports every broken target rather than
+      # one per dispatch. That matters most while the non-Linux legs are still
+      # being brought up: a build that dies at target 6 of 273 says nothing about
+      # the other 267. The job still fails; only the amount of diagnosis it
+      # carries changes.
       - name: Build
         shell: bash
-        run: cmake --build build --parallel
+        run: cmake --build build --parallel -- -k 0
 
       - name: Test
         shell: bash

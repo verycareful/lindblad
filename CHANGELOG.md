@@ -4,6 +4,37 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.19.4] - 2026-07-25
+
+Patch release fixing a dependency build failure that appears on recent Clang
+releases. The macOS and Windows builds now configure cleanly and get as far as
+compiling dependencies; both stopped at the same one. No library or test code
+changed.
+
+### Fixed
+
+- The build failed inside Google Benchmark on Clang 20 and Clang 22, reporting
+  `offset of on non-standard-layout type 'State'` and `'__COUNTER__' is a C2y
+  extension` respectively. Neither is a defect in this project: the pinned
+  Benchmark release compiles its own sources with its own `-Werror`, enabled by
+  default, and predates both diagnostics, so a newer compiler turns them into
+  errors in code the project does not own. Benchmark's `-Werror` is now turned
+  off through the option upstream provides for this. Lindblad's own sources are
+  unaffected and keep `-Wall -Wextra -Wpedantic`; the project has never built
+  with `-Werror`. Older compilers never reached the failure, which is why it
+  appeared only on the newest toolchains.
+
+### Changed
+
+- The CI build step passes `-k 0` to Ninja so a failing job continues past the
+  first broken target and reports all of them. A build that stops at target 6 of
+  273 says nothing about the remaining 267, which made each failed run worth a
+  single diagnosis. The job still fails; only how much it reports changes.
+
+### Results
+
+- 2089 tests across 167 suites — all passed (29.3 s, WSL/Clang).
+
 ## [R.1.19.3] - 2026-07-25
 
 Patch release fixing the two remaining cross-platform build failures. The Linux
