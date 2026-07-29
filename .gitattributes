@@ -1,0 +1,41 @@
+# Line-ending policy.
+#
+# Without this file, line endings are decided by whatever core.autocrlf happens
+# to be set to on each contributor's machine. On Windows that setting rewrites
+# every text file to CRLF at checkout, which broke 29 visualisation tests: the
+# renderers emit \n, the golden files they are compared against arrived on disk
+# with \r\n, and every byte-for-byte comparison failed. The files in the
+# repository were correct the whole time — they were being modified between
+# checkout and test.
+#
+# The policy is LF everywhere, in the repository and in the working tree, on
+# every platform. That is already true of all 422 tracked files, so this file
+# changes no content; it only stops the working tree from drifting.
+
+* text=auto eol=lf
+
+# Golden fixtures are compared byte for byte, so they are the files with the
+# least tolerance for any rewriting. Called out explicitly rather than left to
+# the rule above: it states the requirement at the place it matters, and keeps
+# them protected if the global rule is ever loosened. `text` still normalises
+# to LF on commit, so a fixture regenerated on any platform stays correct.
+tests/golden/** text eol=lf
+
+# Shell scripts must keep LF regardless of any future change above: a CRLF
+# script fails at its shebang with a confusing message about a missing
+# interpreter.
+*.sh text eol=lf
+
+# The repository currently contains no binary files. These rules exist so the
+# first one added — a diagram in the docs, a fixture image — is not corrupted
+# by the text handling above.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.zip  binary
+*.gz   binary
+*.woff binary
+*.woff2 binary
