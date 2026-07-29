@@ -4,6 +4,62 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.19.6] - 2026-07-29
+
+Patch release completing the cross-platform work. Every job in the matrix now
+builds and runs the full suite: Linux under GCC 13 and Clang 18 in both Debug and
+Release, macOS on Apple Silicon, and Windows. Nothing here changes behaviour on a
+platform that already worked.
+
+### Fixed
+
+- Linking failed on Windows with `undefined symbol: __umodti3`, referenced
+  throughout Shor's period-finding circuit construction. Five sites held the
+  intermediate of a modular multiply in `__uint128_t`; the 128-bit division that
+  compiles down to is a call into the compiler's runtime library, which is not
+  linked when Clang targets the Microsoft ABI. Those sites now go through a
+  helper that uses the extension only where it is both available and linkable,
+  and otherwise computes the same result by repeated doubling. The full 64-bit
+  operand range is preserved rather than narrowed, and the result is unchanged
+  on every platform that already built. The extension is also absent from MSVC
+  entirely, so this additionally removes what would have blocked that compiler.
+- 29 visualisation tests failed on Windows, across every ASCII, SVG, LaTeX and
+  HTML golden-fixture comparison. The renderers were correct: the generated text
+  ended each line with a line feed while the stored fixture had gained a carriage
+  return. With no `.gitattributes`, line endings were decided by each machine's
+  Git configuration, and a Windows checkout rewrote all 88 fixture files. The
+  files in the repository were correct throughout; they were being altered
+  between checkout and comparison.
+
+### Added
+
+- `.gitattributes`, pinning line endings to LF in the repository and the working
+  tree on every platform. All 422 tracked files are already stored that way and
+  none contain a NUL byte, so this changes no content — renormalising the whole
+  tree stages nothing. Golden fixtures and shell scripts are declared separately,
+  since byte-for-byte comparisons and shebang lines fail hardest and least
+  legibly when a file is rewritten. Rules for common binary types are included so
+  the first image or archive added to the tree is not corrupted. This also
+  removes the mechanism behind earlier occasions when `CITATION.cff` and
+  `CHANGELOG.md` picked up stray bytes that broke rendering and the repository
+  citation widget.
+
+### Known issues
+
+Both non-Linux jobs still report failures, all of them previously filed and none
+newly introduced here. Windows reports 4 and macOS 6, out of 2091:
+
+- Infinity used as an initial best value does not survive `-ffast-math`, so the
+  QAOA entry points return an empty result, and some non-finite guards are
+  disabled by the same flag (#68). These failures are nondeterministic, so the
+  reported count varies between runs without any change to the code.
+- The MPS SVD counts more significant singular values on arm64 than on x86-64,
+  because the cutoff that classifies them is absolute rather than relative (#69).
+
+### Results
+
+- 2089 tests across 167 suites — all passed (30.2 s, WSL/Clang).
+
 ## [R.1.19.5] - 2026-07-25
 
 Patch release making the source portable to Microsoft's standard library. The
