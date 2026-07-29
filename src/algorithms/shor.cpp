@@ -20,15 +20,45 @@ static uint64_t gcd_u64(uint64_t a, uint64_t b) {
     return a;
 }
 
-// Modular exponentiation: base^exp mod m. Uses __uint128_t to avoid overflow.
+// (a·b) mod m for full-range 64-bit operands.
+//
+// The product of two 64-bit values needs 128 bits, and how to hold it is not
+// portable. `__uint128_t` is a GCC/Clang extension: MSVC has no such type at
+// all, and on a Windows target the 128-bit division it compiles down to is a
+// call into the compiler's runtime library, which an MSVC-ABI link does not
+// pull in (observed as an undefined `__umodti3` at link time). So the extension
+// is used only where it is both available and linkable, and every other
+// toolchain takes the fallback below.
+//
+// The fallback is Russian-peasant doubling: 64 iterations, each keeping both
+// running values strictly below m. The comparisons are written as `x >= m - y`
+// rather than the obvious `x + y >= m` precisely so no intermediate can wrap —
+// which is what makes this correct for any m up to 2^64-1, not just m < 2^63.
+// It is far slower than one hardware divide, which does not matter: every
+// caller here runs while a circuit is being BUILT, never inside a simulation
+// kernel.
+static inline uint64_t mulmod_u64(uint64_t a, uint64_t b, uint64_t m) {
+#if defined(__SIZEOF_INT128__) && !defined(_WIN32)
+    return static_cast<uint64_t>(static_cast<__uint128_t>(a) * b % m);
+#else
+    uint64_t result = 0;
+    a %= m;
+    while (b > 0) {
+        if (b & 1) result = (result >= m - a) ? (result - (m - a)) : (result + a);
+        a = (a >= m - a) ? (a - (m - a)) : (a << 1);
+        b >>= 1;
+    }
+    return result;
+#endif
+}
+
+// Modular exponentiation: base^exp mod m.
 static uint64_t mod_pow(uint64_t base, uint64_t exp, uint64_t mod) {
     uint64_t result = 1;
     base %= mod;
     while (exp > 0) {
-        if (exp & 1) result = static_cast<uint64_t>(
-            static_cast<__uint128_t>(result) * base % mod);
-        base = static_cast<uint64_t>(
-            static_cast<__uint128_t>(base) * base % mod);
+        if (exp & 1) result = mulmod_u64(result, base, mod);
+        base = mulmod_u64(base, base, mod);
         exp >>= 1;
     }
     return result;
@@ -51,8 +81,7 @@ static bool is_prime(uint64_t N) {
         if (x == 1 || x == N - 1) continue;
         bool composite = true;
         for (int i = 0; i < r - 1; ++i) {
-            x = static_cast<uint64_t>(
-                static_cast<__uint128_t>(x) * x % N);
+            x = mulmod_u64(x, x, N);
             if (x == N - 1) { composite = false; break; }
         }
         if (composite) return false;
@@ -153,7 +182,7 @@ QuantumCircuit Shor::build_period_finding_circuit(
             } else {
                 const size_t x = sub >> 1;                  // target sub-state
                 const size_t y = (x < N)
-                    ? static_cast<size_t>(static_cast<__uint128_t>(ak) * x % N)
+                    ? static_cast<size_t>(mulmod_u64(ak, static_cast<uint64_t>(x), N))
                     : x;                                    // identity for x >= N
                 perm[sub] = static_cast<int>((y << 1) | 1); // ctrl = 1: modmult
             }
@@ -162,8 +191,7 @@ QuantumCircuit Shor::build_period_finding_circuit(
         qc.permute(perm, perm_qubits);
 
         // a^(2^{k+1}) mod N = (a^(2^k))^2 mod N
-        ak = static_cast<uint64_t>(
-            static_cast<__uint128_t>(ak) * ak % N);
+        ak = mulmod_u64(ak, ak, N);
     }
 
     // Step 4: IQFT on eval register
