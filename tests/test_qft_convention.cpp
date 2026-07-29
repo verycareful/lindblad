@@ -185,7 +185,7 @@ TEST(QFTConvention, ForwardQFT_N3_Amp3_DoSwapsTrue_Matches_QFT3) {
     auto sv = run_from_basis(n, 3, qc);
     const double inv_sqrt_N = 1.0 / std::sqrt(static_cast<double>(N));
     for (size_t y = 0; y < N; ++y) {
-        const double angle = 2.0 * M_PI * 3.0 * static_cast<double>(y) /
+        const double angle = 2.0 * PI * 3.0 * static_cast<double>(y) /
                              static_cast<double>(N);
         EXPECT_NEAR(sv.amplitude(y).real, std::cos(angle) * inv_sqrt_N, kTol)
             << "amp[" << y << "].real mismatch (LSB convention QFT|3⟩)";
@@ -208,7 +208,7 @@ TEST(QFTConvention, IQFT_QPE_FourierState_N4_PhaseQuarter_PeakAt_M4) {
     std::vector<Complex128> amps(N);
     const double inv_sqrt_N = 1.0 / std::sqrt(static_cast<double>(N));
     for (size_t K = 0; K < N; ++K) {
-        const double angle = 2.0 * M_PI * static_cast<double>(K) * phi;
+        const double angle = 2.0 * PI * static_cast<double>(K) * phi;
         amps[K] = {std::cos(angle) * inv_sqrt_N, std::sin(angle) * inv_sqrt_N};
     }
 
@@ -234,7 +234,7 @@ TEST(QFTConvention, IQFT_QPE_FourierState_N4_PhaseEighth_PeakAt_M2) {
     std::vector<Complex128> amps(N);
     const double inv_sqrt_N = 1.0 / std::sqrt(static_cast<double>(N));
     for (size_t K = 0; K < N; ++K) {
-        const double angle = 2.0 * M_PI * static_cast<double>(K) * phi;
+        const double angle = 2.0 * PI * static_cast<double>(K) * phi;
         amps[K] = {std::cos(angle) * inv_sqrt_N, std::sin(angle) * inv_sqrt_N};
     }
 
@@ -260,7 +260,7 @@ TEST(QFTConvention, IQFT_QPE_FourierState_N5_Phase_3_8ths_PeakAt_M12) {
     std::vector<Complex128> amps(N);
     const double inv_sqrt_N = 1.0 / std::sqrt(static_cast<double>(N));
     for (size_t K = 0; K < N; ++K) {
-        const double angle = 2.0 * M_PI * static_cast<double>(K) * phi;
+        const double angle = 2.0 * PI * static_cast<double>(K) * phi;
         amps[K] = {std::cos(angle) * inv_sqrt_N, std::sin(angle) * inv_sqrt_N};
     }
 
@@ -301,7 +301,7 @@ TEST(QFTConvention, IQFT_QPE_FourierState_N11_PhaseQuarter_PeakAt_M512) {
     std::vector<Complex128> amps(N);
     const double inv_sqrt_N = 1.0 / std::sqrt(static_cast<double>(N));
     for (size_t K = 0; K < N; ++K) {
-        const double angle = 2.0 * M_PI * static_cast<double>(K) * phi;
+        const double angle = 2.0 * PI * static_cast<double>(K) * phi;
         amps[K] = {std::cos(angle) * inv_sqrt_N, std::sin(angle) * inv_sqrt_N};
     }
 
@@ -328,7 +328,7 @@ TEST(QFTConvention, IQFT_QPE_FourierState_N11_PhaseSixth_Spread_PeakNear_M341) {
     std::vector<Complex128> amps(N);
     const double inv_sqrt_N = 1.0 / std::sqrt(static_cast<double>(N));
     for (size_t K = 0; K < N; ++K) {
-        const double angle = 2.0 * M_PI * static_cast<double>(K) * phi;
+        const double angle = 2.0 * PI * static_cast<double>(K) * phi;
         amps[K] = {std::cos(angle) * inv_sqrt_N, std::sin(angle) * inv_sqrt_N};
     }
 
@@ -377,7 +377,7 @@ TEST(QFTConvention, QPE_SGate_PhaseQuarter_N2eval_TopBitstringIs_101) {
     // Controlled-S^(2^k) on (ctrl=qubit k, target=qubit n_eval). S = diag(1, i),
     // so S^(2^k) on |1⟩ adds phase i^(2^k) = exp(2πi 2^k / 4).
     for (int k = 0; k < n_eval; ++k) {
-        const double lambda = (M_PI / 2.0) * static_cast<double>(1ULL << k);
+        const double lambda = (PI / 2.0) * static_cast<double>(1ULL << k);
         qc.cp(lambda, k, n_eval);
     }
 

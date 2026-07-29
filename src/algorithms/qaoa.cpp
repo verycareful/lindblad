@@ -11,7 +11,7 @@
 namespace lindblad {
 namespace algorithms {
 
-static constexpr double kBound = 2.0 * M_PI;
+static constexpr double kBound = 2.0 * PI;
 
 static double computational_basis_cost(
     const SparsePauliOp& cost_hamiltonian,

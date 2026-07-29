@@ -48,8 +48,8 @@ TEST(GateExtended, TDG_PhaseOnExcited) {
     Statevector sv(1);
     apply_x(sv, 0);
     apply_tdg(sv, 0);
-    const double c = std::cos(-M_PI / 4.0);
-    const double s = std::sin(-M_PI / 4.0);
+    const double c = std::cos(-PI / 4.0);
+    const double s = std::sin(-PI / 4.0);
     EXPECT_NEAR(sv.amplitude(1).real, c, kTol);
     EXPECT_NEAR(sv.amplitude(1).imag, s, kTol);
 }
@@ -100,7 +100,7 @@ TEST(GateExtended, P_OnExcitedState_PhaseApplied) {
     // P(π/2)|1⟩ = e^(iπ/2)|1⟩ = i|1⟩
     Statevector sv(1);
     apply_x(sv, 0);
-    apply_p(sv, 0, M_PI / 2.0);
+    apply_p(sv, 0, PI / 2.0);
     EXPECT_NEAR(sv.amplitude(1).real, 0.0, kTol);
     EXPECT_NEAR(sv.amplitude(1).imag, 1.0, kTol);
 }
@@ -109,7 +109,7 @@ TEST(GateExtended, P_Pi_IsZ) {
     // P(π) = Z
     Statevector sv1(1), sv2(1);
     apply_x(sv1, 0); apply_x(sv2, 0);
-    apply_p(sv1, 0, M_PI);
+    apply_p(sv1, 0, PI);
     apply_z(sv2, 0);
     EXPECT_NEAR(sv1.amplitude(1).real, sv2.amplitude(1).real, kTol);
     EXPECT_NEAR(sv1.amplitude(1).imag, sv2.amplitude(1).imag, kTol);
@@ -122,7 +122,7 @@ TEST(GateExtended, P_Pi_IsZ) {
 TEST(GateExtended, U3_IsGeneralSingleQubit) {
     // U3(π, 0, π) = X (up to global phase)
     Statevector sv(1);
-    apply_u3(sv, 0, M_PI, 0.0, M_PI);
+    apply_u3(sv, 0, PI, 0.0, PI);
     // |0⟩ → should be |1⟩ in probability
     EXPECT_NEAR(sv.probability(0), 0.0, kTol);
     EXPECT_NEAR(sv.probability(1), 1.0, kTol);
@@ -131,7 +131,7 @@ TEST(GateExtended, U3_IsGeneralSingleQubit) {
 TEST(GateExtended, U3_IsHadamardCase) {
     // U3(π/2, 0, π) = H
     Statevector sv1(1), sv2(1);
-    apply_u3(sv1, 0, M_PI / 2.0, 0.0, M_PI);
+    apply_u3(sv1, 0, PI / 2.0, 0.0, PI);
     apply_h(sv2, 0);
     EXPECT_NEAR(sv1.probability(0), sv2.probability(0), kTol);
     EXPECT_NEAR(sv1.probability(1), sv2.probability(1), kTol);
@@ -141,8 +141,8 @@ TEST(GateExtended, U1_IsPhaseGate) {
     // U1(λ)|1⟩ = e^(iλ)|1⟩ — same as P(λ)
     Statevector sv1(1), sv2(1);
     apply_x(sv1, 0); apply_x(sv2, 0);
-    apply_u1(sv1, 0, M_PI / 3.0);
-    apply_p(sv2, 0, M_PI / 3.0);
+    apply_u1(sv1, 0, PI / 3.0);
+    apply_p(sv2, 0, PI / 3.0);
     EXPECT_NEAR(sv1.amplitude(1).real, sv2.amplitude(1).real, kTol);
     EXPECT_NEAR(sv1.amplitude(1).imag, sv2.amplitude(1).imag, kTol);
 }
@@ -246,14 +246,14 @@ TEST(GateExtended, CRX_HalfRotation_ControlActive) {
     // |10⟩ → |11⟩ (up to phase)
     Statevector sv(2);
     apply_x(sv, 1);
-    apply_crx(sv, 1, 0, M_PI);
+    apply_crx(sv, 1, 0, PI);
     EXPECT_NEAR(sv.probability(3), 1.0, kTol); // |11⟩ = index 3
 }
 
 TEST(GateExtended, CRX_NoFlipOnZeroControl) {
     Statevector sv(2);
     apply_x(sv, 0);           // q0=1, q1=0
-    apply_crx(sv, 1, 0, M_PI);
+    apply_crx(sv, 1, 0, PI);
     EXPECT_NEAR(sv.probability(1), 1.0, kTol); // unchanged |01⟩
 }
 
@@ -261,7 +261,7 @@ TEST(GateExtended, CRY_HalfPi_CreatesEntanglement) {
     // CRY(π/2) on |10⟩: RY(π/2)|0⟩ = cos(π/4)|0⟩+sin(π/4)|1⟩
     Statevector sv(2);
     apply_x(sv, 1);           // |10⟩
-    apply_cry(sv, 1, 0, M_PI / 2.0);
+    apply_cry(sv, 1, 0, PI / 2.0);
     // q0 gets RY(π/2)
     EXPECT_NEAR(sv.probability(2), 0.5, kTol); // |10⟩
     EXPECT_NEAR(sv.probability(3), 0.5, kTol); // |11⟩
@@ -272,7 +272,7 @@ TEST(GateExtended, CRZ_PhaseOnExcited) {
     // Probabilities unchanged; only phases shift.
     Statevector sv(2);
     apply_x(sv, 0); apply_x(sv, 1);
-    apply_crz(sv, 1, 0, M_PI / 2.0);
+    apply_crz(sv, 1, 0, PI / 2.0);
     EXPECT_NEAR(sv.probability(3), 1.0, kTol); // still |11⟩
     EXPECT_NEAR(sv.norm_sq(), 1.0, 1e-12);
 }
@@ -285,7 +285,7 @@ TEST(GateExtended, CP_PhaseOnBothExcited) {
     // CP(π/2)|11⟩: adds e^(iπ/2)=i phase to |11⟩ component.
     Statevector sv(2);
     apply_x(sv, 0); apply_x(sv, 1);
-    apply_cp(sv, 1, 0, M_PI / 2.0);
+    apply_cp(sv, 1, 0, PI / 2.0);
     EXPECT_NEAR(sv.amplitude(3).real, 0.0, kTol);
     EXPECT_NEAR(sv.amplitude(3).imag, 1.0, kTol);
 }
@@ -294,7 +294,7 @@ TEST(GateExtended, CP_NoPhaseOnSingleExcited) {
     // CP(π/2)|10⟩: control=q1=1 but target=q0=0 → no phase.
     Statevector sv(2);
     apply_x(sv, 1);
-    apply_cp(sv, 1, 0, M_PI / 2.0);
+    apply_cp(sv, 1, 0, PI / 2.0);
     EXPECT_NEAR(sv.amplitude(2).real, 1.0, kTol);
     EXPECT_NEAR(sv.amplitude(2).imag, 0.0, kTol);
 }
@@ -326,7 +326,7 @@ TEST(GateExtended, ECR_IsUnitary_AppliedTwice_Nontrivial) {
 TEST(GateExtended, RXX_Pi_AntiCorrelated) {
     // RXX(π)|00⟩ = -i|11⟩  (up to global phase, max entanglement at π)
     Statevector sv(2);
-    apply_rxx(sv, 0, 1, M_PI);
+    apply_rxx(sv, 0, 1, PI);
     EXPECT_NEAR(sv.probability(0), 0.0, kTol);
     EXPECT_NEAR(sv.probability(3), 1.0, kTol);
     EXPECT_NEAR(sv.amplitude(3).imag, -1.0, kTol);
@@ -335,14 +335,14 @@ TEST(GateExtended, RXX_Pi_AntiCorrelated) {
 TEST(GateExtended, RXX_HalfPi_MaxEntanglement) {
     // RXX(π/2)|00⟩ creates 50/50 superposition of |00⟩ and |11⟩.
     Statevector sv(2);
-    apply_rxx(sv, 0, 1, M_PI / 2.0);
+    apply_rxx(sv, 0, 1, PI / 2.0);
     EXPECT_NEAR(sv.probability(0), 0.5, kTol);
     EXPECT_NEAR(sv.probability(3), 0.5, kTol);
 }
 
 TEST(GateExtended, RYY_Pi_AntiCorrelated) {
     Statevector sv(2);
-    apply_ryy(sv, 0, 1, M_PI);
+    apply_ryy(sv, 0, 1, PI);
     EXPECT_NEAR(sv.probability(0), 0.0, kTol);
     EXPECT_NEAR(sv.probability(3), 1.0, kTol);
 }
@@ -352,7 +352,7 @@ TEST(GateExtended, RZZ_IsPhaseGateOnComputationalBasis) {
     Statevector sv(2);
     apply_h(sv, 0); apply_h(sv, 1);
     auto probs_before = sv.probabilities();
-    apply_rzz(sv, 0, 1, M_PI / 3.0);
+    apply_rzz(sv, 0, 1, PI / 3.0);
     auto probs_after = sv.probabilities();
     for (size_t i = 0; i < 4; ++i)
         EXPECT_NEAR(probs_before[i], probs_after[i], kTol);

@@ -109,7 +109,7 @@ TEST(R1141CorpusSemantics, QftN8MatchesClosedFormOnNonSymmetricInput) {
         for (int j = i; j < n; ++j) {
             frac += ((k >> j) & 1) ? std::pow(0.5, j - i + 1) : 0.0;
         }
-        phi[i] = 2.0 * M_PI * frac;
+        phi[i] = 2.0 * PI * frac;
     }
     const double norm = std::pow(0.5, n / 2.0);
     for (int m = 0; m < (1 << n); ++m) {
@@ -156,7 +156,7 @@ TEST(R1141CorpusSemantics, CliffordN8RunsOnTableauAndAgreesWithStatevector) {
     tvd *= 0.5;
 
     const double support = static_cast<double>(p.size());
-    const double noise_scale = std::sqrt(support / (M_PI * kShotsLocal));
+    const double noise_scale = std::sqrt(support / (PI * kShotsLocal));
     EXPECT_LT(tvd, 3.0 * noise_scale + 0.01)
         << "tableau vs statevector distributions diverge (TVD " << tvd << ")";
 }

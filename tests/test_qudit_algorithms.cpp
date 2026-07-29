@@ -41,7 +41,7 @@ make_simon_f(const std::vector<int>& s, int n, int d) {
 static std::vector<Complex128> shift_eigenstate(int d, int k) {
     std::vector<Complex128> psi(static_cast<size_t>(d));
     const double norm = 1.0 / std::sqrt(static_cast<double>(d));
-    const double two_pi_over_d = 2.0 * M_PI / static_cast<double>(d);
+    const double two_pi_over_d = 2.0 * PI / static_cast<double>(d);
     for (int j = 0; j < d; ++j)
         psi[static_cast<size_t>(j)] =
             Complex128::exp_i(-two_pi_over_d * static_cast<double>(k * j)) * norm;

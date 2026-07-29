@@ -31,10 +31,10 @@ TEST(RZX_SignFix, FromState00_HalfPi) {
     // Start |00⟩, apply RZX(π/2) with q0=Z-qubit, q1=X-qubit.
     // |00⟩ → cos(π/4)|00⟩ − i·sin(π/4)|10⟩
     Statevector sv(2);
-    gates::apply_rzx(sv, 0, 1, M_PI / 2.0);
+    gates::apply_rzx(sv, 0, 1, PI / 2.0);
 
-    const double c = std::cos(M_PI / 4.0);
-    const double s = std::sin(M_PI / 4.0);
+    const double c = std::cos(PI / 4.0);
+    const double s = std::sin(PI / 4.0);
 
     // amplitude at index 0 = |q1=0,q0=0⟩: should be  cos(π/4)
     auto a0 = sv.amplitude(0);
@@ -52,10 +52,10 @@ TEST(RZX_SignFix, FromState01_HalfPi) {
     // |01⟩ → cos(π/4)|01⟩ + i·sin(π/4)|11⟩  (sign flips vs Z=+1)
     Statevector sv(2);
     gates::apply_x(sv, 0);               // |00⟩ → |01⟩
-    gates::apply_rzx(sv, 0, 1, M_PI / 2.0);
+    gates::apply_rzx(sv, 0, 1, PI / 2.0);
 
-    const double c = std::cos(M_PI / 4.0);
-    const double s = std::sin(M_PI / 4.0);
+    const double c = std::cos(PI / 4.0);
+    const double s = std::sin(PI / 4.0);
 
     // index 1 = |q1=0,q0=1⟩
     auto a1 = sv.amplitude(1);
@@ -77,7 +77,7 @@ TEST(RZX_SignFix, RZX_Pi_IsZXProduct) {
     // Actually in lindblad LSB ordering index 2 = |q1=1,q0=0⟩.
     // So |01⟩ with q0=0,q1=1 → index 2. Correct.
     Statevector sv(2);
-    gates::apply_rzx(sv, 0, 1, M_PI);
+    gates::apply_rzx(sv, 0, 1, PI);
 
     // amplitude at index 2 (|q1=1,q0=0⟩) should be -i (up to global phase)
     auto a2 = sv.amplitude(2);
@@ -92,7 +92,7 @@ TEST(RZX_SignFix, RZX_Pi_IsZXProduct) {
 TEST(RZX_SignFix, NormPreserved) {
     Statevector sv(3);
     gates::apply_h(sv, 0);
-    gates::apply_rzx(sv, 0, 1, M_PI / 3.0);
+    gates::apply_rzx(sv, 0, 1, PI / 3.0);
     gates::apply_rzx(sv, 1, 2, 0.7);
     EXPECT_NEAR(sv.norm_sq(), 1.0, 1e-12);
 }

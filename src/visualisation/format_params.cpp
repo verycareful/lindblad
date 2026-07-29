@@ -58,20 +58,20 @@ struct PiSnapEntry {
 const std::array<PiSnapEntry, 14>& pi_snap_table() {
     static const std::array<PiSnapEntry, 14> table = { {
         // Integer multiples of pi.
-        { 1, 1, 1.0          * M_PI,                     "pi"           },
-        { 2, 1, 2.0          * M_PI,                     "2pi"          },
-        { 3, 1, 3.0          * M_PI,                     "3pi"          },
-        { 4, 1, 4.0          * M_PI,                     "4pi"          },
+        { 1, 1, 1.0          * PI,                     "pi"           },
+        { 2, 1, 2.0          * PI,                     "2pi"          },
+        { 3, 1, 3.0          * PI,                     "3pi"          },
+        { 4, 1, 4.0          * PI,                     "4pi"          },
         // Half / third / quarter etc.
-        { 3, 2, 3.0 / 2.0    * M_PI,                     "3pi/2"        },
-        { 1, 2, 0.5          * M_PI,                     "pi/2"         },
-        { 2, 3, 2.0 / 3.0    * M_PI,                     "2pi/3"        },
-        { 1, 3, M_PI         / 3.0,                      "pi/3"         },
-        { 3, 4, 3.0 * M_PI   / 4.0,                      "3pi/4"        },
-        { 1, 4, M_PI         / 4.0,                      "pi/4"         },
-        { 5, 6, 5.0 * M_PI   / 6.0,                      "5pi/6"        },
-        { 1, 6, M_PI         / 6.0,                      "pi/6"         },
-        { 1, 8, M_PI         / 8.0,                      "pi/8"         },
+        { 3, 2, 3.0 / 2.0    * PI,                     "3pi/2"        },
+        { 1, 2, 0.5          * PI,                     "pi/2"         },
+        { 2, 3, 2.0 / 3.0    * PI,                     "2pi/3"        },
+        { 1, 3, PI         / 3.0,                      "pi/3"         },
+        { 3, 4, 3.0 * PI   / 4.0,                      "3pi/4"        },
+        { 1, 4, PI         / 4.0,                      "pi/4"         },
+        { 5, 6, 5.0 * PI   / 6.0,                      "5pi/6"        },
+        { 1, 6, PI         / 6.0,                      "pi/6"         },
+        { 1, 8, PI         / 8.0,                      "pi/8"         },
         // Zero anchor (formatted as "0", not "0pi").
         { 0, 1, 0.0,                                     "0"            },
     } };

@@ -100,7 +100,7 @@ std::vector<Complex128> dft3() {
     const double inv = 1.0 / std::sqrt(3.0);
     for (int j = 0; j < 3; ++j)
         for (int k = 0; k < 3; ++k) {
-            const double a = 2.0 * M_PI * j * k / 3.0;
+            const double a = 2.0 * PI * j * k / 3.0;
             F[j * 3 + k] = Complex128(inv * std::cos(a), inv * std::sin(a));
         }
     return F;
@@ -170,11 +170,11 @@ measure q -> c;
         ADD_FAILURE() << "gate not found";
         return 0.0;
     };
-    EXPECT_NEAR(param_of(GT::RY), M_PI, kTol);
-    EXPECT_NEAR(param_of(GT::RZ), M_PI / 2.0, kTol);
-    EXPECT_NEAR(param_of(GT::P), -M_PI / 4.0, kTol);
-    EXPECT_NEAR(param_of(GT::U1), 2.0 * M_PI, kTol);
-    EXPECT_NEAR(param_of(GT::U2), M_PI, kTol);
+    EXPECT_NEAR(param_of(GT::RY), PI, kTol);
+    EXPECT_NEAR(param_of(GT::RZ), PI / 2.0, kTol);
+    EXPECT_NEAR(param_of(GT::P), -PI / 4.0, kTol);
+    EXPECT_NEAR(param_of(GT::U1), 2.0 * PI, kTol);
+    EXPECT_NEAR(param_of(GT::U2), PI, kTol);
 }
 
 TEST(R1122FillFront, Qasm2CustomGateDefinitionParameterArithmetic) {
@@ -200,9 +200,9 @@ foo(0.8) q[0], q[1];
     EXPECT_NEAR(qc.instructions[1].params[0], 0.4, kTol) << "a/2";
     EXPECT_EQ(qc.instructions[1].qubits, (std::vector<int>{1}));
     EXPECT_NEAR(qc.instructions[2].params[0], 1.6, kTol) << "2*a";
-    EXPECT_NEAR(qc.instructions[3].params[0], 0.8 + M_PI, kTol) << "a+pi";
+    EXPECT_NEAR(qc.instructions[3].params[0], 0.8 + PI, kTol) << "a+pi";
     EXPECT_NEAR(qc.instructions[4].params[0], -0.8, kTol) << "-a";
-    EXPECT_NEAR(qc.instructions[5].params[0], 0.8 - M_PI / 2.0, kTol)
+    EXPECT_NEAR(qc.instructions[5].params[0], 0.8 - PI / 2.0, kTol)
         << "a-pi/2 must bind subtraction before division";
     EXPECT_EQ(qc.instructions[6].type, GT::CX);
     EXPECT_EQ(qc.instructions[6].qubits, (std::vector<int>{0, 1}));
@@ -369,7 +369,7 @@ TEST(R1122FillFront, SamplerBatchSeedingParametersAndNoise) {
     Sampler s;
     s.options.shots = 128;
     s.options.seed = 11;
-    auto batch = s.run({rot, fixed}, {{M_PI}});  // params only for circuit 0
+    auto batch = s.run({rot, fixed}, {{PI}});  // params only for circuit 0
     ASSERT_EQ(batch.size(), 2u);
     ASSERT_EQ(batch[0].size(), 1u);
     EXPECT_EQ(batch[0].begin()->first, "1") << "rx(pi) flips deterministically";

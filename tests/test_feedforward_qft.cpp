@@ -24,7 +24,7 @@ using namespace lindblad;
 using namespace lindblad::algorithms;
 using GT = Instruction::GateType;
 
-static constexpr double kPi = M_PI;
+static constexpr double kPi = PI;
 
 // =============================================================================
 // Helpers

@@ -53,7 +53,7 @@ VQE::Result VQE::compute_minimum_eigenvalue(
     std::vector<double> params = initial_params;
     if (params.empty()) {
         std::mt19937_64 rng(42);
-        std::uniform_real_distribution<double> dist(-M_PI, M_PI);
+        std::uniform_real_distribution<double> dist(-PI, PI);
         params.resize(n_params);
         for (auto& p : params) p = dist(rng);
     }

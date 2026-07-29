@@ -8,9 +8,6 @@
 
 #include <cmath>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 using namespace lindblad;
 
@@ -87,7 +84,7 @@ TEST(EstimatorTest, PlusStateZ) {
 TEST(EstimatorTest, RyParametricHalfPi) {
     // Ry(π/2)|0⟩ → ⟨Z⟩ = cos(π/2) = 0
     QuantumCircuit qc(1);
-    qc.ry(M_PI / 2.0, 0);
+    qc.ry(PI / 2.0, 0);
     SparsePauliOp z({{"Z", Complex128(1.0, 0.0)}});
     Estimator est;
     EXPECT_NEAR(est.run_single(qc, z), 0.0, 1e-10);
@@ -96,7 +93,7 @@ TEST(EstimatorTest, RyParametricHalfPi) {
 TEST(EstimatorTest, RyParametricPi) {
     // Ry(π)|0⟩ = |1⟩ → ⟨Z⟩ = -1
     QuantumCircuit qc(1);
-    qc.ry(M_PI, 0);
+    qc.ry(PI, 0);
     SparsePauliOp z({{"Z", Complex128(1.0, 0.0)}});
     Estimator est;
     EXPECT_NEAR(est.run_single(qc, z), -1.0, 1e-10);
@@ -111,7 +108,7 @@ TEST(EstimatorTest, BatchConsistentWithSingle) {
     SparsePauliOp z({{"Z", Complex128(1.0, 0.0)}});
     Estimator est;
 
-    for (double theta : {0.0, M_PI / 2.0, M_PI}) {
+    for (double theta : {0.0, PI / 2.0, PI}) {
         QuantumCircuit qc(1);
         qc.ry(theta, 0);
         double single = est.run_single(qc, z);
@@ -131,7 +128,7 @@ TEST(EstimatorTest, GradientAnalyticalCheck) {
     Estimator est;
 
     const double theta = 0.7;
-    const double shift = M_PI / 2.0;
+    const double shift = PI / 2.0;
 
     QuantumCircuit qc_plus(1), qc_minus(1);
     qc_plus.ry(theta + shift, 0);

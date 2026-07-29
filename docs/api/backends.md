@@ -153,7 +153,7 @@ Returns: `"lindblad_local_simulator"`
 std::string version() const;
 ```
 
-Returns the build version string derived from the CMake `LINDBLAD_VERSION_LABEL` compile definition (e.g. `"R.1.19.4"`). The value tracks `LINDBLAD_VERSION_LABEL` in `CMakeLists.txt` and cannot drift from the project version.
+Returns the build version string derived from the CMake `LINDBLAD_VERSION_LABEL` compile definition (e.g. `"R.1.19.5"`). The value tracks `LINDBLAD_VERSION_LABEL` in `CMakeLists.txt` and cannot drift from the project version.
 
 ### `max_qubits()`
 

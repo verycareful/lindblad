@@ -362,7 +362,7 @@ int StabilizerState::expectation_pauli(const std::string& pauli) const {
 
 bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
     using GT = Instruction::GateType;
-    const double pi = M_PI;
+    const double pi = PI;
     for (const auto& inst : circuit.instructions) {
         switch (inst.type) {
             case GT::H: case GT::X: case GT::Y: case GT::Z:
@@ -423,7 +423,7 @@ CliffordSimulator::Result CliffordSimulator::run(
     circuit.validate_operands();
 
     const int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
-    const double pi = M_PI;
+    const double pi = PI;
 
     std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
 

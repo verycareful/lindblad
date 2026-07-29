@@ -6,9 +6,6 @@
 #include <cmath>
 #include <stdexcept>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 using namespace lindblad;
 
@@ -80,7 +77,7 @@ TEST(QASM2ParserTest, ParameterizedGate) {
     ASSERT_EQ(qc.instructions.size(), 1u);
     EXPECT_EQ(qc.instructions[0].type, Instruction::GateType::RZ);
     EXPECT_EQ(qc.instructions[0].qubits[0], 0);
-    EXPECT_NEAR(qc.instructions[0].params[0], M_PI/2, 1e-5);
+    EXPECT_NEAR(qc.instructions[0].params[0], PI/2, 1e-5);
 }
 
 // =============================================================================
@@ -95,7 +92,7 @@ TEST(QASM2ParserTest, MathExpressionPi) {
     );
     ASSERT_EQ(qc.instructions.size(), 1u);
     EXPECT_EQ(qc.instructions[0].type, Instruction::GateType::RX);
-    EXPECT_NEAR(qc.instructions[0].params[0], M_PI/2, 1e-10);
+    EXPECT_NEAR(qc.instructions[0].params[0], PI/2, 1e-10);
 }
 
 TEST(QASM2ParserTest, MathExpressionNegative) {
@@ -106,7 +103,7 @@ TEST(QASM2ParserTest, MathExpressionNegative) {
     );
     ASSERT_EQ(qc.instructions.size(), 1u);
     EXPECT_EQ(qc.instructions[0].type, Instruction::GateType::RY);
-    EXPECT_NEAR(qc.instructions[0].params[0], -M_PI, 1e-10);
+    EXPECT_NEAR(qc.instructions[0].params[0], -PI, 1e-10);
 }
 
 // =============================================================================

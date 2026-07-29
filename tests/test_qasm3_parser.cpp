@@ -28,9 +28,6 @@
 #include <stdexcept>
 #include <string>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 using namespace lindblad;
 using GT = Instruction::GateType;
@@ -605,11 +602,11 @@ TEST(QASM3ParserTest, MatrixFallbackCtrlExtendsTo4x4) {
 
 TEST(QASM3ParserTest, ParamExprPiLiteral) {
     auto qc = parse3("qubit[1] q;\nrx(pi) q[0];\n");
-    EXPECT_NEAR(qc.instructions[0].params[0], M_PI, 1e-12);
+    EXPECT_NEAR(qc.instructions[0].params[0], PI, 1e-12);
 }
 TEST(QASM3ParserTest, ParamExprTauLiteral) {
     auto qc = parse3("qubit[1] q;\nrx(tau) q[0];\n");
-    EXPECT_NEAR(qc.instructions[0].params[0], 2.0 * M_PI, 1e-12);
+    EXPECT_NEAR(qc.instructions[0].params[0], 2.0 * PI, 1e-12);
 }
 TEST(QASM3ParserTest, ParamExprEulerLiteral) {
     auto qc = parse3("qubit[1] q;\nrx(euler) q[0];\n");
@@ -617,11 +614,11 @@ TEST(QASM3ParserTest, ParamExprEulerLiteral) {
 }
 TEST(QASM3ParserTest, ParamExprPiOverTwo) {
     auto qc = parse3("qubit[1] q;\nrx(pi/2) q[0];\n");
-    EXPECT_NEAR(qc.instructions[0].params[0], M_PI / 2.0, 1e-12);
+    EXPECT_NEAR(qc.instructions[0].params[0], PI / 2.0, 1e-12);
 }
 TEST(QASM3ParserTest, ParamExprNegativePi) {
     auto qc = parse3("qubit[1] q;\nrx(-pi) q[0];\n");
-    EXPECT_NEAR(qc.instructions[0].params[0], -M_PI, 1e-12);
+    EXPECT_NEAR(qc.instructions[0].params[0], -PI, 1e-12);
 }
 TEST(QASM3ParserTest, ParamExprPrecedenceMulOverAdd) {
     auto qc = parse3("qubit[1] q;\nrx(1.0 + 2.0 * 3.0) q[0];\n");
@@ -657,7 +654,7 @@ TEST(QASM3ParserTest, ParamExprDoubleNegation) {
 }
 TEST(QASM3ParserTest, ParamExprComplexNested) {
     auto qc = parse3("qubit[1] q;\nrx(pi/4 + 1.0) q[0];\n");
-    EXPECT_NEAR(qc.instructions[0].params[0], M_PI / 4.0 + 1.0, 1e-12);
+    EXPECT_NEAR(qc.instructions[0].params[0], PI / 4.0 + 1.0, 1e-12);
 }
 
 // ============================================================================
@@ -819,7 +816,7 @@ TEST(QASM3ParserTest, SymbolicExpressionEvaluatesAfterBind) {
         "qubit[1] q;\n"
         "ry(theta + pi/4) q[0];\n");
     qc.bind_parameters({{"theta", 0.3}});
-    EXPECT_NEAR(qc.instructions[0].params[0], 0.3 + M_PI / 4.0, 1e-12);
+    EXPECT_NEAR(qc.instructions[0].params[0], 0.3 + PI / 4.0, 1e-12);
 }
 TEST(QASM3ParserTest, BindMissingParameterThrows) {
     auto qc = parse3_raw(

@@ -384,7 +384,7 @@ TEST(AuditR1112, C11a_Optimize1qKeepsConditions) {
     QuantumCircuit qc(1, 1);
     qc.h(0);
     qc.measure(0, 0);
-    qc.p_if(M_PI, 0, 0, 1);
+    qc.p_if(PI, 0, 0, 1);
 
     auto out = transpile(qc, CouplingMap(), {}, 1);
 

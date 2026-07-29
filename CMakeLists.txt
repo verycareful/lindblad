@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.19.4 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.19.5 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.19.4")
+set(LINDBLAD_VERSION_LABEL "R.1.19.5")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -208,6 +208,18 @@ if(LINDBLAD_BUILD_TESTS)
 endif()
 if(LINDBLAD_BUILD_BENCHMARKS)
     FetchContent_MakeAvailable(benchmark)
+    # Google Benchmark compiles its own sources with -pedantic-errors, which it
+    # applies unconditionally — turning BENCHMARK_ENABLE_WERROR off above does
+    # not remove it. Clang classifies invalid-offsetof as an extension warning,
+    # and -pedantic-errors promotes extension warnings to hard errors, so
+    # Clang 20 rejects the static assertions Benchmark makes about its own State
+    # layout. The diagnostic is reported as [-Werror,-Winvalid-offsetof] even
+    # with no -Werror on the command line, which makes the real cause easy to
+    # misread. Disabling the group outright is what actually clears it: -w only
+    # silences warnings, and these are errors by the time it would apply.
+    if(TARGET benchmark AND (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+        target_compile_options(benchmark PRIVATE -Wno-invalid-offsetof)
+    endif()
 endif()
 if(LINDBLAD_BUILD_PYTHON)
     FetchContent_MakeAvailable(pybind11)

@@ -102,7 +102,7 @@ TEST(R1122FillAlgo, QFTApplyProducesFourierStateOfOne) {
     auto res = sim.run(composed, 0, 1);
     ASSERT_TRUE(res.success) << res.error_message;
     const double inv = 1.0 / std::sqrt(8.0);
-    const double w = 2.0 * M_PI / 8.0;
+    const double w = 2.0 * PI / 8.0;
     for (int y = 0; y < 8; ++y) {
         EXPECT_NEAR(res.final_state.real_parts[y], inv * std::cos(w * y), 1e-9)
             << "re amp[" << y << "]";

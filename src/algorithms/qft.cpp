@@ -49,7 +49,7 @@ QuantumCircuit QFT::build_circuit(int n, const Options& opts) {
 
     QuantumCircuit qc(n);
 
-    const double pi = M_PI;
+    const double pi = PI;
 
     // Threshold angle below which CP gates are dropped (AQFT approximation).
     // approximation_degree = 0  → threshold = 0 (keep all).
@@ -185,7 +185,7 @@ QuantumCircuit QFT::build_iterative_circuit(int n) {
         throw std::invalid_argument("QFT::build_iterative_circuit: n must be >= 1");
 
     QuantumCircuit qc(n, n);
-    const double pi = M_PI;
+    const double pi = PI;
 
     for (int j = n - 1; j >= 0; --j) {
         // Phase corrections from previously measured qubits (k > j, already done).
@@ -214,7 +214,7 @@ QuantumCircuit QFT::build_iterative_inverse_circuit(int n) {
         throw std::invalid_argument("QFT::build_iterative_inverse_circuit: n must be >= 1");
 
     QuantumCircuit qc(n, n);
-    const double pi = M_PI;
+    const double pi = PI;
 
     for (int j = 0; j < n; ++j) {
         // Phase corrections from previously measured qubits (k < j, already done).

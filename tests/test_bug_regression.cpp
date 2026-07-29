@@ -443,7 +443,7 @@ TEST(BugRegression, B6_AfterGateRemainsDefault) {
 TEST(BugRegression, B7_ToQasm2UnitaryNotComment) {
     const std::vector<Complex128> T_mat = {
         {1,0},{0,0},
-        {0,0},{M_SQRT1_2, M_SQRT1_2}   // T gate = diag(1, e^{iπ/4})
+        {0,0},{INV_SQRT2, INV_SQRT2}   // T gate = diag(1, e^{iπ/4})
     };
 
     QuantumCircuit qc(1);
@@ -786,7 +786,7 @@ TEST(BugRegression, B8_SabreLayoutNocrashOnDenseCircuit) {
 
 TEST(BugRegression, B10_ToQasm2EmitsGlobalPhaseCommentForNonSU2) {
     // e^{iπ/3} · I — pure global phase, no SU(2) content.
-    const double alpha = M_PI / 3.0;
+    const double alpha = PI / 3.0;
     const Complex128 c{std::cos(alpha), std::sin(alpha)};
     const std::vector<Complex128> mat = {c, {0,0}, {0,0}, c};
 
@@ -819,7 +819,7 @@ TEST(BugRegression, B10_ToQasm2NoCommentForSU2Gate) {
 }
 
 TEST(BugRegression, B10_ToQasm3EmitsGphaseForNonSU2) {
-    const double alpha = M_PI / 3.0;
+    const double alpha = PI / 3.0;
     const Complex128 c{std::cos(alpha), std::sin(alpha)};
     const std::vector<Complex128> mat = {c, {0,0}, {0,0}, c};
 

@@ -207,7 +207,7 @@ std::vector<Instruction> lower_mcx(const std::vector<int>& controls, int target)
     // C^kX = H(t) · MCP(π on C ∪ {t}) · H(t): exactly the phase-π (Z-type)
     // multi-control conjugated into the X basis on the target.
     emit_h(out, target);
-    mcp_rec(out, M_PI, all);
+    mcp_rec(out, PI, all);
     emit_h(out, target);
     return out;
 }
@@ -227,7 +227,7 @@ std::vector<Instruction> lower_ccx(int a, int b, int target) {
     // The standard T-ladder (Nielsen & Chuang §4.3, T = P(π/4)): six CXs,
     // seven T/T†, two Hs. The identity is EXACT as a matrix equality — no
     // global-phase discrepancy — so it composes safely under conditions.
-    constexpr double kT = M_PI / 4.0;
+    constexpr double kT = PI / 4.0;
     std::vector<Instruction> out;
     emit_h (out, target);
     emit_cx(out, b, target);

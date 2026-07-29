@@ -4,6 +4,54 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.19.5] - 2026-07-25
+
+Patch release making the source portable to Microsoft's standard library. The
+macOS build now completes and runs the full suite; the Windows build compiles
+this project's own sources for the first time. No behaviour changed on any
+platform that was already working: the constants substituted below are
+bit-identical to the macros they replace.
+
+### Fixed
+
+- The build failed on Windows with 49 or more instances of `use of undeclared
+  identifier 'M_PI'`, along with `M_SQRT1_2`, across both library and test
+  sources. These are POSIX macros rather than standard C++, and Microsoft's
+  standard library only defines them when `_USE_MATH_DEFINES` is set, so they do
+  not exist on that toolchain. They are now replaced throughout by the `PI` and
+  `INV_SQRT2` constants the project already declares, together with the
+  file-local fallback definitions that had accumulated alongside them. Because a
+  macro is only visible to translation units that include whatever defined it,
+  those scattered fallbacks made the breakage per-file rather than uniform,
+  which is why it stayed hidden until a platform without the macros was built.
+- The build still failed inside Google Benchmark on Clang 20 even with that
+  dependency's `-Werror` disabled in the previous release. Benchmark separately
+  passes `-pedantic-errors`, which is not covered by that setting, and Clang
+  treats `invalid-offsetof` as an extension warning, which `-pedantic-errors`
+  promotes to a hard error. The diagnostic is reported as
+  `[-Werror,-Winvalid-offsetof]` even though no `-Werror` is present, which
+  makes the real cause easy to misread. The warning group is now disabled for
+  that dependency, which is what actually clears it.
+
+### Known issues
+
+The macOS job now builds and runs the whole suite, and reports 7 failures out of
+2091 tests. They are genuine defects in this project rather than portability
+gaps, so they are deliberately not addressed in this patch and are tracked for
+the next feature release:
+
+- The QAOA entry points return an empty best bitstring and an unwritten best
+  cost, because the project compiles with `-ffast-math` while those searches use
+  an infinity value as their initial best. Some non-finite guards are disabled
+  for the same reason, including one that should throw on a non-finite angle.
+- The MPS SVD counts 17 significant singular values on arm64 where 12 are
+  expected. The factorisation is accurate to machine epsilon on both targets;
+  the fixed absolute cutoff used to classify them is what differs.
+
+### Results
+
+- 2089 tests across 167 suites — all passed (38.4 s, WSL/Clang).
+
 ## [R.1.19.4] - 2026-07-25
 
 Patch release fixing a dependency build failure that appears on recent Clang
