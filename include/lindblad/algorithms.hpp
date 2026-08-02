@@ -9,10 +9,8 @@
 #include "lindblad/qudit/qudit_simulator.hpp"
 #include "lindblad/qudit/qudit_noise_model.hpp"
 #include "lindblad/qudit/qudit_backend.hpp"
+#include "lindblad/constants.hpp"
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 #include <cmath>
 #include <functional>
 #include <string>
@@ -173,7 +171,7 @@ public:
         // Compute theta[q] = 2 * arcsin(sqrt(p_on[q])) from a domain prior p_on[q] ∈ [0,1].
         std::vector<double> initial_thetas;
 
-        double beta_base   = M_PI / 4.0;   // base angle scale for PI-MA-QAOA init
+        double beta_base   = PI_4;         // base angle scale for PI-MA-QAOA init
         double lambda_co2  = 0.0;          // carbon/other weighting factor (0 = pure economic) - Can be anything but normalised to a "cost"
     };
 

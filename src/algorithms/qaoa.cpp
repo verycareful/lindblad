@@ -13,14 +13,15 @@ namespace algorithms {
 
 static constexpr double kBound = 2.0 * PI;
 
+// PRECONDITION: bitstring.size() == cost_hamiltonian.n_qubits(). Callers filter
+// mismatched keys out; this helper does not signal failure in-band. It used to
+// return +infinity for a size mismatch, which is unusable as an error channel
+// under -ffinite-math-only (see the ranking loop below).
 static double computational_basis_cost(
     const SparsePauliOp& cost_hamiltonian,
     const std::string& bitstring
 ) {
     const int nq = cost_hamiltonian.n_qubits();
-    if (static_cast<int>(bitstring.size()) != nq) {
-        return std::numeric_limits<double>::infinity();
-    }
 
     double energy = 0.0;
     for (const auto& term : cost_hamiltonian.terms) {
@@ -114,13 +115,22 @@ QAOA::Result QAOA::optimize(
     std::vector<double> initial_step(n_params, 0.3);
     nlopt_set_initial_step(opt, initial_step.data());
 
-    double min_val;
+    // NLopt failure codes (< 0) can return WITHOUT writing min_val. Reading it
+    // uninitialised here surfaced an indeterminate stack value as
+    // Result::optimal_value; the same defect was fixed in VQE. The marker is
+    // built from its bit pattern because std::numeric_limits<double>::quiet_NaN
+    // need not be materialised under -ffinite-math-only (see quiet_nan_strict
+    // in types.hpp), which would leave a finite value and hide the failure.
+    // A failed run therefore reports a detectable NaN alongside converged=false
+    // rather than garbage; the success path is unchanged.
+    double min_val = quiet_nan_strict();
     nlopt_result nlopt_res = nlopt_optimize(opt, params.data(), &min_val);
     nlopt_destroy(opt);
 
     result.optimal_value = min_val;
     result.optimal_params = params;
-    result.converged = (nlopt_res > 0 && nlopt_res != NLOPT_MAXEVAL_REACHED);
+    result.converged = (nlopt_res > 0 && nlopt_res != NLOPT_MAXEVAL_REACHED &&
+                        is_finite_strict(min_val));
 
     // Sample to get best bitstring
     sampler.options.seed = options.seed;
@@ -128,14 +138,25 @@ QAOA::Result QAOA::optimize(
     result.counts = sampler.run_single(circuit);
 
     // Rank by computational-basis objective; break ties by sample count.
-    double best_cost = std::numeric_limits<double>::infinity();
+    //
+    // best_cost is guarded by an explicit have_best flag rather than seeded
+    // with +infinity. The project compiles with -ffast-math, which implies
+    // -ffinite-math-only, under which the compiler may assume infinities do
+    // not occur and fold the first comparison away; best_bitstring then stays
+    // unwritten and the caller receives an empty string with no error at all.
+    // A bool carries no floating-point meaning and is correct under any flag
+    // set, so the fix does not depend on how the library is built.
+    double best_cost = 0.0;
     int best_count = -1;
+    bool have_best = false;
     for (const auto& [bits, count] : result.counts) {
+        if (static_cast<int>(bits.size()) != nq) continue;
         const double cost = computational_basis_cost(cost_hamiltonian, bits);
-        if ((cost < best_cost) ||
+        if (!have_best || cost < best_cost ||
             (cost == best_cost && count > best_count)) {
             best_cost = cost;
             best_count = count;
+            have_best = true;
             result.best_bitstring = bits;
         }
     }

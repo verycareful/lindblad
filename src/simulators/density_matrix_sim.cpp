@@ -555,7 +555,7 @@ double DensityMatrix::expectation_value_sparse(const SparsePauliOp& hamiltonian)
 static std::vector<Complex128> gate_matrix_for_dm(const Instruction& inst) {
     using GT = Instruction::GateType;
     const auto& p = inst.params;
-    constexpr double inv_sqrt2 = 0.7071067811865475;
+    constexpr double inv_sqrt2 = INV_SQRT2;
 
     int k = inst.num_qubits();
     size_t sub_dim = 1ULL << k;

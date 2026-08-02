@@ -25,8 +25,9 @@ namespace lindblad {
 // Convention: the same little-endian flat indexing as QuditStatevector,
 //   flat_index = sum_q sigma_q * d^q.
 //
-// Bonds are truncated by SVD with `max_bond_dim` and `svd_cutoff`
-// (relative to the largest singular value).
+// Bonds are truncated by SVD with `max_bond_dim` and `svd_cutoff`, the maximum
+// fraction of total weight (sum of sigma^2) a split may discard. Same rule and
+// same meaning as MPSState::cutoff in the qubit layer.
 // =============================================================================
 
 struct MPSSiteTensor {
@@ -59,6 +60,8 @@ public:
     int n_qudits;
     int d;
     int max_bond_dim;
+    // Fraction of total weight (sum of sigma^2) truncation may discard. Not a
+    // magnitude threshold: a bare singular value is never compared against it.
     double svd_cutoff;
     // SVD backend (audit F-23): default accurate Jacobi. BDC is a faster opt-in
     // that is CURRENTLY BROKEN (Eigen BDCSVD bug, R.1.11.2) and emits a loud
@@ -67,11 +70,11 @@ public:
     std::vector<MPSSiteTensor> tensors;
 
     // Construct in state |0...0> with bond dim 1.
-    QuditMPS(int n_qudits, int d, int max_bond_dim = 64, double svd_cutoff = 1e-12);
+    QuditMPS(int n_qudits, int d, int max_bond_dim = 64, double svd_cutoff = 1e-16);
 
     // Construct from a dense statevector via sequential left-to-right SVDs.
     explicit QuditMPS(const QuditStatevector& sv,
-                      int max_bond_dim = 64, double svd_cutoff = 1e-12);
+                      int max_bond_dim = 64, double svd_cutoff = 1e-16);
 
     // Full contraction back to a dense statevector. Use for small systems only.
     QuditStatevector to_statevector() const;

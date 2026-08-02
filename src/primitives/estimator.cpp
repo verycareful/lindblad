@@ -322,7 +322,7 @@ std::vector<double> Estimator::gradient(
     const size_t P = parameters.size();
     if (P == 0) return {};
 
-    constexpr double shift = 3.14159265358979323846 / 2.0;
+    constexpr double shift = PI_2;
 
     // Build 2P shifted parameter sets: [θ+π/2 e₀, θ-π/2 e₀, θ+π/2 e₁, ...]
     std::vector<std::vector<double>> shifted(2 * P, parameters);

@@ -36,6 +36,7 @@
 using lindblad::DrawMode;
 using lindblad::DrawOptions;
 using lindblad::ParamFormat;
+using lindblad::PI;
 using lindblad::QuantumCircuit;
 
 // Algorithm classes live in the nested lindblad::algorithms namespace; pull
@@ -77,14 +78,14 @@ QuantumCircuit demo_ghz() {
 }
 
 QuantumCircuit demo_parametric() {
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;
     QuantumCircuit qc(3, 0, "parametric");
     qc.rx(kPi / 2.0, 0).ry(kPi / 4.0, 1).crx(kPi / 3.0, 0, 2);
     return qc;
 }
 
 QuantumCircuit demo_tallbox() {
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;
     QuantumCircuit qc(2, 0, "tallbox");
     qc.rxx(kPi / 4.0, 0, 1).ryy(kPi / 6.0, 0, 1).ecr(0, 1);
     return qc;
@@ -153,7 +154,7 @@ QuantumCircuit demo_grover() {
 // Phase estimation with 3 evaluation qubits applied to a T-gate target.
 // The T gate is P(pi/4), whose eigenvalue on |1> has phase 1/8.
 QuantumCircuit demo_qpe() {
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;
     QuantumCircuit unitary(1, 0, "T_gate");
     unitary.p(kPi / 4.0, 0);
     return QPE::build_circuit(unitary, 3);
@@ -175,7 +176,7 @@ QuantumCircuit demo_simon() {
 // linear CNOT entangler. Three qubits, two parameter layers. Hand-built
 // because VQE itself is an optimiser rather than a circuit factory.
 QuantumCircuit demo_vqe() {
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;
     QuantumCircuit qc(3, 0, "vqe_ansatz");
     qc.ry(kPi / 4.0, 0).ry(kPi / 3.0, 1).ry(kPi / 6.0, 2);
     qc.cx(0, 1).cx(1, 2);
@@ -188,7 +189,7 @@ QuantumCircuit demo_vqe() {
 // qubit. Hand-built because QAOA::build_circuit takes SparsePauliOp inputs
 // the CLI does not currently expose on the command line.
 QuantumCircuit demo_qaoa() {
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;
     QuantumCircuit qc(3, 0, "qaoa_triangle");
     qc.h(0).h(1).h(2);
     // Cost layer: RZZ(gamma) on every edge of the triangle (3 edges)

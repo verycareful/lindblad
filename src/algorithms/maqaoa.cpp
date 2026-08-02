@@ -108,14 +108,15 @@ static std::vector<int> cost_term_orbit_map(
 
 // Classical energy of a computational-basis bitstring under the diagonal
 // (I/Z-only) part of the Hamiltonian.
+// PRECONDITION: bitstring.size() == cost_hamiltonian.n_qubits(). Callers filter
+// mismatched keys out; this helper does not signal failure in-band. It used to
+// return +infinity for a size mismatch, which is unusable as an error channel
+// under -ffinite-math-only (see the ranking loop at the end of optimize()).
 static double computational_basis_cost(
     const SparsePauliOp& cost_hamiltonian,
     const std::string& bitstring
 ) {
     const int nq = cost_hamiltonian.n_qubits();
-    if (static_cast<int>(bitstring.size()) != nq) {
-        return std::numeric_limits<double>::infinity();
-    }
 
     double energy = 0.0;
     for (const auto& term : cost_hamiltonian.terms) {
@@ -277,7 +278,15 @@ struct MAQAOACallbackData {
     Statevector* sv;
     std::vector<double> params_buf;
     int nfev;
+    // Best objective seen so far, guarded by have_best rather than seeded with
+    // +infinity. The project compiles with -ffast-math (-ffinite-math-only),
+    // under which the compiler may assume infinities do not occur and fold the
+    // first 'value < best_val' comparison away, leaving best_val never written.
+    // It reaches the caller (per_layer_costs), so this is a result, not a
+    // diagnostic. A bool carries no floating-point meaning and holds under any
+    // flag set. Same pattern in LayerCBData below.
     double best_val;
+    bool best_val_valid;
     std::vector<double> initial_thetas;
     const std::vector<std::vector<int>>* active_qubits;
 };
@@ -297,9 +306,13 @@ static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, vo
         const double value = dm_result.success
             ? dm_result.final_state.expectation_value_sparse(*cb->cost_hamiltonian)
             : 1e12;
+        const double v = is_finite_strict(value) ? value : 1e12;
         ++cb->nfev;
-        if (value < cb->best_val) cb->best_val = value;
-        return is_finite_strict(value) ? value : 1e12;
+        if (!cb->best_val_valid || v < cb->best_val) {
+            cb->best_val       = v;
+            cb->best_val_valid = true;
+        }
+        return v;
     }
     evolve_into(*cb->sv, *cb->cost_hamiltonian, *cb->mixer_hamiltonian, cb->params_buf,
                 cb->maqaoa->options.p,
@@ -309,9 +322,13 @@ static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, vo
                 *cb->active_qubits,
                 cb->initial_thetas);
     const double value = cb->cost_hamiltonian->expectation_value(*cb->sv);
+    const double v     = is_finite_strict(value) ? value : 1e12;
     ++cb->nfev;
-    if (value < cb->best_val) cb->best_val = value;
-    return is_finite_strict(value) ? value : 1e12;
+    if (!cb->best_val_valid || v < cb->best_val) {
+        cb->best_val       = v;
+        cb->best_val_valid = true;
+    }
+    return v;
 }
 
 // =============================================================================
@@ -333,7 +350,8 @@ struct LayerCBData {
     Statevector*         sv;
     int                  p_current;
     int                  nfev;
-    double               best_val;
+    double               best_val;        // guarded by best_val_valid, not +inf
+    bool                 best_val_valid;  // see MAQAOACallbackData above
     std::vector<double>  initial_thetas;
     const std::vector<std::vector<int>>* active_qubits;
 };
@@ -353,7 +371,10 @@ static double layer_objective(unsigned n, const double* x, double* /*grad*/, voi
             : 1e12;
         const double v     = is_finite_strict(value) ? value : 1e12;
         ++d->nfev;
-        if (v < d->best_val) d->best_val = v;
+        if (!d->best_val_valid || v < d->best_val) {
+            d->best_val       = v;
+            d->best_val_valid = true;
+        }
         if (d->nfev % 50 == 0) {
             std::cout << "[MAQAOA] layer=" << d->p_current
                       << " eval=" << d->nfev
@@ -371,7 +392,10 @@ static double layer_objective(unsigned n, const double* x, double* /*grad*/, voi
     const double value = d->cost_hamiltonian->expectation_value(*d->sv);
     const double v     = is_finite_strict(value) ? value : 1e12;
     ++d->nfev;
-    if (v < d->best_val) d->best_val = v;
+    if (!d->best_val_valid || v < d->best_val) {
+        d->best_val       = v;
+        d->best_val_valid = true;
+    }
     if (d->nfev % 50 == 0) {
         std::cout << "[MAQAOA] layer=" << d->p_current
                   << " eval=" << d->nfev
@@ -457,7 +481,7 @@ MAQAOA::Result MAQAOA::optimize(
 
     const int params_per_layer = n_cost_params_per_layer + n_mixer_orbits;
     const int n_params         = options.p * params_per_layer;
-    constexpr double kPi       = 3.14159265358979323846;
+    constexpr double kPi       = PI;
     constexpr double kBound    = 2.0 * kPi;
 
     // Precompute active qubits per cost term once — eliminates ~1M hot-path allocations
@@ -537,7 +561,8 @@ MAQAOA::Result MAQAOA::optimize(
                 &inner_sv,
                 layer,
                 0,
-                std::numeric_limits<double>::infinity(),
+                0.0,     // best_val: meaningless until best_val_valid is set
+                false,   // best_val_valid
                 options.initial_thetas,
                 &active_qubits_per_term
             };
@@ -564,7 +589,13 @@ MAQAOA::Result MAQAOA::optimize(
             // Save initial guess before COBYLA modifies x0 (Change 4)
             result.initial_params.insert(result.initial_params.end(), x0.begin(), x0.end());
 
-            double min_val              = std::numeric_limits<double>::infinity();
+            // NLopt can return without writing min_val. The marker for that
+            // must be detectably non-finite even under -ffinite-math-only, so
+            // it is built from its bit pattern rather than taken from
+            // std::numeric_limits (see quiet_nan_strict in types.hpp). The
+            // integer nlopt_res is checked alongside it and is immune to the
+            // FP model outright.
+            double min_val              = quiet_nan_strict();
             const nlopt_result nlopt_res = nlopt_optimize(opt, x0.data(), &min_val);
             nlopt_destroy(opt);
 
@@ -657,7 +688,8 @@ MAQAOA::Result MAQAOA::optimize(
             &term_orbit_map_cached,
             n_cost_params_per_layer, n_mixer_orbits,
             this, &inner_sv, {}, 0,
-            std::numeric_limits<double>::infinity(),
+            0.0,     // best_val: meaningless until best_val_valid is set
+            false,   // best_val_valid
             options.initial_thetas,
             &active_qubits_per_term
         };
@@ -675,7 +707,8 @@ MAQAOA::Result MAQAOA::optimize(
         std::vector<double> initial_step(n_params, 0.3);
         nlopt_set_initial_step(opt, initial_step.data());
 
-        double min_val               = std::numeric_limits<double>::infinity();
+        // See the layerwise path above for why the marker is bit-built.
+        double min_val               = quiet_nan_strict();
         const nlopt_result nlopt_res  = nlopt_optimize(opt, params.data(), &min_val);
         nlopt_destroy(opt);
 
@@ -706,14 +739,19 @@ MAQAOA::Result MAQAOA::optimize(
     result.wall_time_seconds     = std::chrono::duration<double>(
         t_global_end - t_global_start).count();
 
-    double best_cost = std::numeric_limits<double>::infinity();
+    // Rank by computational-basis objective; break ties by sample count.
+    // have_best rather than a +infinity seed: see MAQAOACallbackData::best_val.
+    double best_cost = 0.0;
     int best_count = -1;
+    bool have_best = false;
     for (const auto& [bits, count] : result.counts) {
+        if (static_cast<int>(bits.size()) != nq) continue;
         const double cost = computational_basis_cost(cost_hamiltonian, bits);
-        if ((cost < best_cost) ||
+        if (!have_best || cost < best_cost ||
             (cost == best_cost && count > best_count)) {
             best_cost             = cost;
             best_count            = count;
+            have_best             = true;
             result.best_bitstring = bits;
         }
     }

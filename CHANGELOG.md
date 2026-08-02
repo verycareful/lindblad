@@ -4,6 +4,99 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.20.0] - 2026-08-02
+
+Correctness release for the three defects the Windows and macOS runners exposed
+once they were able to build and run the suite (#68, #69, #70).
+
+### Added
+
+- `include/lindblad/constants.hpp`: one home for every mathematical constant in
+  the library, each derived from `<numbers>` and declared `inline constexpr`.
+  `types.hpp` includes it, so every name that was previously visible still is.
+  Reference page: `docs/api/constants.md`.
+- `lindblad::quiet_nan_strict()` in `types.hpp`, companion to the existing
+  `is_finite_strict()`. It builds a quiet NaN from its bit pattern, so a marker
+  whose job is to be detectably non-finite survives a build that assumes NaNs
+  do not occur. `std::numeric_limits<double>::quiet_NaN()` need not be
+  materialised under `-ffinite-math-only`, and a marker that silently becomes
+  finite passes every guard it was meant to trip.
+
+### Changed
+
+- MPS bond truncation, in both the qubit and qudit layers, now selects by
+  DISCARDED WEIGHT instead of comparing each singular value against an absolute
+  magnitude. `cutoff` and `svd_cutoff` are now the maximum fraction of total
+  weight (sum of sigma squared) a truncation may discard; both defaults move
+  from `1e-12` to `1e-16`, which bounds truncation error at the order of the
+  reconstruction error an SVD already carries.
+
+  A magnitude threshold asks a question whose answer depends on the scale of
+  the input and on how the target rounded its way there. The same 13-qubit
+  state counted 12 significant directions on x86-64 and 17 on arm64: twelve
+  real singular values at 2.9e-01, everything else numerical zero, and the
+  threshold sitting inside the noise band rather than in the eleven-order gap
+  above it. A weight fraction is scale-free and classifies the same spectrum
+  identically on any target. It is a ceiling rather than a quota: where a
+  spectrum has a clean gap between real content and noise, nothing extra is
+  discarded and retained bond dimension is unchanged.
+
+  The qudit layer previously used a third, different rule (relative magnitude).
+  Both layers now answer the same question, as the mirror convention requires.
+- The Gram-route fallback's `sqrt(eps) * sigma_max` floor is now documented and
+  used as a VALIDITY floor only, distinct from truncation. The Gram route
+  squares the condition number, so values beneath it carry no information
+  however much weight they hold, which is not something a weight budget can
+  express.
+
+### Fixed
+
+- QAOA and MA-QAOA could return an empty best bitstring alongside an unwritten
+  best cost, with no exception. Both seeded their best-so-far with `+infinity`,
+  and `-ffinite-math-only` (implied by `-ffast-math`) permits the compiler to
+  assume infinities do not occur and fold the first comparison away, so the
+  result was never written. Replaced with explicit validity flags at eight
+  sites. `MAQAOA::Result::per_layer_costs` reached callers through the same
+  fold, so this was a wrong result rather than a diagnostic. The remedy is in
+  the source and holds under any flag set. (#68)
+- `QAOA::optimize` read an uninitialised `min_val` into `Result::optimal_value`.
+  NLopt failure codes can return without writing it, so the field could carry an
+  indeterminate value. It is now seeded with a bit-built quiet NaN, and
+  `converged` additionally requires the result to be finite; a failed run
+  reports a detectable NaN instead. The equivalent defect in VQE was fixed
+  earlier, and this was the remaining instance.
+- `INV_SQRT2` was one unit in the last place below correctly-rounded 1/sqrt(2)
+  (`0x3FE6A09E667F3BCC` against `0x3FE6A09E667F3BCD`), and that value was
+  duplicated at seven further sites while the tests spelled the same amplitude
+  correctly. The library and its tests therefore disagreed by one ULP on the
+  Hadamard amplitude, the most-used constant in the codebase. It is now derived
+  once as `SQRT2 / 2.0`; division by a power of two is exact, so the result is
+  correctly rounded by construction. (#70)
+- `include/lindblad/algorithms.hpp` no longer defines `M_PI`. A public header
+  leaking a POSIX macro made the constant's availability depend on include
+  order and on the platform, since Microsoft's standard library gates the `M_*`
+  macros behind `_USE_MATH_DEFINES` and does not provide them by default.
+- Fifteen further hand-typed constant values across the simulators, the
+  transpiler, the QASM 3 parser and the drawing tool now reference the shared
+  definitions rather than repeating digits.
+
+### Known issues
+
+- Truncating by discarded weight and never losing weight while bond budget
+  remains are not simultaneously satisfiable. In the arm64 case above the bond
+  cap was 64 with only 17 directions in play, so a rule that declines to
+  truncate while the cap is slack reinstates the platform split. This release
+  chooses platform stability; the cost is bounded and declared by `cutoff`.
+
+### Results
+
+2089 tests across 167 suites — 2087 passed (33.1 s, WSL/Clang). Two tests hold
+values that encode the previous truncation rule and the previous constant, and
+fail until those values are updated: `R1121Types.ConstantsAreConsistent`, whose
+reference is `1.0 / std::sqrt(2.0)` with a tolerance below one ULP at that
+magnitude, and `R1161MpsShor.StateExactAtEveryStage`, whose `1e-24` bound
+measured the absolute rule's behaviour.
+
 ## [R.1.19.6] - 2026-07-29
 
 Patch release completing the cross-platform work. Every job in the matrix now

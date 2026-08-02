@@ -80,7 +80,11 @@ VQE::Result VQE::compute_minimum_eigenvalue(
     // the recorded history, and fail loudly if the objective never ran.
     // The integer status check comes FIRST: it is immune to -ffast-math,
     // under which std::isfinite may fold away (hence is_finite_strict).
-    double min_val = std::numeric_limits<double>::quiet_NaN();
+    // The marker itself must survive the same flag, so it is built from its
+    // bit pattern: std::numeric_limits<double>::quiet_NaN() need not be
+    // materialised under -ffinite-math-only, which would leave a finite value
+    // here and let an unwritten min_val pass the guard below.
+    double min_val = quiet_nan_strict();
     nlopt_result nlopt_res = nlopt_optimize(opt, params.data(), &min_val);
 
     if (nlopt_res < 0 || !is_finite_strict(min_val)) {

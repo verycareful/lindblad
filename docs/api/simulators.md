@@ -476,7 +476,7 @@ struct MPSTensor {
 class MPSState {
     std::vector<MPSTensor> tensors;
     int max_bond_dim;    // chi parameter
-    double cutoff;       // SVD truncation threshold
+    double cutoff;       // max fraction of weight truncation may discard
     SVDMethod svd_method = SVDMethod::Jacobi;  // SVD backend (R.1.13)
 };
 ```
@@ -512,6 +512,24 @@ floating-point (no fast-math) to keep the SVD input path well-behaved.
 - **Space**: $O(n \cdot \chi^2)$ where $\chi$ = max bond dimension (typically 16–256)
 - **Time per gate**: $O(\chi^4)$ for single-qubit, $O(\chi^6)$ for two-qubit
 - **Accuracy**: Controlled by $\chi$ and `cutoff`; larger $\chi$ = more accurate
+
+**Truncation rule**. `cutoff` is the maximum fraction of total weight
+$\sum \sigma^2$ that a bond truncation may discard. It is not a magnitude
+threshold: a bare singular value is never compared against it. Truncation keeps
+the largest $k \le \chi$ singular values such that the discarded weight stays
+within `cutoff` of the total.
+
+A magnitude threshold asks a question whose answer depends on the scale of the
+matrix and on how the target rounded its way there, so the same state could
+carry a different bond dimension on a different CPU. A weight fraction is
+scale-free and bounds the physical error directly. Note it is a ceiling rather
+than a quota: where a spectrum has a clean gap between real content and
+numerical noise, nothing extra is discarded and the retained bond dimension is
+unchanged.
+
+The default `1e-16` bounds truncation error at the order of the reconstruction
+error an SVD already carries, so nothing the factorisation actually resolved is
+thrown away. The qudit layer's `svd_cutoff` means the same thing.
 
 ### Gate Application via SVD
 

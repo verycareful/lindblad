@@ -209,15 +209,26 @@ QuditMPS::QuditMPS(const QuditStatevector& sv,
         Eigen::VectorXd S;
         qmps_svd(M, svd_method, U, S, V);
 
+        // Discarded-weight truncation, identical to MPSState::svd_truncate:
+        // svd_cutoff is the fraction of total weight (sum of sigma^2) a split
+        // may throw away, NOT a magnitude threshold. The qudit layer mirrors
+        // the qubit layer at general d, and that has to extend to what a bond
+        // dimension means; a magnitude rule also makes retained chi depend on
+        // the input's scale and on how the target rounded its way there.
         const int full_rank = static_cast<int>(S.size());
-        const double smax = (full_rank > 0) ? S(0) : 0.0;
-        const double threshold = smax * svd_cutoff;
+        double total = 0.0;
+        for (int i = 0; i < full_rank; ++i) total += S(i) * S(i);
+        const double budget = svd_cutoff * total;
 
-        int chi = 0;
-        for (int i = 0; i < full_rank; ++i) {
-            if (S(i) > threshold && chi < max_bond_dim) ++chi;
-            else break;
+        int chi = full_rank;
+        double discarded = 0.0;
+        while (chi > 1) {
+            const double w = S(chi - 1) * S(chi - 1);
+            if (discarded + w > budget) break;
+            discarded += w;
+            --chi;
         }
+        if (chi > max_bond_dim) chi = max_bond_dim;
         if (chi == 0) chi = 1;
 
         // Left tensor: shape (d, chi_L, chi) from leftmost chi columns of U.
@@ -467,15 +478,21 @@ void QuditMPS::split_two_sites(int q, const Eigen::MatrixXcd& Theta) {
     Eigen::VectorXd S;
     qmps_svd(Theta, svd_method, U, S, V);
 
+    // Discarded-weight truncation: see the statevector constructor above.
     const int full_rank = static_cast<int>(S.size());
-    const double smax = (full_rank > 0) ? S(0) : 0.0;
-    const double threshold = smax * svd_cutoff;
+    double total = 0.0;
+    for (int i = 0; i < full_rank; ++i) total += S(i) * S(i);
+    const double budget = svd_cutoff * total;
 
-    int chi = 0;
-    for (int i = 0; i < full_rank; ++i) {
-        if (S(i) > threshold && chi < max_bond_dim) ++chi;
-        else break;
+    int chi = full_rank;
+    double discarded = 0.0;
+    while (chi > 1) {
+        const double w = S(chi - 1) * S(chi - 1);
+        if (discarded + w > budget) break;
+        discarded += w;
+        --chi;
     }
+    if (chi > max_bond_dim) chi = max_bond_dim;
     if (chi == 0) chi = 1;
 
     // Left tensor: shape (d, chi_L, chi) from leftmost chi columns of U.

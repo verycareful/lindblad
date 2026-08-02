@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lindblad/constants.hpp"
+
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -43,6 +45,28 @@ inline bool is_finite_strict(double x) noexcept {
     std::uint64_t bits;
     std::memcpy(&bits, &x, sizeof bits);
     return (bits & 0x7FF0000000000000ULL) != 0x7FF0000000000000ULL;
+}
+
+// Companion to is_finite_strict: a quiet NaN built from its bit pattern instead
+// of from std::numeric_limits<double>::quiet_NaN(). The problem is symmetric to
+// the one above. Under -ffinite-math-only the compiler may assume NaNs do not
+// occur and need not materialise the library constant at all, which silently
+// turns a deliberate "not written yet" marker into an ordinary finite value —
+// and a finite marker passes every guard it was supposed to trip. Going through
+// memcpy keeps the value integer data until the last moment, and
+// is_finite_strict reads it back the same way, so the round trip never becomes
+// a floating-point operation the FP model is entitled to reason about.
+//
+// Use this for every marker whose job is to be DETECTABLY non-finite; use
+// is_finite_strict to test it. Do not use +/-infinity as a comparison seed
+// (best-so-far, lower bound); an explicit bool flag is correct there, because a
+// seed's whole purpose is to lose the first comparison and that is exactly the
+// comparison -ffinite-math-only is licensed to fold.
+inline double quiet_nan_strict() noexcept {
+    constexpr std::uint64_t kQuietNaNBits = 0x7FF8000000000000ULL;
+    double x;
+    std::memcpy(&x, &kQuietNaNBits, sizeof x);
+    return x;
 }
 
 // =============================================================================
@@ -200,13 +224,8 @@ inline void aligned_free(void* ptr) noexcept {
 // default to BDC (it is the faster algorithm) and drop the warning.
 enum class SVDMethod { Jacobi, BDC };
 
-// =============================================================================
-// Constants
-// =============================================================================
-
-constexpr double INV_SQRT2 = 0.7071067811865475;
-constexpr double PI = 3.14159265358979323846;
-constexpr double PI_2 = PI / 2.0;
-constexpr double PI_4 = PI / 4.0;
+// Mathematical constants (PI, INV_SQRT2, ...) live in constants.hpp, included
+// at the top of this header. They were declared here historically; every name
+// that was visible then is still visible now via that include.
 
 } // namespace lindblad

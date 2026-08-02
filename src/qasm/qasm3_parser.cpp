@@ -977,8 +977,8 @@ private:
         if (t.type == TT::IDENT || (t.type == TT::KEYWORD && t.text == "pi")) {
             ++pos_;
             if (t.text == "pi") return ParamExpr::make_literal(PI);
-            if (t.text == "tau") return ParamExpr::make_literal(2.0 * PI);
-            if (t.text == "euler") return ParamExpr::make_literal(2.718281828459045);
+            if (t.text == "tau") return ParamExpr::make_literal(TWO_PI);
+            if (t.text == "euler") return ParamExpr::make_literal(E);
             return ParamExpr::make_name(std::string(t.text));
         }
         // KEYWORD: a few constants live in the keyword set

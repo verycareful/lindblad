@@ -207,15 +207,17 @@ post-measurement pure state, and returns per-qudit digits.
 Matrix Product State representation. Each site tensor `A_q` has shape
 `(d, χ_L, χ_R)` with data layout `data[σ·χ_L·χ_R + aL·χ_R + aR]`. Bond
 dimension is truncated after each two-site gate by SVD to `max_bond_dim`,
-dropping singular values below `svd_cutoff` relative to the largest.
+discarding the smallest singular values while the discarded weight
+$\sum \sigma^2$ stays within `svd_cutoff` of the total. Same rule and same
+meaning as `MPSState::cutoff` in the qubit layer.
 
 ### Constructors
 
 ```cpp
 QuditMPS(int n_qudits, int d,
-         int max_bond_dim = 64, double svd_cutoff = 1e-12);   // |0…0⟩
+         int max_bond_dim = 64, double svd_cutoff = 1e-16);   // |0…0⟩
 explicit QuditMPS(const QuditStatevector& sv,
-                  int max_bond_dim = 64, double svd_cutoff = 1e-12);
+                  int max_bond_dim = 64, double svd_cutoff = 1e-16);
 ```
 
 The statevector constructor performs a sequential left-to-right SVD
@@ -229,7 +231,7 @@ parameters).
 | `n_qudits` | `int` | number of sites |
 | `d` | `int` | local dimension |
 | `max_bond_dim` | `int` | maximum retained singular values per bond |
-| `svd_cutoff` | `double` | relative singular-value cutoff |
+| `svd_cutoff` | `double` | max fraction of total weight truncation may discard |
 | `svd_method` | `SVDMethod` | SVD backend (R.1.13): default `Jacobi` (accurate). `BDC` is a faster opt-in but is CURRENTLY BROKEN (Eigen defect, R.1.11.2) and prints a loud runtime warning when selected. Declared in `lindblad/types.hpp`. |
 | `tensors` | `std::vector<MPSSiteTensor>` | site tensors |
 

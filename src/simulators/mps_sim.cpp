@@ -130,9 +130,10 @@ void MPSState::svd_truncate(
     // that is wrong but perfectly finite (fidelity fell to (3/4)^2 with
     // zero truncation error), and an all-non-finite S. Unmarked garbage
     // cannot be pattern-matched away, so this routine TRUSTS NOTHING:
-    //   1. SELECT: all bit-level-finite sigmas above the cutoff, wherever
-    //      they sit in S (immune to ordering corruption); keep the largest
-    //      max_bond_dim of them; gather matching U/V columns individually.
+    //   1. SELECT: every bit-level-finite sigma is a candidate, wherever it
+    //      sits in S (immune to ordering corruption); truncate by DISCARDED
+    //      WEIGHT (below); cap at max_bond_dim; gather matching U/V columns
+    //      individually.
     //   2. VERIFY: kept slice bit-finite AND the Frobenius identity
     //        ||M - U_k S_k V_k^H||_F^2 <= discarded + 1e-12*||M||_F^2
     //      which holds with equality for any true truncated SVD; every
@@ -158,6 +159,31 @@ void MPSState::svd_truncate(
 
     double pending_discarded = 0.0;
 
+    // TRUNCATION RULE — discarded weight, not a magnitude threshold.
+    //
+    // `cutoff` is the fraction of total weight (sum of sigma^2) that truncation
+    // may throw away. The old rule compared each sigma against `cutoff` as an
+    // ABSOLUTE magnitude, which asks a question about the noise rather than
+    // about the data: a value's distance from a fixed constant depends on the
+    // scale of the matrix it came from AND on how the target rounded its way
+    // there. That is how the same 13-qubit state counted 12 significant
+    // directions on x86-64 and 17 on arm64 — twelve real sigmas at 2.9e-01,
+    // everything else numerical zero, and a threshold sitting inside the noise
+    // band instead of inside the eleven-order gap above it.
+    //
+    // A weight fraction is scale-free, so the same spectrum classifies
+    // identically on any target, and it bounds the physical error directly
+    // instead of proxying it. Note the budget is a CEILING, not a quota: on a
+    // bimodal spectrum (stabiliser, GHZ, Shor) there is nothing between the
+    // noise and the budget, so nothing extra is discarded and the result is
+    // bit-for-bit what the magnitude rule produced.
+    //
+    // `sigma_floor` is a separate concept and NOT a truncation knob: it rejects
+    // values that are not trustworthy data at all (the Gram route squares the
+    // condition number, so anything under sqrt(eps)*sigma_max there is noise
+    // regardless of how much weight it carries). Weight below it is still
+    // honestly counted as discarded.
+
     auto attempt = [&](const Eigen::VectorXd& S_try,
                        const Eigen::MatrixXcd& U_try,
                        const Eigen::MatrixXcd& V_try,
@@ -165,14 +191,37 @@ void MPSState::svd_truncate(
         const int md = static_cast<int>(S_try.size());
         std::vector<std::pair<double, int>> fs;  // (sigma, source index)
         fs.reserve(static_cast<size_t>(md));
+        double below_floor = 0.0;  // weight rejected as untrustworthy
         for (int i = 0; i < md; ++i) {
             const double s = S_try(i);
-            if (finite_bits(s) && s > sigma_floor) fs.push_back({s, i});
+            if (!finite_bits(s)) continue;  // artifact, not weight
+            if (s > sigma_floor) fs.push_back({s, i});
+            else                 below_floor += s * s;
         }
         std::stable_sort(fs.begin(), fs.end(), [](const auto& a, const auto& b) {
             return a.first > b.first;
         });
-        int k = std::min<int>(static_cast<int>(fs.size()), max_bond_dim);
+
+        // Walk up from the smallest survivor, dropping while the running
+        // discarded weight stays inside the budget. Weight already rejected by
+        // sigma_floor counts against it, so a Gram route that lost a lot to the
+        // validity floor does not then also truncate aggressively.
+        double total = below_floor;
+        for (const auto& p : fs) total += p.first * p.first;
+        const double budget = cutoff * total;
+
+        int k = static_cast<int>(fs.size());
+        {
+            double d = below_floor;
+            while (k > 1) {
+                const double w = fs[static_cast<size_t>(k - 1)].first *
+                                 fs[static_cast<size_t>(k - 1)].first;
+                if (d + w > budget) break;
+                d += w;
+                --k;
+            }
+        }
+        k = std::min<int>(k, max_bond_dim);
         if (k == 0) {
             // Numerically-zero matrix or fully corrupt spectrum: keep the
             // single largest finite sigma if one exists at all.
@@ -186,19 +235,26 @@ void MPSState::svd_truncate(
                 }
             }
             if (best < 0) return false;
+            // The rescued sigma may have sat below sigma_floor, in which case
+            // its weight is already in below_floor. It is now KEPT, so take it
+            // back out or it would be counted as kept and discarded at once.
+            if (!(best_val > sigma_floor)) below_floor -= best_val * best_val;
             fs.assign(1, {best_val, best});
             k = 1;
         }
 
         // Discarded weight = every finite sigma NOT kept (beyond-rank AND
         // below-floor; non-finite entries are artifacts, not weight).
-        double discarded = 0.0;
+        //
+        // Sum the discarded buckets DIRECTLY. Do not compute this as
+        // `total - kept`: for a normalised state both are ~1.0 while the real
+        // difference is ~1e-30, so the subtraction cannot resolve it and
+        // returns multiples of eps instead — truncation_error() then reports
+        // ~1e-15 of phantom loss for a bond that discarded nothing. Adding up
+        // the small values keeps every term at its own scale.
+        double discarded = below_floor;
         for (size_t i = static_cast<size_t>(k); i < fs.size(); ++i)
             discarded += fs[i].first * fs[i].first;
-        for (int i = 0; i < md; ++i) {
-            const double s = S_try(i);
-            if (finite_bits(s) && !(s > sigma_floor)) discarded += s * s;
-        }
 
         // Gather (descending sigma order: downstream conventions unchanged).
         S_out.resize(static_cast<size_t>(k));
@@ -243,7 +299,10 @@ void MPSState::svd_truncate(
         return true;
     };
 
-    if (!attempt(S_eigen, U_eigen, V_eigen, cutoff)) {
+    // Direct SVD: no validity floor. A backend SVD resolves sigmas down to
+    // ~eps*sigma_max, so every finite value it reports is trustworthy data;
+    // how much of it to keep is the weight budget's decision alone.
+    if (!attempt(S_eigen, U_eigen, V_eigen, 0.0)) {
         // Gram-route fallback.
         const bool tall = rows >= cols;
         const Eigen::MatrixXcd G =
@@ -261,8 +320,13 @@ void MPSState::svd_truncate(
             // Eigenvalues ascend; emit sigmas descending.
             Sg(i) = std::sqrt(std::max(0.0, es.eigenvalues()(gd - 1 - i)));
         }
+        // Validity floor for THIS route only (not a truncation knob): the Gram
+        // matrix squares the condition number, so sigmas under sqrt(eps) times
+        // sigma_max carry no information here however much weight they hold.
+        // Relative to sigma_max, so it means the same thing on every target.
+        constexpr double kGramValidityFloorRel = 1.5e-8;  // ~sqrt(DBL_EPSILON)
         const double smax = (gd > 0) ? Sg(0) : 0.0;
-        const double floor_g = std::max(cutoff, 1.5e-8 * smax);
+        const double floor_g = kGramValidityFloorRel * smax;
 
         Eigen::MatrixXcd Ug(rows, gd), Vg(cols, gd);
         if (tall) {
@@ -805,8 +869,23 @@ static MPSState mps_from_sv(const Statevector& sv, int n, int max_bond_dim, doub
         // fallback; the R.1.11.2 BDCSVD defect made composite states unreliable.
         Eigen::JacobiSVD<Eigen::MatrixXcd> svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
         const auto& svals = svd.singularValues();
-        int k = (int)svals.size();
-        while (k > 1 && std::abs(svals(k - 1)) < cutoff) --k;
+        // Same discarded-weight rule as svd_truncate: `cutoff` is the fraction
+        // of total weight truncation may drop, not a magnitude threshold. The
+        // two construction paths have to agree, or a state's bond dimension
+        // would depend on which one built it.
+        const int nsv = (int)svals.size();
+        double total = 0.0;
+        for (int i = 0; i < nsv; ++i) total += svals(i) * svals(i);
+        const double budget = cutoff * total;
+
+        int k = nsv;
+        double discarded = 0.0;
+        while (k > 1) {
+            const double w = svals(k - 1) * svals(k - 1);
+            if (discarded + w > budget) break;
+            discarded += w;
+            --k;
+        }
         k = std::min(k, max_bond_dim);
 
         result.tensors[site] = MPSTensor(left_bond, k);
@@ -845,7 +924,7 @@ static MPSState mps_from_sv(const Statevector& sv, int n, int max_bond_dim, doub
 static std::array<Complex128, 4> gate2x2(const Instruction& inst) {
     using GT = Instruction::GateType;
     const auto& p = inst.params;
-    constexpr double inv_sqrt2 = 0.7071067811865475;
+    constexpr double inv_sqrt2 = INV_SQRT2;
     std::array<Complex128, 4> U{};
 
     switch (inst.type) {
@@ -936,7 +1015,7 @@ static std::array<Complex128, 16> gate4x4(const Instruction& inst) {
     // Utility: set element
     auto set = [&](int r, int c, Complex128 v) { U[r*4+c] = v; };
 
-    constexpr double inv_sqrt2 = 0.7071067811865475;
+    constexpr double inv_sqrt2 = INV_SQRT2;
 
     switch (inst.type) {
         case GT::CX:
@@ -1204,7 +1283,7 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
     } else if (inst.qubits.size() == 3) {
         int q0 = inst.qubits[0], q1 = inst.qubits[1], q2 = inst.qubits[2];
 
-        constexpr double s2 = 0.7071067811865475;
+        constexpr double s2 = INV_SQRT2;
         const std::array<Complex128, 4> H_g = {
             Complex128(s2,0), Complex128(s2,0),
             Complex128(s2,0), Complex128(-s2,0)

@@ -57,6 +57,9 @@ All simulators follow common interface: `Result run(circuit, params)`
 
 Deep dive: [docs/api/simulators.md](api/simulators.md)
 
+Mathematical constants (`PI`, `INV_SQRT2`, ...) live in one header for the whole
+library: [docs/api/constants.md](api/constants.md)
+
 ### Minimal examples
 
 **Exact statevector**:

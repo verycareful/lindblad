@@ -86,7 +86,7 @@ static ZYZParams zyz_decompose(const Eigen::Matrix2cd& U) {
 static Eigen::Matrix2cd instruction_to_2x2(const Instruction& inst) {
     using GT = Instruction::GateType;
     const auto& p = inst.params;
-    constexpr double inv_sqrt2 = 0.7071067811865475;
+    constexpr double inv_sqrt2 = INV_SQRT2;
     Eigen::Matrix2cd U = Eigen::Matrix2cd::Zero();
 
     switch (inst.type) {
@@ -452,7 +452,7 @@ static QuantumCircuit kak_decompose(const Eigen::Matrix4cd& U4, int q0, int q1) 
     // 4. Reconstruct the entangling part and solve for local corrections.
 
     const std::complex<double> img(0, 1);
-    const double inv_sqrt2 = 0.7071067811865475;
+    constexpr double inv_sqrt2 = INV_SQRT2;
 
     // Magic basis matrix
     Eigen::Matrix4cd M;

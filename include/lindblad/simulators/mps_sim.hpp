@@ -46,7 +46,13 @@ class MPSState {
 public:
     int n_qubits;
     int max_bond_dim;    // chi — controls accuracy vs memory tradeoff
-    double cutoff;       // singular value truncation threshold
+    // Truncation budget: the maximum FRACTION OF TOTAL WEIGHT (sum of sigma^2)
+    // that a bond truncation may discard. Not a magnitude threshold — a bare
+    // sigma is never compared against it. See svd_truncate for why: a magnitude
+    // threshold asks a question whose answer depends on the scale of the input
+    // and on how the target rounded, so the same state could carry a different
+    // bond dimension on a different CPU.
+    double cutoff;
     // SVD backend for truncation (default Jacobi; see SVDMethod). BDC is a
     // faster opt-in that is not yet the default pending the upstream Eigen
     // BDCSVD accuracy fix (R.1.11.2 / docs/plans/eigen-bdcsvd-bug.md).
@@ -54,7 +60,10 @@ public:
     std::vector<MPSTensor> tensors;
 
 public:
-    MPSState(int n_qubits, int max_bond_dim = 64, double cutoff = 1e-12);
+    // cutoff defaults to 1e-16: truncation error is then bounded at the order
+    // of the reconstruction error an SVD already carries (~1.1e-16 relative),
+    // so nothing the factorisation actually resolved is thrown away.
+    MPSState(int n_qubits, int max_bond_dim = 64, double cutoff = 1e-16);
 
     // Gate application via SVD
     void apply_single_qubit_gate(

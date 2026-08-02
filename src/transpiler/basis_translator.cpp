@@ -357,7 +357,7 @@ static std::vector<Instruction> decompose_to_cx_u3(
     const auto& p = inst.params;
     const int q0 = inst.qubits.empty() ? 0 : inst.qubits[0];
     const int q1 = inst.qubits.size() > 1 ? inst.qubits[1] : -1;
-    constexpr double pi = 3.14159265358979323846;
+    constexpr double pi = PI;
     constexpr double pi2 = pi / 2.0;
 
     std::vector<Instruction> out;
