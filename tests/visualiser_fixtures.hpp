@@ -47,7 +47,7 @@ inline QuantumCircuit ghz_3q() {
 // and the pi-snap formatter.
 inline QuantumCircuit parametric_rotations() {
     QuantumCircuit qc(3, 0, "param_rot");
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;  // short local alias, library-sourced value
     qc.rx(kPi / 2.0, 0).ry(kPi / 4.0, 1).crx(kPi / 3.0, 0, 2);
     return qc;
 }
@@ -63,7 +63,7 @@ inline QuantumCircuit barrier_and_measure() {
 // Conditional gate via add_if : H(0) + measure(0,0) + p_if(pi, 1, 0, 1).
 // Tests conditional gate decoration with show_clbits on and off.
 inline QuantumCircuit conditional_feedforward() {
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;  // short local alias, library-sourced value
     QuantumCircuit qc(2, 1, "feedforward");
     qc.h(0).measure(0, 0).p_if(kPi, 1, 0, 1);
     return qc;
@@ -83,7 +83,7 @@ inline QuantumCircuit non_contiguous_unitary() {
 // TallBox demo : RXX(pi/4) + RYY(pi/6) + ECR. Three two-qubit interaction
 // gates all rendered as single labelled tall boxes spanning two wires.
 inline QuantumCircuit tallbox_demo() {
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;  // short local alias, library-sourced value
     QuantumCircuit qc(2, 0, "tallbox");
     qc.rxx(kPi / 4.0, 0, 1).ryy(kPi / 6.0, 0, 1).ecr(0, 1);
     return qc;
@@ -101,7 +101,7 @@ inline QuantumCircuit all_single_qubit_unparam() {
 // Tests Tier 1 show_params toggle and pi-snap formatting.
 inline QuantumCircuit all_single_qubit_param() {
     QuantumCircuit qc(1, 0, "all_1q_param");
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;  // short local alias, library-sourced value
     qc.rx(kPi / 2.0, 0).ry(kPi / 4.0, 0).rz(kPi / 8.0, 0)
       .p(kPi / 3.0, 0).u(kPi / 2.0, kPi / 4.0, kPi / 6.0, 0);
     return qc;

@@ -45,7 +45,8 @@ using namespace lindblad;
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
+// Short local alias, library-sourced value.
+constexpr double kPi = PI;
 
 bool fp_bad(double x) {
     std::uint64_t b;

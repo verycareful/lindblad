@@ -77,7 +77,13 @@ inline Eigen::MatrixXcd build_poison_theta() {
     auto base = sim.run(prefix, /*max_bond_dim=*/64, /*shots=*/0, /*seed=*/42);
     lindblad::MPSState st = base.final_state;
 
-    constexpr double s2 = 0.7071067811865475;
+    // The hand-applied gates below must use the SAME Hadamard amplitude the
+    // library used for the evolved prefix above, or the reconstructed theta is
+    // not the matrix svd_truncate actually saw. The literal previously here was
+    // one ULP below correctly-rounded 1/√2, which is exactly the divergence #70
+    // removed from the library — leaving it would have re-created it inside the
+    // reproducer. Short local alias, single-sourced value.
+    constexpr double s2 = lindblad::INV_SQRT2;
     const std::array<lindblad::Complex128, 4> H = {
         lindblad::Complex128(s2, 0), lindblad::Complex128(s2, 0),
         lindblad::Complex128(s2, 0), lindblad::Complex128(-s2, 0)};

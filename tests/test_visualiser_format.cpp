@@ -27,7 +27,10 @@ const std::string kPi = "\xcf\x80";
 // UTF-8 middle dot (U+00B7) used for multiplication.
 const std::string kMidDot = "\xc2\xb7";
 
-constexpr double kPiD = 3.141592653589793238462643383279502884;
+// Numeric π (kPi above is the UTF-8 GLYPH, a different thing). Library-sourced
+// value; the literal that was here carried far more digits than a double can
+// hold, which reads as precision but is only unverifiable typing.
+constexpr double kPiD = PI;
 
 DrawOptions default_opts() { return DrawOptions{}; }
 

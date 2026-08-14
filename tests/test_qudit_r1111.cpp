@@ -32,7 +32,11 @@ using namespace lindblad::algorithms;
 
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
+// Short local alias, library-sourced value. (Extra digits never bought
+// accuracy here: double carries ~15.95 decimal digits, so this literal and PI
+// were already the same bit pattern — but a literal is only as good as the
+// digits someone typed, and only one of the two can be checked.)
+constexpr double kPi = PI;
 
 int imod(int a, int m) { int r = a % m; return r < 0 ? r + m : r; }
 

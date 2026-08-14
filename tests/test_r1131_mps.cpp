@@ -26,7 +26,8 @@ using namespace lindblad;
 
 namespace {
 
-constexpr double kInv2 = 0.7071067811865475;
+// Short local alias, library-sourced value (the literal was one ULP low).
+constexpr double kInv2 = INV_SQRT2;
 
 std::array<Complex128, 4> hadamard() {
     return {Complex128(kInv2, 0), Complex128(kInv2, 0),

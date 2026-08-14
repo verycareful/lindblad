@@ -71,9 +71,18 @@ struct BruteResult {
     std::vector<std::string> all_optimal; // degenerate optima
 };
 
+// The +infinity seed this used to carry is the defect #68 fixed in the library,
+// and it is worse in a REFERENCE solver than in the thing being tested: every
+// comparison here feeds an assertion about the library's answer, so a reference
+// that silently returns its seed makes a comparison test compare two broken
+// implementations. A seed of +infinity exists only to lose its first
+// comparison, which is precisely the comparison -ffinite-math-only (implied by
+// the project-wide -ffast-math) may fold away on the premise that infinities do
+// not occur. An explicit flag carries the same intent unfoldably.
 BruteResult brute_force_solve() {
     BruteResult res;
-    res.best_cost = std::numeric_limits<double>::infinity();
+    res.best_cost = 0.0;
+    bool have_best = false;
 
     for (int mask = 0; mask < (1 << N); ++mask) {
         int x[N];
@@ -83,10 +92,11 @@ BruteResult brute_force_solve() {
         std::string bits(N, '0');
         for (int i = 0; i < N; ++i) bits[i] = '0' + x[i];
 
-        if (cost < res.best_cost - 1e-9) {
+        if (!have_best || cost < res.best_cost - 1e-9) {
             res.best_cost = cost;
             res.best_bitstring = bits;
             res.all_optimal = {bits};
+            have_best = true;
         } else if (std::fabs(cost - res.best_cost) < 1e-9) {
             res.all_optimal.push_back(bits);
         }
@@ -193,7 +203,11 @@ SAResult simulated_annealing(int num_runs = 100, uint64_t seed = 42,
 
     std::vector<double> costs;
     std::string overall_best_bits;
-    double overall_best_cost = std::numeric_limits<double>::infinity();
+    // Same remedy as brute_force_solve above: a best-so-far seeded with
+    // +infinity is the one comparison -ffinite-math-only may fold, which would
+    // leave overall_best_bits empty and overall_best_cost at its seed.
+    double overall_best_cost = 0.0;
+    bool have_overall_best = false;
     int nfev = 0;
     int successes = 0;
 
@@ -230,11 +244,12 @@ SAResult simulated_annealing(int num_runs = 100, uint64_t seed = 42,
         }
 
         costs.push_back(best_cost);
-        if (best_cost < overall_best_cost) {
+        if (!have_overall_best || best_cost < overall_best_cost) {
             overall_best_cost = best_cost;
             overall_best_bits = std::string(N, '0');
             for (int i = 0; i < N; ++i)
                 overall_best_bits[i] = '0' + best_x[i];
+            have_overall_best = true;
         }
         if (std::fabs(best_cost - brute_min) < 1e-5) ++successes;
     }
@@ -463,7 +478,10 @@ TEST(MicrogridQAOA, AllMethodsComparison) {
 
     // QUBO costs of sampled bitstrings
     double sa_qubo = sa_res.best_cost;
-    double qaoa_sampled_qubo = std::numeric_limits<double>::quiet_NaN();
+    // quiet_nan_strict, not quiet_NaN(): the marker must stay detectably
+    // non-finite when the bitstring is the wrong width, and -ffinite-math-only
+    // need not materialise the library constant. See the note in types.hpp.
+    double qaoa_sampled_qubo = quiet_nan_strict();
     {
         const std::string& bs = qaoa_result.best_bitstring;
         if (static_cast<int>(bs.size()) == N) {

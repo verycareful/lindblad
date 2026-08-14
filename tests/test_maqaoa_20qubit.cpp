@@ -119,16 +119,28 @@ struct ExactResult {
     std::vector<std::string> all_optimal;
 };
 
+// This REFERENCE solver carried the same defect the library was fixed for in
+// #68, which mattered more than it looks: a comparison test whose reference is
+// broken compares two broken implementations and can agree for the wrong reason.
+//
+// A +infinity seed exists solely to lose its first comparison, and that is
+// exactly the comparison -ffinite-math-only (implied by the project-wide
+// -ffast-math) is licensed to fold away, on the premise that infinities do not
+// occur. Fold it and nothing is ever written: best_bitstring stays empty and
+// best_cost stays at the seed. An explicit validity flag states the same intent
+// in a form no floating-point model is entitled to reason about.
 ExactResult exact_solve() {
-    ExactResult res{ std::numeric_limits<double>::infinity(), "", {} };
+    ExactResult res{ 0.0, "", {} };
+    bool have_best = false;
     for (int mask = 0; mask < (1 << N); ++mask) {
         int x[N];
         for (int i = 0; i < N; ++i) x[i] = (mask >> i) & 1;
         double cost = qubo_cost(x);
         std::string bits(N, '0');
         for (int i = 0; i < N; ++i) bits[i] = '0' + x[i];
-        if (cost < res.best_cost - 1e-9) {
+        if (!have_best || cost < res.best_cost - 1e-9) {
             res.best_cost = cost; res.best_bitstring = bits; res.all_optimal = {bits};
+            have_best = true;
         } else if (std::fabs(cost - res.best_cost) < 1e-9) {
             res.all_optimal.push_back(bits);
         }
@@ -304,7 +316,12 @@ TEST(MicrogridQAOA20, MAQAOA_Layerwise) {
                        std::chrono::steady_clock::now() - t0).count();
 
     double final_qubo = result.optimal_value + ising.offset;
-    double sampled_qubo = std::numeric_limits<double>::quiet_NaN();
+    // quiet_nan_strict, not quiet_NaN(): this marker's whole job is to stay
+    // detectably non-finite when the bitstring is the wrong width, and under
+    // -ffinite-math-only the library constant need not be materialised. A
+    // marker that quietly becomes finite would make the "Success (exact)" line
+    // below report against a value nobody computed.
+    double sampled_qubo = quiet_nan_strict();
     if (static_cast<int>(result.best_bitstring.size()) == N) {
         int x[N];
         for (int i = 0; i < N; ++i) x[i] = result.best_bitstring[i] - '0';

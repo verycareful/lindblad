@@ -610,7 +610,7 @@ TEST(QASM3ParserTest, ParamExprTauLiteral) {
 }
 TEST(QASM3ParserTest, ParamExprEulerLiteral) {
     auto qc = parse3("qubit[1] q;\nrx(euler) q[0];\n");
-    EXPECT_NEAR(qc.instructions[0].params[0], 2.718281828459045, 1e-12);
+    EXPECT_NEAR(qc.instructions[0].params[0], E, 1e-12);
 }
 TEST(QASM3ParserTest, ParamExprPiOverTwo) {
     auto qc = parse3("qubit[1] q;\nrx(pi/2) q[0];\n");

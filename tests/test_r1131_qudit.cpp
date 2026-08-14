@@ -158,7 +158,7 @@ TEST(R1131Qudit, ApplyKquditParallelMatchesSerial) {
 // distribution of the exact dense state it was built from.
 TEST(R1131Qudit, MpsMeasureMatchesDenseDistribution) {
     const int d = 2, n = 3;
-    const double inv2 = 0.7071067811865475;
+    const double inv2 = INV_SQRT2;  // short local alias, library-sourced value
     const std::vector<Complex128> H2{Complex128(inv2, 0), Complex128(inv2, 0),
                                      Complex128(inv2, 0), Complex128(-inv2, 0)};
     // CX (d=2), row = new_q1*2 + new_q0: identity on q0=0 block, flip q1 on q0=1.

@@ -4,6 +4,112 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.20.1] - 2026-08-14
+
+Test-only release covering the three defects R.1.20.0 closed (#68, #69, #70).
+No library code changes.
+
+### Added
+
+- `tests/test_r1201_constants.cpp` — coverage for
+  `include/lindblad/constants.hpp`. Every constant is checked bit-for-bit
+  against its `<numbers>` source or against an exact power-of-two derivation,
+  and the one-ULP-low value #70 removed is named by bit pattern and excluded, so
+  a regression to it fails loudly instead of shifting every amplitude in the
+  library invisibly. Correct rounding is confirmed independently at 80-bit
+  precision where the target provides it. The library's own Hadamard is asserted
+  to emit the shared amplitude bit-for-bit, so agreement between the library and
+  its tests is verified end to end rather than assumed.
+
+  `inline constexpr` linkage is asserted ACROSS TWO TRANSLATION UNITS
+  (`tests/test_r1201_constants_tu2.cpp` exists only for that): a namespace-scope
+  `constexpr` without `inline` has internal linkage and would give every
+  including unit its own object at its own address, and no comparison of values
+  inside a single unit can detect it.
+
+- `tests/test_r1201_strict_fp.cpp` and `tests/test_r1201_strict_fp_nofast.cpp` —
+  `quiet_nan_strict()` and `is_finite_strict()` driven through bit patterns,
+  local storage, containers and an opaque call boundary. The two files compile
+  the same shared checks (`tests/r1201_fp_checks.hpp`) under different
+  floating-point models: one under the project-wide `-ffast-math`, one under
+  `-fno-fast-math`. Identical source and identical inputs, so the model is the
+  only variable and a divergence names exactly which property
+  `-ffinite-math-only` broke. What `std::isfinite` does under each model is
+  recorded in the output rather than asserted — that is a question about the
+  compiler, and pinning an answer would fail on a change that broke nothing.
+
+- `tests/test_r1201_truncation.cpp` — the discarded-weight truncation rule,
+  discriminated from the magnitude rule it replaced rather than merely
+  exercised. A Bell pair's spectrum puts the weight decision point at 0.5 and
+  the magnitude decision point at 0.7071, so the retained rank between those two
+  budgets is positive evidence of which rule is in force. Also covered: the
+  budget behaves as a ceiling rather than a quota, with a bimodal spectrum
+  losing nothing as the budget rises across twenty-eight orders of magnitude;
+  accumulated error stays inside the declared budget; and a bond that discarded
+  nothing reports exactly zero. That last one is the regression pin for
+  computing discarded weight as a difference between two quantities near 1.0,
+  which cannot resolve a true difference of ~1e-30 and instead quantises to
+  multiples of the machine epsilon. The qudit layer is checked to classify the
+  same spectrum identically at d = 2 and, at d = 3, to spend its budget against
+  weight rather than magnitude.
+
+- `tests/test_r1201_qaoa_validity.cpp` — QAOA and MA-QAOA result validity. The
+  best bitstring is asserted to be written, at the expected width, and genuinely
+  the cheapest sample: non-emptiness alone would pass on a ranking loop that
+  wrote its first candidate and never compared again.
+  `MAQAOA::Result::per_layer_costs` is checked to be written and finite under
+  the layerwise schedule, since that field reaches callers directly and is why
+  the defect produced a wrong result rather than a missing diagnostic.
+  Convergence is never reported alongside a non-finite value, and seeded runs
+  are reproducible. VQE's equivalent guard is covered alongside.
+
+### Fixed
+
+- Two tests held values encoding pre-R.1.20.0 behaviour. The `INV_SQRT2`
+  assertion compared against `1.0 / std::sqrt(2.0)`, itself one ULP below
+  correctly-rounded 1/√2, with a tolerance smaller than one ULP at that
+  magnitude — an exact-equality check against the wrong value, which passed only
+  while the library carried the same wrong value. It now compares bit-exactly
+  against `SQRT2 / 2.0`. The 13-qubit accumulated-truncation bound was a bare
+  `1e-24` that measured the previous magnitude rule; it is now expressed in
+  units of the declared budget, and its failure message no longer asserts the
+  position #69 deliberately rejected.
+
+- Three brute-force reference solvers in the MA-QAOA comparison tests carried
+  the same `+infinity` seed the library was fixed for. A reference that silently
+  returns its seed makes a comparison test compare two broken implementations,
+  so these mattered more than their location suggests. Replaced with explicit
+  validity flags.
+
+- A finiteness assertion in the noisy MA-QAOA test used `std::isfinite`, which
+  `-ffinite-math-only` may fold to a constant true: an assertion that could not
+  fail, inside a test whose purpose was to catch non-finite results. It now uses
+  the bit-pattern test. Two further non-finite markers built with
+  `std::numeric_limits<double>::quiet_NaN()` in fast-math translation units are
+  now built from their bit pattern, so a marker whose job is to be detectably
+  non-finite cannot quietly become an ordinary value.
+
+- The fail-loud SVD test could not construct its own input: it built its poison
+  NaN with `std::numeric_limits<double>::quiet_NaN()` in a fast-math translation
+  unit, where that constant need not be materialised, so the library correctly
+  declined to throw and the test reported a defect that was not there.
+
+### Changed
+
+- Hand-typed mathematical literals across the test tree now reference the shared
+  constants: six occurrences of the one-ULP-low 1/√2 value and roughly ten π and
+  e literals. Short local aliases are kept where they read better inside a dense
+  matrix literal; only the value is single-sourced. The Hadamard amplitude in
+  the SVD reproducer is affected directly — that file evolves its prefix through
+  the library and then applies further gates by hand, so the two were previously
+  disagreeing by one ULP on the same gate. No hand-typed mathematical literal
+  and no POSIX `M_*` macro now remains anywhere in the shipped sources, tools or
+  tests.
+
+### Results
+
+2138 tests across 172 suites — all passed (25.2 s, WSL/Clang).
+
 ## [R.1.20.0] - 2026-08-02
 
 Correctness release for the three defects the Windows and macOS runners exposed

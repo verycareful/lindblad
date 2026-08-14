@@ -197,6 +197,48 @@ set(LINDBLAD_TEST_SOURCES
     test_r1191_clifford_validation.cpp
     test_r1191_qudit_validation.cpp
     test_r1191_preflight.cpp
+    # R.1.20.1 test suite — R.1.20.0 cross-platform correctness coverage
+    # (#68/#69/#70).
+    #
+    # constants.hpp: every value checked bit-for-bit against <numbers> or an
+    # exact power-of-two derivation, the one-ULP-low literal #70 removed named
+    # and excluded by bit pattern, correct rounding confirmed independently at
+    # 80-bit precision, `inline constexpr` linkage asserted ACROSS TWO
+    # TRANSLATION UNITS (test_r1201_constants_tu2.cpp exists only for that —
+    # address identity is not observable from inside one TU), and the
+    # library's own H gate checked to emit the shared amplitude, so "library
+    # and tests agree" is verified end to end rather than assumed.
+    #
+    # Non-finite sentinels: quiet_nan_strict / is_finite_strict driven through
+    # bit patterns, storage, containers and a call boundary, compiled TWICE
+    # from one shared header (r1201_fp_checks.hpp) — once under the
+    # project-wide -ffast-math and once under -fno-fast-math (see below).
+    # Identical source and inputs, FP model the only variable, so a divergence
+    # names exactly which property -ffinite-math-only broke. std::isfinite's
+    # behaviour is RECORDED rather than asserted: it is a compiler question,
+    # and pinning an answer would fail on a change that broke nothing.
+    #
+    # Truncation: the discarded-weight rule discriminated from the magnitude
+    # rule it replaced. A Bell pair's spectrum puts the weight decision point
+    # at 0.5 and the magnitude one at 0.7071, so the rank between those two
+    # budgets is positive evidence of which rule is in force. Also the
+    # ceiling-not-quota property on bimodal spectra, the budget bound, an
+    # exactly-zero report when nothing is discarded (the regression pin for the
+    # catastrophic-cancellation defect in the accounting), and the qudit layer
+    # classifying the same spectrum identically at d = 2 and d = 3.
+    #
+    # QAOA/MA-QAOA validity: best bitstring written, at width, and genuinely
+    # the cheapest sample (non-empty alone would pass on a loop that never
+    # compared twice); layerwise per_layer_costs written and finite, since that
+    # field reached callers and made #68 a wrong result rather than a missing
+    # diagnostic; convergence never claimed alongside a non-finite value; and
+    # seeded reproducibility. VQE's equivalent guard rides along.
+    test_r1201_constants.cpp
+    test_r1201_constants_tu2.cpp
+    test_r1201_strict_fp.cpp
+    test_r1201_strict_fp_nofast.cpp
+    test_r1201_truncation.cpp
+    test_r1201_qaoa_validity.cpp
 )
 
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this
@@ -205,6 +247,20 @@ set(LINDBLAD_TEST_SOURCES
 # precedent (see the nlopt target_compile_options in the top CMakeLists).
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     set_source_files_properties(test_diag_r1160_strictfp.cpp PROPERTIES
+        COMPILE_OPTIONS "-fno-fast-math")
+
+    # R.1.20.1: the strict-FP leg of the non-finite sentinel suite. Same
+    # mechanism, same reason. r1201_fp_checks.hpp is header-only so this TU
+    # compiles the shared checks under IEEE semantics while its twin
+    # (test_r1201_strict_fp.cpp) compiles the identical source under the
+    # project-wide -ffast-math. The pair is the experiment: quiet_nan_strict
+    # and is_finite_strict claim to be independent of the FP model, and two
+    # legs that agree are what makes that claim evidence rather than assertion.
+    #
+    # The non-inline round_trip() both legs call is defined once, in the
+    # fast-math twin; this TU links against it, which is deliberate — the call
+    # must cross a boundary the optimiser cannot see through.
+    set_source_files_properties(test_r1201_strict_fp_nofast.cpp PROPERTIES
         COMPILE_OPTIONS "-fno-fast-math")
 endif()
 

@@ -37,6 +37,12 @@ TEST(MAQAOANoisyTest, LayerwiseRunCompletes) {
     auto result = maqaoa.optimize(cost);
 
     EXPECT_EQ(result.best_bitstring.size(), 5u);
-    EXPECT_TRUE(std::isfinite(result.optimal_value));
+    // is_finite_strict, not std::isfinite. This TU compiles under the
+    // project-wide -ffast-math, and -ffinite-math-only lets the compiler fold
+    // std::isfinite to a constant true — which turns this line into an
+    // assertion that cannot fail, silently, while still reading like a guard.
+    // The bit-pattern test survives any flag set. Same reasoning as the VQE
+    // finiteness pin in test_r1122_fill_algorithms.cpp.
+    EXPECT_TRUE(is_finite_strict(result.optimal_value)) << result.optimal_value;
     EXPECT_FALSE(result.counts.empty());
 }

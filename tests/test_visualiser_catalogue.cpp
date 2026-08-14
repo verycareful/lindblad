@@ -223,7 +223,7 @@ TEST(GateCatalogueTest, CswapIsCtrlPlusTwoSwapX) {
 }
 
 TEST(GateCatalogueTest, CrxParamLabelIncludesValue) {
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;  // short local alias, library-sourced value
     Glyph g = build_glyph(make_inst(GT::CRX, {0, 1}, {kPi / 2.0}), default_opts());
     const BoxPart* box = find_part_at<BoxPart>(g, 1);
     ASSERT_NE(box, nullptr);
@@ -235,7 +235,7 @@ TEST(GateCatalogueTest, CrxParamLabelIncludesValue) {
 TEST(GateCatalogueTest, CrxHonoursShowParamsFalse) {
     DrawOptions opts;
     opts.show_params = false;
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;  // short local alias, library-sourced value
     Glyph g = build_glyph(make_inst(GT::CRX, {0, 1}, {kPi / 2.0}), opts);
     const BoxPart* box = find_part_at<BoxPart>(g, 1);
     ASSERT_NE(box, nullptr);
@@ -266,7 +266,7 @@ TEST(GateCatalogueTest, RxxIsSingleTallBoxNoStrut) {
 }
 
 TEST(GateCatalogueTest, RyyRzzRzxAllTallBoxes) {
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;  // short local alias, library-sourced value
     for (GT t : { GT::RYY, GT::RZZ, GT::RZX }) {
         Glyph g = build_glyph(make_inst(t, {0, 1}, {kPi / 4.0}), default_opts());
         ASSERT_EQ(g.parts.size(), 1u) << "TallBox should emit one part: type "
@@ -288,7 +288,7 @@ TEST(GateCatalogueTest, EcrIsTallBoxWithoutParams) {
 }
 
 TEST(GateCatalogueTest, RxxLabelIncludesParam) {
-    constexpr double kPi = 3.141592653589793;
+    constexpr double kPi = PI;  // short local alias, library-sourced value
     Glyph g = build_glyph(make_inst(GT::RXX, {0, 1}, {kPi / 4.0}), default_opts());
     const BoxPart* box = find_part_at<BoxPart>(g, 0);
     ASSERT_NE(box, nullptr);

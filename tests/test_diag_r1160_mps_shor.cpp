@@ -63,6 +63,20 @@ constexpr int kQubits = kEval + kTarget;  // 13
 constexpr int kBond = 64;                 // exact at 13 qubits
 constexpr uint64_t kExpectedOrder = 4;    // ord_15(2)
 
+// Accumulated truncation error is asserted in units of the DECLARED truncation
+// budget (MPSState::cutoff), never against a bare constant — see the comment at
+// the assertion in StateExactAtEveryStage for why a bare constant measured the
+// old magnitude rule rather than the library's actual contract.
+//
+// svd_truncate may spend at most one budget (cutoff * local weight) per
+// truncating SVD, so this ceiling says: across every SVD in the longest prefix,
+// truncation spends at most a handful of budgets total. The observed spend is
+// ONE budget, at two of the fourteen cuts. The headroom absorbs per-target
+// rounding differences in where a spectrum's noise floor lands; it is still
+// thirteen orders of magnitude below the weight of any real Schmidt direction
+// in this circuit, which is the regression this bound exists to catch.
+constexpr double kMaxBudgetsSpent = 16.0;
+
 QuantumCircuit prefix_of(const QuantumCircuit& qc, size_t k) {
     QuantumCircuit p(qc.n_qubits, qc.n_clbits);
     p.instructions.assign(qc.instructions.begin(),
@@ -236,7 +250,7 @@ TEST(DiagR1160MpsShor, SamplerMatchesItsOwnState) {
 
     const double noise_scale =
         std::sqrt(static_cast<double>(std::max(support, 1)) /
-                  (3.14159265358979 * shots));
+                  (PI * shots));
     EXPECT_LT(tvd, 2.5 * noise_scale + 0.02)
         << "sampler disagrees with its OWN state beyond sampling noise: "
            "measure_sequential (S2) is implicated";
@@ -263,7 +277,10 @@ TEST(DiagR1160MpsShor, SamplerMatchesItsOwnState) {
 // -----------------------------------------------------------------------------
 namespace {
 
-constexpr double kS2 = 0.7071067811865475;
+// Single-sourced from the library so the hand-rolled H below carries the same
+// amplitude the simulator's own H does; the literal that was here was one ULP
+// low, the divergence #70 removed.
+constexpr double kS2 = INV_SQRT2;
 
 std::array<Complex128, 4> h2x2() {
     return {Complex128(kS2, 0), Complex128(kS2, 0),
@@ -541,7 +558,8 @@ TEST(DiagR1160MpsShor, QuditMpsTwinOnSameIqftTail) {
     }
     QuditMPS qm(qsv, /*max_bond_dim=*/kBond);
 
-    constexpr double s2 = 0.7071067811865475;
+    // Short local alias, library-sourced value (the literal was one ULP low).
+    constexpr double s2 = INV_SQRT2;
     const std::vector<Complex128> H2 = {
         Complex128(s2, 0), Complex128(s2, 0),
         Complex128(s2, 0), Complex128(-s2, 0)};
@@ -702,8 +720,35 @@ TEST(R1161MpsShor, StateExactAtEveryStage) {
             fidelity(sv_state_of(pre), mps_state_to_vec(res.final_state));
         EXPECT_NEAR(fid, 1.0, 1e-9)
             << "MPS state diverged from the statevector reference";
-        EXPECT_LT(res.final_state.truncation_error(), 1e-24)
-            << "real weight was truncated even though chi=64 is exact here";
+
+        // Accumulated discarded weight, measured against the DECLARED budget.
+        //
+        // `cutoff` is a fraction of local weight, so the only scale on which
+        // this figure means anything is `cutoff` itself. The bound here used to
+        // be a bare 1e-24, which measured the OLD absolute-magnitude rule: that
+        // rule kept a ~1e-8 direction instead of discarding it, so the running
+        // total never left numerical dust. Under the discarded-weight rule two
+        // of these cuts spend exactly one budget (~1.11e-16) while fidelity is
+        // still 1.0 and chi is still inside its bound — what gets dropped there
+        // is the noise floor, not structure.
+        //
+        // The old failure message ("real weight was truncated even though
+        // chi=64 is exact here") asserted the position #69 deliberately
+        // rejected. A rule that declines to truncate whenever the bond cap has
+        // room is precisely what produced the platform split: there the cap was
+        // 64 with only 17 directions in play, and the same state still
+        // classified differently per target. So this bound checks what the
+        // library actually promises — truncation stays inside its budget and
+        // does not accumulate gate after gate — and leaves the exactness claim
+        // to fidelity and chi, which are the assertions that can carry it.
+        const double budget = res.final_state.cutoff;
+        ASSERT_GT(budget, 0.0) << "cutoff must be positive for this bound";
+        const double terr = res.final_state.truncation_error();
+        EXPECT_LT(terr, kMaxBudgetsSpent * budget)
+            << "accumulated discarded weight is " << (terr / budget)
+            << " budgets (cutoff = " << budget << "); truncation is eating "
+               "weight across gates rather than dropping a noise floor once";
+
         EXPECT_LE(res.final_state.current_max_bond_dim(), 8);
 
         const auto scan = scan_tensors(res.final_state);
@@ -778,7 +823,7 @@ TEST(R1161MpsShor, SamplerWithinNoiseAt13Qubits) {
     }
     const double noise_scale =
         std::sqrt(static_cast<double>(std::max(support, 1)) /
-                  (3.14159265358979 * shots));
+                  (PI * shots));
     EXPECT_LT(tvd, 2.5 * noise_scale + 0.02);
 }
 
@@ -797,7 +842,8 @@ TEST(R1161MpsShor, QuditTwinStaysExact) {
     }
     QuditMPS qm(qsv, /*max_bond_dim=*/kBond);
 
-    constexpr double s2 = 0.7071067811865475;
+    // Short local alias, library-sourced value (the literal was one ULP low).
+    constexpr double s2 = INV_SQRT2;
     const std::vector<Complex128> H2 = {
         Complex128(s2, 0), Complex128(s2, 0),
         Complex128(s2, 0), Complex128(-s2, 0)};
@@ -880,8 +926,20 @@ TEST(R1161MpsShor, Simon36JacobiReference) {
 // branch is exercised.
 TEST(R1161MpsShor, SvdTruncateThrowsOnUnrecoverableInput) {
     MPSState st(2, kBond);
-    st.tensors[0].data[0] = Complex128(
-        std::numeric_limits<double>::quiet_NaN(), 0.0);
+    // The poison MUST be built with quiet_nan_strict(), not with
+    // std::numeric_limits<double>::quiet_NaN(). This TU compiles under the
+    // project-wide -ffast-math, which implies -ffinite-math-only, and under that
+    // model the compiler is entitled to assume NaNs do not occur and need not
+    // materialise the library constant at all. The tensor then holds an ordinary
+    // finite value, the library's guard correctly does not fire, and the test
+    // fails while reporting a library defect that is not there — the TEST could
+    // not construct its own input. quiet_nan_strict() goes through memcpy, so
+    // the value stays integer data until the last moment and survives any flag
+    // set (see the note on it in types.hpp).
+    const double poison = quiet_nan_strict();
+    ASSERT_FALSE(is_finite_strict(poison))
+        << "the poison value is finite, so this test cannot test anything";
+    st.tensors[0].data[0] = Complex128(poison, 0.0);
 
     std::array<Complex128, 16> CZ{};
     CZ[0 * 4 + 0] = CZ[1 * 4 + 1] = CZ[2 * 4 + 2] = Complex128(1, 0);
@@ -909,8 +967,20 @@ void expect_exact_at_bond64(const QuantumCircuit& qc, const char* what,
     const double fid =
         fidelity(sv_state_of(qc), mps_state_to_vec(res.final_state));
     EXPECT_NEAR(fid, 1.0, 1e-9) << what << ": MPS diverged from statevector";
-    EXPECT_LT(res.final_state.truncation_error(), 1e-18)
-        << what << ": truncated in the exact regime";
+    // Every circuit reaching this helper is inside the exact regime (n <= 12 at
+    // chi = 64 = 2^(12/2)), so truncation should never engage: the assertion is
+    // that not even ONE budget was spent. Stated in units of the declared budget
+    // rather than as a bare constant, for the same reason as the bound in
+    // StateExactAtEveryStage — a bare figure silently measures whichever
+    // truncation rule was in force when it was written, which is how the 1e-24
+    // there came to encode the pre-#69 magnitude rule.
+    const double budget = res.final_state.cutoff;
+    ASSERT_GT(budget, 0.0) << what << ": cutoff must be positive";
+    const double terr = res.final_state.truncation_error();
+    EXPECT_LT(terr, budget)
+        << what << ": spent " << (terr / budget)
+        << " budgets truncating inside the exact regime, where the bond cap "
+           "cannot bind and nothing should have been discarded";
     EXPECT_FALSE(scan_tensors(res.final_state).corrupt) << what;
     EXPECT_LE(res.final_state.current_max_bond_dim(), 64) << what;
     if (expected_final_chi > 0) {

@@ -190,7 +190,17 @@ TEST(R1121Types, ExpIAdditionTheorem) {
 
 TEST(R1121Types, ConstantsAreConsistent) {
     EXPECT_NEAR(2.0 * INV_SQRT2 * INV_SQRT2, 1.0, 1e-15);
-    EXPECT_NEAR(INV_SQRT2, 1.0 / std::sqrt(2.0), 1e-16);
+    // INV_SQRT2 is DERIVED as SQRT2 / 2.0. Division by a power of two is exact,
+    // so this relationship is bit-exact and EXPECT_EQ is the honest assertion.
+    //
+    // The reference used here previously was `1.0 / std::sqrt(2.0)` with a 1e-16
+    // tolerance, and both halves of that were wrong. The expression rounds twice
+    // (sqrt, then divide) and lands one ULP BELOW correctly-rounded 1/√2
+    // (0x3FE6A09E667F3BCC against 0x3FE6A09E667F3BCD). The tolerance is smaller
+    // than one ULP at this magnitude (ULP ≈ 1.11e-16), so EXPECT_NEAR was
+    // already an exact-equality check — against the wrong value. It passed only
+    // while the library carried the same one-ULP-low literal the reference does.
+    EXPECT_EQ(INV_SQRT2, SQRT2 / 2.0);
     // PI_2 and PI_4 are exact binary scalings of PI
     EXPECT_EQ(2.0 * PI_2, PI);
     EXPECT_EQ(4.0 * PI_4, PI);
