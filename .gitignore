@@ -56,8 +56,13 @@ CLAUDE.md
 # reference it, so it must ship (R.1.14.0/R.1.14.1 gitignored it by mistake;
 # see the R.1.15.0 CHANGELOG entry). Directory ignores cannot be re-included
 # below, hence /tools/* + negation instead of /tools/.
+# Second exception, same reason: check_line_endings.py enforces the LF policy
+# that .gitattributes states, and both the CI hygiene job and the committed
+# tests/tools/test_line_endings.py run it, so a clone without it fails its own
+# suite.
 /tools/*
 !/tools/bench_report.py
+!/tools/check_line_endings.py
 
 # Comparison-benchmark working outputs (repo root during a run; archive to
 # local/outputs/ with a date prefix afterwards)

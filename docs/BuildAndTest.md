@@ -64,6 +64,28 @@ For multi-config builds, specify configuration:
 ctest --test-dir build -C Release --output-on-failure
 ```
 
+## Line-Ending Check
+
+`.gitattributes` sets the repository policy: LF everywhere, in the repository and
+in the working tree, on every platform. Git enforces it when content moves
+between the working tree and the object database, which leaves two gaps: a tool
+that rewrites a file in place looks harmless until the moment those attributes
+stop applying, and a file that lost its final newline is indistinguishable from
+one that was truncated.
+
+`tools/check_line_endings.py` closes both. It reads the bytes off disk and
+decides independently of git, so it reports drift whether or not the attributes
+are still doing their job. Binary files are exempt by content (a NUL byte in the
+first block) rather than by extension.
+
+```bash
+python3 tools/check_line_endings.py          # report; exit 1 on any finding
+python3 tools/check_line_endings.py --fix    # repair in place
+```
+
+It also runs as part of the suite: the `python_tools` ctest case scans the tree
+on every run, alongside the unit tests for the scanner itself.
+
 ## Coverage
 
 `LINDBLAD_BUILD_COVERAGE=ON` compiles `lindblad_core` and the test tree with

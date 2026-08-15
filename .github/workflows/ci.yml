@@ -12,8 +12,11 @@
 # dependency is fetched by CMake (FetchContent), so a runner only needs a
 # compiler + ninja + an OpenMP runtime (GCC bundles libgomp; clang's libomp is
 # separate).
-# Later increments (tracked in the CI issue): a gcovr coverage artifact, a
-# clang-format + clang-tidy gate, release automation.
+# Two jobs run alongside the matrix and do not depend on it: `line-endings`
+# (repository hygiene, no compiler needed) and `coverage` (an instrumented build
+# whose report is uploaded as an artifact).
+# Later increments (tracked in the CI issue): a clang-format + clang-tidy gate,
+# release automation.
 
 name: CI
 
@@ -176,3 +179,90 @@ jobs:
       - name: Test
         shell: bash
         run: ctest --test-dir build --output-on-failure
+
+  # Repository hygiene. No compiler, no dependencies, seconds to run.
+  #
+  # .gitattributes states the LF policy and git enforces it in one place: the
+  # conversion applied when content moves between the working tree and the
+  # object database. That is real, but it is a single line acting at commit
+  # time, and it is invisible while it works. This job reads the bytes off disk
+  # and decides independently, so a file that arrives by some other route, or a
+  # path whose attributes changed, is still reported. The same script runs
+  # locally as a ctest case.
+  line-endings:
+    name: line endings
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check tracked files against the LF policy
+        run: python3 tools/check_line_endings.py
+
+  # Coverage report, published as a downloadable artifact so the number is
+  # tracked per release instead of measured by hand.
+  #
+  # A separate job rather than a seventh matrix leg: LINDBLAD_BUILD_COVERAGE
+  # forces -O0 -g for exact line attribution, which would change what the Debug
+  # and Release legs measure and slow them down for nothing. Mirrors the
+  # invocation documented in docs/BuildAndTest.md.
+  coverage:
+    name: coverage (gcovr)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build g++-13 gcovr
+          gcovr --version
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v5
+        with:
+          path: build-cov/_deps
+          key: deps-coverage-ubuntu-24.04-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-cov -G Ninja
+          -DCMAKE_CXX_COMPILER=g++-13
+          -DLINDBLAD_BUILD_COVERAGE=ON
+          -DLINDBLAD_MARCH_NATIVE=OFF
+          -DLINDBLAD_BUILD_PYTHON=OFF
+
+      - name: Build
+        run: cmake --build build-cov --parallel -- -k 0
+
+      - name: Test
+        run: ctest --test-dir build-cov --output-on-failure
+
+      # --gcov-executable must match the compiler: gcov 14 (the Ubuntu 24.04
+      # default) cannot read notes written by GCC 13, and reports every line as
+      # uncovered rather than failing, so a mismatch looks like a coverage
+      # collapse instead of a tooling error.
+      #
+      # The filters keep the report to shipped code. Without them the number is
+      # diluted by the test tree itself and by everything FetchContent pulls
+      # into build-cov/_deps.
+      - name: Report
+        run: |
+          gcovr -r . build-cov \
+            --gcov-executable gcov-13 \
+            --filter src/ --filter include/ \
+            --html-details build-cov/coverage.html \
+            --txt build-cov/coverage.txt \
+            --print-summary
+          echo "::group::coverage.txt"
+          cat build-cov/coverage.txt
+          echo "::endgroup::"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v5
+        with:
+          name: coverage-report
+          path: |
+            build-cov/coverage*.html
+            build-cov/coverage*.css
+            build-cov/coverage.txt
+          if-no-files-found: error

@@ -4,6 +4,77 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.20.2] - 2026-08-15
+
+Closes the coverage-reporting increment of the CI track, and adds an independent
+check for the line-ending policy the repository already declares.
+
+### Added
+
+- `.github/workflows/ci.yml`: a `coverage` job. It configures with
+  `LINDBLAD_BUILD_COVERAGE=ON`, runs the full suite, and uploads the gcovr HTML
+  and txt reports as a downloadable artifact, with the summary echoed into the
+  job log, so the number is tracked per release instead of measured by hand. It
+  is a separate job rather than a seventh matrix leg because coverage
+  instrumentation forces `-O0` for exact line attribution, which would change
+  what the Debug and Release legs measure and slow them down for nothing.
+  `gcov-13` is selected explicitly to match the compiler: a mismatched gcov
+  reports every line as uncovered rather than failing, so it would look like a
+  coverage collapse instead of a tooling error. No minimum is enforced yet,
+  since the first run is what establishes the figure a minimum would be set
+  against.
+
+- `.github/workflows/ci.yml`: a `line-endings` job, which needs no compiler and
+  no dependencies.
+
+- `tools/check_line_endings.py`, a scanner for the LF policy `.gitattributes`
+  declares. Git enforces that policy at exactly one point: the conversion
+  applied when content moves between the working tree and the object database.
+  Two gaps follow. A tool that rewrites a file in place looks harmless right up
+  until those attributes stop applying to it, and a file missing its final
+  newline is indistinguishable from one that was cut off. The scanner reads
+  bytes off disk and decides without consulting git, so it reports drift either
+  way. It checks CRLF, lone CR, and missing final newline, exempts binaries by
+  content rather than by extension so a new binary type needs no change here,
+  and repairs with `--fix`.
+
+- `tests/tools/test_line_endings.py`, 14 cases. The classification rules are
+  driven directly with bytes, because a checker that passes everything is
+  indistinguishable from a clean repository. `--fix` output is asserted
+  idempotent and asserted to satisfy the check it was derived from. One case
+  scans the real tree, which is the guard itself rather than a test of it. These
+  run under ctest rather than the gtest binary, so the suite totals below are
+  unchanged.
+
+- `docs/BuildAndTest.md`: a Line-Ending Check section covering both checks, the
+  binary exemption, and the ctest case that runs them.
+
+### Changed
+
+- `tests/CMakeLists.txt`: the ctest entry that discovers `tests/tools/` is
+  renamed from `bench_report_tools` to `python_tools`, since it now covers two
+  tool suites rather than one.
+
+- `.gitignore`: `tools/check_line_endings.py` is a second exception to the
+  `tools/` ignore, for the same reason as the first. A CI job and a committed
+  test both run it, so a clone without it would fail its own suite.
+
+### Fixed
+
+- `README.md` had been truncated mid-sentence since R.1.12.2, ending at
+  'Commercial use requires a separate' with no final newline. The three lost
+  elements are restored from the last intact revision: the completed license
+  sentence, the pointer to LICENSE / NOTICE / CITATION.cff, and the
+  licensing-inquiries address. A stale reference to a planning file that no
+  longer exists is also corrected.
+
+- Thirteen tracked files carried no final newline, `README.md` among them. All
+  now do, which is what makes the check above enforceable rather than advisory.
+
+### Results
+
+2138 tests across 172 suites, all passed (27.6 s, WSL/Clang).
+
 ## [R.1.20.1] - 2026-08-14
 
 Test-only release covering the three defects R.1.20.0 closed (#68, #69, #70).

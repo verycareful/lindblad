@@ -313,17 +313,20 @@ if(LINDBLAD_BUILD_PYTHON)
     endif()
 endif()
 
-# R.1.14.1 : tools/bench_report.py unit + end-to-end tests. Pure stdlib;
-# registered whenever a Python3 interpreter exists (independent of
-# LINDBLAD_BUILD_PYTHON, which gates the bindings test above).
+# Python tool tests, discovered from tests/tools/: bench_report.py (unit +
+# end-to-end) and the line-ending scanner (classification rules + a scan of the
+# real tree). Pure stdlib; registered whenever a Python3 interpreter exists,
+# independent of LINDBLAD_BUILD_PYTHON, which gates the bindings test above.
+# LINDBLAD_REPO_ROOT is how a case locates the tree it is checking, since ctest
+# runs it from the build directory.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(
-        NAME bench_report_tools
+        NAME python_tools
         COMMAND ${Python3_EXECUTABLE} -m unittest discover
                 -s "${CMAKE_CURRENT_SOURCE_DIR}/tools" -p "test_*.py"
     )
-    set_tests_properties(bench_report_tools PROPERTIES
+    set_tests_properties(python_tools PROPERTIES
         LABELS "lindblad"
         ENVIRONMENT "LINDBLAD_REPO_ROOT=${PROJECT_SOURCE_DIR}")
 endif()
