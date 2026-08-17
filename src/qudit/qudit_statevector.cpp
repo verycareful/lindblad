@@ -79,7 +79,7 @@ void QuditStatevector::apply_1qudit(int q, const std::vector<Complex128>& U) {
     const size_t block  = stride * static_cast<size_t>(d);  // = d^(q+1)
     const long long n_outer = static_cast<long long>(dim / block);
 
-    // Parallelise over outer blocks (audit F-17); scratch is per-thread.
+    // Parallelise over outer blocks; scratch is per-thread.
     #pragma omp parallel if(dim >= (1u << 12))
     {
         std::vector<Complex128> old_amp(static_cast<size_t>(d));

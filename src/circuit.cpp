@@ -1848,7 +1848,7 @@ QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
                     } else if (ikey == "matrix") {
                         // Accumulate into a local vector, then assign once:
                         // Instruction::matrix is copy-on-write (immutable), so
-                        // it cannot be push_back-ed into in place (audit F-18).
+                        // it cannot be push_back-ed into in place.
                         std::vector<Complex128> mat;
                         r.expect('[');
                         while (r.peek() != ']') {
@@ -1893,11 +1893,8 @@ QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
 // one of four renderers based on DrawMode. The renderers live in
 // src/visualisation/render_*.cpp and share the CircuitDocument data model.
 //
-// to_ascii() is now a thin compatibility wrapper that calls draw(ASCII) and
-// is scheduled for removal once external callers migrate. The implementation
-// of the old primitive ASCII drawer (vector<string> wires) has been deleted;
-// the new path is layered, parameter-aware, and shares its layout pass with
-// every other backend.
+// to_ascii() is a thin compatibility wrapper that calls draw(ASCII) and is
+// scheduled for removal once external callers migrate.
 
 std::string QuantumCircuit::draw(DrawMode mode, const DrawOptions& opts) const {
     const auto doc = lindblad::viz::build_document(*this, opts);

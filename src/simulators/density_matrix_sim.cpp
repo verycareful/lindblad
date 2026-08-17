@@ -80,16 +80,15 @@ bool DensityMatrix::is_valid(double atol) const {
 }
 
 // =============================================================================
-// Localized sub-block application helpers (R.1.13, audit F-1/F-2; channel
-// path reworked in R.1.17)
+// Localized sub-block application helpers
 //
 // rho is row-major dim×dim, so a full row is contiguous. Gates: the ket
 // (left) multiply is a complex AXPY over contiguous dim-length rows,
 // parallelised over background groups; the bra (right) multiply stays
 // row-local and parallelises over rows. Channels: applied as ONE fused
 // superoperator pass over vectorized sub-blocks (see
-// dm_superop_apply_inplace) instead of two sweeps + an accumulate per Kraus
-// operator — a 16-operator two-qubit depolarizing channel previously cost
+// dm_superop_apply_inplace) rather than two sweeps + an accumulate per Kraus
+// operator, which would cost a 16-operator two-qubit depolarizing channel
 // ~48 full-rho sweeps and two dim² scratch allocations per call.
 // =============================================================================
 
@@ -255,7 +254,7 @@ void dm_bra_apply_inplace(Complex128* __restrict data,
 
 // =============================================================================
 // apply_gate — localized tensor operation: rho -> U * rho * U†
-// In-place ket AXPY followed by in-place bra multiply (audit F-1). Background
+// In-place ket AXPY followed by in-place bra multiply. Background
 // indices (all target bits = 0) are enumerated directly; each pass is
 // OpenMP-parallel and streams contiguous rows.
 // =============================================================================
@@ -342,12 +341,11 @@ void DensityMatrix::apply_kraus(
     const std::vector<std::vector<Complex128>>& kraus_ops,
     const std::vector<int>& qubits
 ) {
-    // R.1.17 (see the benchmark-driven findings tracked in TODO): the whole
-    // channel is fused into one superoperator and applied in a SINGLE pass
-    // over rho. The previous implementation (R.1.13, audit F-2) performed a
-    // ket sweep + bra sweep + accumulate per Kraus operator and allocated
-    // two dim² scratch buffers per call — a 16-operator two-qubit
-    // depolarizing channel cost ~48 full-rho sweeps per noisy gate. The
+    // The whole channel is fused into one superoperator and applied in a
+    // SINGLE pass over rho. A ket sweep + bra sweep + accumulate per Kraus
+    // operator, with two dim² scratch buffers per call, would instead cost a
+    // 16-operator two-qubit depolarizing channel ~48 full-rho sweeps per
+    // noisy gate. The
     // superoperator build is O(ops · sub_dim⁴) on at-most-16×16 blocks for
     // the 1q/2q channels noise models attach: negligible next to one sweep.
     detail::check_qubits(qubits, n_qubits, "DensityMatrix::apply_kraus");
@@ -496,7 +494,7 @@ double DensityMatrix::expectation_value_sparse(const SparsePauliOp& hamiltonian)
     // For each Pauli string, P[k, row] ≠ 0 only when k = row ⊕ flip_mask
     // (flip_mask covers X and Y positions). The per-row phase is
     // i^{#Y} · (-1)^{popcount(row & sign_mask)} where sign_mask covers Z and Y
-    // positions. R.1.13 (audit F-14): the i^{#Y} factor is a per-term constant
+    // positions. The i^{#Y} factor is a per-term constant
     // folded into the coefficient (same trick as SparsePauliOp to_matrix), the
     // per-row sign is one popcount parity, and the row loop is an OpenMP
     // reduction — replacing the per-row z_bits/y_bits vector walks.
@@ -807,10 +805,9 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             Complex128(0,0), Complex128(0,0)
         };
 
-        // Per-instruction plan, resolved ONCE (audit F-12/F-13; channel
-        // superoperators fused in R.1.17). Previously apply_inst deep-copied
-        // every Kraus matrix and rebuilt the gate matrix on every call — i.e.
-        // per shot per gate. All of it is constant across shots, so
+        // Per-instruction plan, resolved ONCE. Resolving inside apply_inst
+        // instead would deep-copy every Kraus matrix and rebuild the gate
+        // matrix per shot per gate. All of it is constant across shots, so
         // precompute here: gate matrices, and each attached channel FUSED
         // into its internal-convention superoperator with its stride tables,
         // so application is one dm_superop_apply_inplace sweep with zero
@@ -824,7 +821,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
         const size_t n_inst = circuit.instructions.size();
         std::vector<std::vector<Complex128>> gate_mats(n_inst);
         std::vector<std::vector<ResolvedError>> inst_errors(n_inst);
-        // Structured ops applied without a dense matrix (audit F-7/F-9):
+        // Structured ops applied without a dense matrix:
         //   op_kind 0 = matrix gate, 1 = permutation, 2 = mcp phase.
         std::vector<char> op_kind(n_inst, 0);
         std::vector<std::vector<int>> op_perm(n_inst);
@@ -944,7 +941,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             std::vector<int> clreg(n_clbits, 0);
 
             const int n_shots = std::max(1, shots);
-            // Reuse ONE density-matrix buffer across shots (audit F-13):
+            // Reuse ONE density-matrix buffer across shots:
             // re-initialise to |0><0| per shot instead of allocating a fresh
             // 4^N matrix each time. After the loop `dm` holds the last shot's
             // (collapsed) state, which becomes final_state.
@@ -1046,7 +1043,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             // Keys follow the qubit -> clbit mapping of the (terminal)
             // MEASURE instructions; clbit 0 is the rightmost character. When
             // the circuit has no MEASURE at all, the full register is sampled
-            // with qubit-indexed keys (legacy behaviour).
+            // with qubit-indexed keys.
             if (shots > 0) {
                 std::vector<std::pair<int, int>> meas;  // (qubit, clbit)
                 for (const auto& inst : circuit.instructions)

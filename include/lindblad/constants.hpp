@@ -26,14 +26,14 @@ namespace lindblad {
 // ordinary declarations, subject to normal lookup, and either in scope or a
 // compile error.
 //
-// Duplication is the second failure mode, and it is the one that actually bit.
-// INV_SQRT2 was hand-typed as 0.7071067811865475 and copied to seven further
-// sites; that literal is one unit in the last place BELOW correctly-rounded
-// 1/sqrt(2) (0x3FE6A09E667F3BCC against the correct 0x3FE6A09E667F3BCD), while
-// the tests spelled the same amplitude via the POSIX macro and therefore got
-// the correct value. Library and tests disagreed by one ULP on the Hadamard
-// amplitude, the most-used constant in the codebase. One definition, derived
-// rather than typed, removes both the divergence and the class of bug.
+// Duplication is the second failure mode, and it is the more dangerous one. A
+// hand-typed constant can be wrong by one unit in the last place and stay
+// invisible: 0.7071067811865475 is 0x3FE6A09E667F3BCC, one ULP BELOW
+// correctly-rounded 1/sqrt(2) at 0x3FE6A09E667F3BCD. Copy that to eight sites
+// while the tests spell the same amplitude correctly, and the library disagrees
+// with its own tests by one ULP on the Hadamard amplitude, the most-used
+// constant in the codebase, with nothing anywhere saying so. One definition,
+// derived rather than typed, removes both the divergence and the class of bug.
 //
 // Values
 // ------

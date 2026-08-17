@@ -27,7 +27,7 @@ static inline Complex128 from_std(const std::complex<double>& z) noexcept {
 }
 
 // One-time loud warning when the (currently broken) BDCSVD backend is selected
-// on the qudit MPS. Mirrors the qubit-layer warning (audit F-23).
+// on the qudit MPS. Mirrors the qubit-layer warning.
 static void warn_bdc_broken_once_qudit() {
     static bool warned = false;
     if (warned) return;
@@ -35,9 +35,9 @@ static void warn_bdc_broken_once_qudit() {
     std::cerr <<
         "\n***************************************************************\n"
         "[lindblad] WARNING: SVDMethod::BDC (Eigen BDCSVD) is SELECTED on the\n"
-        "  qudit MPS but is CURRENTLY BROKEN for complex / degenerate inputs\n"
-        "  (R.1.11.2 bug, docs/plans/eigen-bdcsvd-bug.md). Results may be\n"
-        "  SILENTLY WRONG. Use SVDMethod::Jacobi (the default) until fixed.\n"
+        "  qudit MPS but is CURRENTLY BROKEN for complex / degenerate inputs:\n"
+        "  results may be SILENTLY WRONG.\n"
+        "  Use SVDMethod::Jacobi (the default) until fixed.\n"
         "***************************************************************\n";
 }
 
@@ -239,7 +239,7 @@ QuditMPS::QuditMPS(const QuditStatevector& sv,
         // Decode with the SAME ordering (this also matches the final-site read
         // `M(aL * d + sigma, 0)`). Using `sigma * chi_L + aL` here transposed the
         // physical/bond indices on intermediate sites (chi_L > 1), corrupting any
-        // state needing >= 3 sites with a nontrivial interior bond (R.1.11.2 fix).
+        // state needing >= 3 sites with a nontrivial interior bond.
         MPSSiteTensor Tq(d, chi_L, chi);
         for (int sigma = 0; sigma < d; ++sigma)
             for (int aL = 0; aL < chi_L; ++aL)
@@ -692,10 +692,10 @@ void QuditMPS::apply_function_oracle(int n_query, int n_output,
     *this = QuditMPS(sv, max_bond_dim, svd_cutoff);
 }
 
-// Sequential environment sampling (audit F-5): previously this contracted the
-// whole MPS to a dense d^n statevector and sampled that, defeating MPS
-// compactness for wide registers. Now it precomputes the right environments
-// once (build_right_envs, O(n·chi^3)) and samples left-to-right read-only,
+// Sequential environment sampling. Contracting the whole MPS to a dense d^n
+// statevector and sampling that would defeat MPS compactness for wide
+// registers, so this precomputes the right environments once
+// (build_right_envs, O(n·chi^3)) and samples left-to-right read-only,
 // carrying the left environment incrementally — O(n·chi^3) total, memory
 // bounded by the bond dimension. Mirrors the qubit-layer mps_sample.
 std::vector<int> QuditMPS::measure(uint64_t seed) {

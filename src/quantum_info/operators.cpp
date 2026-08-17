@@ -150,10 +150,10 @@ std::vector<Complex128> SparsePauliOp::to_matrix() const {
 
         // P = i^{#Y} * X^{x_mask} * Z^{z_mask} (because Y = i*X*Z): the i
         // factor is a CONSTANT per term, one i for every Y in the string.
-        // The pre-R.1.12.2 code applied i^popcount(j & y_mask) per column,
-        // dropping the factor whenever the Y-position input bit was 0, which
-        // made every Y-containing matrix non-Hermitian (issue #30). Fold the
-        // constant into the coefficient once, before the column loop.
+        // Applying i^popcount(j & y_mask) per column instead drops the factor
+        // whenever the Y-position input bit is 0, which makes every
+        // Y-containing matrix non-Hermitian (issue #30). Fold the constant into
+        // the coefficient once, before the column loop.
         const int y_count = LINDBLAD_POPCOUNT64(y_mask) & 3;
         double ty_r = 1.0, ty_i = 0.0;
         switch (y_count) {

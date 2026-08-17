@@ -171,9 +171,9 @@ KrausChannel thermal_relaxation(
     //   = exp(-t/(2*T1)) * sqrt(e_phi).
     // For the defining transverse decay exp(-t/T2) this requires
     //   e_phi = exp(-2 * t * (1/T2 - 1/(2*T1))).
-    // (The factor 2 was previously missing, which dephased at half the
-    // requested rate for every T2 < 2*T1; only the T2 = 2*T1 boundary was
-    // correct.)
+    // The factor 2 is load-bearing: without it the channel dephases at half
+    // the requested rate for every T2 < 2*T1, and only the T2 = 2*T1 boundary
+    // comes out correct.
     double pure_dephasing_rate = std::max(0.0, 1.0 / T2 - 0.5 / T1);
     double e_phi = std::exp(-2.0 * gate_time * pure_dephasing_rate);
 

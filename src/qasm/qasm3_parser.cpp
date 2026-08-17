@@ -437,10 +437,10 @@ Mat mat_pow(const Mat& M, int n, int k) {
 // stacks yields the all-controls-1 slice on the low bits, matching control()
 // and the Shor/QPE controlled matrices.
 //
-// Until R.1.12.2 this helper used a block-diagonal layout (control = MSB),
-// which under the frozen operand order silently SWAPPED control and target
-// for every gate routed through the matrix fallback. Named fast paths were
-// unaffected, which is why no earlier test caught it.
+// The interleaved layout is load-bearing. A block-diagonal layout
+// (control = MSB) instead silently SWAPS control and target, under the frozen
+// operand order, for every gate routed through the matrix fallback. Named fast
+// paths are unaffected, so a test that exercises only those cannot see it.
 Mat mat_add_control(const Mat& M, int k) {
     const size_t d = size_t(1) << k;
     const size_t D = 2 * d;
@@ -735,7 +735,7 @@ private:
     // Parse one top-level statement during the emission pass.
     // `inside_block` distinguishes statements inside an `if` body.
     void parse_statement(bool inside_block) {
-        // Already-parsed-in-first-pass forms we now skip.
+        // Forms already handled by the first pass; skipped here.
         if (at_kw("OPENQASM") || at_kw("include")) {
             while (!at(TT::SEMICOLON) && !at(TT::END)) ++pos_;
             accept(TT::SEMICOLON);
@@ -1254,8 +1254,8 @@ private:
         (void)line;
 
         // Custom-defined gate? Inline it (recursively, with substitution).
-        // Modifiers on a custom gate aren't supported in R.1.9.0 — Qiskit
-        // doesn't emit that combination from to_qasm3().
+        // Modifiers on a custom gate are not supported — Qiskit doesn't emit
+        // that combination from to_qasm3().
         auto def_it = gate_defs_.find(name);
         if (def_it != gate_defs_.end()) {
             if (n_ctrl != 0 || inv || pow_exp != 1) {
@@ -1407,8 +1407,8 @@ private:
                 // (U3(t,p,l)^2 != U3(2t,2p,2l)) and inv U3(t,p,l) =
                 // U3(-t,-l,-p), with phi and lambda swapped. Route those to
                 // the exact matrix fallback (mat_pow / mat_dagger) instead.
-                // Pre-R.1.12.2 this folded u/u2/u3 and silently imported a
-                // slightly different unitary.
+                // Folding u/u2/u3 here instead silently imports a slightly
+                // different unitary.
                 if ((inv || eff_pow != 1) && spec.n_params > 1) return false;
                 double sign = inv ? -1.0 : 1.0;
                 emit_params = fold_angle_params(sign);
@@ -1537,8 +1537,8 @@ private:
                               const std::vector<int>& qubits,
                               int n_ctrl, bool inv, int pow_exp)
     {
-        // Require all params to be numeric — symbolic matrix synthesis is
-        // beyond R.1.9.0's scope; the caller should bind first.
+        // Require all params to be numeric — symbolic matrix synthesis is out
+        // of scope; the caller should bind first.
         std::vector<double> num_params;
         num_params.reserve(params.size());
         for (const auto& p : params) {

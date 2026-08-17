@@ -59,7 +59,7 @@ static SabreRoutingResult sabre_route(
         return adj_pairs.count(static_cast<long long>(a) * ADJ_KEY + b) > 0;
     };
 
-    // Physical-qubit neighbour lists (audit F-16): candidate collection scanned
+    // Physical-qubit neighbour lists: candidate collection scanned
     // the whole coupling edge list per blocked qubit; this indexes it directly.
     std::vector<std::vector<int>> phys_neighbors(
         static_cast<size_t>(coupling_map.n_physical_qubits));
@@ -104,9 +104,9 @@ static SabreRoutingResult sabre_route(
             front.push_back(nid);
     }
 
-    // Routing accumulates output instructions and rebuilds the DAG at the end
-    // (audit F-16: a `DAGCircuit out_dag = dag` full copy here was dead — the
-    // output is built from out_instructions via from_circuit below).
+    // Routing accumulates output instructions and rebuilds the DAG at the end.
+    // A `DAGCircuit out_dag = dag` full copy here would be dead: the output is
+    // built from out_instructions via from_circuit below.
     std::vector<Instruction> out_instructions;
     std::vector<bool> done(id_range, false);
     int swap_count = 0;
@@ -132,8 +132,9 @@ static SabreRoutingResult sabre_route(
             const size_t nw = node.qubit_wires.size();
             if (nw < 2 || node.op.type == Instruction::GateType::BARRIER) {
                 // 0/1-qubit operations and barriers carry no routing
-                // constraint (a full-register BARRIER previously fell into
-                // the 2-qubit branch and could block routing forever).
+                // constraint. The BARRIER test is load-bearing: a
+                // full-register BARRIER reaching the 2-qubit branch below can
+                // block routing forever.
                 executable.push_back(nid);
             } else if (nw == 2) {
                 int la = node.qubit_wires[0];
@@ -209,7 +210,7 @@ static SabreRoutingResult sabre_route(
         // expands the DAG to device width (layout_expansion.hpp), so idle-wire
         // SWAPs are available; standalone SabreSwap on an unexpanded n < P DAG
         // remains restricted to the occupied induced subgraph by construction.
-        // build_inv() is hoisted out of the per-blocked-qubit loop (audit F-16):
+        // build_inv() is hoisted out of the per-blocked-qubit loop:
         // the layout is unchanged until a SWAP is applied at the end of this
         // iteration, so one inverse map serves the whole candidate scan.
         std::vector<std::pair<int,int>> candidates;
@@ -322,8 +323,8 @@ DAGCircuit SabreSwap::run(const DAGCircuit& dag, const TranspilationContext& ctx
     const int N = dag.n_qubits;
     const int P = ctx.coupling_map.n_physical_qubits;
     if (N > P) {
-        // Previously undefined behaviour: layout values >= P indexed the
-        // distance matrix out of range.
+        // Without this, layout values >= P index the distance matrix out of
+        // range.
         throw std::invalid_argument(
             "lindblad::SabreSwap: circuit has " + std::to_string(N) +
             " qubits but the coupling map has only " + std::to_string(P) +
@@ -331,9 +332,9 @@ DAGCircuit SabreSwap::run(const DAGCircuit& dag, const TranspilationContext& ctx
     }
     auto dist = ctx.coupling_map.distance_matrix();
 
-    // Initial layout from the context, validated (R.1.15.0 — previously a
-    // wrong-sized layout was silently ignored, and out-of-range or duplicate
-    // entries indexed the distance matrix out of bounds):
+    // Initial layout from the context, validated: a wrong-sized layout must
+    // not be silently ignored, and out-of-range or duplicate entries index the
+    // distance matrix out of bounds.
     //  - empty     → identity
     //  - size <= N → used as given; remaining wires (e.g. idle wires added by
     //                layout expansion) take the unused physical slots in

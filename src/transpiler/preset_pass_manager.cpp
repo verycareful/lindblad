@@ -1,17 +1,17 @@
 // preset_pass_manager.cpp — PassManager + preset pipeline composition + transpile()
 //
-// Extracted from optimize_1q.cpp in R.1.15.0 (SRP: pipeline composition is
-// not a 1-qubit-optimisation concern).
+// Pipeline composition lives here rather than in optimize_1q.cpp: it is not a
+// 1-qubit-optimisation concern (SRP).
 //
-// Preset levels compose per STAGE (non-cumulative) since R.1.15.0:
+// Preset levels compose per STAGE, non-cumulatively:
 //
-//   stage 0  high-level decomposition (R.1.18.0)
+//   stage 0  high-level decomposition
 //                               HighLevelDecompose, composed at EVERY level
 //                               iff the target needs it: constrained coupling
-//                               map (routing handles at most 3q gates, and
-//                               since R.1.18.2 the pass floors its output at
-//                               2q there — triangle-free maps route nothing
-//                               wider) OR non-empty basis_gates (the
+//                               map (routing handles at most 3q gates, and the
+//                               pass floors its output at 2q there —
+//                               triangle-free maps route nothing wider) OR
+//                               non-empty basis_gates (the
 //                               equivalence library cannot reach
 //                               MCX/MCP/PERMUTATION). With neither, the ops
 //                               stay native for the backends (lowering would
@@ -30,11 +30,10 @@
 //   stage 3  basis translation  BasisTranslator, composed iff basis_gates is
 //                               non-empty; ALWAYS the final stage (see below)
 //
-// Before R.1.15.0 the levels composed cumulatively: level >= 2 first ran the
-// level-0 TrivialLayout + SabreSwap block, so the initial routing pass always
-// executed on the unexpanded DAG (frozen-slot defect, layout_expansion.hpp)
-// and SabreLayout then had to re-route an already-SWAP-laden circuit whose
-// pass-1 SWAPs it could not undo. Now: one layout choice, one routing pass.
+// Per-stage composition means exactly one layout choice and exactly one routing
+// pass at every level. Composing cumulatively instead would run a level-0
+// TrivialLayout + SabreSwap block ahead of SabreLayout, leaving it to re-route
+// an already-SWAP-laden circuit whose SWAPs it cannot undo.
 //
 // Why translation is LAST: Optimize1qGates emits U/RY/RZ and
 // ConsolidateBlocks emits RXX/RYY/RZZ unconditionally — the optimisation
@@ -87,16 +86,16 @@ PassManager preset_pass_manager(
     const CouplingMap& coupling_map,
     const std::vector<std::string>& basis_gates
 ) {
-    // Since R.1.18.0 the coupling map IS consumed here (before that it was
-    // intentionally unused): together with basis_gates it decides whether the
-    // stage-0 HighLevelDecompose pass is composed. basis_gates additionally
-    // decides the translation stage (R.1.15.0). Every composed pass still
+    // The coupling map is consumed here: together with basis_gates it decides
+    // whether the stage-0 HighLevelDecompose pass is composed. basis_gates
+    // additionally decides the translation stage. Every composed pass still
     // reads both from the TranspilationContext handed to run(); transpile()
     // passes the same values into this function and the context, so
     // composition and execution always agree.
     if (optimization_level < 0 || optimization_level > 3) {
-        // Fail loud: level -1 previously returned an EMPTY manager (silent
-        // identity transpile) and level >= 4 silently behaved as level 3.
+        // Fail loud rather than resolve out-of-range levels silently: a
+        // negative level must not yield an EMPTY manager (identity transpile),
+        // and level >= 4 must not quietly behave as level 3.
         throw std::invalid_argument(
             "lindblad::preset_pass_manager: optimization_level " +
             std::to_string(optimization_level) +

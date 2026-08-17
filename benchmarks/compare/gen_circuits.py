@@ -38,10 +38,9 @@ OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "circuits")
 SCALING_SIZES = [8, 10, 14, 16, 18, 22, 24, 26, 32, 40]   # SV: <=26, MPS: 16..40
 DM_SIZES = [4, 6, 8, 10]
 # 25/27-qubit members remain corpus members for map-sized routing baselines
-# and the corpus structural tests. Since R.1.15.0 the transpiler benchmark
-# uses n=22 circuits on the 25/27-slot maps (grid25 / linear27 / heavyhex27):
-# the SABRE frozen-slot defect that forced map-sized circuits is fixed, so
-# smaller-than-map routing is the representative workload again.
+# and the corpus structural tests. The transpiler benchmark itself uses n=22
+# circuits on the 25/27-slot maps (grid25 / linear27 / heavyhex27), since
+# smaller-than-map routing is the representative workload.
 QFT_SIZES = [8, 10, 14, 18, 22, 25, 27]
 QV_SIZES = [8, 10, 14, 18, 22, 25, 27]
 GROVER_SIZES = [8, 10, 12]        # search-register width s; total qubits 2s-3

@@ -14,7 +14,7 @@
 //   3. The maintainer runs the regen tool (lindblad_visualiser_regen) to
 //      generate every golden file from the current implementation.
 //   4. The maintainer reviews each generated file against the design spec
-//      (docs/plans/circuit-visualiser-design.md) before committing.
+//      before committing.
 
 #include <fstream>
 #include <ios>

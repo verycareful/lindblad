@@ -86,12 +86,10 @@ TEST(DiagR1160StrictFP, BdcOnR1112BugMatrix) {
     EXPECT_EQ(rj.rank_1e12, 12) << "expected the twelve-fold degenerate "
                                    "spectrum from the bug note";
 
-    // Probe run 2 answered the maintainer's question: BDC is bit-identically
-    // WRONG under strict FP too (0.9861 norm violation, spurious 0.2635,
-    // 3.8e-170 subnormal) => the R.1.11.2 finding is a GENUINE Eigen 3.4.0
-    // BDCSVD defect, not fast-math. The upstream-report plan in
-    // local/plans/eigen-bdcsvd-bug.md stands, now with a strict-FP data
-    // point. No hard assertion: this test documents, the note decides.
+    // BDC is bit-identically WRONG under strict FP too (0.9861 norm violation,
+    // spurious 0.2635, 3.8e-170 subnormal), so the R.1.11.2 finding is a
+    // GENUINE Eigen 3.4.0 BDCSVD defect and not a fast-math artifact. No hard
+    // assertion: this test records the strict-FP data point.
 }
 
 TEST(DiagR1160StrictFP, LibraryGateApplicationStillCorruptsUnderItsOwnFlags) {

@@ -1,4 +1,4 @@
-// Black-box regression tests for the 8 open bugs listed in docs/plans/TODO.md as of R.1.7.4.
+// Black-box regression tests for the 8 open bugs tracked in TODO as of R.1.7.4.
 // Each test is designed to FAIL if the corresponding bug is still open.
 // Run under ctest (WSL) and compare the pass/fail verdict against the TODO list
 // to determine which entries are genuinely open vs. stale.

@@ -85,10 +85,12 @@ char norm_pauli(char c, const std::string& ctx) {
     }
 }
 
-// Sampling expectation value of a SparsePauliOp (audit F-10). When
+// Sampling expectation value of a SparsePauliOp. When
 // `group_terms` is true, qubit-wise-commuting terms share one measurement run
 // (all Z/I terms collapse into a single Z-basis run); otherwise each term is
-// measured independently (pre-R.1.13 behaviour, byte-identical seeded stream).
+// measured independently. The two paths consume the RNG stream in a different
+// order, so a given seed yields statistically-equivalent but not identical
+// counts.
 double sampled_expectation_value(
     const QuantumCircuit& circuit,
     const SparsePauliOp& observable,

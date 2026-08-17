@@ -213,11 +213,11 @@ inline void aligned_free(void* ptr) noexcept {
 }
 
 // =============================================================================
-// SVDMethod — SVD backend selector for the MPS layers (audit F-23)
+// SVDMethod — SVD backend selector for the MPS layers
 // =============================================================================
 // Jacobi is the DEFAULT on both the qubit and qudit MPS: accurate, and it
-// sidesteps the Eigen BDCSVD accuracy defect found in R.1.11.2 for
-// complex/degenerate inputs (docs/plans/eigen-bdcsvd-bug.md). BDC is faster for
+// sidesteps the Eigen BDCSVD accuracy defect on complex/degenerate inputs.
+// BDC is faster for
 // large bond dimension BUT IS CURRENTLY BROKEN: selecting it emits a loud
 // runtime warning (warn_bdc_broken_once) because results may be silently wrong.
 // TODO(R.1.13+): once the upstream BDCSVD defect is confirmed fixed, flip the
@@ -225,7 +225,7 @@ inline void aligned_free(void* ptr) noexcept {
 enum class SVDMethod { Jacobi, BDC };
 
 // Mathematical constants (PI, INV_SQRT2, ...) live in constants.hpp, included
-// at the top of this header. They were declared here historically; every name
-// that was visible then is still visible now via that include.
+// at the top of this header, so every one of those names is visible to anything
+// including types.hpp.
 
 } // namespace lindblad

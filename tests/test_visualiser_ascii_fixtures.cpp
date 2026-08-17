@@ -10,7 +10,7 @@
 //
 // Regeneration: run lindblad_visualiser_regen after the build to refresh
 // every golden file from the current implementation. Each diff must be
-// reviewed against docs/plans/circuit-visualiser-design.md before committing.
+// reviewed against the visualiser design spec before committing.
 
 #include "lindblad/circuit.hpp"
 #include "lindblad/visualisation.hpp"

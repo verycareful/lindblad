@@ -59,7 +59,7 @@ public:
     virtual ~TranspilationPass() = default;
 };
 
-// High-level decomposition (R.1.18.0) — pre-routing stage-0 pass.
+// High-level decomposition — pre-routing stage-0 pass.
 //
 // Lowers the three high-level instructions to routable, translatable gates:
 // MCX / MCP to { X, H, P, CP, CX, CCX } (ancilla-free, exact) and PERMUTATION
@@ -68,7 +68,7 @@ public:
 // every emitted gate. Instructions other than the three pass through
 // unchanged; a circuit containing none of them is returned as-is.
 //
-// Coupling-map floor (R.1.18.2): when ctx.coupling_map is constrained
+// Coupling-map floor: when ctx.coupling_map is constrained
 // (n_physical_qubits > 0) the output additionally contains NO gate wider than
 // two qubits — every CCX, whether produced by the lowering or written by the
 // user, is flattened into the exact 6-CX T-ladder ({ H, P, CX }). Routing
@@ -92,7 +92,7 @@ public:
 
 // Layout passes
 //
-// Shared output invariant (R.1.15.0): when a coupling map is present, both
+// Shared output invariant: when a coupling map is present, both
 // passes return a DAG with n_qubits == coupling_map.n_physical_qubits — every
 // physical slot holds a (possibly idle) logical wire, so circuits smaller
 // than the device stay routable (idle-wire SWAPs are legal). TrivialLayout is
@@ -128,12 +128,11 @@ public:
 };
 
 // Basis translation — decompose gates into ctx.basis_gates (default: cx+u3).
-// The output is VERIFIED (R.1.15.0): every returned gate is in the target
-// basis, or std::invalid_argument is thrown naming the offending gate.
-// Gates without a decomposition path (MCX/MCP/PERMUTATION when the stage-0
-// HighLevelDecompose pass was not run first, UNITARY, unbound PARAM_* gates)
-// previously passed through silently. Classical conditions are propagated
-// onto every emitted gate.
+// The output is VERIFIED: every returned gate is in the target basis, or
+// std::invalid_argument is thrown naming the offending gate. That covers gates
+// with no decomposition path: MCX/MCP/PERMUTATION when the stage-0
+// HighLevelDecompose pass was not run first, UNITARY, and unbound PARAM_*
+// gates. Classical conditions are propagated onto every emitted gate.
 class BasisTranslator : public TranspilationPass {
 public:
     DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const override;
@@ -205,15 +204,16 @@ public:
     DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const;
 };
 
-// Preset pass managers — per-STAGE composition (non-cumulative, R.1.15.0):
+// Preset pass managers — per-STAGE composition (non-cumulative):
 //   layout+routing   levels 0-1: TrivialLayout → SabreSwap
 //                    levels 2-3: SabreLayout → SabreSwap  (one routing pass)
 //   optimisation     level-dependent chain (see preset_pass_manager.cpp)
 //   translation      BasisTranslator, composed iff basis_gates is non-empty;
 //                    always the FINAL stage, so the basis contract holds on
 //                    the returned circuit.
-// optimization_level outside [0, 3] throws std::invalid_argument (level -1
-// previously returned an empty manager = silent identity transpile).
+// optimization_level outside [0, 3] throws std::invalid_argument, so an
+// out-of-range level cannot resolve to an empty manager (a silent identity
+// transpile).
 // ctx.initial_layout is honoured at levels 0-1 only; leave it empty at
 // levels >= 2 (SabreLayout chooses the layout).
 PassManager preset_pass_manager(
@@ -230,8 +230,7 @@ PassManager preset_pass_manager(
 //     is literal (unroutable for any 2q gate: SABRE throws).
 //   basis_gates — target basis. Non-empty: the output contains ONLY these
 //     gates or std::invalid_argument is thrown (see BasisTranslator).
-//     Empty: no basis translation. (Before R.1.15.0 this parameter was
-//     silently ignored.)
+//     Empty: no basis translation.
 //   optimization_level — 0..3; out of range throws std::invalid_argument.
 QuantumCircuit transpile(
     const QuantumCircuit& circuit,

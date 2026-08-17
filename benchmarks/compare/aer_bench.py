@@ -68,9 +68,8 @@ CLIFFORD_SIZES = [20, 40, 80, 160]
 # Transpiler workloads: (qasm file, circuit key, coupling map). Circuits are
 # SMALLER than their maps (n = 22 on 25/27-slot devices) and both engines
 # translate into the same {cx, u3} basis: the full pipeline (layout + routing
-# + optimisation + translation) is compared end-to-end. The R.1.14 workarounds
-# (map-sized circuits, routing-only) were reverted in R.1.15.0 with the
-# frozen-slot and silent-basis_gates fixes; see bench_compare_transpiler.cpp.
+# + optimisation + translation) is compared end-to-end. See
+# bench_compare_transpiler.cpp for the Lindblad half.
 TRANS_WORK = [
     ("qv_n22.qasm",  "qv22",  "linear27"),
     ("qv_n22.qasm",  "qv22",  "grid25"),

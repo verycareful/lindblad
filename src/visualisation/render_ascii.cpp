@@ -20,8 +20,8 @@
 // width exceeds the threshold; emit "... fold ..." between folds and
 // continuation labels ("<<q[0]: ") on each fold's first column.
 //
-// Multi-line boxes: NOT implemented in this release. All gates render as
-// single-line "[label]" or "<label>" form. Tall boxes (rowspan > 1) draw
+// Multi-line boxes: not implemented. All gates render as single-line
+// "[label]" or "<label>" form. Tall boxes (rowspan > 1) draw
 // vertical pipes through gap rows to span the indicated wire rows.
 
 #include "render_ascii.hpp"

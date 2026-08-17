@@ -221,7 +221,7 @@ std::string format_param(const ParamExpr& e, ParamFormat fmt) {
 // disables them or the caller did). When visible, append a parenthesised
 // comma-separated list. Symbolic param_exprs take precedence over numeric
 // params because QASM 3 input gates store the expression tree even after a
-// binding pass; falling back to params keeps the legacy numeric path working.
+// binding pass; falling back to params keeps the numeric path working.
 
 std::string format_gate_label(const Instruction& inst,
                               const GateSymbol& sym,

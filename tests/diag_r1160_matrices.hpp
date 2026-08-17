@@ -16,9 +16,9 @@
 //     NanBisect probe), then contracted and gate-applied HERE, mirroring
 //     apply_two_qubit_gate_adjacent's theta construction.
 //   build_bdcsvd_bug_matrix() — the 36x36 complex, rank-12, 12-fold
-//     degenerate matrix from local/plans/eigen-bdcsvd-bug.md (R.1.11.2):
-//     qudit Simon post-oracle state at d=6, n=2, s={2,4}; dense-ctor site-0
-//     peel (exact) leaves this residual, which BDCSVD mishandled. True
+//     degenerate matrix BDCSVD mishandles (R.1.11.2): qudit Simon post-oracle
+//     state at d=6, n=2, s={2,4}; dense-ctor site-0 peel (exact) leaves this
+//     residual. True
 //     spectrum: twelve sigma = 1/(2*sqrt(3)), rest zero; sum sigma^2 = 1.
 
 #pragma once

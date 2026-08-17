@@ -43,8 +43,8 @@ namespace transpiler_detail {
 //
 // Returns dag unchanged when the map is unconstrained (n_physical == 0,
 // i.e. default CouplingMap()) or already matches. Throws std::invalid_argument
-// when the circuit cannot fit the device — previously this was undefined
-// behaviour (out-of-range distance-matrix indexing in the SABRE passes).
+// when the circuit cannot fit the device, which would otherwise index the
+// distance matrix out of range in the SABRE passes.
 inline DAGCircuit expand_to_physical(
     const DAGCircuit& dag,
     const TranspilationContext& ctx,

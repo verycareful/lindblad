@@ -10,9 +10,9 @@
 // ConsolidateBlocks: Identify maximal 2Q gate blocks (on the same pair of qubits),
 //   compose their 4x4 unitaries, then KAK-decompose to ≤3 CNOTs + 1Q corrections.
 //
-// PassManager, preset_pass_manager, and transpile() moved to
-// preset_pass_manager.cpp in R.1.15.0 (SRP: pipeline composition is not a
-// 1-qubit-optimisation concern).
+// PassManager, preset_pass_manager and transpile() live in
+// preset_pass_manager.cpp: pipeline composition is not a 1-qubit-optimisation
+// concern (SRP).
 
 #include "lindblad/transpiler.hpp"
 #include "lindblad/gates.hpp"
@@ -50,9 +50,9 @@ static ZYZParams zyz_decompose(const Eigen::Matrix2cd& U) {
     //      [ sin(t/2)*e^{+i(phi-lam)/2},  cos(t/2)*e^{+i(phi+lam)/2} ]]
     // so from the matrix elements:
     //   arg(SU[0,0]) = -(phi+lam)/2      arg(SU[1,0]) = +(phi-lam)/2
-    // The pre-R.1.12.2 extraction used arg(a) = +(phi+lam)/2 (sign flipped),
-    // producing a merged gate with the correct theta but wrong phi/lambda:
-    // transpilation silently changed circuit unitaries (issue #31).
+    // The signs are load-bearing: arg(a) = +(phi+lam)/2 instead yields a
+    // merged gate with the correct theta but wrong phi/lambda, so
+    // transpilation silently changes circuit unitaries (issue #31).
     auto a = SU(0, 0);
     auto b = SU(1, 0);
 
@@ -632,8 +632,8 @@ DAGCircuit ConsolidateBlocks::run(const DAGCircuit& dag, const TranspilationCont
         // Collect all consecutive gates involving only {qa, qb}.
         // Stop when we see a gate on qa or qb that isn't on both, or a gate
         // we cannot represent as a 4x4 (conditioned / unknown): those must
-        // never be absorbed into the block (the old identity fallback
-        // silently deleted them).
+        // never be absorbed into the block, since an identity fallback would
+        // silently delete them.
         auto accum_opt = instruction_to_4x4(inst);
         if (!accum_opt) {
             optimized.instructions.push_back(inst);

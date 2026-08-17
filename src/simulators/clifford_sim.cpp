@@ -396,7 +396,7 @@ bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
 // MEASURE is terminal: no feedforward, no RESET (both introduce randomness or
 // state dependence), and nothing acts on a qubit after it is measured. Under
 // this condition the gate pass can run ONCE and each shot samples measurements
-// from a copy (audit F-19), instead of re-applying every gate per shot.
+// from a copy, instead of re-applying every gate per shot.
 static bool clifford_measures_are_terminal(const QuantumCircuit& circuit) {
     std::vector<bool> measured(static_cast<size_t>(circuit.n_qubits), false);
     for (const auto& inst : circuit.instructions) {

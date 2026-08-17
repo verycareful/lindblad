@@ -63,8 +63,8 @@ public:
     // Fraction of total weight (sum of sigma^2) truncation may discard. Not a
     // magnitude threshold: a bare singular value is never compared against it.
     double svd_cutoff;
-    // SVD backend (audit F-23): default accurate Jacobi. BDC is a faster opt-in
-    // that is CURRENTLY BROKEN (Eigen BDCSVD bug, R.1.11.2) and emits a loud
+    // SVD backend: default accurate Jacobi. BDC is a faster opt-in that is
+    // CURRENTLY BROKEN (Eigen BDCSVD bug) and emits a loud
     // runtime warning when selected. Shared enum lives in types.hpp.
     SVDMethod svd_method = SVDMethod::Jacobi;
     std::vector<MPSSiteTensor> tensors;

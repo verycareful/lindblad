@@ -4,6 +4,85 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.20.3] - 2026-08-17
+
+Almost entirely a comment release: every changed line in the shipped sources,
+headers, build files, CI workflow and tooling is a comment, with one exception
+recorded under Fixed, where the same audit found a broken reference in
+user-visible runtime output.
+
+### Fixed
+
+- The one-time warning emitted when `SVDMethod::BDC` is selected, on both the
+  qubit and qudit MPS layers, directed the reader to a file absent from the
+  repository. Selecting that backend is exactly the case where the warning
+  matters, since it announces that results may be silently wrong, so the
+  pointer failing was worse than its absence. Both messages now state the defect
+  and the remedy without citing anything unreachable. Five further references to
+  the same nonexistent directory are removed from comments in the test tree.
+
+### Changed
+
+- A comment earns its place by explaining the code as it stands: how it works,
+  why it is there, what breaks without it. A comment recording what changed,
+  when it changed, or why it changed is a changelog entry written at a source
+  location, and this release removes them. The distinction is explanation versus
+  justification, and the corollary decides most cases: where something needed
+  explaining it is now explained as it stands, never by comparison with what it
+  replaced. A reader has the current code in front of them and cannot see the
+  old code at all, so a comparison gave them one term of a two-term statement.
+
+  Where the contrast carried real information the information is kept and the
+  history dropped. The T2 dephasing factor in `src/noise/channels.cpp` is the
+  clearest case: it now states that the factor 2 is load-bearing and what goes
+  wrong without it, rather than that it was once absent.
+
+  Two categories are deliberate carve-outs and were left alone: release labels
+  that merely date an otherwise present-tense sentence, and test file headers,
+  where a suite's reason for existing is not cleanly separable from the defect it
+  pins.
+
+- `tests/CMakeLists.txt`: 173 comment lines to 41. `LINDBLAD_TEST_SOURCES` is a
+  list of filenames handed to `add_executable`, so a reader there needs to know
+  which files compile and which need special flags, not what the tests assert.
+  Roughly 150 lines described the latter, duplicating each test file's own header
+  at less depth, and every affected file was checked individually to confirm the
+  header covers the same ground before its build-file copy was deleted. The
+  `-fno-fast-math` block and its explanation of why those two translation units
+  are special is untouched, that being build mechanism available nowhere else.
+  All 102 source entries are byte-identical, so no file left the target.
+
+  Internal precedent for the shape: the `lindblad_core` source list in the root
+  `CMakeLists.txt` names 60 files with no narrative, and `LINDBLAD_BENCH_SOURCES`
+  names 12.
+
+- Public headers now describe behaviour without dating it. The
+  `Estimator::Options::group_pauli_terms` and `Simon::solve` `batch_shots` option
+  docs describe both paths by what they do, keeping the caller-relevant caveat
+  that the two consume the RNG stream in a different order so a given seed yields
+  statistically-equivalent but not identical counts. `QuantumCircuit::to_ascii`
+  is described as the compatibility wrapper it is, rather than as a primitive
+  renderer it no longer contains.
+
+- 41 references to an internal audit's finding numbers are removed from 23 files,
+  8 of them public headers. They indexed a document absent from the repository, so
+  no reader could resolve them, and they recorded provenance rather than
+  behaviour. Every surrounding sentence stands without the label. Removed on the
+  same grounds: five references to a directory that does not exist, one internal
+  iteration marker, and one internal diagnostic-session count.
+
+- `.github/workflows/ci.yml`: the description of the non-Linux legs as the
+  project's first, and the list of CI increments still to come, are removed. The
+  first was false once bring-up completed and the second belongs in the issue it
+  pointed at. Every operational explanation is kept, including why `-k 0` is set,
+  why the Node major versions are pinned, why Windows uses the standalone LLVM
+  distribution rather than the bundled one, and why the gcov executable must
+  match the compiler.
+
+### Results
+
+2138 tests across 172 suites, all passed (29.1 s, WSL/Clang).
+
 ## [R.1.20.2] - 2026-08-15
 
 Closes the coverage-reporting increment of the CI track, and adds an independent

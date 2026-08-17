@@ -130,7 +130,7 @@ void apply_cswap(Statevector& sv, int ctrl, int q1, int q2) {
 // RCCX = H(tgt) . T(tgt) . CX(c2,tgt) . Tdg(tgt) . CX(c1,tgt) .
 //        T(tgt) . CX(c2,tgt) . Tdg(tgt) . H(tgt)
 //
-// R.1.13 (audit F-20): applied as ONE three-level-stride pass over the dim/8
+// Applied as ONE three-level-stride pass over the dim/8
 // base groups (every coefficient of the exact action above is +-1 or +-i, so
 // the kernel is exact with zero floating-point rounding), replacing the
 // 9-kernel ladder that swept the full statevector nine times. The ladder
@@ -221,7 +221,7 @@ void apply_unitary(
     // Count number of background groups
     size_t n_groups = sv.dim >> k;
 
-    // Work-shape dispatch (R.1.13, audit F-8). Parallelising over background
+    // Work-shape dispatch. Parallelising over background
     // groups starves when k is large: an n-qubit oracle has ONE group and ran
     // fully serial with O(4^n) work. With few groups but large blocks,
     // parallelise the ROW loop of the in-group multiply instead (rows are
@@ -342,7 +342,7 @@ void apply_unitary(
 }
 
 // =============================================================================
-// MCX — multi-controlled X (audit F-7). Flips `target` on every amplitude
+// MCX — multi-controlled X. Flips `target` on every amplitude
 // whose control qubits are all |1>. Replaces Grover's dense 2^n x 2^n
 // diffusion matrix with an O(dim) strided pass over disjoint pairs.
 // =============================================================================
@@ -400,7 +400,7 @@ void apply_mcp(Statevector& sv, const std::vector<int>& qubits,
 }
 
 // =============================================================================
-// PERMUTATION — apply |x> -> |perm[x]> on the target subspace (audit F-9).
+// PERMUTATION — apply |x> -> |perm[x]> on the target subspace.
 // The reversible-classical-oracle building block: Shor's modular
 // multiplication is a permutation, applied here as an O(dim) gather instead of
 // a dense 2^k x 2^k matrix multiply.

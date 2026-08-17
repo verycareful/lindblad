@@ -1,4 +1,4 @@
-// bench_qudit_sv.cpp — qudit statevector kernels (audit F-17 / R.1.13 benchmarks)
+// bench_qudit_sv.cpp — qudit statevector kernels
 //
 // Exercises the OpenMP-parallelised apply_1qudit / apply_2qudit paths across
 // d = 2..7 and n = 2..5. Args are {d, n}.

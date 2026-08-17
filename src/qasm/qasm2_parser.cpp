@@ -120,7 +120,7 @@ public:
             // Measurement: indexed form `measure q[i] -> c[j];` or the
             // standard whole-register form `measure q -> c;` (expanded to one
             // measurement per bit). Unresolvable operands THROW: silently
-            // dropping measurements corrupted imports before R.1.12.
+            // dropping a measurement corrupts the imported circuit.
             if (line.find("measure") != std::string::npos) {
                 auto arrow = line.find("->");
                 if (arrow == std::string::npos)
@@ -224,11 +224,9 @@ public:
             }
 
             // Try built-in gates first, then custom definitions. Unknown gates
-            // must surface to the caller — silently skipping them masks parser
-            // bugs and gate-set mismatches and was responsible for round-trip
-            // mismatches that were attributed to other components. (See R.1.10.7
-            // CHANGELOG; this changed in 2026-05 from the legacy "skip on miss"
-            // behavior that targeted compatibility with older Qiskit exports.)
+            // must surface to the caller: skipping them silently masks parser
+            // bugs and gate-set mismatches, and produces round-trip mismatches
+            // whose cause looks like it lies in another component.
             if (!try_apply_builtin(qc, gate_name, params, qubits)) {
                 auto it = gate_defs.find(gate_name);
                 if (it != gate_defs.end()) {

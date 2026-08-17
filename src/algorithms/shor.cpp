@@ -158,7 +158,7 @@ QuantumCircuit Shor::build_period_finding_circuit(
     // Step 3: controlled-U^(2^k) gates.
     // ak = a^(2^k) mod N, updated by squaring each iteration.
     //
-    // R.1.13 (audit F-9): the controlled modular multiplication is a
+    // The controlled modular multiplication is a
     // permutation, so it is emitted as a PERMUTATION over (control, target)
     // instead of a dense (2·2^nt)^2 matrix. Convention: qubits[0] = control k
     // is the LSB of the sub-state index (bit 0 = control, bits 1.. = target),

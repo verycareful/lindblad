@@ -109,9 +109,9 @@ static std::vector<int> cost_term_orbit_map(
 // Classical energy of a computational-basis bitstring under the diagonal
 // (I/Z-only) part of the Hamiltonian.
 // PRECONDITION: bitstring.size() == cost_hamiltonian.n_qubits(). Callers filter
-// mismatched keys out; this helper does not signal failure in-band. It used to
-// return +infinity for a size mismatch, which is unusable as an error channel
-// under -ffinite-math-only (see the ranking loop at the end of optimize()).
+// mismatched keys out; this helper does not signal failure in-band. Returning
+// +infinity for a size mismatch would not work as an error channel under
+// -ffinite-math-only (see the ranking loop at the end of optimize()).
 static double computational_basis_cost(
     const SparsePauliOp& cost_hamiltonian,
     const std::string& bitstring
@@ -760,9 +760,9 @@ MAQAOA::Result MAQAOA::optimize(
 }
 
 // =============================================================================
-// build_circuit — kept for API compatibility and offline inspection.
-// No longer called in the hot path: optimize() uses evolve_into directly.
-// Orbit maps are recomputed internally here since this path is cold.
+// build_circuit — public entry point for offline inspection. Not on the hot
+// path: optimize() uses evolve_into directly. Orbit maps are recomputed
+// internally here since this path is cold.
 // =============================================================================
 
 QuantumCircuit MAQAOA::build_circuit(

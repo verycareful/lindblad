@@ -74,9 +74,10 @@ VQE::Result VQE::compute_minimum_eigenvalue(
     cb_data.energy_history = &result.energy_history;
     nlopt_set_min_objective(opt, vqe_objective, &cb_data);
 
-    // NLopt failure codes (< 0) can return without writing min_val, which
-    // previously surfaced an indeterminate stack value as Result::eigenvalue.
-    // Initialise to NaN, recover the best objective actually evaluated from
+    // NLopt failure codes (< 0) can return without writing min_val, so an
+    // uninitialised min_val surfaces an indeterminate stack value as
+    // Result::eigenvalue. Initialise to NaN, recover the best objective
+    // actually evaluated from
     // the recorded history, and fail loudly if the objective never ran.
     // The integer status check comes FIRST: it is immune to -ffast-math,
     // under which std::isfinite may fold away (hence is_finite_strict).

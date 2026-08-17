@@ -14,9 +14,9 @@ namespace algorithms {
 static constexpr double kBound = 2.0 * PI;
 
 // PRECONDITION: bitstring.size() == cost_hamiltonian.n_qubits(). Callers filter
-// mismatched keys out; this helper does not signal failure in-band. It used to
-// return +infinity for a size mismatch, which is unusable as an error channel
-// under -ffinite-math-only (see the ranking loop below).
+// mismatched keys out; this helper does not signal failure in-band. Returning
+// +infinity for a size mismatch would not work as an error channel under
+// -ffinite-math-only (see the ranking loop below).
 static double computational_basis_cost(
     const SparsePauliOp& cost_hamiltonian,
     const std::string& bitstring
@@ -115,9 +115,9 @@ QAOA::Result QAOA::optimize(
     std::vector<double> initial_step(n_params, 0.3);
     nlopt_set_initial_step(opt, initial_step.data());
 
-    // NLopt failure codes (< 0) can return WITHOUT writing min_val. Reading it
-    // uninitialised here surfaced an indeterminate stack value as
-    // Result::optimal_value; the same defect was fixed in VQE. The marker is
+    // NLopt failure codes (< 0) can return WITHOUT writing min_val, so reading
+    // it uninitialised surfaces an indeterminate stack value as
+    // Result::optimal_value. The marker is
     // built from its bit pattern because std::numeric_limits<double>::quiet_NaN
     // need not be materialised under -ffinite-math-only (see quiet_nan_strict
     // in types.hpp), which would leave a finite value and hide the failure.
@@ -145,7 +145,7 @@ QAOA::Result QAOA::optimize(
     // not occur and fold the first comparison away; best_bitstring then stays
     // unwritten and the caller receives an empty string with no error at all.
     // A bool carries no floating-point meaning and is correct under any flag
-    // set, so the fix does not depend on how the library is built.
+    // set, so this does not depend on how the library is built.
     double best_cost = 0.0;
     int best_count = -1;
     bool have_best = false;
@@ -242,10 +242,10 @@ QuantumCircuit QAOA::build_circuit(
         // per-term rotations exp(-i*beta*c_k*P_k). Exact when the terms
         // commute (the default X mixer); a first-order Trotter step
         // otherwise. Multi-qubit terms use the same basis-change + CX-chain
-        // recipe as the cost unitary: until R.1.12.2 they were FACTORISED
-        // into independent per-qubit rotations (RX(x)RY instead of
-        // exp(-i*beta*XY)), a wrong ansatz for entangling mixers such as the
-        // constraint-preserving XY family.
+        // recipe as the cost unitary, NOT factorised into independent
+        // per-qubit rotations: RX(x)RY instead of exp(-i*beta*XY) is a wrong
+        // ansatz for entangling mixers such as the constraint-preserving XY
+        // family.
         for (const auto& term : mixer_hamiltonian.terms) {
             double angle = 2.0 * beta * term.coeff.real;
 

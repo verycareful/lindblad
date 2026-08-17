@@ -136,8 +136,8 @@ void StatevectorSimulator::apply_instruction(Statevector& sv, const Instruction&
 
 // Collapse `qubit` to a sampled outcome (Born rule), renormalise, return it.
 // Shared by the MEASURE/RESET dispatch cases and the trajectory runner
-// (pre-R.1.13 the same O(dim) loops were triplicated and always serial;
-// audit F-11). Both passes iterate the two qubit-value halves as strided
+// rather than triplicating the same O(dim) loops at each call site. Both
+// passes iterate the two qubit-value halves as strided
 // blocks with branch-free inner loops and are OMP-gated at the same
 // dim >= 2^20 threshold as the gate kernels.
 static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng) {

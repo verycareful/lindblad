@@ -74,7 +74,7 @@ Simon::Result Simon::solve(const QuantumCircuit& oracle, int n,
     std::vector<std::string> equations;
 
     if (batch_shots) {
-        // One batched simulation (audit F-21): the Simon circuit's measurements
+        // One batched simulation: the Simon circuit's measurements
         // are terminal, so a single run samples all shots from one forward pass.
         // Harvest the DISTINCT non-zero equations; a std::set keeps the order
         // deterministic (independent of the counts map's iteration order), so a
@@ -91,8 +91,9 @@ Simon::Result Simon::solve(const QuantumCircuit& oracle, int n,
         }
         equations.assign(seen.begin(), seen.end());
     } else {
-        // Legacy per-sample loop: one single-shot simulation per equation,
-        // reproducing the pre-R.1.13 seeded stream byte-for-byte.
+        // Per-sample loop: one single-shot simulation per equation. Consumes
+        // the RNG stream in a different order from the batched path, so a given
+        // seed yields a different (statistically equivalent) equation stream.
         std::mt19937_64 rng(seed);
         for (int attempt = 0;
              attempt < n * 4 && (int)equations.size() < n - 1 + extra_samples;
@@ -347,7 +348,7 @@ QuditSimon::Result QuditSimon::solve(
 // QuditSimon — shared post-processing (equations → Result)
 //
 // prime d:     field Gaussian elimination (null_space_gf); the first kernel
-//              vector is the period generator (unchanged historical behaviour).
+//              vector is the period generator.
 // composite d: direct search over Z_d^n for a vector that annihilates every
 //              measured y (mod d) and is a verified period of the oracle. Correct
 //              for the ring Z_d and always feasible (d^n << the d^{2n} the sim

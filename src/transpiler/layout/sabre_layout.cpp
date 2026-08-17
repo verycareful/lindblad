@@ -9,11 +9,11 @@
 //   All qubit indices in instructions and edges refer to physical qubits.
 //   SabreSwap must use an identity initial_layout on this output.
 //
-//   Input expansion (R.1.15.0): the DAG is expanded to n_physical_qubits by
-//   identity embedding BEFORE the SABRE search (layout_expansion.hpp — see
-//   there for the frozen-slot defect this prevents). Circuits larger than
-//   the device throw std::invalid_argument instead of indexing the distance
-//   matrix out of range (previously undefined behaviour).
+//   Input expansion: the DAG is expanded to n_physical_qubits by identity
+//   embedding BEFORE the SABRE search (layout_expansion.hpp — see there for
+//   the frozen-slot defect this prevents). Circuits larger than the device
+//   throw std::invalid_argument rather than indexing the distance matrix out
+//   of range.
 
 #include "lindblad/transpiler.hpp"
 
@@ -98,7 +98,7 @@ static SABRERunResult sabre_run(
         in_degree[node.node_id] = 0;
         executed[node.node_id]  = false;
     }
-    // Adjacency list of OP-source edges (audit F-15): advancing successors by
+    // Adjacency list of OP-source edges: advancing successors by
     // scanning ALL dag.edges per executed gate was O(N*E) per pass; the list
     // makes it O(degree). Built with the same OP-source filter as in_degree so
     // the two stay consistent (duplicates per wire are kept — each is one
@@ -133,9 +133,8 @@ static SABRERunResult sabre_run(
     // candidates keep existing inside one component — without a budget this
     // loop cannot terminate on unroutable input. Routing any gate needs at
     // most n_physical SWAPs, so the budget is generous for every routable
-    // circuit. This matters from R.1.15.0 on because SabreLayout is the
-    // FIRST pass at level >= 2 and no longer has a SabreSwap run in front of
-    // it to throw first.
+    // circuit. The budget is load-bearing because SabreLayout is the FIRST
+    // pass at level >= 2, with no SabreSwap run ahead of it to throw first.
     const long long swap_budget =
         static_cast<long long>(dag.nodes.size() + 16) *
         static_cast<long long>(std::max(1, coupling_map.n_physical_qubits));
@@ -153,7 +152,7 @@ static SABRERunResult sabre_run(
                 int lb = node.qubit_wires[1];
                 int pa = layout[la];
                 int pb = layout[lb];
-                if (dist[pa][pb] == 1) {  // adjacent (audit F-15: was is_connected O(E))
+                if (dist[pa][pb] == 1) {  // adjacent
                     executable.push_back(nid);
                 } else {
                     blocked.push_back(nid);

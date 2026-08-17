@@ -50,7 +50,7 @@ struct ParamExpr {
 };
 
 // =============================================================================
-// CowMatrix — copy-on-write, immutable gate matrix (audit F-18)
+// CowMatrix — copy-on-write, immutable gate matrix
 // =============================================================================
 // A gate matrix is logically constant once built, but Instruction is copied a
 // lot (per estimator evaluation, per transpiler pass via to_circuit/from_circuit,
@@ -146,7 +146,7 @@ struct Instruction {
     // For symbolic/parameterised circuits
     std::vector<std::string> param_names;
 
-    // For custom unitaries — copy-on-write (audit F-18): shared, immutable
+    // For custom unitaries — copy-on-write: shared, immutable
     // buffer so Instruction copies do not deep-copy 2^k × 2^k complex data.
     CowMatrix matrix;
 
@@ -447,9 +447,9 @@ public:
                       DrawMode mode = DrawMode::ASCII,
                       const DrawOptions& opts = {}) const;
 
-    // Legacy primitive ASCII renderer. Retained during the R.1.10.0 visualiser
-    // rollout so existing callers continue to compile; scheduled for removal
-    // once tests, bindings, and docs migrate to draw(DrawMode::ASCII).
+    // Compatibility wrapper for draw(DrawMode::ASCII), kept so existing
+    // callers continue to compile; scheduled for removal once tests, bindings
+    // and docs migrate.
     std::string to_ascii() const;
 
     // Pre-flight validation for backend run(): checks that every instruction's

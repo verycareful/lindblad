@@ -45,7 +45,7 @@ QuantumCircuit Grover::build_circuit(
 
         if (nq >= 2) {
             // Diffusion phase flip: H-wrapped multi-controlled X on qubit nq-1,
-            // controlled on qubits 0..nq-2. R.1.13 (audit F-7): a native MCX
+            // controlled on qubits 0..nq-2. A native MCX
             // (a two-amplitude swap) instead of a dense 2^n x 2^n matrix built
             // per iteration. mcx with 1 control reduces to CX, 2 to CCX, so
             // this covers every nq >= 2 uniformly.

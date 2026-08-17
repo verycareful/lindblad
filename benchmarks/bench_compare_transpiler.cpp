@@ -7,10 +7,7 @@
 // friendlier topology, and both translate into the same {cx, u3} basis, so
 // twoq/depth quality counters compare like for like (CX against CX).
 //
-// R.1.15.0 note: this file previously carried two workarounds (circuits sized
-// EXACTLY to their map, and NO basis translation) for the frozen-slot and
-// silent-basis_gates defects fixed in R.1.15.0. Both are reverted: circuits
-// are now SMALLER than their maps (n = 22 on 25/27-slot devices), which
+// Circuits are SMALLER than their maps (n = 22 on 25/27-slot devices), which
 // exercises the layout-expansion path end-to-end, exactly like Qiskit's
 // ancilla allocation on real devices.
 //

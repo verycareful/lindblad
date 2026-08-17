@@ -37,8 +37,7 @@ namespace lindblad {
 
 // Emit a one-time, very visible warning when the (currently broken) BDCSVD
 // backend is selected. Eigen's BDCSVD produces inaccurate results for
-// complex/degenerate inputs (R.1.11.2, docs/plans/eigen-bdcsvd-bug.md); Jacobi
-// is the accurate default.
+// complex/degenerate inputs; Jacobi is the accurate default.
 static void warn_bdc_broken_once() {
     static bool warned = false;
     if (warned) return;
@@ -46,8 +45,8 @@ static void warn_bdc_broken_once() {
     std::cerr <<
         "\n***************************************************************\n"
         "[lindblad] WARNING: SVDMethod::BDC (Eigen BDCSVD) is SELECTED but is\n"
-        "  CURRENTLY BROKEN for complex / degenerate inputs (R.1.11.2 bug,\n"
-        "  docs/plans/eigen-bdcsvd-bug.md). MPS results may be SILENTLY WRONG.\n"
+        "  CURRENTLY BROKEN for complex / degenerate inputs: MPS results may\n"
+        "  be SILENTLY WRONG.\n"
         "  Use SVDMethod::Jacobi (the default) until the upstream fix lands.\n"
         "***************************************************************\n";
 }
@@ -90,9 +89,9 @@ void MPSState::svd_truncate(
         rows, cols
     );
 
-    // SVD backend (audit F-23): Jacobi by default (accurate, avoids the R.1.11.2
-    // BDCSVD accuracy defect), BDC opt-in for speed at large chi. Compute into
-    // shared locals so the truncation logic below is backend-agnostic.
+    // SVD backend: Jacobi by default (accurate, avoids the BDCSVD accuracy
+    // defect), BDC opt-in for speed at large chi. Compute into shared locals so
+    // the truncation logic below is backend-agnostic.
     Eigen::MatrixXcd U_eigen, V_eigen;
     Eigen::VectorXd S_eigen;
     if (svd_method == SVDMethod::BDC) {
@@ -109,9 +108,9 @@ void MPSState::svd_truncate(
     }
 
     // Bit-level finite check — immune to -ffast-math, which folds
-    // std::isnan to false and makes NaN comparisons unreliable in this TU
-    // (diagnosed in R.1.16.0: a NaN sigma passed 'S > cutoff' here and got
-    // KEPT, growing chi with garbage).
+    // std::isnan to false and makes NaN comparisons unreliable in this TU.
+    // A NaN sigma otherwise satisfies 'S > cutoff' here and is KEPT, growing
+    // chi with garbage.
     auto finite_bits = [](double x) {
         std::uint64_t b;
         std::memcpy(&b, &x, sizeof(b));
@@ -119,7 +118,7 @@ void MPSState::svd_truncate(
     };
 
     // ------------------------------------------------------------------
-    // SELECT -> VERIFY -> FALLBACK -> THROW  (R.1.16.0, issue #44, v3)
+    // SELECT -> VERIFY -> FALLBACK -> THROW  (issue #44)
     //
     // Eigen 3.4.0's SVD on degenerate rank-deficient inputs (the 13-qubit
     // Shor IQFT two-site thetas, spectrum {1,1,1,1,0,...}) returns broken
@@ -149,9 +148,8 @@ void MPSState::svd_truncate(
     //      weight is honestly accounted in truncation_error().
     //   4. THROW if the fallback fails verification too — never continue
     //      with a corrupt tensor (silent NaN propagation is exactly how
-    //      issue #44 originally manifested).
-    // Reproducers + the full seven-run diagnosis: tests/diag_r1160_matrices.hpp
-    // and the DiagR1160* suites.
+    //      issue #44 manifests).
+    // Reproducers: tests/diag_r1160_matrices.hpp and the DiagR1160* suites.
     // ------------------------------------------------------------------
 
     double m_fro_sq = 0.0;
@@ -162,14 +160,14 @@ void MPSState::svd_truncate(
     // TRUNCATION RULE — discarded weight, not a magnitude threshold.
     //
     // `cutoff` is the fraction of total weight (sum of sigma^2) that truncation
-    // may throw away. The old rule compared each sigma against `cutoff` as an
-    // ABSOLUTE magnitude, which asks a question about the noise rather than
-    // about the data: a value's distance from a fixed constant depends on the
-    // scale of the matrix it came from AND on how the target rounded its way
-    // there. That is how the same 13-qubit state counted 12 significant
-    // directions on x86-64 and 17 on arm64 — twelve real sigmas at 2.9e-01,
-    // everything else numerical zero, and a threshold sitting inside the noise
-    // band instead of inside the eleven-order gap above it.
+    // may throw away. Comparing each sigma against `cutoff` as an ABSOLUTE
+    // magnitude instead would ask a question about the noise rather than about
+    // the data: a value's distance from a fixed constant depends on the scale of
+    // the matrix it came from AND on how the target rounded its way there. On
+    // one 13-qubit state that counts 12 significant directions on x86-64 and 17
+    // on arm64 — twelve real sigmas at 2.9e-01, everything else numerical zero,
+    // and a fixed threshold sitting inside the noise band instead of inside the
+    // eleven-order gap above it.
     //
     // A weight fraction is scale-free, so the same spectrum classifies
     // identically on any target, and it bounds the physical error directly
@@ -407,7 +405,7 @@ void MPSState::apply_two_qubit_gate_adjacent(
     // theta[l, p1, p2, r] = sum_m T1[l,p1,m] * T2[m,p2,r]
     // Stored as (bl*2) x (2*br) matrix for SVD: row = l*2+p1, col = p2*br+r.
     //
-    // R.1.13 (audit F-6): this contraction is a single zero-copy Eigen GEMM.
+    // This contraction is a single zero-copy Eigen GEMM.
     // MPSTensor data is contiguous row-major in exactly the needed shapes:
     //   T1[(l*2+p1), m] is (bl*2) x bm,  T2[m, (p2*br+r)] is bm x (2*br),
     // and Complex128 is layout-identical to std::complex<double>, so both map
@@ -865,8 +863,8 @@ static MPSState mps_from_sv(const Statevector& sv, int n, int max_bond_dim, doub
                         block[alpha * right_cols + p * half_cols + c2].real,
                         block[alpha * right_cols + p * half_cols + c2].imag);
 
-        // JacobiSVD for accuracy (audit F-23): this is the reconstruction
-        // fallback; the R.1.11.2 BDCSVD defect made composite states unreliable.
+        // JacobiSVD for accuracy: this is the reconstruction fallback, and the
+        // BDCSVD defect makes composite states unreliable.
         Eigen::JacobiSVD<Eigen::MatrixXcd> svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
         const auto& svals = svd.singularValues();
         // Same discarded-weight rule as svd_truncate: `cutoff` is the fraction
@@ -1381,7 +1379,7 @@ static bool mps_measures_are_terminal(const QuantumCircuit& circuit) {
 }
 
 // =============================================================================
-// Hoisted read-only sequential sampling (audit F-3/F-4)
+// Hoisted read-only sequential sampling
 //
 // The right environments E_q (transfer-operator contraction of sites q..N-1)
 // are INVARIANT across shots and across the left-to-right projection, so they
@@ -1628,7 +1626,7 @@ MPSSimulator::Result MPSSimulator::run(
 
         if (shots > 0) {
             // qubit -> clbit map of the terminal measurements. Empty when the
-            // circuit has no MEASURE: sample the full register (legacy keys).
+            // circuit has no MEASURE: sample the full register, qubit-indexed.
             std::vector<std::pair<int, int>> meas;
             for (const auto& inst : circuit.instructions)
                 if (inst.type == Instruction::GateType::MEASURE)
@@ -1661,7 +1659,7 @@ MPSSimulator::Result MPSSimulator::run(
                 auto raw = sv.sample_counts(shots, seed);
                 for (const auto& [bits, cnt] : raw) record(bits, cnt);
             } else {
-                // Sequential MPS measurement (audit F-4): right environments are
+                // Sequential MPS measurement: right environments are
                 // shot-invariant, so compute them ONCE and sample each shot
                 // read-only (no per-shot MPS copy, no environment rebuild).
                 // O(N * chi^3) per shot.

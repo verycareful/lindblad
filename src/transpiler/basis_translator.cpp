@@ -66,7 +66,7 @@ std::vector<std::vector<int>> CouplingMap::distance_matrix() const {
     const int INF = std::numeric_limits<int>::max() / 2;
     std::vector<std::vector<int>> dist(n, std::vector<int>(n, INF));
 
-    // BFS from each source (audit F-25): O(V·(V+E)) beats Floyd-Warshall's
+    // BFS from each source: O(V·(V+E)) beats Floyd-Warshall's
     // O(V^3) for the sparse device graphs this is used on (e.g. a 127-qubit
     // heavy-hex has ~144 edges, not ~8000). Build the adjacency list once.
     std::vector<std::vector<int>> adj(n);
@@ -299,8 +299,8 @@ CouplingMap CouplingMap::all_to_all(int n) {
 // the offending gate. Anything the equivalence library cannot reach (MCX,
 // MCP, PERMUTATION when the stage-0 HighLevelDecompose pass was not run
 // ahead of translation; UNITARY; symbolic PARAM_*
-// gates, whose parameters are unbound) previously passed through SILENTLY,
-// violating the caller's basis. MEASURE/RESET/BARRIER are not gates and are
+// gates, whose parameters are unbound) would otherwise pass through SILENTLY
+// and violate the caller's basis. MEASURE/RESET/BARRIER are not gates and are
 // exempt. Since the library targets cx+u3, a basis that includes neither
 // the source gate nor cx+u3 also throws.
 //
@@ -308,9 +308,7 @@ CouplingMap CouplingMap::all_to_all(int n) {
 // with the condition propagated onto EVERY emitted instruction. This is
 // exact — the decompositions are unitary-only (no measurement), so all
 // emitted gates fire under the same runtime clbit state, which the sequence
-// never modifies. (Before R.1.15.0 decomposition silently DROPPED the
-// condition; the pass was never composed into a preset pipeline, so the bug
-// was latent.)
+// never modifies.
 //
 // Routing interaction: every decomposition maps a gate to 1q gates + CX on
 // the SAME qubit pair(s), so a post-routing circuit stays hardware-legal.

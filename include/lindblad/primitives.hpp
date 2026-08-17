@@ -23,15 +23,14 @@ public:
         NoiseModel noise_model;
         int optimization_level = 0;
 
-        // Group commuting Pauli terms so they share measurement runs
-        // (audit F-10): all Z/I terms measure together, and remaining terms
-        // group by qubit-wise commutativity — up to a T-fold reduction in
-        // simulations for a T-term observable, at identical accuracy and
-        // statistics. Default true. Set false to restore the pre-R.1.13
-        // one-run-per-term sampling, which reproduces old seeded counts
-        // byte-for-byte (the grouped path consumes the RNG stream in a
-        // different order, so a given seed yields statistically-equivalent
-        // but not identical counts). Only affects shots > 0 sampling.
+        // Group commuting Pauli terms so they share measurement runs: all
+        // Z/I terms measure together, and remaining terms group by qubit-wise
+        // commutativity — up to a T-fold reduction in simulations for a T-term
+        // observable, at identical accuracy and statistics. Default true. Set
+        // false for one-run-per-term sampling; the two paths consume the RNG
+        // stream in a different order, so a given seed yields
+        // statistically-equivalent but not identical counts. Only affects
+        // shots > 0 sampling.
         bool group_pauli_terms = true;
     };
 
