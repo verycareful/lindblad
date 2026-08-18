@@ -76,15 +76,11 @@ VQE::Result VQE::compute_minimum_eigenvalue(
 
     // NLopt failure codes (< 0) can return without writing min_val, so an
     // uninitialised min_val surfaces an indeterminate stack value as
-    // Result::eigenvalue. Initialise to NaN, recover the best objective
-    // actually evaluated from
-    // the recorded history, and fail loudly if the objective never ran.
-    // The integer status check comes FIRST: it is immune to -ffast-math,
-    // under which std::isfinite may fold away (hence is_finite_strict).
-    // The marker itself must survive the same flag, so it is built from its
-    // bit pattern: std::numeric_limits<double>::quiet_NaN() need not be
-    // materialised under -ffinite-math-only, which would leave a finite value
-    // here and let an unwritten min_val pass the guard below.
+    // Result::eigenvalue. Initialise to a detectably non-finite marker (see
+    // quiet_nan_strict in types.hpp), recover the best objective actually
+    // evaluated from the recorded history, and fail loudly if the objective
+    // never ran. The integer status check comes FIRST: it carries no
+    // floating-point meaning for the optimiser to reason about.
     double min_val = quiet_nan_strict();
     nlopt_result nlopt_res = nlopt_optimize(opt, params.data(), &min_val);
 

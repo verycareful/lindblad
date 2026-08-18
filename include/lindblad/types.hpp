@@ -33,35 +33,35 @@ namespace lindblad {
 // We use conditional compilation to remove the pragma on MSVC; GCC/Clang use it.
 
 // =============================================================================
-// is_finite_strict — IEEE-754 finiteness test immune to -ffast-math
+// is_finite_strict / quiet_nan_strict - non-finite detection by bit pattern
 // =============================================================================
-// The project compiles with -ffast-math (-ffinite-math-only), under which the
-// compiler may constant-fold std::isfinite / std::isnan to "always finite",
-// silently disabling NaN guards (clang warns via -Wnan-infinity-disabled; GCC
-// does not warn at all). This bit-pattern test (finite iff the exponent field
-// is not all-ones) survives any flag set and costs one integer compare; use it
-// for every guard whose job is to DETECT non-finite values.
+// Finiteness read straight off the IEEE-754 exponent field (finite iff those
+// eleven bits are not all ones), and a quiet NaN built from the matching
+// pattern. One integer compare each, no <cmath> call, and no dependence on how
+// the standard library spells the classification.
+//
+// Both are correct only while the build omits -ffinite-math-only. Under that
+// flag clang attaches nofpclass(nan inf) to floating-point parameters and
+// return values, so a NaN crossing ANY function boundary is poison, and poison
+// reads back as whatever occupies the register, inconsistently between uses.
+// The caller forms that poison before the call, so the body below cannot
+// recover it however it is written. The CMake flag list therefore pairs
+// -ffast-math with -fno-finite-math-only.
+//
+// Use is_finite_strict for every guard whose job is to DETECT a non-finite
+// value, and quiet_nan_strict for every marker whose job is to BE detectably
+// non-finite. Do not use +/-infinity as a comparison seed (best-so-far, lower
+// bound); an explicit bool flag is correct there, since a seed exists precisely
+// to lose its first comparison.
 inline bool is_finite_strict(double x) noexcept {
     std::uint64_t bits;
     std::memcpy(&bits, &x, sizeof bits);
     return (bits & 0x7FF0000000000000ULL) != 0x7FF0000000000000ULL;
 }
 
-// Companion to is_finite_strict: a quiet NaN built from its bit pattern instead
-// of from std::numeric_limits<double>::quiet_NaN(). The problem is symmetric to
-// the one above. Under -ffinite-math-only the compiler may assume NaNs do not
-// occur and need not materialise the library constant at all, which silently
-// turns a deliberate "not written yet" marker into an ordinary finite value —
-// and a finite marker passes every guard it was supposed to trip. Going through
-// memcpy keeps the value integer data until the last moment, and
-// is_finite_strict reads it back the same way, so the round trip never becomes
-// a floating-point operation the FP model is entitled to reason about.
-//
-// Use this for every marker whose job is to be DETECTABLY non-finite; use
-// is_finite_strict to test it. Do not use +/-infinity as a comparison seed
-// (best-so-far, lower bound); an explicit bool flag is correct there, because a
-// seed's whole purpose is to lose the first comparison and that is exactly the
-// comparison -ffinite-math-only is licensed to fold.
+// Built from the bit pattern rather than from
+// std::numeric_limits<double>::quiet_NaN(), so the marker does not depend on
+// the library constant being materialised.
 inline double quiet_nan_strict() noexcept {
     constexpr std::uint64_t kQuietNaNBits = 0x7FF8000000000000ULL;
     double x;

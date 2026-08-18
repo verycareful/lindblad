@@ -40,8 +40,8 @@
 
 namespace diag_r1160 {
 
-// NaN/Inf detection that survives -ffinite-math-only (std::isnan folds to
-// false under fast-math): check the raw exponent bits.
+// NaN/Inf detection by raw exponent bits, so the diagnostic does not depend on
+// how the standard library spells the classification.
 inline bool fp_bad(double x) {
     std::uint64_t b;
     std::memcpy(&b, &x, sizeof(b));
@@ -216,24 +216,34 @@ struct SvdReport {
     double frob_sq = 0.0;      // ||M||_F^2
     double recon_err = 0.0;    // max |U S V^H - M| (full, only if !corrupt)
     double smallest_pos = 0.0; // smallest sigma > 0 (subnormal tell)
-    int rank_1e12 = 0;         // sigma > 1e-12 count (finite sigmas only)
+    int rank = 0;              // sigmas above sigma_floor (finite sigmas only)
+    double sigma_floor = 0.0;  // threshold rank was counted against
     std::vector<double> top;   // leading singular values (up to 14)
-    // Resolution upgrade (probe run 3): WHERE is the corruption, and is the
-    // TRUNCATED slice — the only thing svd_truncate keeps — usable?
+    // WHERE the corruption sits, and whether the TRUNCATED slice (the only part
+    // svd_truncate keeps) is usable.
     std::vector<int> u_bad_cols;   // U columns containing NaN/Inf
     std::vector<int> v_bad_cols;   // V columns containing NaN/Inf
-    bool kept_slice_bad = true;    // NaN/Inf inside U/V cols < rank_1e12
-    double trunc_recon_err = -1.0; // max |U_r S_r V_r^H - M| at rank_1e12
+    bool kept_slice_bad = true;    // NaN/Inf inside U/V cols < rank
+    double trunc_recon_err = -1.0; // max |U_r S_r V_r^H - M| at rank
                                    // (-1 if the kept slice is corrupt)
 };
 
 // Shared report builder over explicit factors, so the Eigen-SVD wrapper and
 // the in-test Gram-route replication produce comparable diagnostics.
+//
+// sigma_floor = threshold the significant sigmas are counted against. A backend
+// SVD resolves down to roughly eps * sigma_max, so the absolute default holds
+// there. The Gram route squares the condition number and resolves only to about
+// sqrt(eps) * sigma_max, so it passes the same validity floor it built its
+// partner factors with; counting below that floor reports its own noise as
+// retained rank.
 inline SvdReport report_from_factors(const Eigen::MatrixXcd& M,
                                      const Eigen::VectorXd& S,
                                      const Eigen::MatrixXcd& U,
-                                     const Eigen::MatrixXcd& V) {
+                                     const Eigen::MatrixXcd& V,
+                                     double sigma_floor = 1e-12) {
     SvdReport r;
+    r.sigma_floor = sigma_floor;
     r.s_bad = vector_bad(S);
     for (Eigen::Index c = 0; c < U.cols(); ++c) {
         for (Eigen::Index i = 0; i < U.rows(); ++i) {
@@ -256,7 +266,7 @@ inline SvdReport report_from_factors(const Eigen::MatrixXcd& M,
     for (Eigen::Index i = 0; i < S.size(); ++i) {
         if (!fp_bad(S(i))) {
             r.sum_sq += S(i) * S(i);
-            if (S(i) > 1e-12) r.rank_1e12++;
+            if (S(i) > sigma_floor) r.rank++;
             if (S(i) > 0.0 &&
                 (r.smallest_pos == 0.0 || S(i) < r.smallest_pos)) {
                 r.smallest_pos = S(i);
@@ -270,7 +280,7 @@ inline SvdReport report_from_factors(const Eigen::MatrixXcd& M,
     }
     // The candidate-fix question: is everything at columns < rank finite,
     // and does the truncated slice alone reconstruct M?
-    const int k = r.rank_1e12;
+    const int k = r.rank;
     r.kept_slice_bad = false;
     for (int c : r.u_bad_cols) r.kept_slice_bad |= (c < k);
     for (int c : r.v_bad_cols) r.kept_slice_bad |= (c < k);
@@ -333,7 +343,7 @@ inline SvdReport run_gram_route_report(const Eigen::MatrixXcd& M) {
             else V.col(i).setZero();
         }
     }
-    return report_from_factors(M, S, U, V);
+    return report_from_factors(M, S, U, V, floor_g);
 }
 
 inline void print_svd_report_line(std::ostream& os, const char* tag,
@@ -348,7 +358,8 @@ inline void print_svd_report_line(std::ostream& os, const char* tag,
     for (size_t i = 0; i < r.v_bad_cols.size(); ++i)
         os << (i ? "," : "") << r.v_bad_cols[i];
     os << ")\n[svd:" << tag << "] sum(s^2)=" << r.sum_sq
-       << "  |M|_F^2=" << r.frob_sq << "  rank(>1e-12)=" << r.rank_1e12
+       << "  |M|_F^2=" << r.frob_sq << "  rank(>" << r.sigma_floor
+       << ")=" << r.rank
        << "  kept_slice=" << (r.kept_slice_bad ? "CORRUPT" : "clean")
        << "  trunc_recon_err=" << r.trunc_recon_err
        << "  full_recon_err=" << r.recon_err

@@ -110,8 +110,8 @@ static std::vector<int> cost_term_orbit_map(
 // (I/Z-only) part of the Hamiltonian.
 // PRECONDITION: bitstring.size() == cost_hamiltonian.n_qubits(). Callers filter
 // mismatched keys out; this helper does not signal failure in-band. Returning
-// +infinity for a size mismatch would not work as an error channel under
-// -ffinite-math-only (see the ranking loop at the end of optimize()).
+// +infinity for a size mismatch would put a sentinel into a value the ranking
+// loop at the end of optimize() compares as ordinary cost data.
 static double computational_basis_cost(
     const SparsePauliOp& cost_hamiltonian,
     const std::string& bitstring
@@ -278,13 +278,12 @@ struct MAQAOACallbackData {
     Statevector* sv;
     std::vector<double> params_buf;
     int nfev;
-    // Best objective seen so far, guarded by have_best rather than seeded with
-    // +infinity. The project compiles with -ffast-math (-ffinite-math-only),
-    // under which the compiler may assume infinities do not occur and fold the
-    // first 'value < best_val' comparison away, leaving best_val never written.
-    // It reaches the caller (per_layer_costs), so this is a result, not a
-    // diagnostic. A bool carries no floating-point meaning and holds under any
-    // flag set. Same pattern in LayerCBData below.
+    // Best objective seen so far, guarded by best_val_valid rather than seeded
+    // with +infinity. best_val reaches the caller (per_layer_costs), so a seed
+    // that was never overwritten is a wrong result rather than a missing
+    // diagnostic. A bool states "nothing selected yet" directly and carries no
+    // floating-point meaning for the optimiser to reason about. Same pattern in
+    // LayerCBData below.
     double best_val;
     bool best_val_valid;
     std::vector<double> initial_thetas;
@@ -589,12 +588,10 @@ MAQAOA::Result MAQAOA::optimize(
             // Save initial guess before COBYLA modifies x0 (Change 4)
             result.initial_params.insert(result.initial_params.end(), x0.begin(), x0.end());
 
-            // NLopt can return without writing min_val. The marker for that
-            // must be detectably non-finite even under -ffinite-math-only, so
-            // it is built from its bit pattern rather than taken from
-            // std::numeric_limits (see quiet_nan_strict in types.hpp). The
-            // integer nlopt_res is checked alongside it and is immune to the
-            // FP model outright.
+            // NLopt can return without writing min_val. The marker for that is
+            // a detectably non-finite NaN (see quiet_nan_strict in types.hpp).
+            // The integer nlopt_res is checked alongside it and carries no
+            // floating-point meaning for the optimiser to reason about.
             double min_val              = quiet_nan_strict();
             const nlopt_result nlopt_res = nlopt_optimize(opt, x0.data(), &min_val);
             nlopt_destroy(opt);

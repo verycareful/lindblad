@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.20.3 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.20.4 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.20.3")
+set(LINDBLAD_VERSION_LABEL "R.1.20.4")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -23,6 +23,12 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
         -fopenmp
         -funroll-loops
         -ffast-math
+        # -ffast-math bundles -ffinite-math-only, under which clang marks
+        # floating-point parameters and return values nofpclass(nan inf). A NaN
+        # crossing any function boundary is then poison, and every non-finite
+        # guard in the tree reads it back as finite. This must follow
+        # -ffast-math to override that one member of the bundle.
+        -fno-finite-math-only
         -Wall
         -Wextra
         -Wpedantic
@@ -78,9 +84,9 @@ include(FetchContent)
 # CMake 4.0 REMOVED (not deprecated) compatibility with a declared
 # cmake_minimum_required below 3.5, so any dependency still declaring an older
 # floor is a hard configure error there. NLopt v2.7.1 declares VERSION 3.2 and
-# fails outright on a CMake 4 host; Homebrew already ships CMake 4, so this hit
-# the macOS build first. This variable tells cmake_minimum_required to treat a
-# too-old declared floor as 3.5, and is read by the fetched subprojects below.
+# fails outright on a CMake 4 host. This variable tells cmake_minimum_required
+# to treat a too-old declared floor as 3.5, and is read by the fetched
+# subprojects below.
 # CMake versions before 3.31 ignore it, so the setting is safe everywhere.
 #
 # The variable only has an effect where a declared floor is below 3.5, which

@@ -4,6 +4,71 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.20.4] - 2026-08-18
+
+Every non-finite guard in the library was inoperative when built with clang 20
+or later, on every platform. The two issues this release closes were filed
+against the Windows and macOS CI runners, but neither is a platform defect: both
+runners simply carried a newer compiler than the Linux ones.
+
+### Fixed
+
+- **Non-finite detection silently disabled under `-ffinite-math-only`**
+  (issue #68). `-ffast-math` bundles `-ffinite-math-only`, and clang 20 acts on
+  that flag by marking floating-point parameters and return values
+  `nofpclass(nan inf)`. A NaN crossing any function boundary is therefore
+  poison, and poison reads back as whatever occupies the register, differently
+  at each use. Every guard whose job is to notice a non-finite value answered
+  "finite" unconditionally, including for infinities. Affected: the bit-level
+  finiteness check backing the MPS SVD select-verify-fallback, which exists to
+  contain a known Eigen 3.4.0 defect (issue #44); the fail-loud non-finite
+  check; and the optimiser sentinels in VQE, QAOA and MA-QAOA. The build now
+  pairs `-ffast-math` with `-fno-finite-math-only`.
+
+  No remedy inside the guards was available. The caller forms the poison before
+  the call, so bit inspection through `memcpy`, a `volatile` staging variable,
+  and a non-inlined call boundary all fail, individually and together. Confirmed
+  on Linux with clang 20.1.2 against clang 18.1.3 under identical flags, and by
+  the disappearance of the annotation from the emitted IR once the flag is
+  dropped. Removing it measured no cost: benchmarked across both run orderings
+  with the Clifford tableau path, which touches no floating point, as the
+  control for ordering bias.
+
+- **Retained-rank counting in the SVD diagnostics** (issue #69). The diagnostic
+  counted significant singular values against a fixed absolute `1e-12`, while
+  the Gram fallback route it reports on applies a `sqrt(eps) * sigma_max`
+  validity floor. That route squares the condition number, so its residual
+  singular values land near `sqrt(eps)` and were counted as retained rank on
+  some targets and optimisation levels but not others: rank 5 against an
+  expected 4 on one reproducer, 17 against 12 on the other, while reconstruction
+  stayed accurate to `1e-16` on every leg. The counter now applies the same
+  floor the route builds its factors with, and reports which threshold it used
+  rather than naming a fixed one in its label.
+
+### Changed
+
+- `-Wno-nan-infinity-disabled` is gone from the documented build line. The
+  warning it suppressed cannot be emitted once `-ffinite-math-only` is off.
+- The MPS simulator carried a private copy of the bit-level finiteness check.
+  It now calls the shared `is_finite_strict`, so there is one implementation of
+  the concept rather than two.
+- The two-leg floating-point test pair shared its assertions through inline
+  functions with external linkage, so the linker kept a single merged definition
+  and both legs exercised the same machine code under different labels. The
+  shared header now gives its contents internal linkage, and the call barrier
+  both legs use is compiled once per leg instead of once in total.
+- A new test asserts that `__FINITE_MATH_ONLY__` is 0. This is the only way a
+  build can report this class of defect: a disabled guard cannot detect that it
+  has been disabled, so the flag state is asserted directly.
+- CI: the macOS leg is removed and the Windows leg becomes opt-in, requested per
+  dispatch. A `linux clang-20 Release` leg is added, spanning a compiler
+  generation rather than a platform, because nothing else in the matrix ran a
+  compiler newer than clang 18 and the defect above was compiler-driven.
+
+### Results
+
+2139 tests across 172 suites, all passed (33.4 s, WSL/Clang).
+
 ## [R.1.20.3] - 2026-08-17
 
 Almost entirely a comment release: every changed line in the shipped sources,

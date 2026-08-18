@@ -323,10 +323,8 @@ void apply_mirror(MPSState& st, const Instruction& inst) {
     }
 }
 
-// NaN/Inf detection that SURVIVES -ffast-math: the tests compile with
-// -ffinite-math-only, under which std::isnan/std::isinf constant-fold to
-// false (this is also why probe 1's EXPECT_NEAR(terr, 0) "passed" on a NaN
-// value). Check the raw exponent bits instead.
+// NaN/Inf detection by raw exponent bits, so the diagnostic does not depend on
+// how the standard library spells the classification.
 bool fp_bad(double x) {
     std::uint64_t b;
     std::memcpy(&b, &x, sizeof(b));
@@ -892,7 +890,7 @@ TEST(R1161MpsShor, PoisonThetaKeptSliceContract) {
     const auto r =
         diag_r1160::run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(theta);
     print_svd_report("r1161/jacobi/poison", r);
-    EXPECT_EQ(r.rank_1e12, 4) << "poison theta has exact Schmidt rank 4";
+    EXPECT_EQ(r.rank, 4) << "poison theta has exact Schmidt rank 4";
     EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-12);
     EXPECT_FALSE(r.kept_slice_bad);
     EXPECT_GE(r.trunc_recon_err, 0.0);
@@ -914,7 +912,7 @@ TEST(R1161MpsShor, Simon36JacobiReference) {
     print_svd_report("r1161/jacobi/simon36", rj);
     print_svd_report("r1161/bdc/simon36", rb);  // documentation only
     EXPECT_FALSE(rj.corrupt);
-    EXPECT_EQ(rj.rank_1e12, 12);
+    EXPECT_EQ(rj.rank, 12);
     EXPECT_NEAR(rj.sum_sq, rj.frob_sq, 1e-10);
     EXPECT_LT(rj.recon_err, 1e-10);
 }
@@ -926,16 +924,11 @@ TEST(R1161MpsShor, Simon36JacobiReference) {
 // branch is exercised.
 TEST(R1161MpsShor, SvdTruncateThrowsOnUnrecoverableInput) {
     MPSState st(2, kBond);
-    // The poison MUST be built with quiet_nan_strict(), not with
-    // std::numeric_limits<double>::quiet_NaN(). This TU compiles under the
-    // project-wide -ffast-math, which implies -ffinite-math-only, and under that
-    // model the compiler is entitled to assume NaNs do not occur and need not
-    // materialise the library constant at all. The tensor then holds an ordinary
-    // finite value, the library's guard correctly does not fire, and the test
-    // fails while reporting a library defect that is not there — the TEST could
-    // not construct its own input. quiet_nan_strict() goes through memcpy, so
-    // the value stays integer data until the last moment and survives any flag
-    // set (see the note on it in types.hpp).
+    // The poison is built with quiet_nan_strict() so the marker does not depend
+    // on std::numeric_limits<double>::quiet_NaN() being materialised (see the
+    // note on it in types.hpp). The ASSERT below is the guard that matters: a
+    // finite poison value means the TEST failed to construct its own input, and
+    // everything after it would report a library defect that is not there.
     const double poison = quiet_nan_strict();
     ASSERT_FALSE(is_finite_strict(poison))
         << "the poison value is finite, so this test cannot test anything";
@@ -1048,7 +1041,10 @@ TEST(R1161MpsShor, GramRouteReconstructsPoisonTheta) {
     const auto theta = diag_r1160::build_poison_theta();
     const auto r = diag_r1160::run_gram_route_report(theta);
     print_svd_report("r1161/gram/poison", r);
-    EXPECT_EQ(r.rank_1e12, 4);
+    EXPECT_EQ(r.rank, 4);
+    EXPECT_GT(r.sigma_floor, 1e-12)
+        << "the Gram route must count rank against its own sqrt(eps)-scaled "
+           "floor, not the absolute default";
     EXPECT_FALSE(r.kept_slice_bad);
     EXPECT_GE(r.trunc_recon_err, 0.0);
     EXPECT_LT(r.trunc_recon_err, 1e-10);
@@ -1059,7 +1055,10 @@ TEST(R1161MpsShor, GramRouteReconstructsSimon36) {
     const auto M = diag_r1160::build_bdcsvd_bug_matrix();
     const auto r = diag_r1160::run_gram_route_report(M);
     print_svd_report("r1161/gram/simon36", r);
-    EXPECT_EQ(r.rank_1e12, 12);
+    EXPECT_EQ(r.rank, 12);
+    EXPECT_GT(r.sigma_floor, 1e-12)
+        << "the Gram route must count rank against its own sqrt(eps)-scaled "
+           "floor, not the absolute default";
     EXPECT_FALSE(r.kept_slice_bad);
     EXPECT_GE(r.trunc_recon_err, 0.0);
     EXPECT_LT(r.trunc_recon_err, 1e-8);

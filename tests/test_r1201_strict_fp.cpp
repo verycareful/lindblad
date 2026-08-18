@@ -1,33 +1,25 @@
 // R.1.20.1 test suite — quiet_nan_strict / is_finite_strict, FAST-MATH leg.
 //
-// This translation unit compiles under the project-wide -ffast-math, which
-// implies -ffinite-math-only. Its twin, test_r1201_strict_fp_nofast.cpp,
-// includes the SAME checks under -fno-fast-math. Comparing the two answers the
-// question the helpers exist to settle: does a guard survive the FP model the
-// library is actually built with?
+// This translation unit compiles under the project-wide flags. Its twin,
+// test_r1201_strict_fp_nofast.cpp, includes the SAME checks under
+// -fno-fast-math. Comparing the two answers the question the helpers exist to
+// settle: does a guard mean the same thing under the FP model the library is
+// actually built with?
 //
-// R.1.20.0 added quiet_nan_strict() as the companion to the existing
-// is_finite_strict(). The pair matters because the failure they prevent is
-// silent in both directions: a NaN guard that folds to "always finite" stops
-// reporting, and a NaN marker that is never materialised stops being
-// detectable. Neither leaves a warning on GCC, and neither changes any
-// observable behaviour until the moment something has actually gone wrong.
+// The pair matters because the failure it catches is silent in both directions:
+// a NaN guard that folds to "always finite" stops reporting, and a NaN marker
+// that is never materialised stops being detectable. Neither leaves a warning
+// on GCC, and neither changes any observable behaviour until the moment
+// something has actually gone wrong.
+//
+// This leg also carries the build-configuration pin, being the one compiled
+// with the project's own flags.
 //
 // The shared body lives in r1201_fp_checks.hpp; see the note there.
 
 #include "r1201_fp_checks.hpp"
 
 #include <gtest/gtest.h>
-
-namespace r1201_fp {
-
-// The one non-inline definition in the pair. Deliberately in its own function
-// in its own translation unit so the value crosses a boundary the optimiser
-// cannot see through, rather than staying in a register it has already drawn
-// conclusions about. Both legs link against this single definition.
-double round_trip(double x) { return x; }
-
-} // namespace r1201_fp
 
 namespace {
 const std::string kLeg = "fast-math";
@@ -51,6 +43,23 @@ TEST(R1201StrictFPFastMath, MarkerSurvivesStorageAndCalls) {
 
 TEST(R1201StrictFPFastMath, ValidityFlagPatternRanksCorrectly) {
     r1201_fp::check_validity_flag_pattern_ranks_correctly(kLeg);
+}
+
+// The build-configuration pin, and the only check here that does not go through
+// a value. Under -ffinite-math-only clang marks floating-point parameters and
+// return values nofpclass(nan inf), so a NaN crossing any function boundary is
+// poison and reads back as whatever occupies the register. Every non-finite
+// guard in the library is then inoperative, and no guard can report that about
+// itself, which is why this asserts the flag state directly.
+TEST(R1201StrictFPFastMath, BuildOmitsFiniteMathOnly) {
+#if defined(__FINITE_MATH_ONLY__)
+    EXPECT_EQ(__FINITE_MATH_ONLY__, 0)
+        << "-ffinite-math-only is in effect for a translation unit built with "
+           "the project-wide flags; every non-finite guard in the library is "
+           "inoperative";
+#else
+    GTEST_SKIP() << "compiler does not define __FINITE_MATH_ONLY__";
+#endif
 }
 
 // Prints rather than asserts; see the note on report_std_isfinite_behaviour.

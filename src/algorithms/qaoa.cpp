@@ -15,8 +15,8 @@ static constexpr double kBound = 2.0 * PI;
 
 // PRECONDITION: bitstring.size() == cost_hamiltonian.n_qubits(). Callers filter
 // mismatched keys out; this helper does not signal failure in-band. Returning
-// +infinity for a size mismatch would not work as an error channel under
-// -ffinite-math-only (see the ranking loop below).
+// +infinity for a size mismatch would put a sentinel into a value the ranking
+// loop below compares as ordinary cost data.
 static double computational_basis_cost(
     const SparsePauliOp& cost_hamiltonian,
     const std::string& bitstring
@@ -117,12 +117,9 @@ QAOA::Result QAOA::optimize(
 
     // NLopt failure codes (< 0) can return WITHOUT writing min_val, so reading
     // it uninitialised surfaces an indeterminate stack value as
-    // Result::optimal_value. The marker is
-    // built from its bit pattern because std::numeric_limits<double>::quiet_NaN
-    // need not be materialised under -ffinite-math-only (see quiet_nan_strict
-    // in types.hpp), which would leave a finite value and hide the failure.
-    // A failed run therefore reports a detectable NaN alongside converged=false
-    // rather than garbage; the success path is unchanged.
+    // Result::optimal_value. The marker is a detectably non-finite NaN (see
+    // quiet_nan_strict in types.hpp), so a failed run reports that alongside
+    // converged=false rather than garbage; the success path is unchanged.
     double min_val = quiet_nan_strict();
     nlopt_result nlopt_res = nlopt_optimize(opt, params.data(), &min_val);
     nlopt_destroy(opt);
@@ -140,12 +137,11 @@ QAOA::Result QAOA::optimize(
     // Rank by computational-basis objective; break ties by sample count.
     //
     // best_cost is guarded by an explicit have_best flag rather than seeded
-    // with +infinity. The project compiles with -ffast-math, which implies
-    // -ffinite-math-only, under which the compiler may assume infinities do
-    // not occur and fold the first comparison away; best_bitstring then stays
-    // unwritten and the caller receives an empty string with no error at all.
-    // A bool carries no floating-point meaning and is correct under any flag
-    // set, so this does not depend on how the library is built.
+    // with +infinity. A seed exists to lose its first comparison, and with no
+    // eligible sample at all a seeded loop returns that seed as though it were
+    // a result, leaving best_bitstring empty with no error reported. A bool
+    // states "nothing selected yet" directly and carries no floating-point
+    // meaning for the optimiser to reason about.
     double best_cost = 0.0;
     int best_count = -1;
     bool have_best = false;

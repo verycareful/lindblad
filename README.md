@@ -4,7 +4,7 @@
 [![CMake](https://img.shields.io/badge/CMake-3.21+-064F8C?style=flat-square&logo=cmake&logoColor=white)](https://cmake.org/)
 [![License: Lindblad v2.3](https://img.shields.io/badge/License-Lindblad%20v2.3-red.svg)](LICENSE)
 [![Status: Active](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)](.)
-[![Version](https://img.shields.io/badge/version-R.1.20.3-blue?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-R.1.20.4-blue?style=flat-square)](CHANGELOG.md)
 
 > **License Notice:** This software is **proprietary and source-available**. Free for non-commercial and academic use only. Commercial use of any kind requires a separate written license agreement. Private non-commercial redistribution to specific peers/collaborators is permitted under the same license terms, for both unmodified copies (§3.1) and modifications (§3.2 of [LICENSE](LICENSE)). **Public redistribution in any form — including forks, copies, mirrors, package registries, and derivative works — is strictly prohibited without explicit written authorization from the author.** Public GitHub forks are technically permitted by GitHub's platform but are **not licensed** under this agreement for any purpose other than reviewing or submitting contributions via pull request; any other use of a fork constitutes a violation. By submitting any contribution (pull request, code snippet, bug fix, or similar) you grant the author a perpetual, irrevocable license to use and commercialize it while retaining your own copyright — see §6.3 of [LICENSE](LICENSE). See [LICENSE](LICENSE) for full terms — `lindblad.software@proton.me` for licensing inquiries.
 
@@ -215,7 +215,6 @@ For maximum performance on Linux with Clang 18+ and libomp:
 cmake -S . -B build-clang -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CXX_COMPILER=clang++ \
-  -DCMAKE_CXX_FLAGS="-Wno-nan-infinity-disabled" \
   -DLINDBLAD_MARCH_NATIVE=ON \
   -DLINDBLAD_BUILD_PYTHON=OFF
 cmake --build build-clang -j$(nproc)
@@ -225,10 +224,6 @@ Verified with Clang 18.1.3+ and LLVM libomp. Use `-DLINDBLAD_MARCH_NATIVE=ON`
 rather than putting `-march=native` in `CMAKE_CXX_FLAGS`: user flags are
 emitted before the project's compile options, so the default
 `-march=x86-64-v3` would silently override a flag-level `-march=native`.
-`-Wno-nan-infinity-disabled` silences Clang's warning that `std::isnan` /
-`std::isfinite` are unreliable under `-ffast-math`; the warning is
-informational for Lindblad because every NaN guard in the codebase uses a
-bit-level check (`lindblad::is_finite_strict`) that is immune to fast-math.
 
 ---
 

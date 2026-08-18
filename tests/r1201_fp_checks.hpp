@@ -4,26 +4,20 @@
 //
 // Header-only ON PURPOSE, mirroring the diag_r1160_matrices.hpp precedent: each
 // including translation unit compiles these checks under ITS OWN floating-point
-// flags. test_r1201_strict_fp.cpp includes them under the project-wide
-// -ffast-math; test_r1201_strict_fp_nofast.cpp includes them under
-// -fno-fast-math (per-source CMake override). Identical source, identical
-// inputs, only the FP model differs.
+// flags. test_r1201_strict_fp.cpp includes them under the project-wide flags;
+// test_r1201_strict_fp_nofast.cpp includes them under -fno-fast-math
+// (per-source CMake override). Identical source, identical inputs, and the FP
+// model is the only variable.
 //
-// That pairing is the entire point. quiet_nan_strict() and is_finite_strict()
-// exist because -ffast-math implies -ffinite-math-only, under which the
-// compiler may assume infinities and NaNs do not occur and is therefore
-// entitled to:
+// EVERYTHING BELOW HAS INTERNAL LINKAGE, which is load-bearing rather than
+// stylistic. An inline function with external linkage defined in both including
+// TUs collapses to a single merged definition at link time, and which TU's
+// codegen survives is the linker's choice; the two legs would then run the same
+// machine code under two labels and the comparison would establish nothing.
 //
-//   - fold std::isfinite / std::isnan to a constant true, silently disabling
-//     any guard written with them;
-//   - decline to materialise std::numeric_limits<double>::quiet_NaN() at all,
-//     silently turning a deliberate "not written yet" marker into an ordinary
-//     finite value that passes every guard it was meant to trip.
-//
-// Both helpers route through memcpy so the value stays integer data until the
-// last moment. If that reasoning is sound, EVERY assertion below holds
-// identically on both legs — and a leg that diverges names exactly which
-// property the FP model broke.
+// What the pair checks: is_finite_strict and quiet_nan_strict answer the same
+// way under both floating-point models the tree is built with. A leg that
+// diverges names exactly which property that model changed.
 
 #include <gtest/gtest.h>
 
@@ -37,6 +31,7 @@
 #include <vector>
 
 namespace r1201_fp {
+namespace {
 
 // IEEE-754 binary64 layout, by bit pattern rather than by <limits>, because
 // <limits> is one of the things under test here.
@@ -59,9 +54,19 @@ inline double from_bits(std::uint64_t b) {
     return x;
 }
 
-// Deliberately not inline-able away: forces the value across a call boundary so
-// the compiler cannot keep it in a register it has already reasoned about.
-double round_trip(double x);
+// Forces the value across a call boundary the optimiser cannot see through, so
+// the marker cannot stay in a register the compiler has already drawn
+// conclusions about. noinline here rather than a definition in one of the two
+// TUs, so each leg exercises a copy compiled under its own flags.
+#if defined(_MSC_VER)
+__declspec(noinline)
+#else
+__attribute__((noinline))
+#endif
+inline double round_trip(double x) {
+    volatile double sink = x;
+    return sink;
+}
 
 // =============================================================================
 // The checks
@@ -211,4 +216,5 @@ inline void report_std_isfinite_behaviour(const std::string& leg) {
               << lindblad::is_finite_strict(pos_inf) << "\n";
 }
 
+} // namespace
 } // namespace r1201_fp

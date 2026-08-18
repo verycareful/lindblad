@@ -26,7 +26,6 @@
 #include <cmath>
 #include <chrono>
 #include <cstdint>
-#include <cstring>
 #include <iostream>
 #include <numeric>
 #include <random>
@@ -107,16 +106,6 @@ void MPSState::svd_truncate(
         V_eigen = svd.matrixV();
     }
 
-    // Bit-level finite check — immune to -ffast-math, which folds
-    // std::isnan to false and makes NaN comparisons unreliable in this TU.
-    // A NaN sigma otherwise satisfies 'S > cutoff' here and is KEPT, growing
-    // chi with garbage.
-    auto finite_bits = [](double x) {
-        std::uint64_t b;
-        std::memcpy(&b, &x, sizeof(b));
-        return ((b >> 52) & 0x7FFu) != 0x7FFu;
-    };
-
     // ------------------------------------------------------------------
     // SELECT -> VERIFY -> FALLBACK -> THROW  (issue #44)
     //
@@ -192,7 +181,9 @@ void MPSState::svd_truncate(
         double below_floor = 0.0;  // weight rejected as untrustworthy
         for (int i = 0; i < md; ++i) {
             const double s = S_try(i);
-            if (!finite_bits(s)) continue;  // artifact, not weight
+            // A NaN sigma satisfies 's > sigma_floor' and would be kept,
+            // growing chi with garbage.
+            if (!is_finite_strict(s)) continue;  // artifact, not weight
             if (s > sigma_floor) fs.push_back({s, i});
             else                 below_floor += s * s;
         }
@@ -227,7 +218,7 @@ void MPSState::svd_truncate(
             double best_val = -1.0;
             for (int i = 0; i < md; ++i) {
                 const double s = S_try(i);
-                if (finite_bits(s) && s > best_val) {
+                if (is_finite_strict(s) && s > best_val) {
                     best_val = s;
                     best = i;
                 }
@@ -275,11 +266,11 @@ void MPSState::svd_truncate(
 
         // Verify 1: kept slice bit-finite.
         for (int i = 0; i < k; ++i)
-            if (!finite_bits(S_out[static_cast<size_t>(i)])) return false;
+            if (!is_finite_strict(S_out[static_cast<size_t>(i)])) return false;
         for (const auto& c : U_out)
-            if (!finite_bits(c.real) || !finite_bits(c.imag)) return false;
+            if (!is_finite_strict(c.real) || !is_finite_strict(c.imag)) return false;
         for (const auto& c : Vt_out)
-            if (!finite_bits(c.real) || !finite_bits(c.imag)) return false;
+            if (!is_finite_strict(c.real) || !is_finite_strict(c.imag)) return false;
 
         // Verify 2: Frobenius identity of the truncated factorisation.
         Eigen::Map<const EigenCMatrix> Um(
@@ -289,7 +280,7 @@ void MPSState::svd_truncate(
         Eigen::Map<const Eigen::VectorXd> Sm(S_out.data(), k);
         const double resid =
             (mat - Um * Sm.asDiagonal() * Vtm).squaredNorm();
-        if (!finite_bits(resid)) return false;
+        if (!is_finite_strict(resid)) return false;
         if (resid > discarded + 1e-12 * m_fro_sq + 1e-18) return false;
 
         new_rank = k;

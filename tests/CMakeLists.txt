@@ -117,14 +117,11 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
     # The strict-FP leg of the non-finite sentinel suite. Same mechanism, same
     # reason. r1201_fp_checks.hpp is header-only so this TU compiles the shared
     # checks under IEEE semantics while its twin (test_r1201_strict_fp.cpp)
-    # compiles the identical source under the project-wide -ffast-math. The pair
-    # is the experiment: quiet_nan_strict and is_finite_strict claim to be
-    # independent of the FP model, and two legs that agree are what makes that
-    # claim evidence rather than assertion.
-    #
-    # The non-inline round_trip() both legs call is defined once, in the
-    # fast-math twin; this TU links against it, which is deliberate — the call
-    # must cross a boundary the optimiser cannot see through.
+    # compiles the identical source under the project-wide flags. The pair is
+    # the experiment: two legs that agree are what makes the helpers' claim
+    # evidence rather than assertion. The header gives its contents internal
+    # linkage so each leg runs its own codegen; without that the linker merges
+    # the two into one and both legs report on the same machine code.
     set_source_files_properties(test_r1201_strict_fp_nofast.cpp PROPERTIES
         COMPILE_OPTIONS "-fno-fast-math")
 endif()

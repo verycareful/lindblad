@@ -63,7 +63,7 @@ TEST(DiagR1160StrictFP, JacobiPoisonKeptSliceIsCleanAndExact) {
     print_report("strict/jacobi/poison", r);
 
     EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-12);
-    EXPECT_EQ(r.rank_1e12, 4) << "poison theta has exact Schmidt rank 4";
+    EXPECT_EQ(r.rank, 4) << "poison theta has exact Schmidt rank 4";
     EXPECT_FALSE(r.kept_slice_bad)
         << "NaN inside the KEPT columns: slice-based hardening insufficient";
     EXPECT_GE(r.trunc_recon_err, 0.0);
@@ -83,7 +83,7 @@ TEST(DiagR1160StrictFP, BdcOnR1112BugMatrix) {
     EXPECT_FALSE(rj.corrupt);
     EXPECT_NEAR(rj.sum_sq, rj.frob_sq, 1e-10);
     EXPECT_LT(rj.recon_err, 1e-10);
-    EXPECT_EQ(rj.rank_1e12, 12) << "expected the twelve-fold degenerate "
+    EXPECT_EQ(rj.rank, 12) << "expected the twelve-fold degenerate "
                                    "spectrum from the bug note";
 
     // BDC is bit-identically WRONG under strict FP too (0.9861 norm violation,
@@ -149,7 +149,7 @@ TEST(R1161StrictFP, PoisonThetaKeptSliceContract) {
         // Acceptance must be sound: exact spectrum, exact reconstruction.
         // A factorisation that clears the detectors while being wrong is the
         // one outcome that would silently corrupt the library.
-        EXPECT_EQ(r.rank_1e12, 4);
+        EXPECT_EQ(r.rank, 4);
         EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-12);
         EXPECT_GE(r.trunc_recon_err, 0.0);
         EXPECT_LT(r.trunc_recon_err, 1e-12);
@@ -174,7 +174,7 @@ TEST(R1161StrictFP, Simon36JacobiReference) {
     print_report("r1161-strict/jacobi/simon36", rj);
     print_report("r1161-strict/bdc/simon36", rb);  // documentation only
     EXPECT_FALSE(rj.corrupt);
-    EXPECT_EQ(rj.rank_1e12, 12);
+    EXPECT_EQ(rj.rank, 12);
     EXPECT_NEAR(rj.sum_sq, rj.frob_sq, 1e-10);
     EXPECT_LT(rj.recon_err, 1e-10);
 }
@@ -218,7 +218,10 @@ TEST(R1161StrictFP, GramRouteReconstructsPoisonTheta) {
     const auto theta = build_poison_theta();
     const auto r = run_gram_route_report(theta);
     print_report("r1161-strict/gram/poison", r);
-    EXPECT_EQ(r.rank_1e12, 4);
+    EXPECT_EQ(r.rank, 4);
+    EXPECT_GT(r.sigma_floor, 1e-12)
+        << "the Gram route must count rank against its own sqrt(eps)-scaled "
+           "floor, not the absolute default";
     EXPECT_FALSE(r.kept_slice_bad);
     EXPECT_GE(r.trunc_recon_err, 0.0);
     EXPECT_LT(r.trunc_recon_err, 1e-10);
@@ -229,7 +232,10 @@ TEST(R1161StrictFP, GramRouteReconstructsSimon36) {
     const auto M = build_bdcsvd_bug_matrix();
     const auto r = run_gram_route_report(M);
     print_report("r1161-strict/gram/simon36", r);
-    EXPECT_EQ(r.rank_1e12, 12);
+    EXPECT_EQ(r.rank, 12);
+    EXPECT_GT(r.sigma_floor, 1e-12)
+        << "the Gram route must count rank against its own sqrt(eps)-scaled "
+           "floor, not the absolute default";
     EXPECT_FALSE(r.kept_slice_bad);
     EXPECT_GE(r.trunc_recon_err, 0.0);
     EXPECT_LT(r.trunc_recon_err, 1e-8);

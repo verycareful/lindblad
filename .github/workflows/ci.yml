@@ -1,7 +1,8 @@
-# CI matrix.
-#   Core Linux legs: [GCC 13, Clang 18] x [Debug, Release] on Ubuntu 24.04.
-#   Cross-platform legs (Release): macOS (Homebrew LLVM + libomp) and Windows
-#   (standalone LLVM Clang, for its OpenMP runtime, under the MSVC environment).
+# CI matrix, all Ubuntu 24.04:
+#   [GCC 13, Clang 18] x [Debug, Release], plus Clang 20 Release.
+# The Clang 20 leg spans a compiler generation rather than a platform. Nothing
+# else in the matrix runs a compiler newer than clang 18, and a defect that only
+# a newer one exhibits would otherwise reach a user's build before ours.
 # Mirrors the README's standard build settings EXCEPT the -march choice: hosted
 # runners span hardware generations, so CI builds the pinned x86-64-v3 baseline
 # (the LINDBLAD_MARCH_NATIVE=OFF default) instead of -march=native, otherwise
@@ -9,9 +10,10 @@
 # dependency is fetched by CMake (FetchContent), so a runner only needs a
 # compiler + ninja + an OpenMP runtime (GCC bundles libgomp; clang's libomp is
 # separate).
-# Two jobs run alongside the matrix and do not depend on it: `line-endings`
-# (repository hygiene, no compiler needed) and `coverage` (an instrumented build
-# whose report is uploaded as an artifact).
+# `build-test-windows` runs only when the dispatch asks for it; see the note on
+# that job. Two further jobs run alongside the matrix and do not depend on it:
+# `line-endings` (repository hygiene, no compiler needed) and `coverage` (an
+# instrumented build whose report is uploaded as an artifact).
 
 name: CI
 
@@ -25,6 +27,11 @@ on:
   # pull_request:
   #   branches: [main]
   workflow_dispatch:
+    inputs:
+      run_windows:
+        description: "Also run the Windows leg"
+        type: boolean
+        default: false
 
 jobs:
   build-test:
@@ -35,9 +42,9 @@ jobs:
       # scripts through `cmake -P` as build-time custom commands. Each is a fresh
       # CMake process, so it does not inherit the policy floor the project sets
       # for the fetched subprojects, and each script declares a minimum below
-      # 3.5 — which CMake 4 rejects outright. The environment variable is the
-      # one channel those child processes do see. Only runners with CMake 4 are
-      # affected (macOS today, via Homebrew).
+      # 3.5, which CMake 4 rejects outright. The environment variable is the one
+      # channel those child processes do see. It costs nothing on a runner
+      # carrying CMake 3.x and is what keeps one carrying CMake 4 building.
       CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     strategy:
       fail-fast: false
@@ -46,34 +53,22 @@ jobs:
           - name: linux gcc-13 Debug
             os: ubuntu-24.04
             cxx: g++-13
-            cxx_flags: ""
             build_type: Debug
           - name: linux gcc-13 Release
             os: ubuntu-24.04
             cxx: g++-13
-            cxx_flags: ""
             build_type: Release
           - name: linux clang-18 Debug
             os: ubuntu-24.04
             cxx: clang++-18
-            # Clang-only diagnostic knob from the standard build settings; GCC
-            # has no such flag, so it is scoped to the clang jobs.
-            cxx_flags: "-Wno-nan-infinity-disabled"
             build_type: Debug
           - name: linux clang-18 Release
             os: ubuntu-24.04
             cxx: clang++-18
-            cxx_flags: "-Wno-nan-infinity-disabled"
             build_type: Release
-          - name: macos clang Release
-            os: macos-14
-            cxx: clang++            # resolved to the Homebrew LLVM clang++ below
-            cxx_flags: "-Wno-nan-infinity-disabled"
-            build_type: Release
-          - name: windows clang Release
-            os: windows-2022
-            cxx: clang++
-            cxx_flags: "-Wno-nan-infinity-disabled"
+          - name: linux clang-20 Release
+            os: ubuntu-24.04
+            cxx: clang++-20
             build_type: Release
 
     steps:
@@ -81,54 +76,24 @@ jobs:
       # deprecated on runners). Deliberately the lowest Node-24 majors.
       - uses: actions/checkout@v5
 
-      - name: Install toolchain (Linux)
-        if: runner.os == 'Linux'
+      - name: Install toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build g++-13 clang-18 libomp-18-dev
           echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
 
-      - name: Install toolchain (macOS)
-        if: runner.os == 'macOS'
+      # Ubuntu 24.04 carries clang-18 in its own repositories; clang 20 comes
+      # from apt.llvm.org, which llvm.sh configures. libomp ships separately
+      # from the compiler and this project requires it unconditionally
+      # (find_package(OpenMP REQUIRED) plus -fopenmp at compile and link).
+      - name: Install clang-20
+        if: matrix.cxx == 'clang++-20'
         run: |
-          brew install ninja libomp llvm
-          echo "CXX=$(brew --prefix llvm)/bin/clang++" >> "$GITHUB_ENV"
-          # Hint find_package(OpenMP) at the separately-kegged libomp.
-          echo "OpenMP_ROOT=$(brew --prefix libomp)" >> "$GITHUB_ENV"
-
-      # Puts MSVC's headers/libs on the environment so the Clang driver
-      # (windows-msvc target) can find them.
-      - name: Set up MSVC environment (Windows)
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      # The MSVC dev environment above prepends Visual Studio's own bundled LLVM
-      # to PATH, so a bare `clang++` resolves there. That toolchain carries no
-      # OpenMP runtime, which this project requires unconditionally
-      # (find_package(OpenMP REQUIRED) plus -fopenmp at compile and link), so
-      # the build is pointed at the standalone LLVM distribution instead: it
-      # ships libomp and makes the compiler choice explicit rather than
-      # PATH-order dependent.
-      - name: Install toolchain (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          choco install ninja llvm --no-progress
-          $llvmBin = "C:\Program Files\LLVM\bin"
-          if (-not (Test-Path "$llvmBin\clang++.exe")) {
-            throw "expected clang++ at $llvmBin"
-          }
-          # Forward slashes: this value reaches CMake through a bash step, where
-          # backslashes would be read as escapes.
-          echo "CXX=$($llvmBin -replace '\\','/')/clang++.exe" >> $env:GITHUB_ENV
-          # Ahead of the Visual Studio LLVM directory for any later PATH lookup.
-          echo $llvmBin >> $env:GITHUB_PATH
-          & "$llvmBin\clang++.exe" --version
-          # Report the OpenMP runtime up front: its absence is the difference
-          # between this toolchain and the Visual Studio one, and it would
-          # otherwise only surface as a confusing link error much later.
-          Get-ChildItem "C:\Program Files\LLVM\lib\libomp.lib" -ErrorAction SilentlyContinue |
-            ForEach-Object { "found $($_.FullName)" }
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 20
+          sudo apt-get install -y libomp-20-dev
+          clang++-20 --version
 
       - name: Cache FetchContent dependencies
         uses: actions/cache@v5
@@ -142,7 +107,6 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCMAKE_CXX_COMPILER="${{ env.CXX }}"
-          -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}"
           -DLINDBLAD_MARCH_NATIVE=OFF
           -DLINDBLAD_BUILD_PYTHON=OFF
 
@@ -166,6 +130,86 @@ jobs:
       # one per dispatch: a build that dies at target 6 of 273 says nothing
       # about the other 267. The job still fails; only the amount of diagnosis
       # it carries changes.
+      - name: Build
+        shell: bash
+        run: cmake --build build --parallel -- -k 0
+
+      - name: Test
+        shell: bash
+        run: ctest --test-dir build --output-on-failure
+
+  # Windows, on request only: tick `run_windows` when dispatching. Its own job
+  # rather than a matrix leg, so a dispatch that does not ask for it reports
+  # skipped instead of green, and so the Windows-only toolchain setup keeps
+  # being parsed on every run rather than rotting inside a comment.
+  build-test-windows:
+    name: windows clang Release
+    if: ${{ inputs.run_windows }}
+    runs-on: windows-2022
+    env:
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+    steps:
+      - uses: actions/checkout@v5
+
+      # Puts MSVC's headers/libs on the environment so the Clang driver
+      # (windows-msvc target) can find them.
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # The MSVC dev environment above prepends Visual Studio's own bundled LLVM
+      # to PATH, so a bare `clang++` resolves there. That toolchain carries no
+      # OpenMP runtime, which this project requires unconditionally
+      # (find_package(OpenMP REQUIRED) plus -fopenmp at compile and link), so
+      # the build is pointed at the standalone LLVM distribution instead: it
+      # ships libomp and makes the compiler choice explicit rather than
+      # PATH-order dependent.
+      - name: Install toolchain
+        shell: pwsh
+        run: |
+          choco install ninja llvm --no-progress
+          $llvmBin = "C:\Program Files\LLVM\bin"
+          if (-not (Test-Path "$llvmBin\clang++.exe")) {
+            throw "expected clang++ at $llvmBin"
+          }
+          # Forward slashes: this value reaches CMake through a bash step, where
+          # backslashes would be read as escapes.
+          echo "CXX=$($llvmBin -replace '\\','/')/clang++.exe" >> $env:GITHUB_ENV
+          # Ahead of the Visual Studio LLVM directory for any later PATH lookup.
+          echo $llvmBin >> $env:GITHUB_PATH
+          & "$llvmBin\clang++.exe" --version
+          # Report the OpenMP runtime up front: its absence is the difference
+          # between this toolchain and the Visual Studio one, and it would
+          # otherwise only surface as a confusing link error much later.
+          Get-ChildItem "C:\Program Files\LLVM\lib\libomp.lib" -ErrorAction SilentlyContinue |
+            ForEach-Object { "found $($_.FullName)" }
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v5
+        with:
+          path: build/_deps
+          key: deps-windows-2022-clang-Release-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure
+        shell: bash
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_COMPILER="${{ env.CXX }}"
+          -DLINDBLAD_MARCH_NATIVE=OFF
+          -DLINDBLAD_BUILD_PYTHON=OFF
+
+      # Same reasoning as the matrix job's copy of this step.
+      - name: Dump CMake configure log (on failure)
+        if: failure()
+        shell: bash
+        run: |
+          for f in build/CMakeFiles/CMakeConfigureLog.yaml \
+                   build/CMakeFiles/CMakeError.log \
+                   build/CMakeFiles/CMakeOutput.log; do
+            echo "===================== $f ====================="
+            if [ -f "$f" ]; then cat "$f"; else echo "(not present)"; fi
+          done
+
       - name: Build
         shell: bash
         run: cmake --build build --parallel -- -k 0

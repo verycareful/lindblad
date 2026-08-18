@@ -2,25 +2,22 @@
 //
 // Compiled WITHOUT fast math (-fno-fast-math, set per-source in
 // tests/CMakeLists.txt) while its twin test_r1201_strict_fp.cpp compiles under
-// the project-wide -ffast-math. Same header, same checks, same inputs — the
+// the project-wide flags. Same header, same checks, same inputs, and the
 // floating-point model is the only variable.
 //
 // What the pair establishes:
 //
-//   Both legs green  the helpers do what they claim. is_finite_strict and
-//                    quiet_nan_strict are model-independent, so guards written
-//                    with them mean the same thing in every build of the
-//                    library, which is the property #68 needed and the POSIX
-//                    spellings could not provide.
+//   Both legs green  is_finite_strict and quiet_nan_strict answer the same way
+//                    under both FP models the tree is built with, so a guard
+//                    written with them means the same thing in either, which is
+//                    the property #68 needed and the POSIX spellings could not
+//                    provide.
 //
 //   Legs disagree    the assertion that differs names precisely which property
-//                    -ffinite-math-only broke, with everything else held
-//                    constant. That is a far stronger diagnostic than a single
-//                    failing test in a fast-math build, where "the compiler
-//                    folded it" and "the helper is wrong" look identical.
-//
-// The non-inline round_trip() the checks call is defined once, in the fast-math
-// twin; this TU links against it.
+//                    the FP model changed, with everything else held constant.
+//                    That is a far stronger diagnostic than a single failing
+//                    test in one build, where "the compiler folded it" and "the
+//                    helper is wrong" look identical.
 
 #include "r1201_fp_checks.hpp"
 
