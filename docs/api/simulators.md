@@ -501,12 +501,55 @@ corruption), verifies the kept factorisation against the Frobenius identity
 `‖M − U·S·V†‖²_F = Σ(discarded σ²)`, recomputes via a Gram-matrix
 eigendecomposition if verification fails, and throws `std::runtime_error`
 rather than continue if both routes fail — an MPS run can no longer produce
-a silently corrupted state from a bad SVD. `truncation_error()` counts only
+a silently corrupted state from a bad SVD.
+
+That identity is an equality for a true truncated SVD, so the allowance above
+the discarded weight is only the backward error a stable SVD is entitled to.
+The bound is stated in the amplitude domain,
+`‖M − U·S·V†‖_F ≤ sqrt(Σ discarded σ²) + c·N·eps·‖M‖_F` with `N` the larger
+matrix dimension, and applied by squaring the right-hand side whole.
+
+Both halves earn their place. Sizing the backward-error term tightly matters
+because a factorisation can reconstruct its input to a few parts in `10⁸`,
+which is nowhere near backward-stable yet is orders away from producing a NaN;
+a looser gate accepts it, and the resulting state carries a norm error while
+its Schmidt directions stay exact, which no downstream check would catch.
+Keeping the bound in the amplitude domain matters because squaring it termwise
+would drop the cross term. Under heavy truncation the residual and the discarded
+weight are two large nearly-equal quantities arrived at by different routes, so
+their difference carries first-order rounding, and a purely squared bound would
+reject sound factorisations there. The cross term vanishes as the discarded
+weight does, so a bond that truncated nothing still faces the strict bound.
+
+`max_verify_residual_excess()` reports what the gate actually admitted. `truncation_error()` counts only
 finite discarded weight (including below-cutoff values) and is committed
 only after verification. The verification costs roughly one extra
 rank-slice matrix multiply per two-qubit gate (measured at 28–42% on the
 MPS benchmark domain), and `mps_sim.cpp` is compiled under strict IEEE
 floating-point (no fast-math) to keep the SVD input path well-behaved.
+
+**Ladder observability**. Which route a bond split took is otherwise invisible
+to the caller, since a rescued split and a clean one both yield valid tensors.
+Two counters on `MPSState` report it:
+
+- `svd_call_count()`: bond splits performed, one per call into the truncation
+  routine. This is the denominator; a fallback count means nothing without it.
+- `gram_fallback_count()`: splits where the SVD backend's factorisation failed
+  verification and the Gram route was used instead. Only successful rescues are
+  counted, because a Gram route that also fails verification throws.
+- `max_verify_residual_excess()`: the worst factorisation error verification
+  accepted, as a fraction of $\|M\|_F^2$, maximised over splits. The Frobenius
+  identity holds with equality for a true truncated SVD, so this reports the
+  excess over that ideal rather than the raw residual, and a healthy run sits
+  near the square of machine epsilon. It says how close a run came to being
+  rescued, and how much error the accepted route let through when it was not.
+
+A run with `gram_fallback_count() == 0` never distrusted its SVD backend. A
+nonzero count is not an error: it is the containment working, and the discarded
+weight the rescue's validity floor rejected is included in `truncation_error()`.
+Both counters accumulate over the state's lifetime and are not reset by gate
+application. Reconstruction from a statevector does not run the ladder and does
+not advance either counter.
 
 **Complexity**:
 - **Space**: $O(n \cdot \chi^2)$ where $\chi$ = max bond dimension (typically 16–256)

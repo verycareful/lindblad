@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <string>
 #include <vector>
 
 using namespace lindblad;
@@ -309,6 +310,73 @@ TEST(R1201Truncation, TruncationDoesEngageWhenTheBudgetAllowsIt) {
         << "a budget of 0.75 per bond covers the 0.5 each GHZ direction "
            "carries; if nothing was discarded the rule is not spending at all";
     EXPECT_EQ(st.current_max_bond_dim(), 1);
+}
+
+// =============================================================================
+// The verify gate under heavy truncation
+// =============================================================================
+
+// svd_truncate accepts a factorisation when
+//   ||M - U_k S_k V_k^H||_F <= sqrt(discarded) + c*N*eps*||M||_F
+// and the statement is load-bearing in the AMPLITUDE domain. Squaring it
+// termwise drops the cross term 2*c*N*eps*sqrt(discarded*||M||_F^2), which is
+// the entire allowance once truncation is heavy: `resid` and `discarded` are
+// then two large nearly-equal quantities reached by different routes, so they
+// differ by ordinary FIRST-order rounding (~eps*discarded) while a squared
+// bound offers only second-order room. Every heavily-truncating split is
+// rejected in that case, and since the Gram route is measured against the same
+// gate it fails identically, so svd_truncate throws its double-failure error
+// and no state comes out at all.
+//
+// A large cutoff is what puts these cases in that regime: a GHZ bond carries
+// 0.5 of the weight in each direction, so a budget above 0.5 discards one of
+// them outright. That is not incidental setting, it is the only regime the
+// cross term is reachable in, so each case asserts the weight it ACTUALLY
+// discarded rather than trusting the budget to have bitten. Without that check
+// a future change could stop truncating here and the coverage would vanish
+// silently.
+TEST(R1205VerifyGate, HeavyTruncationIsAcceptedNotRescued) {
+    for (double cutoff : {0.55, 0.75, 0.9}) {
+        SCOPED_TRACE("cutoff=" + std::to_string(cutoff));
+
+        // Reaching the next line at all is half the assertion: a gate that
+        // rejects sound factorisations surfaces here, as a thrown
+        // std::runtime_error naming both failed routes.
+        MPSState st = ghz_state(6, cutoff);
+
+        EXPECT_GT(st.truncation_error(), 0.0)
+            << "this case must actually discard weight, or it no longer "
+               "covers the branch it exists for";
+        ASSERT_GT(st.svd_call_count(), 0u);
+        EXPECT_LT(st.gram_fallback_count(), st.svd_call_count())
+            << "every split was rescued, so the primary route is being "
+               "rejected systematically rather than on merit: a mis-stated "
+               "gate looks exactly like this whenever the Gram route happens "
+               "to survive it";
+    }
+}
+
+// The bond cap is the other road into the same regime, and it reaches it
+// without a large cutoff: chi below the state's Schmidt rank forces real
+// weight out at every split while the budget stays at its default. Both roads
+// have to stay open, since they arrive at the gate with different `discarded`
+// values relative to ||M||_F^2.
+TEST(R1205VerifyGate, ChiCappedSplitsSurviveTheGate) {
+    for (int chi : {1, 2, 3}) {
+        SCOPED_TRACE("chi=" + std::to_string(chi));
+        MPSState st(6, chi, kDocumentedDefaultCutoff);
+        st.apply_single_qubit_gate(h2x2(), 0);
+        st.apply_single_qubit_gate(h2x2(), 2);
+        for (int q = 0; q + 1 < 6; ++q) {
+            st.apply_two_qubit_gate(cnot_control_first_operand(), q, q + 1);
+        }
+
+        EXPECT_LE(st.current_max_bond_dim(), chi)
+            << "the cap must hold, or this case is not truncating at all";
+        ASSERT_GT(st.svd_call_count(), 0u);
+        EXPECT_LT(st.gram_fallback_count(), st.svd_call_count())
+            << "systematic rejection under a bond cap";
+    }
 }
 
 // =============================================================================

@@ -3,6 +3,7 @@
 #include "lindblad/types.hpp"
 
 #include <array>
+#include <cstddef>
 #include <random>
 #include <unordered_map>
 #include <vector>
@@ -77,6 +78,30 @@ public:
     double truncation_error() const { return total_truncation_error; }
     int current_max_bond_dim() const;
 
+    // SVD ladder observability.
+    //
+    // svd_truncate runs SELECT -> VERIFY -> FALLBACK -> THROW: it distrusts the
+    // SVD backend's factorisation and recomputes through the Gram route when
+    // verification rejects it. Both outcomes are silent from outside, so these
+    // two counters are the only way to tell a state that took the primary path
+    // throughout from one that was rescued on every bond.
+    //
+    // svd_call_count() is the denominator: a bond split calls svd_truncate once,
+    // so a bare fallback count means nothing without it. gram_fallback_count()
+    // counts only the rescues that SUCCEEDED; a Gram route that also fails
+    // verification throws rather than returning.
+    std::size_t gram_fallback_count() const { return gram_fallbacks; }
+    std::size_t svd_call_count() const { return svd_calls; }
+
+    // Worst factorisation error the VERIFY rung accepted, as a fraction of
+    // ||M||_F^2, maximised over splits. A perfect truncated SVD satisfies the
+    // Frobenius identity with equality, so this reports the excess over that
+    // ideal rather than the raw residual, and a clean run sits at the square
+    // of machine epsilon (~1e-32). It is the ladder's own decision variable:
+    // how close a run came to being rescued, and how much error the accepted
+    // route let through when it was not.
+    double max_verify_residual_excess() const { return max_verify_resid_excess; }
+
     // Measurements and expectation values
     std::vector<double> probabilities_single(int qubit) const;
 
@@ -90,6 +115,9 @@ public:
 
 private:
     double total_truncation_error = 0.0;
+    std::size_t gram_fallbacks = 0;
+    std::size_t svd_calls = 0;
+    double max_verify_resid_excess = 0.0;
 
     // SVD helper
     void svd_truncate(

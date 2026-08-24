@@ -2,6 +2,7 @@
 /build/
 /build-clang/
 /build-cov/
+/build-gcc13/
 /build_win/
 /out/
 /bin/

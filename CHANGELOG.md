@@ -4,6 +4,119 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.20.5] - 2026-08-24
+
+The MPS state norm drifted high by `2.7e-8` on the 13-qubit period-finding path
+under some compilers (issue #71). The cause was the verify step of the SVD
+select-verify-fallback ladder accepting a factorisation it should have rejected,
+and the fix is to state that step's tolerance correctly rather than to relax any
+test bound.
+
+The wider result is about what the ladder was built to catch. Its detectors were
+shaped by the Eigen 3.4.0 failures behind issue #44, all of which announce
+themselves: NaN inside singular vectors, non-finite entries displacing real
+sigmas, an all-non-finite spectrum. This defect produces none of those. The
+factorisation reconstructs its input to eight significant digits, contains no
+non-finite value anywhere, and clears every bit-level check. It is caught only by
+holding the reconstruction to the accuracy a stable factorisation owes, which
+makes containment depend on a tolerance being right rather than on a NaN being
+noticed.
+
+### Fixed
+
+- **MPS verify step accepted a factorisation that was not backward-stable**
+  (issue #71). A truncated SVD satisfies
+  `‖M − U_k·S_k·V_k†‖²_F = Σ(discarded σ²)` with equality, so the only slack the
+  check may allow above the discarded weight is the backward error a stable
+  factorisation is entitled to. The tolerance instead allowed a flat
+  `1e-12·‖M‖²_F`, which is around `1e-6` in amplitude terms and roughly twenty
+  orders looser than needed. The bound is now stated in the amplitude domain,
+  `‖M − U_k·S_k·V_k†‖_F ≤ sqrt(Σ discarded σ²) + c·N·eps·‖M‖_F` with `N` the
+  larger matrix dimension, and applied by squaring the right-hand side whole.
+
+  Stating it in the amplitude domain is load-bearing rather than cosmetic.
+  Squaring the bound term by term drops the cross term
+  `2·c·N·eps·sqrt(Σ discarded σ²·‖M‖²_F)`, which is negligible when a bond
+  discards nothing and is the entire allowance when it truncates heavily: the
+  residual and the discarded weight are then two large nearly-equal quantities
+  reached by different routes, so their difference carries first-order rounding
+  while a squared bound offers only second-order room. The cross term vanishes as
+  the discarded weight does, so a bond that truncated nothing still faces the
+  strict bound alone.
+
+  Measured on the affected path: the accepted factorisation's excess over the
+  identity was `7.37e-16` of `‖M‖²_F`, a `2.7e-8` relative reconstruction error,
+  against `2.79e-30` for a healthy factorisation of the same matrices. The
+  fallback had not been engaging at all, so no rescue was involved. After the
+  fix the fallback engages once across 240 bond splits, the norm error falls to
+  `-8.7e-15`, and the accumulated discarded weight is unchanged at `3.6e-30`,
+  so the rescue costs no accuracy.
+
+  The symptom was a uniform norm excess with the Schmidt directions intact:
+  fidelity read `1.0000000271`, above 1, and every probability carried the same
+  scale factor. Normalized fidelity was correct to four ulp throughout, which is
+  why nothing downstream of the state could have detected it.
+
+- **`R1161MpsShor.PoisonThetaKeptSliceContract` asserted a third party's
+  behaviour.** The test required Eigen's JacobiSVD to return a clean rank-4
+  factorisation of a degenerate rank-deficient input, which Eigen guarantees
+  nothing about and which was observed failing on one configuration. It now
+  asserts acceptance soundness, matching the structure its strict-FP twin already
+  had: if the detectors accept the kept slice it must genuinely be the exact
+  truncation, and if they reject it the fallback carries the split. The
+  assertion moved from Eigen's output onto the library's contract, which is that
+  a bad factorisation is detected.
+
+### Added
+
+- **SVD ladder observability on `MPSState`.** Which rung of
+  select-verify-fallback ran was invisible from outside, since a rescued bond and
+  a clean one yield equally valid tensors. Three accessors report it:
+  `svd_call_count()` (bond splits performed, the denominator without which a
+  fallback count means nothing), `gram_fallback_count()` (splits where the SVD
+  backend's factorisation was rejected and the Gram route was used, counting only
+  rescues that succeeded, since a failed rescue throws), and
+  `max_verify_residual_excess()` (the worst factorisation error verification
+  accepted, as a fraction of `‖M‖²_F`, reported as the excess over the exact
+  identity so a healthy run sits near the square of machine epsilon).
+
+  A run reporting zero fallbacks never distrusted its SVD backend. A nonzero
+  count is not an error but the containment working, and the weight the rescue's
+  validity floor rejects is included in `truncation_error()`.
+
+### Changed
+
+- **`.gitignore` covers `build-gcc13/`.** The other build directory names in
+  use are ignored, so a GCC build tree alongside them was the one that would
+  have been staged by a wildcard add. Reproducing this release's defect needs a
+  second compiler, which makes that directory a normal thing to have present.
+
+### Tests
+
+- `R1205SvdLadder.CensusOnShorPeriodFinding` reads the ladder counters on the
+  13-qubit circuit and decomposes any drift into norm and direction. An MPS whose
+  tensors are individually valid can still carry a norm other than 1, and that
+  case is physically different from a wrong Schmidt vector: the first scales
+  every probability by a common factor and is the only one that can push fidelity
+  above 1, while the second tilts the state and drives the normalized overlap
+  below it. Raw fidelity cannot separate them, so the test reports norm, raw
+  fidelity and normalized fidelity together.
+- `R1205VerifyGate` pins the heavy-truncation branch of the verify bound by both
+  routes into it, a budget large enough to discard a whole Schmidt direction and
+  a bond cap set below the state's Schmidt rank, since the two arrive at the
+  check with different discarded weight relative to `‖M‖²_F`. Each case asserts
+  the weight it actually discarded, so the coverage cannot lapse silently if the
+  truncation rule changes, and asserts that rescues do not fire on every split,
+  which is what systematic rejection looks like when the fallback survives it.
+
+### Results
+
+2142 tests across 174 suites, all passed (26.5 s, WSL/Clang; 18.7 s, WSL/GCC 13).
+
+Both compilers are recorded because only one of them reproduces the defect. The
+`2.7e-8` drift appears under GCC 13 Release and not under Clang Release, so a
+green Clang run alone is not evidence that this release fixed anything.
+
 ## [R.1.20.4] - 2026-08-18
 
 Every non-finite guard in the library was inoperative when built with clang 20

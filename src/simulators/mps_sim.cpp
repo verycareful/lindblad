@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -123,11 +124,13 @@ void MPSState::svd_truncate(
     //      WEIGHT (below); cap at max_bond_dim; gather matching U/V columns
     //      individually.
     //   2. VERIFY: kept slice bit-finite AND the Frobenius identity
-    //        ||M - U_k S_k V_k^H||_F^2 <= discarded + 1e-12*||M||_F^2
-    //      which holds with equality for any true truncated SVD; every
-    //      failure mode observed so far trips it. Costs one rank-slice
-    //      GEMM — small next to the SVD itself, and correctness outranks
-    //      it (golden rule #1 over #2).
+    //        ||M - U_k S_k V_k^H||_F <= sqrt(discarded) + c*N*eps*||M||_F
+    //      which holds with EQUALITY at zero slack for any true truncated
+    //      SVD, the allowance being only the backward error a stable SVD is
+    //      entitled to (see the gate itself for the sizing). Every failure
+    //      mode observed so far trips it. Costs one rank-slice GEMM — small
+    //      next to the SVD itself, and correctness outranks it (golden rule
+    //      #1 over #2).
     //   3. FALLBACK on failure: recompute via the Gram route (M^H M or
     //      M M^H, whichever is smaller, SelfAdjointEigenSolver — robust on
     //      exactly-degenerate Hermitian input), sigma = sqrt(max(lambda,0)),
@@ -138,13 +141,19 @@ void MPSState::svd_truncate(
     //   4. THROW if the fallback fails verification too — never continue
     //      with a corrupt tensor (silent NaN propagation is exactly how
     //      issue #44 manifests).
+    // Which rung ran is otherwise invisible to the caller, since a rescued
+    // bond and a clean one produce equally valid tensors. svd_call_count()
+    // and gram_fallback_count() report it.
     // Reproducers: tests/diag_r1160_matrices.hpp and the DiagR1160* suites.
     // ------------------------------------------------------------------
+
+    ++svd_calls;
 
     double m_fro_sq = 0.0;
     for (const auto& c : M) m_fro_sq += c.real * c.real + c.imag * c.imag;
 
     double pending_discarded = 0.0;
+    double pending_resid_excess = 0.0;
 
     // TRUNCATION RULE — discarded weight, not a magnitude threshold.
     //
@@ -273,6 +282,25 @@ void MPSState::svd_truncate(
             if (!is_finite_strict(c.real) || !is_finite_strict(c.imag)) return false;
 
         // Verify 2: Frobenius identity of the truncated factorisation.
+        //
+        // ||M - U_k S_k V_k^H||_F^2 == discarded holds with EQUALITY for a
+        // truncated SVD in exact arithmetic, so the slack added to `discarded`
+        // is the entire allowance a COMPUTED factorisation gets. Size it from
+        // the backward error a stable SVD is entitled to and no larger: the
+        // standard bound is ||M - U S V^H||_F <= c * N * eps * ||M||_F with N
+        // the larger dimension, and this compares squared norms, so the bound
+        // enters squared.
+        //
+        // c is generous because the two errors are not symmetric: a false
+        // REJECT costs one Gram recomputation, while a false ACCEPT is a wrong
+        // state that nothing downstream will catch. Even so the gate lands far
+        // below the defects this ladder exists for. On the degenerate
+        // rank-deficient thetas of a 13-qubit period-finding circuit, Eigen
+        // 3.4.0 has been measured returning a factorisation whose excess over
+        // the identity is 7.4e-16 of ||M||_F^2 (a 2.7e-8 relative
+        // reconstruction error, which is not backward-stable at any dimension)
+        // while a healthy factorisation of the same matrices measures 2.8e-30.
+        // Ten orders of clearance above, four below.
         Eigen::Map<const EigenCMatrix> Um(
             reinterpret_cast<const std::complex<double>*>(U_out.data()), rows, k);
         Eigen::Map<const EigenCMatrix> Vtm(
@@ -281,10 +309,35 @@ void MPSState::svd_truncate(
         const double resid =
             (mat - Um * Sm.asDiagonal() * Vtm).squaredNorm();
         if (!is_finite_strict(resid)) return false;
-        if (resid > discarded + 1e-12 * m_fro_sq + 1e-18) return false;
+        constexpr double kBackwardErrorSlack = 64.0;
+        const double bwd = kBackwardErrorSlack *
+                           static_cast<double>(std::max(rows, cols)) *
+                           std::numeric_limits<double>::epsilon();
+        // The comparison is stated and made in the AMPLITUDE domain:
+        //   ||M - U_k S_k V_k^H||_F <= sqrt(discarded) + bwd * ||M||_F
+        // Squaring it here would drop the cross term
+        // 2*bwd*sqrt(discarded*||M||_F^2), which is the dominant allowance
+        // whenever truncation is heavy. That term is not optional slack: with
+        // `discarded` at the scale of ||M||_F^2, resid and discarded are two
+        // large nearly-equal quantities computed by different routes, so their
+        // difference carries FIRST-order rounding (~eps*discarded) while a
+        // squared-domain bound offers only second-order room. It vanishes as
+        // discarded -> 0, so a bond that truncated nothing is still held to
+        // the strict backward-error bound alone.
+        const double allowed =
+            std::sqrt(discarded) + bwd * std::sqrt(m_fro_sq);
+        if (resid > allowed * allowed + 1e-18) return false;
 
         new_rank = k;
         pending_discarded = discarded;
+        // Excess over a perfect truncated SVD, which satisfies the Frobenius
+        // identity with EQUALITY (resid == discarded). Subtracting `discarded`
+        // leaves only the factorisation's own error, so the figure means the
+        // same thing on a bond that truncated heavily and one that truncated
+        // nothing. Clamped because the two sides are computed differently and
+        // can cross by an ulp when both are dust.
+        pending_resid_excess =
+            (m_fro_sq > 0.0) ? std::max(0.0, resid - discarded) / m_fro_sq : 0.0;
         return true;
     };
 
@@ -340,9 +393,14 @@ void MPSState::svd_truncate(
                 " matrix (non-finite or non-reconstructing factorisation); "
                 "refusing to continue with a corrupt tensor");
         }
+        // Counted only here, past the throw: gram_fallback_count() reports
+        // rescues that succeeded, and a failed rescue does not return.
+        ++gram_fallbacks;
     }
 
     total_truncation_error += pending_discarded;
+    max_verify_resid_excess =
+        std::max(max_verify_resid_excess, pending_resid_excess);
 }
 
 // =============================================================================
