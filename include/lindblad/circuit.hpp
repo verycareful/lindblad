@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lindblad/types.hpp"
+#include "lindblad/validation.hpp"
 
 #include <memory>
 #include <string>
@@ -149,6 +150,17 @@ struct Instruction {
     // For custom unitaries — copy-on-write: shared, immutable
     // buffer so Instruction copies do not deep-copy 2^k × 2^k complex data.
     CowMatrix matrix;
+
+    // Physical-validity policy for `matrix`, set where the matrix entered the
+    // circuit and carried with it from there. run()'s pre-flight is what reads
+    // it: a matrix can reach a circuit without passing through unitary() (the
+    // QASM parser builds instructions directly), so the pre-flight is the one
+    // place every matrix is guaranteed to be seen once.
+    //
+    // Instructions the library synthesises rather than receives (a fused
+    // block, a KAK product) carry Ignore: their matrix is the library's own
+    // arithmetic, not a caller's declaration.
+    ValidationOptions validation;
 
     // For PERMUTATION: basis-index map of size 2^k over the k target qubits.
     // permutation[x] = image of sub-state x (LSB = qubits[0]). Empty otherwise.
@@ -315,9 +327,13 @@ public:
     QuantumCircuit& rccx(int c1, int c2, int target);
 
     // Custom unitary
+    // validation = policy and tolerance for the unitarity of `matrix`. It is
+    // applied here, at ingress, and stored on the instruction so run() applies
+    // the same policy to the same matrix.
     QuantumCircuit& unitary(const std::vector<Complex128>& matrix,
                             const std::vector<int>& qubits,
-                            const std::string& label = "");
+                            const std::string& label = "",
+                            ValidationOptions validation = {});
 
     // Multi-controlled X: flip `target` when every control qubit is |1>.
     // Any number of controls (0 controls == plain X). Applied natively by the
@@ -460,6 +476,17 @@ public:
     // kernel regardless of ingress. Throws std::out_of_range on the first bad
     // index (backends run it inside run()'s try, so it surfaces through Result).
     void validate_operands() const;
+
+    // Pre-flight validation for backend run(): checks that every instruction
+    // carrying a caller-supplied matrix is unitary, under that instruction's
+    // own ValidationOptions. This is the one place every matrix in a circuit
+    // is seen exactly once, whatever route it arrived by, and it runs before
+    // gate fusion so a matrix is checked while it is still the caller's rather
+    // than after it has been multiplied into a block. Instructions carrying
+    // Validation::Ignore, and matrices whose size does not match their operand
+    // count (a structural error, reported where sizes are checked), are
+    // skipped. Throws std::invalid_argument under Validation::Throw.
+    void validate_physical() const;
 
 private:
     void validate_qubit(int qubit) const;

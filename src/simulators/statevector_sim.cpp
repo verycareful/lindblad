@@ -29,7 +29,14 @@ static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng);
 // apply_instruction — dispatch to the appropriate gate function
 // =============================================================================
 
-void StatevectorSimulator::apply_instruction(Statevector& sv, const Instruction& inst) {
+void StatevectorSimulator::apply_instruction(Statevector& sv,
+                                            const Instruction& inst) {
+    apply_instruction(sv, inst, inst.validation);
+}
+
+void StatevectorSimulator::apply_instruction(Statevector& sv,
+                                            const Instruction& inst,
+                                            ValidationOptions physical) {
     using GT = Instruction::GateType;
     const auto& q = inst.qubits;
     const auto& p = inst.params;
@@ -81,7 +88,7 @@ void StatevectorSimulator::apply_instruction(Statevector& sv, const Instruction&
 
         // Custom unitary
         case GT::UNITARY:
-            gates::apply_unitary(sv, q, inst.matrix);
+            gates::apply_unitary(sv, q, inst.matrix, physical);
             break;
 
         // Multi-controlled X: qubits = [controls..., target].
@@ -204,7 +211,7 @@ static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
             if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
             continue;
         }
-        sim.apply_instruction(sv, inst);
+        sim.apply_instruction(sv, inst, {Validation::Ignore});
     }
 }
 
@@ -238,6 +245,11 @@ void StatevectorSimulator::simulate_circuit(
     // outcomes are recorded into it (collapse drawn from the thread-local
     // RNG). For circuits without measurement or conditioning this reduces to
     // the plain forward pass.
+    // A public entry that does not pass through run(), so it owns the physical
+    // pre-flight itself. The trajectory below then applies under Ignore, the
+    // same division run() uses.
+    circuit.validate_physical();
+
     const int n_clbits =
         circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
     std::vector<int> clreg(static_cast<size_t>(n_clbits), 0);
@@ -382,6 +394,11 @@ QuantumCircuit sv_fuse_circuit(StatevectorSimulator& sim,
             Instruction fused;
             fused.type = Instruction::GateType::UNITARY;
             fused.qubits = support;
+            // The block is a product the library formed from matrices the
+            // pre-flight already accepted, so it carries no caller declaration
+            // to check. Its drift away from exact unitarity is the accumulated
+            // rounding of that product, which is the library's own arithmetic.
+            fused.validation = {Validation::Ignore, 0.0};
             std::vector<Complex128> rowM(d * d);
             for (size_t r = 0; r < d; ++r)          // row-major = transpose of
                 for (size_t c = 0; c < d; ++c)      // the column-major store
@@ -448,7 +465,7 @@ QuantumCircuit sv_fuse_circuit(StatevectorSimulator& sim,
                 col.real_parts[r] = colM[c * d + r].real;
                 col.imag_parts[r] = colM[c * d + r].imag;
             }
-            sim.apply_instruction(col, local);
+            sim.apply_instruction(col, local, {Validation::Ignore});
             for (size_t r = 0; r < d; ++r)
                 colM[c * d + r] = Complex128(col.real_parts[r],
                                              col.imag_parts[r]);
@@ -466,6 +483,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
     int shots,
     uint64_t seed
 ) {
+    ScopedWarningFlush flush_on_exit;
     Result result;
 
     try {
@@ -475,6 +493,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // Pre-flight: reject any out-of-range operand index up front so the
         // failure surfaces through Result rather than reaching a kernel.
         circuit.validate_operands();
+        circuit.validate_physical();
         if (options.fusion_max_qubit < 2 ||
             options.fusion_max_qubit > SV_FUSION_MAX_QUBIT_LIMIT) {
             throw std::invalid_argument(
@@ -582,7 +601,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             for (const auto& inst : exec->instructions) {
                 if (inst.type == Instruction::GateType::MEASURE ||
                     inst.type == Instruction::GateType::BARRIER) continue;
-                apply_instruction(*sv_work, inst);
+                apply_instruction(*sv_work, inst, {Validation::Ignore});
             }
 
             std::vector<std::pair<int, int>> meas;  // (qubit, clbit)

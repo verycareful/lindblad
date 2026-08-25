@@ -52,6 +52,21 @@ throw `std::out_of_range`, and operand-structure violations (non-distinct qubits
 wrong matrix / Kraus / permutation size) throw `std::invalid_argument`. Direct
 primitive callers therefore get the same guarantees as circuit callers.
 
+### Physical Validity
+
+A second pre-flight, `QuantumCircuit::validate_physical()`, checks that every
+instruction carrying a caller-supplied matrix is unitary, under that
+instruction's own policy. It runs beside the operand pre-flight and before gate
+fusion, so a matrix is judged while it is still the caller's rather than after
+it has been multiplied into a block. Because it has already judged every matrix,
+execution applies instructions under `Validation::Ignore`: the per-shot
+trajectory and the terminal-measurement pass would otherwise re-measure the same
+unchanged matrix once per shot.
+
+Kraus and superoperator entry points check trace preservation on the same terms.
+Policies, tolerances, the warning channel, and what the library exempts as its
+own arithmetic are documented in [validation.md](validation.md).
+
 ### Execution Semantics (frozen in R.1.12)
 
 The statevector, density-matrix, and MPS simulators pick one of three

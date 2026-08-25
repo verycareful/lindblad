@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lindblad/types.hpp"
+#include "lindblad/validation.hpp"
 
 #include <array>
 #include <cstddef>
@@ -66,12 +67,16 @@ public:
     // so nothing the factorisation actually resolved is thrown away.
     MPSState(int n_qubits, int max_bond_dim = 64, double cutoff = 1e-16);
 
-    // Gate application via SVD
+    // Gate application via SVD.
+    // validation = policy and tolerance for the unitarity of U. Both matrices
+    // are fixed-size, so the check is 8 or 64 complex multiplies.
     void apply_single_qubit_gate(
-        const std::array<Complex128, 4>& U, int qubit
+        const std::array<Complex128, 4>& U, int qubit,
+        ValidationOptions validation = {}
     );
     void apply_two_qubit_gate(
-        const std::array<Complex128, 16>& U, int q1, int q2
+        const std::array<Complex128, 16>& U, int q1, int q2,
+        ValidationOptions validation = {}
     );
 
     // Truncation info

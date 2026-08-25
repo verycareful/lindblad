@@ -476,6 +476,13 @@ functions are not `noexcept`. Direct callers receive the exception; when a gate
 is reached through a simulator `run()`, the pre-flight surfaces the same failure
 through `Result`.
 
+Physical validity is a third class, and it is governed separately. A primitive
+taking a caller-supplied matrix, `apply_unitary` here, also checks that the
+matrix is unitary. That check is floating-point work rather than an integer
+comparison, so it takes a `ValidationOptions` the caller can set per call:
+`Throw` at `1e-12` by default, down to `Ignore` for a caller that has already
+proven its input. See [validation.md](validation.md).
+
 ## See Also
 
 - [Statevector API](statevector.md) — Quantum state representation and alignment

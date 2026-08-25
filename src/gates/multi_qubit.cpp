@@ -1,6 +1,7 @@
 #include "lindblad/gates.hpp"
 
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/validate_physical.hpp"
 
 #include <algorithm>
 #include <array>
@@ -187,7 +188,8 @@ void apply_rccx(Statevector& sv, int c1, int c2, int tgt) {
 void apply_unitary(
     Statevector& sv,
     const std::vector<int>& targets,
-    const std::vector<Complex128>& matrix
+    const std::vector<Complex128>& matrix,
+    ValidationOptions validation
 ) {
     detail::check_qubits(targets, sv.n_qubits, "unitary");
     detail::check_all_distinct(targets, "unitary");
@@ -201,6 +203,8 @@ void apply_unitary(
             ", got " + std::to_string(matrix.size())
         );
     }
+
+    detail::check_unitary(matrix, block_size, validation, "unitary");
 
     // Precompute target masks
     std::vector<size_t> target_masks(k);

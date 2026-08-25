@@ -1,9 +1,11 @@
 # Build artifacts
 /build/
 /build-clang/
+/build-clang-nomarch/
 /build-cov/
 /build-gcc13/
-/build_win/
+/build-gcc13-nomarch/
+/build-win/
 /out/
 /bin/
 /lib/

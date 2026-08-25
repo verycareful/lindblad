@@ -1,6 +1,7 @@
 #include "lindblad/qudit/qudit_statevector.hpp"
 
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/validate_physical.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -71,10 +72,13 @@ double QuditStatevector::norm_sq() const {
 // base = outer + inner               (first element of this group, qudit q = 0)
 // amplitudes[base + k*stride]        (element where qudit q = k)
 
-void QuditStatevector::apply_1qudit(int q, const std::vector<Complex128>& U) {
+void QuditStatevector::apply_1qudit(int q, const std::vector<Complex128>& U,
+                                    ValidationOptions validation) {
     detail::check_qudit(q, n_qudits, "QuditStatevector::apply_1qudit");
     detail::check_size(U.size(), static_cast<size_t>(d) * static_cast<size_t>(d),
                        "QuditStatevector::apply_1qudit", "matrix");
+    detail::check_unitary(U, static_cast<size_t>(d), validation,
+                          "QuditStatevector::apply_1qudit");
     const size_t stride = ipow(static_cast<size_t>(d), q);
     const size_t block  = stride * static_cast<size_t>(d);  // = d^(q+1)
     const long long n_outer = static_cast<long long>(dim / block);
@@ -121,13 +125,16 @@ void QuditStatevector::apply_1qudit(int q, const std::vector<Complex128>& U) {
 // indices with divisions.
 
 void QuditStatevector::apply_2qudit(int q0, int q1,
-                                    const std::vector<Complex128>& U) {
+                                    const std::vector<Complex128>& U,
+                                    ValidationOptions validation) {
     detail::check_qudit(q0, n_qudits, "QuditStatevector::apply_2qudit");
     detail::check_qudit(q1, n_qudits, "QuditStatevector::apply_2qudit");
     detail::check_distinct2(q0, q1, "QuditStatevector::apply_2qudit", "qudits");
     detail::check_size(U.size(),
                        static_cast<size_t>(d) * d * d * d,
                        "QuditStatevector::apply_2qudit", "matrix");
+    detail::check_unitary(U, static_cast<size_t>(d) * static_cast<size_t>(d),
+                          validation, "QuditStatevector::apply_2qudit");
 
     const size_t stride0 = ipow(static_cast<size_t>(d), q0);
     const size_t stride1 = ipow(static_cast<size_t>(d), q1);
@@ -197,12 +204,13 @@ void QuditStatevector::apply_2qudit(int q0, int q1,
 //   - write back
 
 void QuditStatevector::apply_kqudit(const std::vector<int>& qudits,
-                                    const std::vector<Complex128>& U)
+                                    const std::vector<Complex128>& U,
+                                    ValidationOptions validation)
 {
     const int k = static_cast<int>(qudits.size());
     if (k < 1) return;
-    if (k == 1) { apply_1qudit(qudits[0], U); return; }
-    if (k == 2) { apply_2qudit(qudits[0], qudits[1], U); return; }
+    if (k == 1) { apply_1qudit(qudits[0], U, validation); return; }
+    if (k == 2) { apply_2qudit(qudits[0], qudits[1], U, validation); return; }
 
     detail::check_qudits(qudits, n_qudits, "QuditStatevector::apply_kqudit");
     {
@@ -210,6 +218,8 @@ void QuditStatevector::apply_kqudit(const std::vector<int>& qudits,
         for (int i = 0; i < k; ++i) dk *= static_cast<size_t>(d);
         detail::check_size(U.size(), dk * dk,
                            "QuditStatevector::apply_kqudit", "matrix");
+        detail::check_unitary(U, dk, validation,
+                              "QuditStatevector::apply_kqudit");
     }
 
     // Validate distinctness

@@ -1,6 +1,7 @@
 #include "lindblad/qudit/qudit_density_matrix.hpp"
 
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/validate_physical.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -211,11 +212,14 @@ void QuditDensityMatrix::apply_to_bra(int q, const std::vector<Complex128>& U)
 // apply_1qudit — ρ → U_q ρ U_q†
 // =============================================================================
 
-void QuditDensityMatrix::apply_1qudit(int q, const std::vector<Complex128>& U)
+void QuditDensityMatrix::apply_1qudit(int q, const std::vector<Complex128>& U,
+                                      ValidationOptions validation)
 {
     detail::check_qudit(q, n_qudits, "QuditDensityMatrix::apply_1qudit");
     detail::check_size(U.size(), static_cast<size_t>(d) * static_cast<size_t>(d),
                        "QuditDensityMatrix::apply_1qudit", "matrix");
+    detail::check_unitary(U, static_cast<size_t>(d), validation,
+                          "QuditDensityMatrix::apply_1qudit");
     apply_to_ket(q, U);
     apply_to_bra(q, U);
 }
@@ -331,13 +335,16 @@ void QuditDensityMatrix::apply_to_bra_2q(int q0, int q1,
 // =============================================================================
 
 void QuditDensityMatrix::apply_2qudit(int q0, int q1,
-                                      const std::vector<Complex128>& U)
+                                      const std::vector<Complex128>& U,
+                                      ValidationOptions validation)
 {
     detail::check_qudit(q0, n_qudits, "QuditDensityMatrix::apply_2qudit");
     detail::check_qudit(q1, n_qudits, "QuditDensityMatrix::apply_2qudit");
     detail::check_distinct2(q0, q1, "QuditDensityMatrix::apply_2qudit", "qudits");
     detail::check_size(U.size(), static_cast<size_t>(d) * d * d * d,
                        "QuditDensityMatrix::apply_2qudit", "matrix");
+    detail::check_unitary(U, static_cast<size_t>(d) * static_cast<size_t>(d),
+                          validation, "QuditDensityMatrix::apply_2qudit");
     apply_to_ket_2q(q0, q1, U);
     apply_to_bra_2q(q0, q1, U);
 }
@@ -347,12 +354,15 @@ void QuditDensityMatrix::apply_2qudit(int q0, int q1,
 // =============================================================================
 
 void QuditDensityMatrix::apply_kraus_1qudit(
-    int q, const std::vector<std::vector<Complex128>>& K_ops)
+    int q, const std::vector<std::vector<Complex128>>& K_ops,
+    ValidationOptions validation)
 {
     detail::check_qudit(q, n_qudits, "QuditDensityMatrix::apply_kraus_1qudit");
     for (const auto& K : K_ops)
         detail::check_size(K.size(), static_cast<size_t>(d) * static_cast<size_t>(d),
                            "QuditDensityMatrix::apply_kraus_1qudit", "Kraus operator");
+    detail::check_kraus_tp(K_ops, static_cast<size_t>(d), validation,
+                           "QuditDensityMatrix::apply_kraus_1qudit");
     std::vector<Complex128> rho_new(dim_sq, Complex128(0.0, 0.0));
 
     for (const auto& K : K_ops) {
@@ -424,7 +434,8 @@ void QuditDensityMatrix::apply_kraus_1qudit(
 
 void QuditDensityMatrix::apply_kraus_2qudit(
     int q0, int q1,
-    const std::vector<std::vector<Complex128>>& K_ops)
+    const std::vector<std::vector<Complex128>>& K_ops,
+    ValidationOptions validation)
 {
     detail::check_qudit(q0, n_qudits, "QuditDensityMatrix::apply_kraus_2qudit");
     detail::check_qudit(q1, n_qudits, "QuditDensityMatrix::apply_kraus_2qudit");
@@ -432,6 +443,9 @@ void QuditDensityMatrix::apply_kraus_2qudit(
     for (const auto& K : K_ops)
         detail::check_size(K.size(), static_cast<size_t>(d) * d * d * d,
                            "QuditDensityMatrix::apply_kraus_2qudit", "Kraus operator");
+    detail::check_kraus_tp(K_ops, static_cast<size_t>(d) * static_cast<size_t>(d),
+                           validation,
+                           "QuditDensityMatrix::apply_kraus_2qudit");
     std::vector<Complex128> rho_new(dim_sq, Complex128(0.0, 0.0));
 
     for (const auto& K : K_ops) {

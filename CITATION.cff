@@ -8,10 +8,10 @@ authors:
     given-names: Sricharan
     alias: verycareful
     orcid: https://orcid.org/0009-0004-6873-5692
-version: R.1.20.5
-date-released: 2026-08-24
+version: R.1.21.0
+date-released: 2026-08-25
 license: "LicenseRef-Lindblad-2.3"
-repository-code: https://github.com/verycareful
+repository-code: https://github.com/verycareful/lindblad
 contact:
   - email: lindblad.software@proton.me
 preferred-citation:
@@ -21,6 +21,6 @@ preferred-citation:
     - family-names: Suresh
       given-names: Sricharan
       orcid: https://orcid.org/0009-0004-6873-5692
-  version: R.1.20.5
+  version: R.1.21.0
   year: 2026
-  url: https://github.com/verycareful
+  url: https://github.com/verycareful/lindblad

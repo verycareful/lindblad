@@ -2,6 +2,7 @@
 
 #include "lindblad/statevector.hpp"
 #include "lindblad/types.hpp"
+#include "lindblad/validation.hpp"
 
 #include <vector>
 
@@ -19,6 +20,12 @@ namespace gates {
 // comparisons at the O(2^n) kernel entry, so they are free next to the sweep.
 // Because they throw, none of these functions is noexcept. See
 // include/lindblad/detail/validate.hpp.
+//
+// Physical validity is separate. A primitive taking a caller-supplied matrix
+// also checks that the matrix is unitary, which is floating-point work rather
+// than an integer comparison, so it is governed by a ValidationOptions the
+// caller can set per call: Throw at 1e-12 by default, down to Ignore for a
+// caller that has already proven its input. See include/lindblad/validation.hpp.
 
 // =============================================================================
 // Single-qubit gates
@@ -121,10 +128,13 @@ void apply_rccx(Statevector& sv, int c1, int c2, int tgt);
 // Arbitrary N-qubit unitary
 // =============================================================================
 
+// validation = policy and tolerance for the unitarity check on `matrix`.
+// The check runs after the size check, so it never reads past the operand.
 void apply_unitary(
     Statevector& sv,
     const std::vector<int>& targets,
-    const std::vector<Complex128>& matrix  // row-major, 2^k × 2^k
+    const std::vector<Complex128>& matrix,  // row-major, 2^k × 2^k
+    ValidationOptions validation = {}
 );
 
 // =============================================================================

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lindblad/statevector.hpp"
+#include "lindblad/validation.hpp"
 #include "lindblad/types.hpp"
 
 #include <string>
@@ -44,8 +45,10 @@ public:
     bool is_valid(double atol = 1e-8) const;
 
     // Gate application: rho -> U.rho.U†
+    // validation = policy and tolerance for the unitarity of U.
     void apply_gate(const std::vector<Complex128>& U,
-                    const std::vector<int>& qubits);
+                    const std::vector<int>& qubits,
+                    ValidationOptions validation = {});
 
     // Apply a k-qubit channel given directly as its superoperator, in ONE
     // pass over rho (R.1.17). S is (4^k × 4^k) row-major, external
@@ -54,16 +57,19 @@ public:
     //   S[(r_out·2^k + c_out)·4^k + (r_in·2^k + c_in)]
     //   rho'_block = S · vec(rho_block)  per background pair.
     // For a Kraus channel {K_k}: S[(ro,co),(ri,ci)] = Σ_k K[ro,ri]·conj(K[co,ci]).
-    // Trace preservation is the caller's responsibility (no validation).
+    // Trace preservation is checked under `validation`: the condition on a
+    // superoperator is Σ_ro S[(ro,ro),(ri,ci)] = δ_ri,ci at every input pair.
     // apply_kraus() builds this superoperator internally and is the
     // preferred entry point when only the operators are at hand.
     void apply_channel_superop(const std::vector<Complex128>& S,
-                               const std::vector<int>& qubits);
+                               const std::vector<int>& qubits,
+                               ValidationOptions validation = {});
 
     // Kraus channel: rho -> sum_k K_k.rho.K_k†
     void apply_kraus(
         const std::vector<std::vector<Complex128>>& kraus_ops,
-        const std::vector<int>& qubits
+        const std::vector<int>& qubits,
+        ValidationOptions validation = {}
     );
 
     // Full-register basis permutation: rho -> P.rho.P† where full_perm[a] is

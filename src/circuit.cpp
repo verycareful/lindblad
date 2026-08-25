@@ -1,5 +1,6 @@
 #include "lindblad/circuit.hpp"
 #include "lindblad/operators.hpp"
+#include "lindblad/detail/validate_physical.hpp"
 
 #include "visualisation/document.hpp"
 #include "visualisation/render_ascii.hpp"
@@ -208,6 +209,20 @@ void QuantumCircuit::validate_operands() const {
         for (int q : inst.qubits) validate_qubit(q);
         for (int c : inst.clbits) validate_clbit(c);
         if (inst.condition_clbit >= 0) validate_clbit(inst.condition_clbit);
+    }
+}
+
+void QuantumCircuit::validate_physical() const {
+    for (const auto& inst : instructions) {
+        if (inst.type != Instruction::GateType::UNITARY) continue;
+        if (inst.validation.policy == Validation::Ignore) continue;
+
+        const std::vector<Complex128>& m = inst.matrix;
+        const std::size_t rows = std::size_t(1) << inst.qubits.size();
+        if (m.size() != rows * rows) continue;
+
+        detail::check_unitary(m, rows, inst.validation,
+                              inst.gate_name().c_str());
     }
 }
 
@@ -443,13 +458,23 @@ QuantumCircuit& QuantumCircuit::rccx(int c1, int c2, int target) {
 
 QuantumCircuit& QuantumCircuit::unitary(const std::vector<Complex128>& matrix,
                                          const std::vector<int>& qubits,
-                                         const std::string& label) {
+                                         const std::string& label,
+                                         ValidationOptions validation) {
     for (int q : qubits) validate_qubit(q);
+
+    // A wrong-size matrix is a structural error, reported where the size is
+    // checked. Measuring unitarity on it would read past the operand, so the
+    // physical check only runs on an operand whose shape already holds.
+    const std::size_t rows = std::size_t(1) << qubits.size();
+    if (matrix.size() == rows * rows)
+        detail::check_unitary(matrix, rows, validation, "unitary");
+
     Instruction inst;
     inst.type = Instruction::GateType::UNITARY;
     inst.qubits = qubits;
     inst.matrix = matrix;
     inst.label = label;
+    inst.validation = validation;
     instructions.push_back(std::move(inst));
     return *this;
 }

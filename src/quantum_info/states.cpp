@@ -13,6 +13,11 @@ namespace lindblad {
 // =============================================================================
 
 Operator Operator::from_circuit(const QuantumCircuit& circuit) {
+    // Judge the circuit's supplied matrices once, here, rather than once per
+    // basis column below: the columns re-apply the same instructions 2^n times
+    // and the verdict cannot differ between them.
+    circuit.validate_physical();
+
     size_t dim = 1ULL << circuit.n_qubits;
     std::vector<Complex128> mat(dim * dim, Complex128(0.0, 0.0));
 
@@ -24,7 +29,7 @@ Operator Operator::from_circuit(const QuantumCircuit& circuit) {
 
         // Apply all gates
         for (const auto& inst : circuit.instructions) {
-            sim.apply_instruction(sv, inst);
+            sim.apply_instruction(sv, inst, {Validation::Ignore});
         }
 
         // Extract column

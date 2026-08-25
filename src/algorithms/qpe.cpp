@@ -65,6 +65,13 @@ QuantumCircuit QPE::build_circuit(
 
         Instruction ctrl_u;
         ctrl_u.type = Instruction::GateType::UNITARY;
+        // Nothing here is a caller declaration to judge. CU_matrix is built
+        // from Upow_flat, which is U extracted by simulating basis columns and
+        // then squared k times, so its distance from exact unitarity is the
+        // accumulated rounding of those squarings. The caller's declaration is
+        // the `unitary` circuit, whose own instructions were checked where they
+        // entered it.
+        ctrl_u.validation = {Validation::Ignore, 0.0};
         ctrl_u.qubits = {k};
         for (int tq = 0; tq < nu; ++tq)
             ctrl_u.qubits.push_back(num_eval_qubits + tq);

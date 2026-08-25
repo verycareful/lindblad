@@ -1,13 +1,13 @@
 #include "lindblad/qudit/qudit_mps.hpp"
 
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/validate_physical.hpp"
 
 #include <Eigen/SVD>
 
 #include <algorithm>
 #include <cmath>
 #include <complex>
-#include <iostream>
 #include <random>
 #include <stdexcept>
 #include <utility>
@@ -32,13 +32,13 @@ static void warn_bdc_broken_once_qudit() {
     static bool warned = false;
     if (warned) return;
     warned = true;
-    std::cerr <<
-        "\n***************************************************************\n"
-        "[lindblad] WARNING: SVDMethod::BDC (Eigen BDCSVD) is SELECTED on the\n"
+    emit_warning(
+        "***************************************************************\n"
+        "  WARNING: SVDMethod::BDC (Eigen BDCSVD) is SELECTED on the\n"
         "  qudit MPS but is CURRENTLY BROKEN for complex / degenerate inputs:\n"
         "  results may be SILENTLY WRONG.\n"
         "  Use SVDMethod::Jacobi (the default) until fixed.\n"
-        "***************************************************************\n";
+        "***************************************************************");
 }
 
 // SVD with the selected backend. Jacobi is accurate (default); BDC is faster
@@ -398,10 +398,13 @@ void QuditMPS::normalize() {
 // apply_1qudit — O(d^2 * chi_L * chi_R)
 // =============================================================================
 
-void QuditMPS::apply_1qudit(int q, const std::vector<Complex128>& U) {
+void QuditMPS::apply_1qudit(int q, const std::vector<Complex128>& U,
+                            ValidationOptions validation) {
     detail::check_qudit(q, n_qudits, "QuditMPS::apply_1qudit");
     detail::check_size(U.size(), static_cast<size_t>(d) * static_cast<size_t>(d),
                        "QuditMPS::apply_1qudit", "matrix");
+    detail::check_unitary(U, static_cast<size_t>(d), validation,
+                          "QuditMPS::apply_1qudit");
 
     auto& T = tensors[static_cast<size_t>(q)];
     const int chi_L = T.chi_L;
@@ -523,12 +526,14 @@ void QuditMPS::split_two_sites(int q, const Eigen::MatrixXcd& Theta) {
 // apply_2qudit_adjacent — d^2 x d^2 gate on sites (q, q+1)
 // =============================================================================
 
-void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U) {
+void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U,
+                                     ValidationOptions validation) {
     detail::check_qudit(q, n_qudits, "QuditMPS::apply_2qudit_adjacent");
     detail::check_qudit(q + 1, n_qudits, "QuditMPS::apply_2qudit_adjacent");
     const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
     detail::check_size(U.size(), d2 * d2,
                        "QuditMPS::apply_2qudit_adjacent", "matrix");
+    detail::check_unitary(U, d2, validation, "QuditMPS::apply_2qudit_adjacent");
 
     Eigen::MatrixXcd Theta = contract_two_sites(q);
     const int chi_L = tensors[static_cast<size_t>(q)].chi_L;
@@ -593,19 +598,21 @@ void QuditMPS::apply_swap(int q) {
             swap_mat[row * d2 + col] = Complex128(1.0, 0.0);
         }
     }
-    apply_2qudit_adjacent(q, swap_mat);
+    apply_2qudit_adjacent(q, swap_mat, {Validation::Ignore});
 }
 
 // =============================================================================
 // apply_2qudit — arbitrary pair (q0, q1); SWAP chain for non-adjacent pairs
 // =============================================================================
 
-void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U) {
+void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U,
+                            ValidationOptions validation) {
     detail::check_qudit(q0, n_qudits, "QuditMPS::apply_2qudit");
     detail::check_qudit(q1, n_qudits, "QuditMPS::apply_2qudit");
     detail::check_distinct2(q0, q1, "QuditMPS::apply_2qudit", "qudits");
     const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
     detail::check_size(U.size(), d2 * d2, "QuditMPS::apply_2qudit", "matrix");
+    detail::check_unitary(U, d2, validation, "QuditMPS::apply_2qudit");
 
     // Normalise so q0 < q1, exchanging the two digit roles of U if necessary
     // (valid in any fixed digit convention: it relabels which operand owns
@@ -637,7 +644,7 @@ void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U) {
     }
 
     if (q1 == q0 + 1) {
-        apply_2qudit_adjacent(q0, U);
+        apply_2qudit_adjacent(q0, U, {Validation::Ignore});
         return;
     }
 
@@ -648,7 +655,7 @@ void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U) {
     for (int i = q0; i < q1 - 1; ++i)
         apply_swap(i);
 
-    apply_2qudit_adjacent(q1 - 1, U);
+    apply_2qudit_adjacent(q1 - 1, U, {Validation::Ignore});
 
     for (int i = q1 - 2; i >= q0; --i)
         apply_swap(i);

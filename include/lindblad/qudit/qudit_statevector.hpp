@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lindblad/types.hpp"
+#include "lindblad/validation.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -41,7 +42,9 @@ public:
 
     // Apply a d×d unitary U to qudit q.
     // U is stored row-major: U[row*d + col] is the (row,col) entry.
-    void apply_1qudit(int q, const std::vector<Complex128>& U);
+    // validation = policy and tolerance for the unitarity of U.
+    void apply_1qudit(int q, const std::vector<Complex128>& U,
+                      ValidationOptions validation = {});
 
     // Apply a d²×d² unitary U to qudits (q0, q1), q0 != q1.
     // Convention (project LSB-first, docs/Architecture.md "Conventions"):
@@ -49,7 +52,8 @@ public:
     //   row r = new_q1*d + new_q0; col c = old_q1*d + old_q0.
     // This is the d-level generalisation of the qubit apply_unitary contract
     // (index bit i = qubits[i]).
-    void apply_2qudit(int q0, int q1, const std::vector<Complex128>& U);
+    void apply_2qudit(int q0, int q1, const std::vector<Complex128>& U,
+                      ValidationOptions validation = {});
 
     // Apply a d^k × d^k unitary U to k distinct qudits in the order given by
     // `qudits`. Row index in U is r = sum_i new_x_{qudits[i]} * d^i
@@ -57,7 +61,8 @@ public:
     // and must have size d^(2k).
     // qudits must contain distinct indices in [0, n_qudits).
     void apply_kqudit(const std::vector<int>& qudits,
-                      const std::vector<Complex128>& U);
+                      const std::vector<Complex128>& U,
+                      ValidationOptions validation = {});
 
     // Apply an oracle function f: Z_d^{n_query} -> Z_d^{n_output} as
     //   |x_0..x_{n_query-1}> |y_0..y_{n_output-1}>

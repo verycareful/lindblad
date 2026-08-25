@@ -77,7 +77,15 @@ public:
         const SparsePauliOp& observable
     );
 
+    // Dispatch one instruction. The two-argument form applies the
+    // instruction's own ValidationOptions to its matrix, which is what a
+    // caller driving instructions by hand wants. run() uses the three-argument
+    // form with Validation::Ignore: its pre-flight has already checked every
+    // matrix in the circuit once, and re-checking per shot would measure the
+    // same unchanged matrix `shots` times.
     void apply_instruction(Statevector& sv, const Instruction& inst);
+    void apply_instruction(Statevector& sv, const Instruction& inst,
+                           ValidationOptions physical);
 };
 
 } // namespace lindblad

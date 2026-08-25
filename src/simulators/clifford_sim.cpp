@@ -416,11 +416,13 @@ CliffordSimulator::Result CliffordSimulator::run(
     const QuantumCircuit& circuit, int shots, uint64_t seed
 ) {
     using GT = Instruction::GateType;
+    ScopedWarningFlush flush_on_exit;
     Result result(circuit.n_qubits);
 
     // Pre-flight: reject any out-of-range operand index up front (this backend
     // surfaces errors by throwing).
     circuit.validate_operands();
+    circuit.validate_physical();
 
     const int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
     const double pi = PI;

@@ -1,5 +1,6 @@
 #pragma once
 #include "lindblad/types.hpp"
+#include "lindblad/validation.hpp"
 #include "lindblad/qudit/qudit_statevector.hpp"
 #include "lindblad/qudit/qudit_noise_model.hpp"
 #include <cstddef>
@@ -47,16 +48,21 @@ public:
     // Unitary evolution: ρ → U_q ρ U_q†
     // -------------------------------------------------------------------------
 
-    void apply_1qudit(int q, const std::vector<Complex128>& U);
-    void apply_2qudit(int q0, int q1, const std::vector<Complex128>& U);
+    void apply_1qudit(int q, const std::vector<Complex128>& U,
+                      ValidationOptions validation = {});
+    void apply_2qudit(int q0, int q1, const std::vector<Complex128>& U,
+                      ValidationOptions validation = {});
 
     // -------------------------------------------------------------------------
     // Kraus channels: ρ → Σ_k K_k ρ K_k†
     // -------------------------------------------------------------------------
 
-    void apply_kraus_1qudit(int q, const std::vector<std::vector<Complex128>>& K_ops);
+    void apply_kraus_1qudit(int q,
+                            const std::vector<std::vector<Complex128>>& K_ops,
+                            ValidationOptions validation = {});
     void apply_kraus_2qudit(int q0, int q1,
-                            const std::vector<std::vector<Complex128>>& K_ops);
+                            const std::vector<std::vector<Complex128>>& K_ops,
+                            ValidationOptions validation = {});
 
     // -------------------------------------------------------------------------
     // Lindblad master equation step (first-order Euler):

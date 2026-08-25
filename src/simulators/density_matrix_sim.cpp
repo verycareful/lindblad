@@ -7,6 +7,7 @@
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/circuit.hpp"
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/noise.hpp"
 #include "lindblad/operators.hpp"
 #include "lindblad/types.hpp"
@@ -260,7 +261,8 @@ void dm_bra_apply_inplace(Complex128* __restrict data,
 // =============================================================================
 
 void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
-                                const std::vector<int>& qubits) {
+                                const std::vector<int>& qubits,
+                                ValidationOptions validation) {
     detail::check_qubits(qubits, n_qubits, "DensityMatrix::apply_gate");
     detail::check_all_distinct(qubits, "DensityMatrix::apply_gate");
     const int k = static_cast<int>(qubits.size());
@@ -269,6 +271,8 @@ void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
     if (U.size() != sub_dim * sub_dim) {
         throw std::invalid_argument("Gate matrix size mismatch");
     }
+
+    detail::check_unitary(U, sub_dim, validation, "DensityMatrix::apply_gate");
 
     std::vector<size_t> sub_off, bg;
     dm_build_tables(n_qubits, dim, qubits, sub_off, bg);
@@ -339,7 +343,8 @@ static std::vector<Complex128> dm_channel_superop(
 
 void DensityMatrix::apply_kraus(
     const std::vector<std::vector<Complex128>>& kraus_ops,
-    const std::vector<int>& qubits
+    const std::vector<int>& qubits,
+    ValidationOptions validation
 ) {
     // The whole channel is fused into one superoperator and applied in a
     // SINGLE pass over rho. A ket sweep + bra sweep + accumulate per Kraus
@@ -356,6 +361,9 @@ void DensityMatrix::apply_kraus(
         detail::check_size(K.size(), sub_dim * sub_dim,
                            "DensityMatrix::apply_kraus", "Kraus operator");
 
+    detail::check_kraus_tp(kraus_ops, sub_dim, validation,
+                           "DensityMatrix::apply_kraus");
+
     std::vector<size_t> sub_off, bg;
     dm_build_tables(n_qubits, dim, qubits, sub_off, bg);
 
@@ -365,7 +373,8 @@ void DensityMatrix::apply_kraus(
 
 void DensityMatrix::apply_channel_superop(
     const std::vector<Complex128>& S_ext,
-    const std::vector<int>& qubits
+    const std::vector<int>& qubits,
+    ValidationOptions validation
 ) {
     // Public contract (external convention, matching KrausChannel and
     // apply_unitary): S is (4^k × 4^k) row-major with
@@ -373,9 +382,9 @@ void DensityMatrix::apply_channel_superop(
     // bit b of every sub-index addressing qubits[b] (LSB-first), and
     //   rho'_block = S · vec(rho_block)
     // on each background-pair sub-block, identity elsewhere. For a Kraus
-    // channel, S[(ro,co),(ri,ci)] = Σ_k K[ro,ri]·conj(K[co,ci]); the caller
-    // is responsible for trace preservation (Σ K†K = I) — no validation is
-    // performed here (is_valid() exists for checking states).
+    // channel, S[(ro,co),(ri,ci)] = Σ_k K[ro,ri]·conj(K[co,ci]). Trace
+    // preservation is checked under `validation`, in the superoperator form
+    // of the condition: Σ_ro S[(ro,ro),(ri,ci)] = δ_ri,ci.
     const int k = static_cast<int>(qubits.size());
     const size_t sd = size_t(1) << k;
     const size_t sd2 = sd * sd;
@@ -384,6 +393,11 @@ void DensityMatrix::apply_channel_superop(
     }
     detail::check_qubits(qubits, n_qubits, "DensityMatrix::apply_channel_superop");
     detail::check_all_distinct(qubits, "DensityMatrix::apply_channel_superop");
+
+    // Checked on the external form, before the bit-reversal bridge below: the
+    // trace condition is stated in the public convention the caller supplied.
+    detail::check_superop_tp(S_ext, sd, validation,
+                             "DensityMatrix::apply_channel_superop");
 
     std::vector<size_t> sub_off, bg;
     dm_build_tables(n_qubits, dim, qubits, sub_off, bg);
@@ -769,6 +783,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
     int shots,
     uint64_t seed
 ) {
+    ScopedWarningFlush flush_on_exit;
     Result result;
 
     try {
@@ -777,6 +792,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
         // Pre-flight: reject any out-of-range operand index up front so the
         // failure surfaces through Result rather than reaching a kernel.
         circuit.validate_operands();
+        circuit.validate_physical();
 
         // Execution strategy (see docs/api/simulators.md, Execution semantics):
         // per-shot trajectories whenever a classical condition exists OR a

@@ -370,7 +370,11 @@ static Eigen::Matrix4cd circuit_to_4x4(const QuantumCircuit& qc2) {
     for (int col = 0; col < 4; ++col) {
         Statevector basis(2);
         basis.initialize_basis(col);
-        for (const auto& ki : qc2.instructions) sim.apply_instruction(basis, ki);
+        // A basis-column extraction, not an execution: the operands here came
+        // from the circuit under optimisation, which is judged where it enters
+        // and again by run()'s pre-flight.
+        for (const auto& ki : qc2.instructions)
+            sim.apply_instruction(basis, ki, {Validation::Ignore});
         for (int row = 0; row < 4; ++row)
             U(row, col) = std::complex<double>(basis.real_parts[row],
                                                basis.imag_parts[row]);

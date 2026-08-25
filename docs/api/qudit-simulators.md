@@ -417,6 +417,15 @@ operands of a two-qudit gate not distinct, or a gate/Kraus matrix that is not
 `d^k × d^k`) throws `std::invalid_argument`. Messages carry the primitive name
 and the offending value, matching the qubit-layer contract.
 
+### Physical validity
+
+The qudit layer mirrors the qubit layer here too. Every apply-primitive taking
+a caller-supplied matrix checks that it is unitary, and the two
+`QuditDensityMatrix` Kraus entry points check trace preservation, each under a
+trailing `ValidationOptions` defaulting to `Throw` at `1e-12`. The qudit
+backends have no circuit-level pre-flight, so the primitive call is where the
+check happens. See [validation.md](validation.md).
+
 ---
 
 ## Usage examples

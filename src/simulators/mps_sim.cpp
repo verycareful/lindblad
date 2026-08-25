@@ -16,6 +16,7 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/circuit.hpp"
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/gates.hpp"
 
 #include <Eigen/Dense>
@@ -26,7 +27,6 @@
 #include <cmath>
 #include <chrono>
 #include <cstdint>
-#include <iostream>
 #include <limits>
 #include <numeric>
 #include <random>
@@ -42,13 +42,13 @@ static void warn_bdc_broken_once() {
     static bool warned = false;
     if (warned) return;
     warned = true;
-    std::cerr <<
-        "\n***************************************************************\n"
-        "[lindblad] WARNING: SVDMethod::BDC (Eigen BDCSVD) is SELECTED but is\n"
+    emit_warning(
+        "***************************************************************\n"
+        "  WARNING: SVDMethod::BDC (Eigen BDCSVD) is SELECTED but is\n"
         "  CURRENTLY BROKEN for complex / degenerate inputs: MPS results may\n"
         "  be SILENTLY WRONG.\n"
         "  Use SVDMethod::Jacobi (the default) until the upstream fix lands.\n"
-        "***************************************************************\n";
+        "***************************************************************");
 }
 
 // =============================================================================
@@ -409,9 +409,12 @@ void MPSState::svd_truncate(
 // =============================================================================
 
 void MPSState::apply_single_qubit_gate(
-    const std::array<Complex128, 4>& U, int qubit
+    const std::array<Complex128, 4>& U, int qubit,
+    ValidationOptions validation
 ) {
     detail::check_qubit(qubit, n_qubits, "MPSState::apply_single_qubit_gate");
+    detail::check_unitary(U.data(), 2, validation,
+                          "MPSState::apply_single_qubit_gate");
     auto& T = tensors[qubit];
     MPSTensor result(T.bond_left, T.bond_right);
 
@@ -536,11 +539,14 @@ void MPSState::apply_swap_adjacent(int q) {
 // =============================================================================
 
 void MPSState::apply_two_qubit_gate(
-    const std::array<Complex128, 16>& U, int q1, int q2
+    const std::array<Complex128, 16>& U, int q1, int q2,
+    ValidationOptions validation
 ) {
     detail::check_qubit(q1, n_qubits, "MPSState::apply_two_qubit_gate");
     detail::check_qubit(q2, n_qubits, "MPSState::apply_two_qubit_gate");
     detail::check_distinct2(q1, q2, "MPSState::apply_two_qubit_gate");
+    detail::check_unitary(U.data(), 4, validation,
+                          "MPSState::apply_two_qubit_gate");
 
     // Ensure q1 < q2
     bool swapped = (q1 > q2);
@@ -554,7 +560,7 @@ void MPSState::apply_two_qubit_gate(
                 for (int pi1 = 0; pi1 < 2; ++pi1)
                     for (int pi2 = 0; pi2 < 2; ++pi2)
                         U_swapped[(po1*2+po2)*4+(pi1*2+pi2)] = U[(po2*2+po1)*4+(pi2*2+pi1)];
-        apply_two_qubit_gate(U_swapped, q1, q2);
+        apply_two_qubit_gate(U_swapped, q1, q2, {Validation::Ignore});
         return;
     }
 
@@ -1278,7 +1284,8 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
                 inst.matrix[0], inst.matrix[1],
                 inst.matrix[2], inst.matrix[3]
             };
-            mps.apply_single_qubit_gate(U, inst.qubits[0]);
+            mps.apply_single_qubit_gate(U, inst.qubits[0],
+                                        {Validation::Ignore});
             return;
         }
         if (inst.qubits.size() == 2) {
@@ -1299,7 +1306,8 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
                     U[r * 4 + c] = inst.matrix[swap01(r) * 4 + swap01(c)];
                 }
             }
-            mps.apply_two_qubit_gate(U, inst.qubits[0], inst.qubits[1]);
+            mps.apply_two_qubit_gate(U, inst.qubits[0], inst.qubits[1],
+                                     {Validation::Ignore});
             return;
         }
         if (mps.n_qubits > MPS_SV_MAX_QUBITS) {
@@ -1321,11 +1329,12 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
 
     if (inst.qubits.size() == 1) {
         auto U = gate2x2(inst);
-        mps.apply_single_qubit_gate(U, inst.qubits[0]);
+        mps.apply_single_qubit_gate(U, inst.qubits[0], {Validation::Ignore});
 
     } else if (inst.qubits.size() == 2) {
         auto U = gate4x4(inst);
-        mps.apply_two_qubit_gate(U, inst.qubits[0], inst.qubits[1]);
+        mps.apply_two_qubit_gate(U, inst.qubits[0], inst.qubits[1],
+                                 {Validation::Ignore});
 
     } else if (inst.qubits.size() == 3) {
         int q0 = inst.qubits[0], q1 = inst.qubits[1], q2 = inst.qubits[2];
@@ -1556,12 +1565,14 @@ MPSSimulator::Result MPSSimulator::run(
     const QuantumCircuit& circuit, int max_bond_dim,
     int shots, uint64_t seed
 ) {
+    ScopedWarningFlush flush_on_exit;
     Result result(circuit.n_qubits);
     result.final_state = MPSState(circuit.n_qubits, max_bond_dim);
 
     // Pre-flight: reject any out-of-range operand index up front (this backend
     // surfaces errors by throwing, consistent with its other run() guards).
     circuit.validate_operands();
+    circuit.validate_physical();
 
     auto t_start = std::chrono::high_resolution_clock::now();
     std::mt19937_64 rng(seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed);

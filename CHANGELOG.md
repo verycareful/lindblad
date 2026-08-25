@@ -4,6 +4,116 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.21.0] - 2026-08-25
+
+A supplied gate matrix that is not unitary, or a Kraus set that does not
+preserve trace, is the right size and perfectly memory-safe. The math runs, and
+it returns a well-defined number that is wrong in a way nothing downstream
+notices. Those inputs are now rejected by default (issue #55).
+
+Index bounds and operand structure were already checked unconditionally, because
+violating them is undefined behaviour rather than a wrong answer. Physical
+validity is the third class and it is governed differently, because the check is
+floating-point work of the same order as a dense multiply rather than an integer
+comparison. Every primitive taking a caller-supplied matrix now carries a
+`ValidationOptions`: a policy of `Throw`, `Warn`, `Fix` or `Ignore`, and an
+absolute tolerance defaulting to `1e-12`. The default is `Throw`, and `Ignore`
+returns before measuring anything, so opting out costs one branch.
+
+The tolerance is deliberately stricter than the `1e-8` common elsewhere. A
+correct gate over irrational amplitudes is never bit-exactly unitary, so the
+check must carry a tolerance at all; `1e-12` accepts a deeply composed matrix,
+which holds unitarity to around `1e-13`, and rejects anything that drifted for a
+reason. The residual is reported in the failure message, so a caller needing a
+different tolerance can read the measured number rather than guess it.
+
+Cost is `4^k / 2^n` of the kernel the check guards, which is fifteen parts per
+million for a two-qubit gate at twenty qubits, and approaches the kernel's own
+cost only for wide gates on tiny registers.
+
+### Added
+
+- `Validation` and `ValidationOptions` in a new public header,
+  `include/lindblad/validation.hpp`. `ValidationOptions` is a trivially copyable
+  aggregate, which is what keeps it free to carry on an instruction through the
+  gate-fusion path.
+- Unitarity checks at `gates::apply_unitary`, `QuantumCircuit::unitary`,
+  `DensityMatrix::apply_gate`, both `MPSState` gate entry points, all three
+  `QuditStatevector` apply-primitives, all three `QuditMPS` apply-primitives,
+  and both `QuditDensityMatrix` gate entry points.
+- Trace-preservation checks at `DensityMatrix::apply_kraus`,
+  `DensityMatrix::apply_channel_superop`, and both `QuditDensityMatrix` Kraus
+  entry points. The superoperator form of the condition is
+  `Σ_ro S[(ro,ro),(ri,ci)] = δ_ri,ci` at every input index pair.
+- `QuantumCircuit::validate_physical()`, a pre-flight beside the existing
+  operand pre-flight. It is the one place every matrix in a circuit is seen
+  exactly once whatever route it arrived by, which matters because a matrix can
+  enter a circuit without passing through `unitary()`: the QASM parser builds
+  instructions directly. It runs before gate fusion, so a matrix is judged while
+  it is still the caller's rather than after it has been multiplied into a block.
+- A settable warning channel: `set_warning_handler`, `emit_warning`,
+  `flush_warnings`, and a `ScopedWarningFlush` guard held by each backend
+  `run()`. `Warn` is reachable from inside a shots loop, so identical messages
+  are emitted once and counted, and the repeat count is reported at the next
+  flush rather than dropped.
+- `docs/api/validation.md`, covering policies, the tolerance rationale, what is
+  checked where, the cost model, and the warning channel.
+
+### Changed
+
+- `Instruction` carries a `ValidationOptions` describing its matrix, set where
+  the matrix entered the circuit. `compose` and the routing and layout passes
+  preserve it by copying; `inverse()` and phase estimation's controlled-U
+  inherit from their source instruction, whose matrix is unitary exactly when
+  theirs is. QASM has no syntax for a policy, so an export and re-import resets
+  to the default, which makes a circuit louder rather than quieter.
+- Matrices the library synthesises rather than receives carry `Ignore`: a fused
+  block, and the controlled-U that phase estimation builds by repeated squaring.
+  Their distance from exact unitarity is accumulated rounding of the library's
+  own arithmetic, not a caller's declaration.
+- Execution does not re-judge what the pre-flight already judged. The per-shot
+  trajectory, the terminal-measurement pass, the fusion builder, and the
+  basis-column extractions in `Operator::from_circuit` and the transpiler all
+  apply under `Ignore`. Those extraction loops previously re-measured the same
+  unchanged matrix once per column, up to `2^n` times.
+- `DensityMatrix::apply_channel_superop` documented trace preservation as the
+  caller's responsibility with no validation performed. It is now checked under
+  the same policy as the rest.
+- The two BDCSVD selection warnings route through the warning handler instead of
+  writing to `std::cerr` directly, so a caller can capture or silence every
+  warning the library emits in one place. The default sink still writes to
+  `std::cerr`.
+- `.gitignore` covers two further build directories, `build-clang-nomarch/` and
+  `build-gcc13-nomarch/`, used for building each compiler with and without
+  `-march=native`. The `build_win/` entry is now `build-win/`, so every build
+  directory entry uses the same hyphenated form.
+
+### Fixed
+
+- `CITATION.cff` gave `https://github.com/verycareful` as both `repository-code`
+  and the preferred citation's `url`. That is my profile page, not the
+  repository, so anyone resolving the citation landed in the wrong place. Both
+  now point at `https://github.com/verycareful/lindblad`.
+
+### Results
+
+2142 tests across 174 suites, 2137 passed (29.2 s, WSL/Clang; 21.6 s,
+WSL/GCC 13). Both compilers were run with `-march=native`, and the two runs agree
+exactly on which tests pass, which matters for a change whose checks are
+floating-point residuals compared against a fixed tolerance.
+
+Five tests are pinned red and are expected to fail in this release:
+`R1131Kernels.ApplyUnitaryManyGroups`,
+`R1131Kernels.ApplyUnitaryFewGroupsLargeBlock`, and the three
+`R1131Qudit.Apply*quditParallelMatchesSerial` cases. Each feeds a dense matrix
+with all-distinct entries that is deliberately not unitary, because the
+reference applies the identical linear map and any index or stride bug then
+shows, where a real unitary's symmetries would mask it. The tests are correct
+and the technique is sound; they exercise kernel index arithmetic through an
+entry point that has acquired a physical contract. Updating them to request
+`Validation::Ignore` is test-side work and lands in the accompanying test
+release.
+
 ## [R.1.20.5] - 2026-08-24
 
 The MPS state norm drifted high by `2.7e-8` on the 13-qubit period-finding path

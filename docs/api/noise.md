@@ -19,7 +19,10 @@ Fields:
 
 Helpers:
 
-- `is_valid(atol)`: checks whether sum_k K_k^dagger K_k is identity
+- `is_valid(atol)`: checks whether sum_k K_k^dagger K_k is identity. This
+  answers the question on demand; `DensityMatrix::apply_kraus` enforces the
+  same condition on every call under its `ValidationOptions`, at a stricter
+  default tolerance (see [validation.md](validation.md))
 - `trace_preserving_error()`: Frobenius norm of the trace-preserving error
 
 ## `NoiseChannels`

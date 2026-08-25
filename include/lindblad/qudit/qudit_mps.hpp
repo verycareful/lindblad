@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lindblad/types.hpp"
+#include "lindblad/validation.hpp"
 #include "lindblad/qudit/qudit_statevector.hpp"
 
 #include <Eigen/Dense>
@@ -88,15 +89,18 @@ public:
     // --- Gate / oracle / measurement API ---------------------------------------
 
     // d x d unitary on qudit q.  Row-major: U[row*d + col].
-    void apply_1qudit(int q, const std::vector<Complex128>& U);
+    void apply_1qudit(int q, const std::vector<Complex128>& U,
+                      ValidationOptions validation = {});
 
     // d^2 x d^2 unitary on adjacent qudits (q, q+1).
     // Row index r = out_q*d + out_{q+1}; col index c = in_q*d + in_{q+1}.
-    void apply_2qudit_adjacent(int q, const std::vector<Complex128>& U);
+    void apply_2qudit_adjacent(int q, const std::vector<Complex128>& U,
+                               ValidationOptions validation = {});
 
     // d^2 x d^2 unitary on arbitrary qudits (q0, q1), q0 != q1.
     // Non-adjacent pairs are handled with a SWAP chain.
-    void apply_2qudit(int q0, int q1, const std::vector<Complex128>& U);
+    void apply_2qudit(int q0, int q1, const std::vector<Complex128>& U,
+                      ValidationOptions validation = {});
 
     // Per-basis-state phase: amplitude[idx] *= phase_fn(digits(idx)).
     // Fallback path via dense statevector (always exact, may be slow).
