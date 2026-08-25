@@ -104,6 +104,16 @@ set(LINDBLAD_TEST_SOURCES
     test_r1201_strict_fp_nofast.cpp
     test_r1201_truncation.cpp
     test_r1201_qaoa_validity.cpp
+    test_r1211_validation_core.cpp
+    test_r1211_warning_channel.cpp
+    test_r1211_sv_physical.cpp
+    test_r1211_dm_physical.cpp
+    test_r1211_mps_physical.cpp
+    test_r1211_qudit_physical.cpp
+    test_r1211_propagation.cpp
+    test_r1211_synthesized.cpp
+    test_r1211_margins.cpp
+    test_r1211_backfill_r120.cpp
 )
 
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this

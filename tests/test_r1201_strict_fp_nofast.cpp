@@ -54,3 +54,30 @@ TEST(R1201StrictFPStrict, RecordStdIsfiniteBehaviour) {
     r1201_fp::report_std_isfinite_behaviour(kLeg);
     SUCCEED();
 }
+
+// The two legs share their assertions through a header and differ only in the
+// floating-point flags their translation unit is compiled with. That makes the
+// flag state itself a contract: if both legs were to compile under one model,
+// every check above would run twice against identical codegen while appearing
+// to cover two.
+//
+// This leg carries -fno-fast-math, set on the source file in tests/CMakeLists.
+//
+// __FAST_MATH__ alone cannot express the distinction. It is defined only when
+// the whole -ffast-math bundle is in force, and this build pairs -ffast-math
+// with -fno-finite-math-only, so neither leg defines it. The other bundle
+// members are individually observable and -fno-fast-math turns all of them
+// off, so their presence is what actually separates the two translation units.
+#if defined(__FAST_MATH__) || defined(__ASSOCIATIVE_MATH__) || \
+    defined(__RECIPROCAL_MATH__) || defined(__NO_MATH_ERRNO__)
+#define LINDBLAD_TEST_FAST_MATH_FAMILY 1
+#else
+#define LINDBLAD_TEST_FAST_MATH_FAMILY 0
+#endif
+
+TEST(R1201StrictFPStrict, LegIsCompiledWithoutFastMath) {
+    EXPECT_EQ(LINDBLAD_TEST_FAST_MATH_FAMILY, 0)
+        << "the strict leg sees a fast-math relaxation, so its -fno-fast-math "
+           "source property has stopped taking effect and both legs now "
+           "measure one model";
+}

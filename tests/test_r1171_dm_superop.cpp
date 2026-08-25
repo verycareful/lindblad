@@ -278,19 +278,26 @@ TEST(R1171DmChannelSuperop, TracePreservationAndHermiticity) {
     expect_hermitian(dm2);
 }
 
-// 6. Empty-operator channel annihilates ρ. This pins the CURRENT contract (an
-//    all-zero superoperator zeroes the addressed sub-blocks); it is NOT a fix
-//    target for this test release.
-TEST(R1171DmChannelSuperop, EmptyOperatorChannelAnnihilates) {
+// 6. Empty-operator channel. RED, issue #76: a Kraus set with no operators is
+//    applied as an all-zero superoperator, which zeroes the addressed
+//    sub-blocks and takes the trace to 0. A state whose trace is 0 is not a
+//    state, and it is produced by a call that reported success.
+//
+//    Sum over no operators is the zero matrix, so the trace-preservation
+//    residual is exactly 1: this is the most non-trace-preserving channel that
+//    exists, not a borderline one. Nothing rejects it. check_qubits and
+//    check_all_distinct pass, the per-operator size loop has no iterations, and
+//    check_kraus_tp returns early on ops.empty().
+TEST(R1171DmChannelSuperop, EmptyOperatorChannelIsRejected) {
     QuantumCircuit prep(2);
     prep.h(0).h(1);
     DensityMatrix dm = prep_dm(prep);
-    dm.apply_kraus(Ops{}, {0});
-    for (const auto& v : dm.data) {
-        EXPECT_EQ(v.real, 0.0);
-        EXPECT_EQ(v.imag, 0.0);
-    }
-    EXPECT_EQ(dm.trace(), 0.0);
+    ASSERT_NEAR(dm.trace(), 1.0, 1e-12);
+
+    EXPECT_THROW(dm.apply_kraus(Ops{}, {0}), std::invalid_argument)
+        << "issue #76: a channel with no operators was accepted";
+    EXPECT_NEAR(dm.trace(), 1.0, 1e-12)
+        << "issue #76: the state was annihilated; trace is now " << dm.trace();
 }
 
 // 7. RESET instruction path (a 2-operator 1q channel through apply_kraus at

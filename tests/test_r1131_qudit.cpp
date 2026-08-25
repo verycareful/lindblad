@@ -123,7 +123,11 @@ TEST(R1131Qudit, Apply1quditParallelMatchesSerial) {
 
     QSV sv(n, d);
     sv.amplitudes = in;
-    sv.apply_1qudit(3, U);
+    // distinct_matrix is deliberately not unitary, so the unitarity check is
+    // opted out of here. What this test measures is the parallel kernel's digit
+    // arithmetic against the serial reference, and a real unitary's symmetries
+    // would help a stride bug go unnoticed.
+    sv.apply_1qudit(3, U, {Validation::Ignore});
     expect_amps_close(sv.amplitudes, ref_1qudit(in, d, n, 3, U));
 }
 
@@ -136,7 +140,8 @@ TEST(R1131Qudit, Apply2quditParallelMatchesSerial) {
 
     QSV sv(n, d);
     sv.amplitudes = in;
-    sv.apply_2qudit(1, 5, U);
+    // Not unitary by construction; see the note in Apply1quditParallelMatchesSerial.
+    sv.apply_2qudit(1, 5, U, {Validation::Ignore});
     expect_amps_close(sv.amplitudes, ref_2qudit(in, d, n, 1, 5, U));
 }
 
@@ -150,7 +155,8 @@ TEST(R1131Qudit, ApplyKquditParallelMatchesSerial) {
 
     QSV sv(n, d);
     sv.amplitudes = in;
-    sv.apply_kqudit(qudits, U);
+    // Not unitary by construction; see the note in Apply1quditParallelMatchesSerial.
+    sv.apply_kqudit(qudits, U, {Validation::Ignore});
     expect_amps_close(sv.amplitudes, ref_kqudit(in, d, n, qudits, U));
 }
 
@@ -218,4 +224,16 @@ TEST(R1131Qudit, MpsBdcSelectionWarns) {
         << "qudit BDC warning not emitted; got: [" << out << "]";
     EXPECT_NE(out.find("BROKEN"), std::string::npos);
     EXPECT_NE(out.find("qudit"), std::string::npos);
+
+    // The message must point at nothing the reader cannot reach. Selecting this
+    // backend is exactly the case where the warning matters, since it announces
+    // that results may be silently wrong, so a dangling pointer is worse than
+    // no pointer. Asserted here rather than in a suite of its own because the
+    // latch above means this is the only test that can ever see the text.
+    for (const char* unreachable : {"docs/plans", "docs/superpowers",
+                                    "Audit docs", ".md"}) {
+        EXPECT_EQ(out.find(unreachable), std::string::npos)
+            << "the warning cites '" << unreachable
+            << "', which is absent from a published clone; got: [" << out << "]";
+    }
 }

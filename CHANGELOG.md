@@ -4,6 +4,121 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.21.1] - 2026-08-25
+
+The first test coverage the physical-validity framework has had, and it found
+four defects in it. This release ships red on purpose.
+
+A `.1` takes no library code, so none of the four could be fixed here. The
+alternative was to write each test around the behaviour as it stands, and that
+is how a defect becomes permanent: a test that encodes a bug as its expectation
+defends the bug against every later attempt to fix it. Every test in this wave
+therefore asserts the contract, and fifteen of them fail. Each names its issue
+in the failure message, so a run reads as an inventory rather than as noise.
+
+### Tests
+
+226 tests across ten new suites, plus the five kernel tests R.1.21.0 shipped
+pinned red, which are now green.
+
+- **The framework's own core.** The three residuals driven directly rather than
+  through a backend: exact-zero cases, analytic values on crafted
+  perturbations, and the upper-triangle walk of `U†U` checked against a full
+  walk, since halving that work relies on the product being Hermitian and
+  nothing had ever tested the shortcut. The policy dispatcher is covered as a
+  full cross product, four policies against a passing and a failing residual
+  for each of the three properties. The tolerance boundary is pinned at one ulp
+  either side, along with a tolerance of zero and one of infinity.
+
+- **The warning channel.** Two of its behaviours had no witness anywhere in the
+  suite. The default sink writes through `std::cerr` rather than C stderr, so a
+  caller who redirects the stream to capture library diagnostics receives them;
+  the two suites that already do this would have gone quiet otherwise. And the
+  handler is invoked under the channel lock, which is what lets a user sink be
+  written without being thread safe, since warnings originate inside OpenMP
+  regions. An overlap detector across an OpenMP region asserts it directly.
+
+- **Every entry point.** Nineteen primitives take a policy, and each owes the
+  same four promises, so the contract is stated once in a shared probe and
+  applied per entry point. The per-backend files then carry only what differs:
+  how the primitive is reached, and what a violating operand looks like for it.
+  The density-matrix suite covers all three properties and pins their
+  independence in both directions, since a channel of non-unitary operators can
+  be perfectly valid while a set of perfectly unitary ones is not.
+
+- **Propagation.** The policy travels on the instruction, so it survives any
+  transformation that copies one. Copy, `compose`, `repeat`, `inverse` and the
+  DAG round trip are each asserted individually. That is what makes the routes
+  that lose it findings rather than anecdotes.
+
+- **The library's own matrices.** A default-on check creates one failure mode
+  that per-primitive testing cannot find: the library rejecting its own
+  arithmetic. QPE is the one place that happens, since its controlled powers
+  come from repeated squaring, and the regression pin runs it at seven
+  evaluation widths. Grover, QFT, a thirty-two-angle standard-gate sweep,
+  basis-column extraction and gate fusion establish that nothing else needs the
+  same exemption.
+
+- **Margins.** Every named gate and every noise channel measured against the
+  framework's 1e-12 rather than the 1e-8 that `Operator::is_unitary` and
+  `KrausChannel::is_valid` default to, with composition depth to 128 and tensor
+  products to six factors, since those predicates are applied to products and
+  not only to primitives. Each suite reports its worst residual, so a passing
+  run still produces the numbers a later tolerance decision needs.
+
+- **Backfill.** The R.1.20.5 SVD ladder accessors gain their own contract, and
+  each leg of the two-model floating-point pair now asserts which model it was
+  compiled under. R.1.20.4 fixed those two legs sharing merged machine code;
+  nothing had asserted they compile differently, which is the property that fix
+  restored. The R.1.20.3 assertion that the BDC warning cites nothing
+  unreachable is added to the two tests that already receive that message,
+  since its latch is process-global and only one test can ever observe it.
+
+### Fixed
+
+- `R1171DmChannelSuperop.EmptyOperatorChannelAnnihilates` asserted that a
+  channel with no operators takes the trace to zero, and described that as a
+  pinned contract which was explicitly not a fix target. It is replaced by
+  `EmptyOperatorChannelIsRejected`, which asserts the contract and fails.
+- Each leg of the floating-point pair asserted its model with `__FAST_MATH__`,
+  which is defined only when the whole `-ffast-math` bundle is in force. The
+  build pairs that flag with `-fno-finite-math-only`, so neither leg defined it
+  and the strict leg was passing vacuously. Both now test the bundle members
+  that `-fno-fast-math` actually turns off.
+
+### Results
+
+2368 tests across 211 suites, 2353 passed (20.0 s, WSL/GCC 13; 28.9 s,
+WSL/Clang 18).
+
+The fifteen failures are the four defects above, asserted against. Both
+compilers produce the same set with identical assertion text, and nothing else
+fails, so the red set is an exact inventory. They are:
+
+- A matrix carrying a NaN or an infinity is accepted unless the non-finite
+  entry sits in the final column. The residual functions track their worst
+  entry with a comparison that is NaN-safe once but not across a running
+  maximum, so the next finite entry displaces the NaN. Detection therefore
+  depends on position: two of four entries at 2x2, eight of sixty-four at 8x8.
+  Six tests.
+- The policy is silently reset to the default by `control()` and by a JSON
+  round trip. `control()` builds a fresh instruction and does not carry the
+  field, where `inverse()` copies the whole instruction and is correct; the
+  JSON writer emits the matrix entry by entry but not the policy. A circuit
+  that ran before being written to disk is rejected when it is read back. Five
+  tests.
+- `to_qasm2()` writes a multi-qubit custom unitary as a gate whose body is a
+  literal `cx`, so the matrix never reaches the text. Export a CZ and read it
+  back as a CNOT, with nothing reported at either end. The same function
+  refuses the other unrepresentable operations loudly, and the operand is
+  exactly representable through the decomposition that path already uses. One
+  test.
+- A Kraus set with no operators is never measured, and annihilates the state
+  while reporting success. The sum over no operators is the zero matrix, whose
+  trace-preservation residual is exactly one, so it is the most
+  non-trace-preserving operand there is and the only one the check returns
+  early on. Three tests.
+
 ## [R.1.21.0] - 2026-08-25
 
 A supplied gate matrix that is not unitary, or a Kraus set that does not

@@ -69,3 +69,29 @@ TEST(R1201StrictFPFastMath, RecordStdIsfiniteBehaviour) {
     r1201_fp::report_std_isfinite_behaviour(kLeg);
     SUCCEED();
 }
+
+// The counterpart of LegIsCompiledWithoutFastMath in the strict twin. Together
+// the two establish that the pair spans two floating-point models rather than
+// running the same one under two names.
+// __FAST_MATH__ is NOT the discriminator: it requires the whole -ffast-math
+// bundle, and this build pairs -ffast-math with -fno-finite-math-only, so it is
+// defined in neither leg. The individually-observable bundle members are what
+// separate them, since -fno-fast-math turns all of them off.
+#if defined(__FAST_MATH__) || defined(__ASSOCIATIVE_MATH__) || \
+    defined(__RECIPROCAL_MATH__) || defined(__NO_MATH_ERRNO__)
+#define LINDBLAD_TEST_FAST_MATH_FAMILY 1
+#else
+#define LINDBLAD_TEST_FAST_MATH_FAMILY 0
+#endif
+
+TEST(R1201StrictFPFastMath, LegIsCompiledWithFastMath) {
+#if defined(__GNUC__) || defined(__clang__)
+    EXPECT_EQ(LINDBLAD_TEST_FAST_MATH_FAMILY, 1)
+        << "the project-wide -ffast-math did not reach this translation unit, "
+           "so both legs of the pair now compile under the strict model and "
+           "the fast-math half of the coverage is gone";
+#else
+    GTEST_SKIP() << "the -ffast-math flag is set only for GCC and Clang; this "
+                    "compiler spells its fast-math model differently.";
+#endif
+}

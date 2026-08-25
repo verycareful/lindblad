@@ -122,4 +122,16 @@ TEST(R1131Mps, BdcSelectionEmitsBrokenWarning) {
     EXPECT_NE(out.find("BROKEN"), std::string::npos);
     EXPECT_NE(out.find("Jacobi"), std::string::npos)
         << "warning should direct users to the Jacobi default";
+
+    // The message must point at nothing the reader cannot reach. Selecting this
+    // backend is exactly the case where the warning matters, since it announces
+    // that results may be silently wrong, so a dangling pointer is worse than
+    // no pointer. Asserted here because warn_bdc_broken_once() latches
+    // process-globally: this is the only test that can ever see the text.
+    for (const char* unreachable : {"docs/plans", "docs/superpowers",
+                                    "Audit docs", ".md"}) {
+        EXPECT_EQ(out.find(unreachable), std::string::npos)
+            << "the warning cites '" << unreachable
+            << "', which is absent from a published clone; got: [" << out << "]";
+    }
 }

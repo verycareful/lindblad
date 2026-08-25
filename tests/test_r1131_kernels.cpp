@@ -161,7 +161,10 @@ TEST(R1131Kernels, ApplyUnitaryManyGroups) {
 
     Statevector sv(nq);
     sv.set_amplitudes(in);
-    gates::apply_unitary(sv, targets, U);
+    // distinct_matrix is deliberately not unitary, so the unitarity check is
+    // opted out of here. What this test measures is index and stride
+    // arithmetic, which a real unitary's symmetries would help conceal.
+    gates::apply_unitary(sv, targets, U, {Validation::Ignore});
     expect_amps_close(sv.amplitudes(), ref_unitary(in, targets, U));
 }
 
@@ -174,6 +177,7 @@ TEST(R1131Kernels, ApplyUnitaryFewGroupsLargeBlock) {
 
     Statevector sv(nq);
     sv.set_amplitudes(in);
-    gates::apply_unitary(sv, targets, U);
+    // Not unitary by construction; see the note in ApplyUnitaryManyGroups.
+    gates::apply_unitary(sv, targets, U, {Validation::Ignore});
     expect_amps_close(sv.amplitudes(), ref_unitary(in, targets, U));
 }
