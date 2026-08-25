@@ -197,6 +197,14 @@ Behavior:
 - `to_json()` and `from_json()` provide a minimal, zero-dependency format
 - Gate strings are stored using `gate_name()`; custom unitaries include matrix
 - Conditioning metadata is serialized when present
+- The instruction's `ValidationOptions` is written beside its matrix whenever it
+  differs from the default, so a circuit that ran before being saved still runs
+  after being loaded. The policy is stored by name rather than as an enumerator
+  index. An absent field reads back as `Validation::Throw`, so a file written
+  without one loads toward the stricter setting rather than silently opting out
+- JSON is the lossless route for a multi-qubit custom unitary. `to_qasm2()`
+  refuses one, since OpenQASM 2.0 has no literal-matrix syntax (see
+  [qasm.md](qasm.md))
 - `MCX` / `MCP` / `PERMUTATION` round-trip natively (the `permutation`
   basis-index map is a first-class JSON field); JSON is the lossless
   structural format for these ops, whereas QASM 3 lowers `PERMUTATION` to

@@ -248,7 +248,11 @@ TEST(R1211SerialisationLoss, QasmRoundTripMustNotSilentlyChangeTheOperator) {
     std::string qasm;
     try {
         qasm = qc.to_qasm2();
-    } catch (const std::invalid_argument&) {
+    } catch (const std::runtime_error&) {
+        // std::runtime_error is the exporter's type for an operand with no
+        // faithful OpenQASM 2.0 spelling, pinned for MCX / MCP / PERMUTATION by
+        // R1181Export.Qasm2DefaultThrowsForAllThreeOps. A multi-qubit UNITARY
+        // is refused on the same ground and so reports the same way.
         SUCCEED() << "the export refused this operand loudly, which is the "
                      "other acceptable outcome";
         return;

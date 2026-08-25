@@ -28,10 +28,13 @@
 // register size worth simulating, and it approaches the kernel's own cost only
 // for wide gates on tiny registers.
 //
-// Every comparison here is written as !(dev <= tol) rather than (dev > tol) so
-// that a NaN residual, which compares false against everything, is a failure
-// rather than a silent pass. A matrix carrying a non-finite entry is exactly
-// what these checks exist to catch.
+// A matrix carrying a non-finite entry is exactly what these checks exist to
+// catch, and two separate mechanisms are needed to catch one. The tolerance
+// comparison is written as !(dev <= tol) rather than (dev > tol), so a NaN
+// residual, which compares false against everything, is a failure rather than a
+// silent pass. Accumulating the residual needs more than that spelling: see
+// accumulate_worst, where a maximum taken over many entries has to latch a
+// non-finite one instead of comparing against it.
 
 namespace lindblad {
 namespace detail {
@@ -120,6 +123,23 @@ inline void enforce_physical(double deviation, const ValidationOptions& v,
 // Residuals
 // -----------------------------------------------------------------------------
 
+// A running maximum that a non-finite entry, once seen, is never displaced
+// from.
+//
+// Spelling a single comparison as !(d <= worst) makes a NaN a failure, since a
+// NaN compares false against everything. That is not sufficient for a RUNNING
+// maximum: once worst holds a NaN, !(d <= worst) is true for every later d as
+// well, so the next finite entry overwrites it. Only the last pair visited
+// would survive, and that pair is always the final diagonal one, which is why
+// position within the operand would decide whether a NaN is reported at all.
+//
+// Latching is done on the bit pattern rather than on comparison, so the
+// residual reports the non-finite operand under any floating-point model.
+inline void accumulate_worst(double& worst_sq, double d) {
+    if (!is_finite_strict(worst_sq)) return;
+    if (!is_finite_strict(d) || d > worst_sq) worst_sq = d;
+}
+
 // max |(U†U - I)_ij|. U†U is Hermitian, so entry (j,i) is the conjugate of
 // (i,j) and carries the same magnitude; walking the upper triangle halves the
 // work without changing the maximum.
@@ -132,7 +152,7 @@ inline double unitarity_deviation(const Complex128* U, std::size_t rows) {
                 acc += U[m * rows + i].conj() * U[m * rows + j];
             const Complex128 diff = acc - Complex128(i == j ? 1.0 : 0.0, 0.0);
             const double d = diff.norm_sq();
-            if (!(d <= worst_sq)) worst_sq = d;
+            accumulate_worst(worst_sq, d);
         }
     }
     return std::sqrt(worst_sq);
@@ -159,7 +179,7 @@ inline double kraus_tp_deviation(
             const Complex128 diff =
                 sum[i * dim + j] - Complex128(i == j ? 1.0 : 0.0, 0.0);
             const double d = diff.norm_sq();
-            if (!(d <= worst_sq)) worst_sq = d;
+            accumulate_worst(worst_sq, d);
         }
     }
     return std::sqrt(worst_sq);
@@ -180,7 +200,7 @@ inline double superop_tp_deviation(const Complex128* S, std::size_t dim) {
                 acc += S[(r * dim + r) * side + in];
             const Complex128 diff = acc - Complex128(ri == ci ? 1.0 : 0.0, 0.0);
             const double d = diff.norm_sq();
-            if (!(d <= worst_sq)) worst_sq = d;
+            accumulate_worst(worst_sq, d);
         }
     }
     return std::sqrt(worst_sq);
@@ -203,6 +223,11 @@ inline void check_unitary(const std::vector<Complex128>& U, std::size_t rows,
     check_unitary(U.data(), rows, v, ctx);
 }
 
+// An empty operator list returns without measuring, because rejecting it
+// belongs to detail::check_kraus_nonempty and has already happened at every
+// entry point that fuses a channel. Measuring it here as well would report a
+// residual of exactly 1 against the trace-preservation tolerance, describing a
+// malformed argument as physics the caller might opt out of.
 inline void check_kraus_tp(const std::vector<std::vector<Complex128>>& ops,
                            std::size_t dim, const ValidationOptions& v,
                            const char* ctx) {

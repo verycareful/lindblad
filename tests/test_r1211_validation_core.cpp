@@ -16,6 +16,7 @@
 #include "lindblad/constants.hpp"
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
+#include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 
 #include <cmath>
@@ -712,22 +713,22 @@ TEST(R1211Guards, ZeroSizedOperandsReturnWithoutMeasuring) {
 }
 
 TEST(R1211Guards, EmptyKrausSetIsRejected) {
-    // RED, issue #76. Sum over no operators is the zero matrix, whose
-    // trace-preservation residual is exactly 1: an empty set is the most
-    // non-trace-preserving channel that exists, not a borderline one.
+    // Issue #76. Sum over no operators is the zero matrix, so an empty set
+    // fuses to an all-zero superoperator and drives the trace to 0.
     //
-    // check_kraus_tp returns early on ops.empty(), so the residual is never
-    // measured. Nothing else rejects it either: DensityMatrix::apply_kraus
-    // checks the qubit indices, then loops over the operators to check their
-    // sizes, and that loop has no iterations. The channel is applied and
-    // annihilates the state silently.
-    EXPECT_THROW(detail::check_kraus_tp({}, 2, ValidationOptions{}, CTX),
-                 std::invalid_argument)
+    // The rejection is Class B, not Class C: a list with no operators is a
+    // malformed argument rather than a channel whose physics is off, so it is
+    // refused where it is supplied and without consulting a policy.
+    EXPECT_THROW(detail::check_kraus_nonempty(0, CTX), std::invalid_argument)
         << "issue #76: an empty Kraus set is accepted";
+    EXPECT_NO_THROW(detail::check_kraus_nonempty(1, CTX));
 }
 
-TEST(R1211Guards, EmptyKrausSetIsSkippedUnderIgnore) {
-    // Whatever the fix does, Ignore must keep meaning what it says.
+TEST(R1211Guards, EmptyKrausSetIsNotMeasuredAsAResidual) {
+    // The Class C residual deliberately does not own this case. Measuring it
+    // would report a deviation of exactly 1 against the trace-preservation
+    // tolerance, describing a structural defect as suppressible physics.
+    EXPECT_NO_THROW(detail::check_kraus_tp({}, 2, ValidationOptions{}, CTX));
     EXPECT_NO_THROW(detail::check_kraus_tp({}, 2, {Validation::Ignore}, CTX));
 }
 

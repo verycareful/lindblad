@@ -39,8 +39,17 @@ static QuantumCircuit from_qasm3(const std::string& qasm);
 - Emits `OPENQASM 2.0;` + `include "qelib1.inc";`
 - Declares `qreg q[n_qubits];` and (when present) `creg c[n_clbits];`
 - Each instruction is rendered as `name(params)? q[i] (, q[j])* ;`
-- `UNITARY` and `PARAM_*` instructions are rendered as `gate '<label>' omitted`
-  comments because QASM 2.0 has no native representation for them; the output
+- A one-qubit `UNITARY` is Euler-decomposed to `u(theta, phi, lambda)`, which
+  preserves the map exactly (QASM 2.0 has no global-phase syntax, so the phase
+  is dropped; `to_qasm3()` keeps it via `gphase`)
+- A `UNITARY` on two or more qubits throws `std::runtime_error`. QASM 2.0 has no
+  literal-matrix syntax, so the operand has no faithful spelling, and no exact
+  lowering for one exists. `decompose_unrepresentable` does not change this: it
+  lowers the three high-level operations below and cannot reach a raw matrix.
+  Use `to_json()`, which round-trips a matrix losslessly, or decompose the
+  operand into standard gates before exporting
+- `PARAM_*` instructions are rendered as `gate '<label>' omitted` comments
+  because QASM 2.0 cannot express an unbound symbolic parameter; the output
   remains valid QASM 2.0
 - `MCX` / `MCP` / `PERMUTATION` throw `std::runtime_error` by default: QASM 2.0
   has no gate modifiers and no permutation encoding, so no faithful

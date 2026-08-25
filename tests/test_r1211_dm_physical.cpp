@@ -292,14 +292,22 @@ TEST(R1211DmKraus, EmptyChannelIsRejectedRatherThanAnnihilatingTheState) {
            "operators; trace is now " << rho.trace();
 }
 
-TEST(R1211DmKraus, EmptyChannelUnderIgnoreIsTheCallersChoice) {
-    // Ignore means the caller has taken responsibility, so this must keep
-    // working however issue #76 is fixed, unless the fix routes the rejection
-    // through Class B instead. Either outcome is defensible; what is pinned
-    // here is only that the two policies do not behave identically.
-    auto rho = fresh(2);
-    rho.apply_kraus({}, {0}, {Validation::Ignore});
-    SUCCEED() << "trace after an ignored empty channel: " << rho.trace();
+TEST(R1211DmKraus, EmptyChannelIsRejectedUnderEveryPolicy) {
+    // Issue #76 is fixed in Class B, so the rejection does not consult the
+    // policy. Ignore says the caller accepts a channel whose physics is off by
+    // more than atol; it cannot be read as consent to annihilate the state,
+    // because what an empty list produces is not an imprecise state but no
+    // state at all.
+    for (const auto policy : {Validation::Throw, Validation::Warn,
+                              Validation::Fix, Validation::Ignore}) {
+        auto rho = fresh(2);
+        EXPECT_THROW(rho.apply_kraus({}, {0}, {policy}), std::invalid_argument)
+            << "issue #76: an empty channel survived policy "
+            << static_cast<int>(policy);
+        EXPECT_NEAR(rho.trace(), 1.0, 1e-14)
+            << "issue #76: the state was annihilated under policy "
+            << static_cast<int>(policy);
+    }
 }
 
 TEST(R1211DmKraus, IgnoreStillAppliesTheChannel) {

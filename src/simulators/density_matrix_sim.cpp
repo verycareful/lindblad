@@ -353,6 +353,7 @@ void DensityMatrix::apply_kraus(
     // noisy gate. The
     // superoperator build is O(ops · sub_dim⁴) on at-most-16×16 blocks for
     // the 1q/2q channels noise models attach: negligible next to one sweep.
+    detail::check_kraus_nonempty(kraus_ops.size(), "DensityMatrix::apply_kraus");
     detail::check_qubits(qubits, n_qubits, "DensityMatrix::apply_kraus");
     detail::check_all_distinct(qubits, "DensityMatrix::apply_kraus");
     const int k = static_cast<int>(qubits.size());

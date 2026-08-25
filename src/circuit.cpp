@@ -15,7 +15,6 @@
 #include <sstream>
 #include <stdexcept>
 #include <iomanip>
-#include <set>
 
 namespace lindblad {
 
@@ -1053,6 +1052,14 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
             ci.label = "c_" + inst.gate_name();
             ci.condition_clbit = inst.condition_clbit;
             ci.condition_value = inst.condition_value;
+            // The policy governs the matrix, and the controlled matrix is
+            // unitary exactly when the block it was built from is: the control
+            // structure contributes identity on every unselected slice, which
+            // changes no residual. A caller who opted out of the check on the
+            // source matrix has therefore opted out of the same check here, and
+            // dropping the field would make a legal circuit unrunnable by the
+            // act of controlling it.
+            ci.validation = inst.validation;
             result.instructions.push_back(std::move(ci));
         };
 
@@ -1065,6 +1072,7 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
                 ci.params = inst.params;
                 ci.condition_clbit = inst.condition_clbit;
                 ci.condition_value = inst.condition_value;
+                ci.validation = inst.validation;
                 bool handled = true;
                 switch (inst.type) {
                     case GT::X:   ci.type = GT::CX;  break;
@@ -1102,6 +1110,7 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
                         Instruction ci; ci.type = GT::CCX; ci.qubits = {ctrl, q0, q1};
                         ci.condition_clbit = inst.condition_clbit;
                         ci.condition_value = inst.condition_value;
+                        ci.validation = inst.validation;
                         result.instructions.push_back(std::move(ci));
                         continue;
                     }
@@ -1109,6 +1118,7 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
                         Instruction ci; ci.type = GT::CSWAP; ci.qubits = {ctrl, q0, q1};
                         ci.condition_clbit = inst.condition_clbit;
                         ci.condition_value = inst.condition_value;
+                        ci.validation = inst.validation;
                         result.instructions.push_back(std::move(ci));
                         continue;
                     }
@@ -1215,24 +1225,6 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
         }
     }
 
-    // Emit custom gate block definitions for multi-qubit UNITARYs.
-    // Each unique label gets one definition; the body uses cx q0,q1 so the
-    // gate call inlines to exactly one instruction on round-trip.
-    {
-        std::set<std::string> emitted_gate_defs;
-        for (const auto& inst : *insts) {
-            if (inst.type == Instruction::GateType::UNITARY && inst.qubits.size() >= 2) {
-                std::string gdef_name = inst.gate_name();
-                if (emitted_gate_defs.insert(gdef_name).second) {
-                    oss << "gate " << gdef_name;
-                    for (size_t i = 0; i < inst.qubits.size(); ++i)
-                        oss << (i == 0 ? " q" : ",q") << i;
-                    oss << " { cx q0,q1; }\n";
-                }
-            }
-        }
-    }
-
     for (const auto& inst : *insts) {
         std::string gname = inst.gate_name();
 
@@ -1267,6 +1259,23 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
                 "to_qasm2: " + gname + " is not representable in OpenQASM 2.0; "
                 "set QasmExportOptions::decompose_unrepresentable to lower it "
                 "at export, or use to_qasm3()");
+        }
+
+        // A multi-qubit UNITARY is in the same position: QASM 2 has no syntax
+        // for a literal matrix, so the operand has no faithful spelling of its
+        // own, and no exact lowering for one exists in the tree. That leaves
+        // refusing or writing a different operator, and only refusing keeps the
+        // export trustworthy. decompose_unrepresentable is deliberately not
+        // offered here: it lowers MCX / MCP / PERMUTATION, and pointing at it
+        // for an operand it cannot lower would send the caller in a circle.
+        if (inst.type == Instruction::GateType::UNITARY &&
+            inst.qubits.size() >= 2) {
+            throw std::runtime_error(
+                "to_qasm2: the " + std::to_string(inst.qubits.size()) +
+                "-qubit unitary '" + gname + "' is not representable in "
+                "OpenQASM 2.0 (no literal-matrix syntax); use to_json() for a "
+                "lossless round trip, or decompose it into standard gates "
+                "before exporting");
         }
 
         // 1-qubit UNITARY: Euler-angle decomposition → U(theta, phi, lambda).
@@ -1588,6 +1597,35 @@ static Instruction::GateType str_to_gate_type(const std::string& s) {
     return GT::UNITARY;  // fallback for custom labels
 }
 
+namespace {
+
+constexpr ValidationOptions kDefaultValidation{};
+
+// The policy is written as a name rather than as the enumerator's integer, so
+// a stored circuit cannot change meaning if the enumeration is ever reordered.
+const char* validation_policy_to_str(Validation p) {
+    switch (p) {
+        case Validation::Throw:  return "throw";
+        case Validation::Warn:   return "warn";
+        case Validation::Fix:    return "fix";
+        case Validation::Ignore: return "ignore";
+    }
+    return "throw";
+}
+
+Validation validation_policy_from_str(const std::string& name) {
+    if (name == "throw")  return Validation::Throw;
+    if (name == "warn")   return Validation::Warn;
+    if (name == "fix")    return Validation::Fix;
+    if (name == "ignore") return Validation::Ignore;
+    // Guessing here would pick a policy the file did not ask for, and the
+    // wrong guess towards Ignore turns a rejected operand into a wrong answer.
+    throw std::runtime_error(
+        "QuantumCircuit::from_json: unknown validation policy '" + name + "'");
+}
+
+} // namespace
+
 std::string QuantumCircuit::to_json() const {
     // Unbound symbolic parameter expressions (produced by from_qasm3) have no
     // JSON representation; silently dropping them would corrupt the
@@ -1685,6 +1723,22 @@ std::string QuantumCircuit::to_json() const {
                 o << "[" << inst.matrix[j].real << "," << inst.matrix[j].imag << "]";
             }
             o << "]";
+        }
+
+        // Physical-validity policy. The matrix is written entry by entry
+        // above, so the policy governing it has to travel with it or a circuit
+        // that ran before being written throws when read back.
+        //
+        // Emitted only where it differs from the default, which keeps a file
+        // written by any other route loading unchanged. An absent field
+        // therefore means Throw, and that direction is the safe one: a policy
+        // that fails to survive a round trip produces a loud rejection rather
+        // than a silent opt-out.
+        if (inst.validation.policy != kDefaultValidation.policy ||
+            inst.validation.atol != kDefaultValidation.atol) {
+            o << ",\"validation\":{\"policy\":"
+              << json_escape(validation_policy_to_str(inst.validation.policy))
+              << ",\"atol\":" << inst.validation.atol << "}";
         }
 
         // Conditioning
@@ -1887,6 +1941,22 @@ QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
                         }
                         r.expect(']');
                         inst.matrix = std::move(mat);
+                    } else if (ikey == "validation") {
+                        r.expect('{');
+                        while (r.peek() != '}') {
+                            if (r.peek() == ',') r.next();
+                            const std::string vkey = r.read_string();
+                            r.expect(':');
+                            if (vkey == "policy") {
+                                inst.validation.policy =
+                                    validation_policy_from_str(r.read_string());
+                            } else if (vkey == "atol") {
+                                inst.validation.atol = r.read_number();
+                            } else {
+                                r.skip_value();
+                            }
+                        }
+                        r.expect('}');
                     } else if (ikey == "condition_clbit") {
                         inst.condition_clbit = r.read_int();
                     } else if (ikey == "condition_value") {

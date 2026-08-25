@@ -114,6 +114,7 @@ set(LINDBLAD_TEST_SOURCES
     test_r1211_synthesized.cpp
     test_r1211_margins.cpp
     test_r1211_backfill_r120.cpp
+    test_r1212_guards.cpp
 )
 
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this

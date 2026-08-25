@@ -129,5 +129,21 @@ inline void check_require(bool ok, const char* ctx, const std::string& msg) {
     if (!ok) throw_structure(ctx, msg);
 }
 
+// A channel must supply at least one Kraus operator.
+//
+// This is structural rather than physical, and so is checked here rather than
+// left to the trace-preservation residual. Sum over no operators is the zero
+// matrix, so an empty set fuses to an all-zero superoperator, zeroes the
+// addressed sub-blocks of rho and drives the trace to 0. What comes back is
+// not a state, and every expectation value, probability and fidelity read from
+// it afterwards is meaningless.
+//
+// Being Class B, the rejection does not consult ValidationOptions. That is the
+// point: Validation::Ignore means the caller accepts a channel whose physics is
+// slightly off, and it must not be readable as consent to annihilate the state.
+inline void check_kraus_nonempty(size_t n_ops, const char* ctx) {
+    check_require(n_ops > 0, ctx, "channel has no Kraus operators");
+}
+
 } // namespace detail
 } // namespace lindblad

@@ -357,6 +357,8 @@ void QuditDensityMatrix::apply_kraus_1qudit(
     int q, const std::vector<std::vector<Complex128>>& K_ops,
     ValidationOptions validation)
 {
+    detail::check_kraus_nonempty(K_ops.size(),
+                                 "QuditDensityMatrix::apply_kraus_1qudit");
     detail::check_qudit(q, n_qudits, "QuditDensityMatrix::apply_kraus_1qudit");
     for (const auto& K : K_ops)
         detail::check_size(K.size(), static_cast<size_t>(d) * static_cast<size_t>(d),
@@ -437,6 +439,8 @@ void QuditDensityMatrix::apply_kraus_2qudit(
     const std::vector<std::vector<Complex128>>& K_ops,
     ValidationOptions validation)
 {
+    detail::check_kraus_nonempty(K_ops.size(),
+                                 "QuditDensityMatrix::apply_kraus_2qudit");
     detail::check_qudit(q0, n_qudits, "QuditDensityMatrix::apply_kraus_2qudit");
     detail::check_qudit(q1, n_qudits, "QuditDensityMatrix::apply_kraus_2qudit");
     detail::check_distinct2(q0, q1, "QuditDensityMatrix::apply_kraus_2qudit", "qudits");

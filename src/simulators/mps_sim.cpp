@@ -60,6 +60,16 @@ MPSState::MPSState(int n_qubits, int max_bond_dim, double cutoff)
     , max_bond_dim(max_bond_dim)
     , cutoff(cutoff)
     , total_truncation_error(0.0) {
+    // A bond dimension below 1 retains no singular values at all. Left
+    // unchecked it reaches svd_truncate as k = min(k, max_bond_dim) == 0,
+    // which is indistinguishable there from a numerically corrupt spectrum:
+    // the rescue branch keeps one sigma, reports nothing discarded, and the
+    // verify step then measures a rank-1 residual against a bound sized for a
+    // factorisation that dropped nothing. Both routes fail and the throw
+    // blames the SVD backend for what is a caller argument.
+    detail::check_require(max_bond_dim >= 1, "MPSState",
+                          "max_bond_dim must be >= 1 (got " +
+                              std::to_string(max_bond_dim) + ")");
     tensors.resize(n_qubits);
     for (int i = 0; i < n_qubits; ++i) {
         tensors[i] = MPSTensor(1, 1);
@@ -1566,6 +1576,13 @@ MPSSimulator::Result MPSSimulator::run(
     int shots, uint64_t seed
 ) {
     ScopedWarningFlush flush_on_exit;
+    // Checked here as well as in the MPSState constructor so the message names
+    // this call. The argument order differs from StatevectorSimulator::run
+    // (circuit, shots, seed), so run(qc, 0, 0) meaning shots is a live way to
+    // arrive here.
+    detail::check_require(max_bond_dim >= 1, "MPSSimulator::run",
+                          "max_bond_dim must be >= 1 (got " +
+                              std::to_string(max_bond_dim) + ")");
     Result result(circuit.n_qubits);
     result.final_state = MPSState(circuit.n_qubits, max_bond_dim);
 

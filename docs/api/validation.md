@@ -62,10 +62,18 @@ apply_unitary(sv, {0, 1}, U, {Validation::Ignore});      // no check at all
 A correct gate over irrational amplitudes is never bit-exactly unitary, so the
 check has to carry a tolerance at all. `1e-12` is loose enough to accept a
 deeply composed or fused matrix, which holds unitarity to around `1e-13`, and
-tight enough to reject anything that drifted for a reason. It is deliberately
-stricter than the `1e-8` that `Operator::is_unitary` and
-`KrausChannel::is_valid` default to: those answer a question at the tolerance
-common elsewhere in the ecosystem, while `atol` enforces a contract.
+tight enough to reject anything that drifted for a reason.
+
+`Operator::is_unitary`, `Operator::is_hermitian` and `KrausChannel::is_valid`
+default to the same `1e-12`, so asking whether an operand is acceptable gives
+the same verdict as handing it to a primitive. A looser default on the query
+would let a matrix pass `is_unitary()` and then be rejected by the kernel it was
+checked for.
+
+The tolerance is absolute and applies to the worst entry of the residual. Note
+that this is stricter than the convention common elsewhere in the ecosystem,
+where a relative term is usually combined with an absolute one and the effective
+allowance on a unit-magnitude entry is correspondingly wider.
 
 The failure message reports the measured residual, so a caller who needs a
 different tolerance can read the number rather than guess it:
@@ -92,6 +100,14 @@ Trace preservation of a caller-supplied channel:
 - `DensityMatrix::apply_channel_superop`, in the superoperator form of the same
   condition: `Σ_ro S[(ro,ro),(ri,ci)] = δ_ri,ci`
 - `QuditDensityMatrix::apply_kraus_1qudit`, `apply_kraus_2qudit`
+
+A channel with no operators is NOT on this list, deliberately. It is rejected
+before any residual is measured, as a malformed argument rather than as invalid
+physics, so the rejection is unconditional and `Validation::Ignore` does not
+suppress it. Sum over no operators is the zero matrix, which would fuse to an
+all-zero superoperator and leave a state whose trace is zero. `Ignore` means the
+caller accepts an operand whose physics is off by more than `atol`; it cannot
+also mean they accept losing the state.
 
 The Clifford backend has no arbitrary-matrix entry point, so nothing there
 carries a policy.

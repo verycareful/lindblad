@@ -4,6 +4,140 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.21.2] - 2026-08-25
+
+The five defects R.1.21.1 filed are fixed and its fifteen deliberately red tests
+are green. Fixing them turned up two more, and those are filed rather than
+patched in, because one of them is a numerics problem with no small answer.
+
+Two of the fixes changed a contract rather than a line of arithmetic, and both
+are worth reading before upgrading: a multi-qubit custom unitary is now refused
+by `to_qasm2()` instead of being exported, and an empty Kraus set is now
+rejected under every validation policy including `Ignore`.
+
+### Fixed
+
+- **A non-finite matrix entry was detected only in the final column** (#73). All
+  three physical-validity residuals tracked their worst entry with a comparison
+  written to treat a NaN as a failure. That spelling is correct for a single
+  comparison against a fixed tolerance and wrong for a running maximum: once the
+  accumulator holds a NaN, every later comparison against it is false as well,
+  so the next finite entry overwrites it. Only the last index pair visited
+  survived, and that pair is always the final diagonal one. A single-qubit
+  matrix carrying a NaN in its first column passed the default `Throw` policy;
+  at eight rows, 56 of 64 positions went undetected. The accumulator now latches
+  a non-finite value on its bit pattern rather than by comparison, so it holds
+  under any floating-point model.
+
+- **An empty Kraus set annihilated the state** (#76). `apply_kraus` accepted a
+  channel with no operators, fused it to an all-zero superoperator, drove the
+  trace to zero and reported success. Every guard on the way in passed: the
+  qubit indices were valid, the per-operator size check was a loop with no
+  iterations, and the trace-preservation check returned early on an empty list.
+  Sum over no operators is the zero matrix, so an empty set is the most
+  non-trace-preserving channel that exists and was the one case whose residual
+  was never measured. It is now rejected as a malformed operand rather than as
+  invalid physics, which makes the rejection unconditional: a list with no
+  operators is not a channel, and `Validation::Ignore` means the caller accepts
+  a matrix that is slightly off, never that they consent to losing the state.
+  The guard covers the density-matrix and both qudit entry points.
+
+- **The validation policy was silently reset by two routes** (#74). A
+  `ValidationOptions` travels on the instruction whose matrix it describes, so
+  it survives copy, `compose`, `repeat`, `inverse` and the DAG round trip.
+  `control()` and the JSON round trip rebuilt the instruction instead and left
+  the policy at its default, turning a circuit the caller had legitimately opted
+  out of into one that would not run, with nothing pointing at where the opt-out
+  went. `control()` now carries the field on every path it builds. The JSON
+  format now writes the policy and its tolerance beside the matrix and reads
+  them back, storing the policy by name so a saved circuit cannot change meaning
+  if the enumeration is ever reordered. An absent field still means `Throw`, so
+  files written before this release load unchanged and always toward the
+  stricter setting.
+
+- **A non-positive `max_bond_dim` was reported as an SVD backend failure**
+  (#77). `MPSState` and `MPSSimulator::run` accepted zero and negative bond
+  dimensions. What surfaced several layers later was a message naming the SVD
+  backend and its fallback as the suspects, when the operand was at fault: a
+  retained rank of zero enters the rescue branch written for a corrupt spectrum,
+  which reports nothing discarded, so verification then measures a rank-1
+  residual against a bound sized for a factorisation that dropped nothing. Both
+  entry points now reject it up front, naming the argument and its value. The
+  argument order differs from `StatevectorSimulator::run(circuit, shots, seed)`,
+  so reaching this by passing a shot count is a realistic mistake rather than a
+  hypothetical one.
+
+### Changed
+
+- **`to_qasm2()` refuses a multi-qubit custom unitary** (#75). It previously
+  emitted one as a custom gate definition whose body was the literal text
+  `cx q0,q1`, whatever the matrix held. The matrix was never written. Exporting
+  a CZ and reading it back returned a CNOT, with no error at either end, and for
+  a wider unitary it returned a CNOT on the first two wires. The same function
+  already refused `MCX`, `MCP` and `PERMUTATION` on precisely this ground, so
+  the loud path existed and this operand was not taking it. It now does, under
+  both settings of `QasmExportOptions::decompose_unrepresentable`: that option
+  lowers the three high-level operations and cannot reach a raw matrix, so
+  naming it here would send the caller in a circle. The message points at
+  `to_json()`, which round-trips a matrix losslessly. One-qubit unitaries are
+  unaffected and still Euler-decompose exactly.
+
+  This is a behaviour change for anyone exporting such a circuit. The previous
+  behaviour produced a different operator and reported success, so there is no
+  version of this that is both quiet and correct.
+
+- **`Operator::is_unitary`, `Operator::is_hermitian` and
+  `KrausChannel::is_valid` now default to a tolerance of 1e-12** rather than
+  1e-8, matching `ValidationOptions::atol`. Two defaults four orders apart let a
+  matrix pass `is_unitary()` and then be rejected by the primitive it was
+  checked for. The tolerance is absolute and measured against the worst entry of
+  the residual, and the deepest compositions this library produces hold
+  unitarity to around 1e-14, so the tightening leaves the practical margin
+  intact.
+
+### Tests
+
+Three existing tests asserted contracts that these fixes replace, and were
+restated rather than adjusted to match the new behaviour.
+`BugRegression.B7_ToQasm2TwoQubitUnitaryRoundTrip` asserted only that the gate
+count survived a QASM 2 round trip, which the `cx` placeholder is exactly what
+made pass; it now asserts the operator. The two empty-channel tests asserted
+that the rejection was suppressible by policy, which the fix deliberately makes
+untrue.
+
+Eight new tests across two suites cover the bond-dimension guard, which had none
+because it was found after the R.1.21.1 wave closed, and the QASM refusal,
+including that its message names a route that actually works.
+
+### Documentation
+
+- `docs/api/qasm.md`: the QASM 2.0 export section described `UNITARY`
+  instructions as being emitted as omitted-gate comments, which had not been
+  true for some time and did not describe the placeholder that was actually
+  written. It now states the one-qubit Euler path and the multi-qubit refusal
+  separately, and says why `decompose_unrepresentable` does not apply.
+- `docs/api/validation.md`: the tolerance section no longer describes
+  `Operator::is_unitary` and `KrausChannel::is_valid` as looser than `atol`,
+  since they now match it, and explains why a query and a contract sharing one
+  default is the point. The list of checked properties gains a note that an
+  empty channel is deliberately absent from it, being rejected unconditionally
+  rather than under a policy.
+- `docs/api/noise.md`: `KrausChannel::is_valid` documented at the shared
+  tolerance, and the empty-operator rejection recorded on the entry point.
+- `docs/api/circuit.md`: JSON serialization documented as carrying the
+  validation policy, including that an absent field reads back as `Throw`, and
+  noted as the lossless route for a multi-qubit custom unitary.
+- `docs/api/simulators.md`: `max_bond_dim` documented with its lower bound and
+  with the argument-order difference against `StatevectorSimulator::run` that
+  makes passing a shot count there a realistic mistake.
+
+### Results
+
+2376 tests across 213 suites, all passed (19.7 s, WSL/GCC 13; 28.3 s,
+WSL/Clang 18). Both compilers agree exactly, which matters for #73: the fix
+turns on detecting a non-finite value under `-ffast-math`, where the two
+toolchains have historically disagreed.
+
 ## [R.1.21.1] - 2026-08-25
 
 The first test coverage the physical-validity framework has had, and it found

@@ -17,7 +17,9 @@ struct KrausChannel {
     std::vector<std::vector<Complex128>> operators;  // list of Kraus matrices
     int n_qubits = 1;
 
-    bool is_valid(double atol = 1e-8) const;  // Check sum_k K_k†K_k = I
+    // Matches ValidationOptions::atol, so a channel that passes here is one
+    // the Kraus primitives will also accept.
+    bool is_valid(double atol = 1e-12) const;  // Check sum_k K_k†K_k = I
     double trace_preserving_error() const;
 };
 

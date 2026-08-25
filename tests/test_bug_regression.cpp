@@ -585,12 +585,17 @@ measure gamma[0] -> res[3];
 }
 
 // =============================================================================
-// B7 extended — multi-qubit UNITARY round-trip through to_qasm2() / from_qasm2()
-// A 2-qubit UNITARY (CZ as custom matrix) must survive serialisation.
+// B7 extended - a multi-qubit UNITARY must never be silently substituted
+// The original assertion here was a gate COUNT, which issue #75 satisfied for
+// as long as it existed: the exporter wrote a custom gate whose body was the
+// literal text `cx q0,q1` whatever the matrix held, and that placeholder is
+// precisely what made the count come out right. A CZ exported and re-imported
+// as a CNOT, and the count never noticed.
 // =============================================================================
 
 TEST(BugRegression, B7_ToQasm2TwoQubitUnitaryRoundTrip) {
-    // CZ = diag(1,1,1,-1) as a raw 4×4 custom unitary.
+    // CZ = diag(1,1,1,-1) as a raw 4x4 custom unitary. Distinguishable from
+    // CX, which is the point: a CNOT-shaped substitution has to be visible.
     const std::vector<Complex128> CZ_mat = {
         {1,0},{0,0},{0,0},{0,0},
         {0,0},{1,0},{0,0},{0,0},
@@ -603,18 +608,16 @@ TEST(BugRegression, B7_ToQasm2TwoQubitUnitaryRoundTrip) {
     qc.unitary(CZ_mat, {0, 1}, "my_cz");
     qc.h(0);
 
-    const std::string qasm = qc.to_qasm2();
+    // OpenQASM 2.0 has no literal-matrix syntax and the tree holds no exact
+    // lowering for a 2-qubit matrix, so the only answer that does not change
+    // the operator is to refuse.
+    EXPECT_THROW((void)qc.to_qasm2(), std::runtime_error)
+        << "issue #75: a 2-qubit UNITARY was exported, and whatever came out "
+           "cannot be the operand";
 
-    // No comment-emission.
-    EXPECT_EQ(qasm.find("// gate"), std::string::npos)
-        << "to_qasm2() emitted 2-qubit UNITARY as comment (bug B7 open). Output:\n" << qasm;
-
-    // Gate count preserved on round-trip: H + UNITARY + H = 3 instructions.
-    const QuantumCircuit parsed = QuantumCircuit::from_qasm2(qasm);
-    EXPECT_EQ(parsed.size(), 3)
-        << "2-qubit UNITARY dropped on to_qasm2() round-trip (bug B7 open).";
+    // The surrounding gates are ordinary and must not have been disturbed.
+    EXPECT_EQ(qc.size(), 3u);
 }
-
 // =============================================================================
 // B6 extended — before_gate noise across multiple gates in one circuit
 // 100% bit-flip before every H on a 2-qubit circuit; both qubits affected.

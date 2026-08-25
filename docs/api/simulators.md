@@ -708,6 +708,13 @@ auto result = sim.run(large_circuit, 100);  // 100 shots
 - **max_bond_dim** ($\chi$): Controls truncation; typical range 16–512
   - Larger $\chi$ = more accurate but slower and more memory
   - $\chi = 2^n$ recovers exact simulation
+  - Must be at least 1. `MPSState` and `MPSSimulator::run` reject a smaller
+    value with `std::invalid_argument`: a retained rank of zero keeps no
+    singular values at all, and left unchecked it reaches the truncation step
+    indistinguishable from a numerically corrupt spectrum. Note that
+    `MPSSimulator::run(circuit, max_bond_dim, shots, seed)` takes the bond
+    dimension where `StatevectorSimulator::run(circuit, shots, seed)` takes the
+    shot count
 - **cutoff**: SVD truncation threshold; typical 1e-12 to 1e-8
   - Discards singular values $< \text{cutoff}$
   - Minimal impact on accuracy for cutoff $\leq 1e-10$

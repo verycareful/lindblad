@@ -102,8 +102,13 @@ public:
     Operator adjoint() const;
     Operator power(int n) const;
 
-    bool is_unitary(double atol = 1e-8) const;
-    bool is_hermitian(double atol = 1e-8) const;
+    // The tolerance matches ValidationOptions::atol, so asking an Operator
+    // whether it is unitary gives the same verdict the primitives give when
+    // they are handed the same matrix. Two defaults an order of magnitude
+    // apart would let a matrix pass is_unitary() and then be rejected by the
+    // kernel it was checked for.
+    bool is_unitary(double atol = 1e-12) const;
+    bool is_hermitian(double atol = 1e-12) const;
 
     Complex128 trace() const;
     size_t dim() const { return 1ULL << n_qubits; }
