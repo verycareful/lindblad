@@ -18,8 +18,11 @@
 #include "lindblad/gates.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
 
+#include "../two_qubit_decompose.hpp"
+
 #include <Eigen/Dense>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <complex>
@@ -439,6 +442,132 @@ static void emit_1q(QuantumCircuit& circ, const Eigen::Matrix2cd& U2, int q) {
     circ.instructions.push_back(u3);
 }
 
+// Takagi factorisation of a complex symmetric UNITARY S: a real orthogonal O
+// with O^T S O diagonal.
+//
+// Write S = A + iB with A, B real symmetric. S is unitary here (S = Ud^T Ud
+// with Ud unitary, and S* S = Ud* Ud^T = (Ud Ud*)* = I), and expanding
+// S* S = I gives A B = B A. Commuting real symmetric matrices share a real
+// orthonormal eigenbasis, so ONE real orthogonal matrix diagonalises S:
+// diagonalise A, then inside each degenerate eigenvalue cluster of A
+// diagonalise B restricted to that cluster. Where both are degenerate on a
+// cluster, S restricted to it is a multiple of the identity and any
+// orthonormal basis of the cluster serves, so two levels suffice at 4x4.
+//
+// O^T O = I holds by construction. That is the point: it removes the
+// distinct-eigenvalue precondition that reading Takagi vectors off a Schur
+// decomposition carries, and every common two-qubit gate violates that
+// precondition (CZ and CNOT, iSWAP, SWAP and the identity all repeat a Weyl
+// coordinate; only a generic unitary has three distinct ones).
+static Eigen::Matrix4d takagi_real_orthogonal(const Eigen::Matrix4cd& S) {
+    const Eigen::Matrix4d A = S.real();
+    const Eigen::Matrix4d B = S.imag();
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix4d> es(A);
+    Eigen::Matrix4d O = es.eigenvectors();
+    const Eigen::Vector4d w = es.eigenvalues();  // ascending
+
+    // S unitary puts the eigenvalues of A in [-1, 1], so an absolute cluster
+    // tolerance is meaningful without scaling by the matrix norm.
+    constexpr double kClusterTol = 1e-9;
+
+    int start = 0;
+    for (int k = 1; k <= 4; ++k) {
+        if (k == 4 || std::abs(w(k) - w(start)) > kClusterTol) {
+            const int dim = k - start;
+            if (dim > 1) {
+                const Eigen::MatrixXd basis = O.block(0, start, 4, dim);
+                Eigen::MatrixXd blk = basis.transpose() * B * basis;
+                blk = 0.5 * (blk + blk.transpose());  // shed asymmetric round-off
+                Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es2(blk);
+                O.block(0, start, 4, dim) = basis * es2.eigenvectors();
+            }
+            start = k;
+        }
+    }
+    return O;
+}
+
+// Weyl chamber reduction. Many (kx, ky, kz) describe the same operator up to
+// local gates, and they do not all cost the same: a point with a zero
+// coordinate needs one fewer interaction rotation, so reducing into the
+// canonical chamber saves a two-qubit gate rather than merely tidying numbers.
+// iSWAP is the case that shows it, canonical at (pi/4, pi/4, 0) for two
+// rotations while the square-root search reaches it at (pi/2, 3pi/4, 3pi/4),
+// needing three.
+//
+// Three generators, each absorbed entirely into the local factors:
+//   SHIFT   exp(-i(pi/2)·P⊗P) = -i(P⊗P), so moving one coordinate by pi/2
+//           costs a local P on each wire, plus a global phase nobody observes.
+//   NEGATE  conjugating by P⊗I flips the two coordinates whose Pauli
+//           anticommutes with P and leaves the third alone.
+//   SWAP    conjugating by a local Clifford transposes two coordinates.
+static void canonicalise_weyl(std::array<double, 3>& k,
+                              Eigen::Matrix2cd& W0, Eigen::Matrix2cd& W1,
+                              Eigen::Matrix2cd& V0, Eigen::Matrix2cd& V1) {
+    const std::complex<double> img(0.0, 1.0);
+
+    std::array<Eigen::Matrix2cd, 3> P;
+    P[0] <<   0,    1,     1,   0;   // X, paired with the kx coordinate
+    P[1] <<   0, -img,   img,   0;   // Y, with ky
+    P[2] <<   1,    0,     0,  -1;   // Z, with kz
+
+    Eigen::Matrix2cd Sg;
+    Sg << 1, 0, 0, img;
+    Eigen::Matrix2cd Hg;
+    Hg << 1, 1, 1, -1;
+    Hg *= INV_SQRT2;
+
+    const auto shift = [&](int i) {
+        k[i] -= PI_2;
+        V0 = V0 * P[i];
+        V1 = V1 * P[i];
+    };
+    const auto negate_other_two = [&](int i) {
+        for (int j = 0; j < 3; ++j)
+            if (j != i) k[j] = -k[j];
+        V1 = V1 * P[i];
+        W1 = P[i] * W1;
+    };
+    const auto swap_coords = [&](int i, int j) {
+        const int a = std::min(i, j), b = std::max(i, j);
+        const Eigen::Matrix2cd C =
+            (a == 0 && b == 1) ? Sg : (a == 0 && b == 2) ? Hg : (Sg * Hg * Sg);
+        std::swap(k[i], k[j]);
+        V0 = V0 * C.adjoint();
+        V1 = V1 * C.adjoint();
+        W0 = C * W0;
+        W1 = C * W1;
+    };
+
+    // Fold each coordinate into (-pi/4, pi/4]. Four shifts return the local
+    // factors to where they started while subtracting 2pi, and a 2pi change in
+    // a coordinate is physically nothing (P⊗P has eigenvalues ±1, so
+    // exp(-2·pi·i·P⊗P) = I). Only n mod 4 shifts need applying; the rest comes
+    // off the number without touching a matrix.
+    for (int i = 0; i < 3; ++i) {
+        const int n = static_cast<int>(std::floor((k[i] + PI_4) / PI_2));
+        const int reps = ((n % 4) + 4) % 4;
+        for (int r = 0; r < reps; ++r) shift(i);
+        k[i] -= static_cast<double>(n - reps) * PI_2;
+    }
+
+    // Order by descending magnitude, then drive the two leading coordinates
+    // non-negative. Negations arrive in pairs, so the trailing coordinate is
+    // the one allowed to stay negative.
+    constexpr double kOrderTol = 1e-12;
+    for (int pass = 0; pass < 3; ++pass)
+        for (int i = 0; i < 2; ++i)
+            if (std::abs(k[i]) < std::abs(k[i + 1]) - kOrderTol)
+                swap_coords(i, i + 1);
+
+    if (k[0] < 0.0 && k[1] < 0.0)       negate_other_two(2);
+    else if (k[0] < 0.0 && k[2] < 0.0)  negate_other_two(1);
+    else if (k[1] < 0.0 && k[2] < 0.0)  negate_other_two(0);
+    else if (k[0] < 0.0)                negate_other_two(1);
+    else if (k[1] < 0.0)                negate_other_two(0);
+}
+
 // KAK decomposition. Decomposes U4 into local gates + exp(i*H_interaction).
 // U = (V1⊗V0) · exp(i*(kx·XX + ky·YY + kz·ZZ)) · (W1⊗W0)
 // Returns the full gate sequence as a QuantumCircuit on qubits [0,1].
@@ -466,103 +595,133 @@ static QuantumCircuit kak_decompose(const Eigen::Matrix4cd& U4, int q0, int q1) 
           1,  0,  0, -img;
     M *= inv_sqrt2;
 
-    // U in magic basis
-    Eigen::Matrix4cd Ud = M.adjoint() * U4 * M;
+    // The magic-basis correspondence SU(2)⊗SU(2) <-> SO(4) requires U in
+    // SU(4); a product of gate unitaries is only in U(4). The phase removed
+    // here is global and unobservable, and the caller compares up to exactly
+    // that phase.
+    const std::complex<double> det4 = U4.determinant();
+    const Eigen::Matrix4cd Usu = U4 / std::pow(det4, 0.25);
 
-    // Symmetric part: Ud^T * Ud
+    // U in magic basis
+    Eigen::Matrix4cd Ud = M.adjoint() * Usu * M;
+
+    // Ud is real orthogonal exactly when U4 is local, so the decomposition is
+    // a hunt for two real orthogonal factors, Ud = O_V · D · O_W with D diagonal
+    // unitary. Squaring isolates O_W:
+    //     S := Ud^T Ud = O_W^T D² O_W
+    // so a Takagi factorisation S = O Λ O^T with O real orthogonal delivers
+    // O_W = O^T and D² = Λ.
     Eigen::Matrix4cd S = Ud.transpose() * Ud;
 
-    // Eigendecompose S (it's complex symmetric, not Hermitian)
-    // For complex symmetric, use colPivHouseholderQr or Schur decomp
-    Eigen::ComplexSchur<Eigen::Matrix4cd> schur(S);
-    Eigen::Vector4cd evals = schur.matrixT().diagonal();
+    const Eigen::Matrix4d O = takagi_real_orthogonal(S);
+    const Eigen::Matrix4cd Ocx = O.cast<std::complex<double>>();
+    const Eigen::Vector4cd lambda = (Ocx.transpose() * S * Ocx).diagonal();
 
-    // Canonical coordinates from eigenvalues:
-    // lambda_i = exp(i * 2 * alpha_i)
-    // Following Shende 2004: extract phases, then use the known linear map
-    // to recover (kx, ky, kz) and clamp to the Weyl chamber.
-    std::vector<double> phases(4);
-    for (int i = 0; i < 4; ++i) {
-        phases[i] = std::arg(evals(i)) / 2.0;
+    Eigen::Vector4d base;
+    for (int j = 0; j < 4; ++j) base(j) = std::arg(lambda(j)) / 2.0;
+
+    // D is a SQUARE ROOT of Λ, so each diagonal entry carries an independent
+    // sign, and O's columns carry an arbitrary order. Only one family of
+    // (order, sign) choices puts D in the canonical magic-basis positions,
+    //     d0 = -kx + ky - kz        d2 =  kx + ky + kz
+    //     d1 = -kx - ky + kz        d3 =  kx - ky - kz
+    // which invert to kx = (d2+d3)/2, ky = (d0+d2)/2, kz = (d1+d2)/2. Only in
+    // that arrangement is M D M† the interaction that the emitted
+    // RXX/RYY/RZZ reproduce.
+    //
+    // Substituting the inverse back into the forward map leaves a residual of
+    // +-(sum d)/2 on every entry, so the whole consistency requirement
+    // collapses to one scalar condition: sum(d) = 0 (mod 4pi). A permutation
+    // cannot change a sum, so it constrains only HOW MANY entries are
+    // sign-flipped, never which ones. This is strictly stronger than
+    // det(D) = +1 (sum(d) = 0 mod 2pi); requiring only the weaker condition
+    // strands every operand whose phase sum is pi, iSWAP among them.
+    constexpr double kFourPi = 2.0 * TWO_PI;
+    // Slack on a whole-turn count, not on a physical quantity: the sum is a
+    // few additions of values already accurate to a handful of ulps.
+    constexpr double kTurnTol = 1e-9;
+    const double sum_base = base.sum();
+
+    std::array<int, 16> valid_masks{};
+    int n_masks = 0;
+    for (int mask = 0; mask < 16; ++mask) {
+        int flips = 0;
+        for (int b = 0; b < 4; ++b) flips += (mask >> b) & 1;
+        const double turns = (sum_base + PI * flips) / kFourPi;
+        if (std::abs(turns - std::round(turns)) < kTurnTol) valid_masks[n_masks++] = mask;
     }
 
-    // Try all 24 permutations of phases to find the one that gives
-    // Weyl chamber coordinates satisfying pi/4 >= kx >= ky >= kz >= 0.
-    // This is the correct approach per Shende 2004 — simple descending sort
-    // does NOT guarantee the canonical Weyl chamber ordering.
-    std::sort(phases.begin(), phases.end());
-    std::vector<int> perm = {0, 1, 2, 3};
-
-    double kx = 0, ky = 0, kz = 0;
+    // Every surviving candidate is a CORRECT decomposition; they differ only in
+    // how many interaction rotations they cost. Rank by that, because reducing
+    // gate count is the purpose of the pass and a coordinate outside the Weyl
+    // chamber can need three rotations where two would do.
+    constexpr double kAtol = 1e-10;
+    std::array<int, 4> perm = {0, 1, 2, 3};
+    std::array<int, 4> best_perm = {0, 1, 2, 3};
+    Eigen::Vector4d best_d = Eigen::Vector4d::Zero();
+    double kx = 0.0, ky = 0.0, kz = 0.0;
+    int best_nonzero = 4;
+    double best_magnitude = 0.0;
     bool found = false;
 
     do {
-        double p0 = phases[perm[0]], p1 = phases[perm[1]];
-        double p2 = phases[perm[2]], p3 = phases[perm[3]];
+        for (int mi = 0; mi < n_masks; ++mi) {
+            const int mask = valid_masks[mi];
+            Eigen::Vector4d d;
+            for (int j = 0; j < 4; ++j)
+                d(j) = base(perm[j]) + (((mask >> j) & 1) ? PI : 0.0);
 
-        double tkx = ( p0 - p1 - p2 + p3) / 4.0;
-        double tky = ( p0 + p1 - p2 - p3) / 4.0;
-        double tkz = (-p0 + p1 - p2 + p3) / 4.0;
+            const double tkx = (d(2) + d(3)) / 2.0;
+            const double tky = (d(0) + d(2)) / 2.0;
+            const double tkz = (d(1) + d(2)) / 2.0;
 
-        constexpr double pi_4 = PI / 4.0;
-        constexpr double tol = 1e-8;
+            int nonzero = 0;
+            double magnitude = 0.0;
+            for (const double v : {tkx, tky, tkz}) {
+                if (std::abs(v) > kAtol) ++nonzero;
+                magnitude += std::abs(v);
+            }
 
-        // Check Weyl chamber: pi/4 >= kx >= ky >= kz >= 0
-        if (tkx >= -tol && tky >= -tol && tkz >= -tol &&
-            tkx <= pi_4 + tol &&
-            tkx >= tky - tol && tky >= tkz - tol) {
-            kx = std::max(0.0, std::min(pi_4, tkx));
-            ky = std::max(0.0, std::min(tkx, tky));
-            kz = std::max(0.0, std::min(tky, tkz));
-            found = true;
-            break;
+            if (!found || nonzero < best_nonzero ||
+                (nonzero == best_nonzero && magnitude < best_magnitude - kAtol)) {
+                found = true;
+                best_nonzero = nonzero;
+                best_magnitude = magnitude;
+                best_perm = perm;
+                best_d = d;
+                kx = tkx;
+                ky = tky;
+                kz = tkz;
+            }
         }
     } while (std::next_permutation(perm.begin(), perm.end()));
 
-    if (!found) {
-        // Fallback: use sorted phases (original approach) — may be approximate
-        std::sort(phases.begin(), phases.end(), std::greater<double>());
-        kx = ( phases[0] - phases[1] - phases[2] + phases[3]) / 4.0;
-        ky = ( phases[0] + phases[1] - phases[2] - phases[3]) / 4.0;
-        kz = (-phases[0] + phases[1] - phases[2] + phases[3]) / 4.0;
-        // Clamp to Weyl chamber
-        kx = std::abs(kx); ky = std::abs(ky); kz = std::abs(kz);
-        if (kx < ky) std::swap(kx, ky);
-        if (ky < kz) std::swap(ky, kz);
-        if (kx < ky) std::swap(kx, ky);
-    }
+    // Leaving the operand undecomposed beats guessing at it: run()'s
+    // verification net then keeps the original block.
+    if (!found) return QuantumCircuit(2);
 
-    // Determine CNOT count from canonical coordinates
-    // If all zero: local gates only (0 CX)
-    // If one non-zero: 1 CX
-    // If two non-zero: 2 CX
-    // Otherwise: 3 CX
+    Eigen::Matrix4d Ow = Eigen::Matrix4d::Zero();
+    for (int j = 0; j < 4; ++j) Ow.col(j) = O.col(best_perm[j]);
 
-    // ---- Extract local correction gates via Takagi factorization ----
-    // S = Ud^T Ud = L_M^T A_d^2 L_M  (L_M complex-orthogonal in magic basis)
-    // Takagi vectors: u_j = exp(-i*arg(v_j^T v_j)/2) * v_j  where v_j = Q[:,j].
-    // These satisfy u_j^T u_k = delta_jk for distinct eigenvalues of S.
+    // Both local factors must be SPECIAL orthogonal, since SU(2)⊗SU(2)
+    // corresponds to SO(4) rather than O(4). det(O_V)*det(O_W) is pinned at
+    // det(Ud)/det(D) = 1, so the two determinants always share a sign and one
+    // column flip corrects both at once. The flip is free: it leaves
+    // S = O Λ O^T intact.
+    if (Ow.determinant() < 0.0) Ow.col(0) = -Ow.col(0);
 
-    Eigen::Matrix4cd Q = schur.matrixU();
+    Eigen::Vector4cd ad_inv_diag;
+    for (int j = 0; j < 4; ++j)
+        ad_inv_diag(j) = std::exp(std::complex<double>(0.0, -best_d(j)));
 
-    Eigen::Matrix4cd L_M;
-    for (int j = 0; j < 4; ++j) {
-        Eigen::Vector4cd v = Q.col(j);
-        std::complex<double> vTv(0.0, 0.0);
-        for (int i = 0; i < 4; ++i) vTv += v(i) * v(i);
-        double ph = (std::abs(vTv) > 1e-12) ? -std::arg(vTv) / 2.0 : 0.0;
-        L_M.col(j) = std::exp(std::complex<double>(0.0, ph)) * v;
-    }
+    const Eigen::Matrix4cd Owc = Ow.cast<std::complex<double>>();
 
-    // A_d diagonal from Schur eigenvalue phases
-    Eigen::Vector4cd ad_diag, ad_inv_diag;
-    for (int j = 0; j < 4; ++j) {
-        ad_diag(j)     = std::exp(std::complex<double>(0.0,  phases[j]));
-        ad_inv_diag(j) = std::exp(std::complex<double>(0.0, -phases[j]));
-    }
-
-    // K_M = Ud · L_M^T · A_d^{-1}
-    Eigen::Matrix4cd K_M = Ud * L_M.transpose() * ad_inv_diag.asDiagonal();
+    // O_V = Ud · O · D⁻¹ needs no realness check. G := Ud O satisfies
+    // G^T G = O^T S O = Λ = D², so O_V^T O_V = I, and O_V is unitary too,
+    // being a product of unitaries. Complex-orthogonal AND unitary forces
+    // O_V^T = O_V†, hence O_V = conj(O_V): real.
+    const Eigen::Matrix4cd L_M = Owc.transpose();                      // O_W
+    const Eigen::Matrix4cd K_M = Ud * Owc * ad_inv_diag.asDiagonal();  // O_V
 
     // Convert to physical basis
     Eigen::Matrix4cd W_phys = M * L_M * M.adjoint();  // W1 ⊗ W0 (pre-rotation)
@@ -571,6 +730,16 @@ static QuantumCircuit kak_decompose(const Eigen::Matrix4cd& U4, int q0, int q1) 
     Eigen::Matrix2cd W0, W1, V0, V1;
     tensor_factor(W_phys, W0, W1);
     tensor_factor(V_phys, V0, V1);
+
+    // The rotation-count ranking above picks the cheapest point the
+    // square-root search can reach, which is not always the cheapest point
+    // that exists. Reducing into the Weyl chamber closes that gap, moving the
+    // cost into local factors that are emitted either way.
+    std::array<double, 3> weyl = {kx, ky, kz};
+    canonicalise_weyl(weyl, W0, W1, V0, V1);
+    kx = weyl[0];
+    ky = weyl[1];
+    kz = weyl[2];
 
     // Build result circuit: (W1⊗W0) → interaction → (V1⊗V0)
     QuantumCircuit result(2);
@@ -610,6 +779,57 @@ static QuantumCircuit kak_decompose(const Eigen::Matrix4cd& U4, int q0, int q1) 
 
     return result;
 }
+
+// =============================================================================
+// tqd::lower_2q_unitary - the ConsolidateBlocks numerics, reached by the QASM
+// exporters through src/transpiler/two_qubit_decompose.hpp
+// =============================================================================
+
+namespace tqd {
+
+std::optional<Lowered> lower_2q_unitary(const Instruction& inst) {
+    if (inst.qubits.size() != 2) return std::nullopt;
+
+    const auto u4 = instruction_to_4x4(inst);
+    if (!u4) return std::nullopt;
+
+    // Both the 4x4 above and the circuit below live on qubits [0, 1]; the
+    // operand order of `inst` is applied at the end, so the two never disagree
+    // about which wire is which.
+    const QuantumCircuit kak = kak_decompose(*u4, 0, 1);
+    const Eigen::Matrix4cd rebuilt = circuit_to_4x4(kak);
+    if (!matrices_equal_up_to_phase(rebuilt, *u4)) return std::nullopt;
+
+    // Recover the phase the emitted sequence dropped. The comparison is taken
+    // at the largest-magnitude entry, which is the best-conditioned place to
+    // divide; U(theta, phi, lambda) spans SU(2), so a U(2) operand always
+    // leaves exactly one global phase behind and never more.
+    int bi = 0, bj = 0;
+    double best = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            if (std::abs(rebuilt(i, j)) > best) {
+                best = std::abs(rebuilt(i, j));
+                bi = i;
+                bj = j;
+            }
+        }
+    }
+
+    Lowered out;
+    out.global_phase =
+        (best > 1e-12) ? std::arg((*u4)(bi, bj) / rebuilt(bi, bj)) : 0.0;
+    out.instructions = kak.instructions;
+    for (auto& emitted : out.instructions) {
+        for (auto& q : emitted.qubits) q = (q == 0) ? inst.qubits[0] : inst.qubits[1];
+        emitted.condition_clbit = inst.condition_clbit;
+        emitted.condition_value = inst.condition_value;
+        emitted.validation = inst.validation;
+    }
+    return out;
+}
+
+}  // namespace tqd
 
 DAGCircuit ConsolidateBlocks::run(const DAGCircuit& dag, const TranspilationContext& /*ctx*/) const {
     QuantumCircuit qc = dag.to_circuit();
@@ -680,26 +900,54 @@ DAGCircuit ConsolidateBlocks::run(const DAGCircuit& dag, const TranspilationCont
             ++j;
         }
 
-        // Only KAK-decompose when 2+ gates were consolidated; a single gate
-        // passes through unchanged (kak_decompose omits local corrections and
-        // would silently corrupt any gate that isn't in the RXX/RYY/RZZ family).
+        // A lone gate skips the decomposition entirely. Nothing is lost by
+        // that: its block holds one two-qubit gate, so the count guard below
+        // could only accept a replacement with fewer instructions overall, and
+        // a decomposition emitting an interaction rotation plus local
+        // corrections never has fewer. Skipping is the same verdict, reached
+        // without doing the work.
         if (block_count == 1) {
             optimized.instructions.push_back(inst);
         } else {
             QuantumCircuit kak_circ = kak_decompose(accum, qa, qb);
 
-            // Verification net: the Takagi step inside kak_decompose assumes
-            // distinct eigenvalues of the magic-basis Gram matrix; degenerate
-            // blocks can yield wrong local corrections. Rebuild the
-            // decomposition's 4x4 and require equality with the block (up to
-            // global phase); on mismatch keep the ORIGINAL block instructions
-            // (correctness over optimisation, no silent corruption).
+            // Two independent gates decide whether the decomposition is used,
+            // and both are load-bearing. The verification net answers "is this
+            // decomposition VALID": rebuild its 4x4 and require equality with
+            // the block up to global phase. The count guard below answers "is
+            // it WORTH keeping". Folding the two together would let a
+            // numerical failure hide behind a size comparison.
             QuantumCircuit local(2);
             for (auto ki : kak_circ.instructions) {
                 for (auto& q : ki.qubits) q = (q == qa) ? 0 : 1;
                 local.instructions.push_back(std::move(ki));
             }
-            if (matrices_equal_up_to_phase(circuit_to_4x4(local), accum)) {
+            const bool exact =
+                matrices_equal_up_to_phase(circuit_to_4x4(local), accum);
+
+            // Two-qubit gates are the metric. They dominate cost in every
+            // backend, and they are the only count that is trustworthy at this
+            // point: the cleanup sweep that follows this pass at level 3
+            // merges and cancels single-qubit gates, so a total-gate
+            // comparison taken here judges a circuit that no longer exists by
+            // the time it runs. The two-qubit count is stable across that
+            // sweep, since CXCancellation matches only CX pairs and this pass
+            // emits RXX/RYY/RZZ. Total count therefore breaks ties only, where
+            // it cannot invert the decision.
+            const auto count_2q = [](const std::vector<Instruction>& v) {
+                int n = 0;
+                for (const auto& in : v)
+                    if (in.qubits.size() == 2) ++n;
+                return n;
+            };
+            const int kak_2q = count_2q(kak_circ.instructions);
+            const int block_2q = count_2q(block_insts);
+            const bool cheaper =
+                kak_2q < block_2q ||
+                (kak_2q == block_2q &&
+                 kak_circ.instructions.size() <= block_insts.size());
+
+            if (exact && cheaper) {
                 for (const auto& ki : kak_circ.instructions) {
                     optimized.instructions.push_back(ki);
                 }

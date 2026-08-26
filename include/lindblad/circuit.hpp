@@ -252,8 +252,47 @@ struct DrawOptions {
 // PERMUTATION maps produce one multi-controlled network per displaced basis
 // state, so the output can be large — that cost is inherent to the format.
 
+// Whether a UNITARY instruction may be lowered to standard gates at export.
+//
+// FormatDefault is not indecision, it is the statement that each format should
+// do what its own capabilities allow:
+//
+//   QASM 2 REFUSES. There is no literal-matrix syntax, so any UNITARY has to be
+//   restructured into gates the caller never wrote, and the single-qubit
+//   corrections land in U(theta, phi, lambda), which spans SU(2) rather than
+//   U(2). Any operand carrying a global phase therefore loses it, and QASM 2
+//   has nowhere to put it. Restructuring a circuit and discarding information
+//   are both things to ask about rather than assume.
+//
+//   QASM 3 LOWERS. `gphase` is first-class there, so the same decomposition is
+//   exact: nothing is discarded and there is nothing to consent to.
+//
+// Always and Never override that per call, in the same direction for both
+// formats, so a value read at a call site means one thing wherever it is used.
+enum class UnitaryLowering {
+    FormatDefault,  // QASM 2 refuses; QASM 3 lowers
+    Always,         // lower in both formats
+    Never           // refuse in both formats
+};
+
+// A 2-qubit UNITARY lowers through the KAK decomposition into { U, RXX, RYY,
+// RZZ }; a 1-qubit one through an Euler decomposition into U. Three or more
+// qubits ALWAYS refuse, in every format and under every setting here, because
+// no exact decomposition for them exists in this project. That refusal is a
+// statement about the operand, not about these options, and its message says
+// so rather than implying a flag would help.
 struct QasmExportOptions {
     bool decompose_unrepresentable = false; // lower MCX/MCP/PERMUTATION at export
+
+    UnitaryLowering unitary_lowering = UnitaryLowering::FormatDefault;
+
+    // QASM 2 only, and meaningful only where lowering actually happens. A
+    // lowering that drops a global phase throws unless this is set; with it
+    // set the export proceeds, warns through the diagnostic sink once per
+    // lowered instruction, and records the dropped angle in the emitted text
+    // as a `// global phase: <alpha>` comment. There is no QASM 3 counterpart
+    // because no QASM 3 lowering is lossy.
+    bool accept_global_phase_loss = false;
 };
 
 // =============================================================================
@@ -421,7 +460,7 @@ public:
     // QASM 3.0: MCX/MCP emit natively via the `ctrl @` modifier; PERMUTATION
     // is always lowered at export (SWAPs for wire relabelings, exact
     // transposition networks otherwise) — QASM 3 has no permutation primitive.
-    std::string to_qasm3() const;
+    std::string to_qasm3(const QasmExportOptions& opts = {}) const;
     static QuantumCircuit from_qasm2(const std::string& qasm);
     static QuantumCircuit from_qasm3(const std::string& qasm);
 

@@ -4,6 +4,102 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.22.0] - 2026-08-26
+
+Issue #78 reported that the KAK decomposition inside `ConsolidateBlocks` failed
+on degenerate Weyl coordinates. A structural diagnostic showed the scope was
+wider: the pass had never consolidated an entangling block at all, on any
+operand. Correctness was never affected, because a verification net discards a
+failed factorisation and keeps the original instructions, so the pass simply did
+nothing and said nothing about doing nothing.
+
+Fixing it made an exact two-qubit QASM export possible for the first time, which
+is the rest of this release.
+
+### Fixed
+
+- **`ConsolidateBlocks` never consolidated an entangling block (#78).** Four
+  independent defects in `kak_decompose`, any one of which alone made the
+  verification net reject the result: Schur vectors were used as Takagi vectors,
+  which is valid only when the magic-basis Gram matrix has distinct eigenvalues;
+  an in-place sort of the eigenvalue phases destroyed their pairing with the
+  eigenvectors; the local factor and its transpose were used the wrong way
+  round; and the Weyl-chamber permutation was found but never applied to the
+  eigenvector columns. The decomposition now factors the Gram matrix by
+  simultaneous real diagonalisation of its real and imaginary parts, which needs
+  no distinctness assumption, and selects the square-root branch and column
+  order by a single scalar condition on the phase sum. Verified against every
+  two-qubit entangler, a generic unitary, and Haar-random operands.
+- **`to_qasm3()` dropped a multi-qubit unitary (#79).** Anything wider than one
+  qubit fell through to the generic emission path, which wrote a call to a gate
+  the file never defined and stored the matrix nowhere. The output was not valid
+  OpenQASM 3, since it referenced an undeclared identifier. A two-qubit unitary
+  is now lowered exactly, and three or more qubits are refused with a message
+  that says no exact lowering exists rather than implying an option would help.
+- **`from_qasm3()` could not read the `gphase` that `to_qasm3()` emits (#84).**
+  The exporter has emitted `gphase` for global phase since that was added, and
+  the parser rejected it as an unknown gate, so QASM 3 never round-tripped a
+  circuit carrying a global phase. Uncontrolled `gphase` is now accepted and
+  discarded, since circuits here are defined up to global phase. Under `ctrl @`
+  it is not discarded: the phase then applies only on the all-controls-one
+  branch, making it an observable relative phase, and it is emitted as `MCP`.
+
+### Added
+
+- **Weyl chamber reduction.** A correct decomposition is not automatically a
+  minimal one, and an equivalent point outside the canonical chamber costs an
+  extra interaction rotation. The coordinates are now reduced by shift, negate
+  and swap moves that are absorbed entirely into the local factors, so iSWAP
+  costs two rotations rather than three.
+- **A two-qubit gate-count guard in `ConsolidateBlocks`.** The pass keeps a
+  decomposition only when it lowers the two-qubit count, with total count as a
+  tie-break. This sits beside the existing verification net rather than
+  replacing it: the net decides whether a factorisation is valid, the guard
+  whether it is worth keeping. Two-qubit count is the metric because the
+  single-qubit count measured at this point is not the count that survives the
+  cleanup sweep that follows.
+- **`QasmExportOptions::unitary_lowering`** and
+  **`QasmExportOptions::accept_global_phase_loss`**, plus a defaulted options
+  parameter on `to_qasm3()`. `UnitaryLowering::FormatDefault` states that each
+  format does what its capabilities allow: QASM 2 refuses, QASM 3 lowers, since
+  `gphase` makes the same decomposition exact there. `Always` and `Never`
+  override both formats in the same direction.
+
+### Changed
+
+- **BREAKING: `to_qasm2()` now refuses a `UNITARY` at every width by default.**
+  It previously lowered a one-qubit unitary and recorded any dropped global
+  phase in a comment. Lowering restructures a circuit into gates the caller
+  never wrote, and it cannot carry a global phase, and those are two different
+  things to agree to. `unitary_lowering` governs the first,
+  `accept_global_phase_loss` the second, so a caller can permit restructuring
+  while still refusing to lose information: an operand already in SU(2) lowers
+  exactly and no loss arises. Where loss is accepted, the export warns once per
+  lowered instruction through the diagnostic handler and records the dropped
+  angle in the emitted text.
+
+### Results
+
+2382 tests across 214 suites, 2376 passed and 6 failed, on Clang 18.1.3
+(30.1 s) and GCC 13.3.0 (19.1 s) under Ubuntu 24.04. Both compilers produced
+the identical six failures, so nothing here is compiler- or flag-dependent.
+
+The six are the QASM 2 export tests that pin the previous contract, and they
+fail loudly rather than quietly: `BugRegression.B7_ToQasm2UnitaryNotComment`,
+`BugRegression.B7_ToQasm2UnitaryRoundTrip`,
+`BugRegression.B10_ToQasm2EmitsGlobalPhaseCommentForNonSU2`,
+`BugRegression.B10_ToQasm2NoCommentForSU2Gate`,
+`R1211SerialisationLoss.QasmSingleQubitUnitaryRoundTripsFaithfully` and
+`R1212QasmUnitary.OneQubitUnitariesAreUnaffected`. Each now meets the door
+described above. They are updated in the test release that follows this one,
+where their assertions can move together with the contract they describe.
+
+Two further findings from this work are filed and not addressed here: #82, that
+`ConsolidateBlocks` chooses its decomposition before the target basis is known,
+so a three-rotation result becomes six CX after translation where the algorithm
+guarantees at most three; and #83, on constants that are transcribed rather than
+taken from the constants header.
+
 ## [R.1.21.3] - 2026-08-26
 
 The first CI dispatch carrying the R.1.21.1 validation suites came back red on

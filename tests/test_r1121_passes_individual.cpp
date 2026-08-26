@@ -103,12 +103,23 @@ TEST(R1121Passes, ConsolidateBlocksPreservesSemantics) {
     expect_equiv(run_pass(ConsolidateBlocks(), qc), qc);
 }
 
-// ConsolidateBlocks over the FULL two-qubit gate set. Each block is a maximal
-// run of gates on one pair, KAK-decomposed to <=3 CNOTs + 1Q corrections. The
-// pass has a verification net: if the rebuilt 4x4 (from the emitted, possibly
-// zyz-affected, corrections) does not match the block up to global phase, it
-// keeps the ORIGINAL instructions. So the output is ALWAYS equivalent to the
-// input up to global phase, exercising both the KAK path and the fallback.
+// ConsolidateBlocks over the FULL two-qubit gate set, asserting that the pass
+// preserves the operator up to global phase for every entangler.
+//
+// WHAT THIS DOES NOT COVER, since the shape of the fixtures decides it: a block
+// is a run of ADJACENT two-qubit gates on one pair, and a single-qubit gate on
+// either wire ends that run. Every fixture below separates its two entanglers
+// with local gates, so each forms a block of ONE and is returned by the
+// block_count == 1 early-out without the decomposition being reached at all.
+// The same holds for the raw-UNITARY case at the end, where an `rz` sits
+// between the two `unitary` calls.
+//
+// So this pins the passthrough path. It cannot distinguish a working
+// decomposition from a discarded one either way, because the pass keeps the
+// ORIGINAL instructions whenever its verification net rejects a
+// factorisation, and the original instructions are equivalent by definition.
+// Structural coverage of the decomposition needs blocks of adjacent
+// entanglers and an assertion about the OUTPUT SHAPE rather than the operator.
 TEST(R1121Passes, ConsolidateBlocksFullTwoQubitSetPreservesSemantics) {
     struct Case { const char* name; void (*apply)(QuantumCircuit&); };
     const Case cases[] = {
@@ -130,8 +141,9 @@ TEST(R1121Passes, ConsolidateBlocksFullTwoQubitSetPreservesSemantics) {
         {"cu",    [](QuantumCircuit& c){ c.cu(0.4, 0.5, -0.6, 0.2, 0, 1); }},
     };
     for (const Case& cs : cases) {
-        // A maximal block: 1Q corrections on both wires sandwiching two copies
-        // of the entangler (forces block_count >= 2 -> KAK path).
+        // Local gates on both wires around two copies of the entangler. The
+        // local gates end the run, so this is two blocks of one rather than
+        // one block of two.
         QuantumCircuit qc(2);
         qc.ry(0.3, 0).rz(0.5, 1);
         cs.apply(qc);
@@ -154,6 +166,12 @@ TEST(R1121Passes, ConsolidateBlocksFullTwoQubitSetPreservesSemantics) {
 TEST(R1121Passes, ConsolidateBlocksDegenerateKakCases) {
     // Degenerate KAK spectra (equal interaction coefficients) stress the
     // Takagi step; the verification net guarantees correctness regardless.
+    //
+    // Unlike the full-gate-set case above, both fixtures here place their two
+    // entanglers ADJACENTLY, with no local gate between them, so each really is
+    // one block of two and the decomposition is reached. What is still not
+    // asserted is whether the decomposition was kept: equivalence holds either
+    // way, since the fallback returns the input.
     {
         QuantumCircuit qc(2);
         qc.swap(0, 1).cz(0, 1);  // [SWAP then CZ]

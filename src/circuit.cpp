@@ -9,6 +9,8 @@
 #include "visualisation/render_html.hpp"
 
 #include "transpiler/high_level_decompose.hpp"
+#include "transpiler/two_qubit_decompose.hpp"
+#include "lindblad/validation.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -1190,6 +1192,40 @@ int QuantumCircuit::num_parameters() const {
 // QASM Export (basic QASM 2.0)
 // =============================================================================
 
+namespace {
+
+// Does a UNITARY get lowered by this exporter, under these options?
+//
+// `format_lowers_by_default` carries the one thing the option cannot know: what
+// the target format can represent. QASM 2 passes false (no literal-matrix
+// syntax, and its lowering discards any global phase), QASM 3 passes true
+// (`gphase` makes the same lowering exact). Always and Never override both in
+// the same direction, so the enum value means one thing wherever it is read.
+bool lower_unitary_here(const QasmExportOptions& opts,
+                        bool format_lowers_by_default) {
+    switch (opts.unitary_lowering) {
+        case UnitaryLowering::Always: return true;
+        case UnitaryLowering::Never:  return false;
+        case UnitaryLowering::FormatDefault: break;
+    }
+    return format_lowers_by_default;
+}
+
+// Above two qubits no exact decomposition exists anywhere in this project, so
+// no export option can make the operand representable. Both exporters say so
+// in the same words, and neither names a flag, because naming one would send
+// the caller to try something that cannot work.
+[[noreturn]] void throw_unitary_too_wide(const char* fn, std::size_t width,
+                                         const std::string& gname) {
+    throw std::runtime_error(
+        std::string(fn) + ": the " + std::to_string(width) + "-qubit unitary '" +
+        gname + "' cannot be exported: no exact lowering above two qubits "
+        "exists. Use to_json() for a lossless round trip, or decompose it into "
+        "standard gates before exporting");
+}
+
+}  // namespace
+
 std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
     std::ostringstream oss;
     oss << "OPENQASM 2.0;\n";
@@ -1261,75 +1297,117 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
                 "at export, or use to_qasm3()");
         }
 
-        // A multi-qubit UNITARY is in the same position: QASM 2 has no syntax
-        // for a literal matrix, so the operand has no faithful spelling of its
-        // own, and no exact lowering for one exists in the tree. That leaves
-        // refusing or writing a different operator, and only refusing keeps the
-        // export trustworthy. decompose_unrepresentable is deliberately not
-        // offered here: it lowers MCX / MCP / PERMUTATION, and pointing at it
-        // for an operand it cannot lower would send the caller in a circle.
-        if (inst.type == Instruction::GateType::UNITARY &&
-            inst.qubits.size() >= 2) {
-            throw std::runtime_error(
-                "to_qasm2: the " + std::to_string(inst.qubits.size()) +
-                "-qubit unitary '" + gname + "' is not representable in "
-                "OpenQASM 2.0 (no literal-matrix syntax); use to_json() for a "
-                "lossless round trip, or decompose it into standard gates "
-                "before exporting");
-        }
-
-        // 1-qubit UNITARY: Euler-angle decomposition → U(theta, phi, lambda).
+        // UNITARY, at every width. OpenQASM 2.0 has no literal-matrix syntax,
+        // so the operand has no spelling of its own and must be either lowered
+        // into standard gates or refused.
         //
-        // OpenQASM 2.0 has no representation for a global phase (no `gphase`
-        // instruction). The `u(theta, phi, lambda)` gate covers only SU(2),
-        // so any U(2) input with a non-trivial `alpha = arg(U[0,0]) -
-        // arg(det(U))/2` is lowered lossily. The dropped phase is unobservable
-        // when this gate is used standalone, but becomes a relative phase
-        // between control branches if the result is later wrapped under a
-        // control (e.g. via re-parsing and constructing a controlled-U).
-        //
-        // When alpha is non-zero we emit a `// global phase: <alpha>` comment
-        // so the loss is documented and discoverable by readers / round-trip
-        // diff tools. For lossless round-tripping use `to_qasm3()`, which
-        // emits `gphase(alpha)` (preserved through QASM 3 `ctrl @` modifiers).
-        if (inst.type == Instruction::GateType::UNITARY && inst.qubits.size() == 1) {
-            const auto& m = inst.matrix;
-            double a_mag = std::sqrt(m[0].real*m[0].real + m[0].imag*m[0].imag);
-            double b_mag = std::sqrt(m[1].real*m[1].real + m[1].imag*m[1].imag);
-            double theta = 2.0 * std::atan2(b_mag, a_mag);
-            double phi = 0.0, lambda = 0.0, alpha = 0.0;
-            if (a_mag > 1e-9) {
-                alpha = std::atan2(m[0].imag, m[0].real);
-                if (b_mag > 1e-9) {
-                    lambda = std::atan2(-m[1].imag, -m[1].real) - alpha;
-                    phi    = std::atan2( m[2].imag,  m[2].real) - alpha;
-                } else {
-                    // theta ~ 0: entire phase lives in d
-                    lambda = std::atan2(m[3].imag, m[3].real) - alpha;
-                }
-            } else {
-                // theta ~ pi: read phases directly from b and c; alpha undefined,
-                // pick a canonical SU(2) representative.
-                lambda = std::atan2(-m[1].imag, -m[1].real);
-                phi    = std::atan2( m[2].imag,  m[2].real);
-            }
-            if (std::abs(alpha) > 1e-9) {
-                oss << "// global phase: " << std::setprecision(15) << alpha
-                    << " (dropped — OpenQASM 2.0 cannot represent global phase; "
-                    << "use to_qasm3() for lossless round-trip)\n";
-            }
-            oss << "u(" << std::setprecision(15) << theta
-                << "," << phi << "," << lambda
-                << ") q[" << inst.qubits[0] << "];\n";
-            continue;
-        }
-
-        // Multi-qubit UNITARY: custom gate definition was emitted at top; just call it.
+        // TWO SEPARATE CONSENTS are involved, and they are not the same thing.
+        // Lowering RESTRUCTURES the circuit into gates the caller never wrote.
+        // Lowering also cannot carry a global phase, because the single-qubit
+        // corrections land in U(theta, phi, lambda), which spans SU(2) rather
+        // than U(2), and QASM 2 has nowhere to put the remainder. The first is
+        // governed by unitary_lowering, the second by accept_global_phase_loss.
+        // Keeping them apart lets a caller permit restructuring while still
+        // refusing to lose information, which is a real position: an operand
+        // already in SU(2) lowers exactly and no loss arises at all.
         if (inst.type == Instruction::GateType::UNITARY) {
-            oss << gname;
-            for (size_t i = 0; i < inst.qubits.size(); ++i)
-                oss << (i == 0 ? " " : ",") << "q[" << inst.qubits[i] << "]";
-            oss << ";\n";
+            const std::size_t width = inst.qubits.size();
+            if (width >= 3) throw_unitary_too_wide("to_qasm2", width, gname);
+
+            if (!lower_unitary_here(opts, /*format_lowers_by_default=*/false)) {
+                throw std::runtime_error(
+                    "to_qasm2: the " + std::to_string(width) + "-qubit unitary '" +
+                    gname + "' is not representable in OpenQASM 2.0 (no "
+                    "literal-matrix syntax). Set QasmExportOptions::"
+                    "unitary_lowering = UnitaryLowering::Always to lower it into "
+                    "standard gates at export; that lowering cannot carry a "
+                    "global phase, so set accept_global_phase_loss as well if the "
+                    "operand has one. to_json() round-trips losslessly instead");
+            }
+
+            std::vector<Instruction> lowered;
+            double alpha = 0.0;
+
+            if (width == 1) {
+                const auto& m = inst.matrix;
+                double a_mag = std::sqrt(m[0].real*m[0].real + m[0].imag*m[0].imag);
+                double b_mag = std::sqrt(m[1].real*m[1].real + m[1].imag*m[1].imag);
+                double theta = 2.0 * std::atan2(b_mag, a_mag);
+                double phi = 0.0, lambda = 0.0;
+                if (a_mag > 1e-9) {
+                    alpha = std::atan2(m[0].imag, m[0].real);
+                    if (b_mag > 1e-9) {
+                        lambda = std::atan2(-m[1].imag, -m[1].real) - alpha;
+                        phi    = std::atan2( m[2].imag,  m[2].real) - alpha;
+                    } else {
+                        // theta ~ 0: entire phase lives in d
+                        lambda = std::atan2(m[3].imag, m[3].real) - alpha;
+                    }
+                } else {
+                    // theta ~ pi: read phases directly from b and c; alpha
+                    // undefined, pick a canonical SU(2) representative.
+                    lambda = std::atan2(-m[1].imag, -m[1].real);
+                    phi    = std::atan2( m[2].imag,  m[2].real);
+                }
+                Instruction u;
+                u.type = Instruction::GateType::U;
+                u.qubits = inst.qubits;
+                u.params = {theta, phi, lambda};
+                u.condition_clbit = inst.condition_clbit;
+                u.condition_value = inst.condition_value;
+                u.validation = inst.validation;
+                lowered.push_back(std::move(u));
+            } else {
+                const auto low = tqd::lower_2q_unitary(inst);
+                if (!low) {
+                    throw std::runtime_error(
+                        "to_qasm2: the 2-qubit unitary '" + gname + "' could not "
+                        "be decomposed: the decomposition did not reproduce the "
+                        "operand. Use to_json() for a lossless round trip");
+                }
+                lowered = low->instructions;
+                alpha = low->global_phase;
+            }
+
+            if (std::abs(alpha) > 1e-9) {
+                if (!opts.accept_global_phase_loss) {
+                    throw std::runtime_error(
+                        "to_qasm2: lowering the " + std::to_string(width) +
+                        "-qubit unitary '" + gname + "' would drop a global phase "
+                        "of " + std::to_string(alpha) + " radians, which OpenQASM "
+                        "2.0 cannot represent. Set QasmExportOptions::"
+                        "accept_global_phase_loss to proceed and record the loss "
+                        "in a comment, or use to_qasm3(), which carries it exactly "
+                        "via gphase");
+                }
+                // One warning per lowered instruction, through the shared sink
+                // so a caller can capture or silence it, and one comment in the
+                // text so the loss survives in the file itself.
+                emit_warning(
+                    "to_qasm2: dropped a global phase of " +
+                    std::to_string(alpha) + " radians lowering the " +
+                    std::to_string(width) + "-qubit unitary '" + gname + "'");
+                oss << "// global phase: " << std::setprecision(15) << alpha
+                    << " (dropped: OpenQASM 2.0 cannot represent global phase; "
+                    << "use to_qasm3() for a lossless round trip)\n";
+            }
+
+            for (const auto& g : lowered) {
+                oss << g.gate_name();
+                if (!g.params.empty()) {
+                    oss << "(";
+                    for (size_t i = 0; i < g.params.size(); ++i) {
+                        if (i > 0) oss << ",";
+                        oss << std::setprecision(15) << g.params[i];
+                    }
+                    oss << ")";
+                }
+                for (size_t i = 0; i < g.qubits.size(); ++i) {
+                    if (i > 0) oss << ",";
+                    oss << " q[" << g.qubits[i] << "]";
+                }
+                oss << ";\n";
+            }
             continue;
         }
 
@@ -1373,7 +1451,7 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
     return oss.str();
 }
 
-std::string QuantumCircuit::to_qasm3() const {
+std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
     std::ostringstream oss;
     oss << "OPENQASM 3.0;\n";
     oss << "include \"stdgates.inc\";\n";
@@ -1475,6 +1553,58 @@ std::string QuantumCircuit::to_qasm3() const {
                 oss << (i == 0 ? " " : ", ") << "q[" << inst.qubits[i] << "]";
             }
             oss << ";\n";
+            continue;
+        }
+
+        // A UNITARY wider than one qubit. QASM 3 has no literal-matrix syntax
+        // either, so it must be lowered or refused; falling through to the
+        // generic tail would write a call to a gate the file never defines and
+        // drop the matrix entirely (issue #79).
+        if (inst.type == Instruction::GateType::UNITARY && inst.qubits.size() >= 2) {
+            const std::size_t width = inst.qubits.size();
+            if (width >= 3) throw_unitary_too_wide("to_qasm3", width, gname);
+
+            if (!lower_unitary_here(opts, /*format_lowers_by_default=*/true)) {
+                throw std::runtime_error(
+                    "to_qasm3: the 2-qubit unitary '" + gname + "' was not "
+                    "lowered because QasmExportOptions::unitary_lowering is "
+                    "Never. QASM 3 has no literal-matrix syntax, so the operand "
+                    "has no other spelling; clear that setting to lower it "
+                    "exactly, or use to_json()");
+            }
+
+            const auto lowered = tqd::lower_2q_unitary(inst);
+            if (!lowered) {
+                throw std::runtime_error(
+                    "to_qasm3: the 2-qubit unitary '" + gname + "' could not be "
+                    "decomposed: the decomposition did not reproduce the "
+                    "operand. Use to_json() for a lossless round trip");
+            }
+
+            // `gphase` is what makes this exact rather than merely equivalent:
+            // the emitted single-qubit corrections span SU(2), so the operand's
+            // global phase has to be restored explicitly. QASM 2 has nowhere to
+            // put this, which is the whole reason the two formats differ here.
+            if (std::abs(lowered->global_phase) > 1e-9) {
+                oss << "gphase(" << std::setprecision(15)
+                    << lowered->global_phase << ");\n";
+            }
+            for (const auto& g : lowered->instructions) {
+                oss << g.gate_name();
+                if (!g.params.empty()) {
+                    oss << "(";
+                    for (size_t i = 0; i < g.params.size(); ++i) {
+                        if (i > 0) oss << ", ";
+                        oss << std::setprecision(15) << g.params[i];
+                    }
+                    oss << ")";
+                }
+                for (size_t i = 0; i < g.qubits.size(); ++i) {
+                    if (i > 0) oss << ",";
+                    oss << " q[" << g.qubits[i] << "]";
+                }
+                oss << ";\n";
+            }
             continue;
         }
 

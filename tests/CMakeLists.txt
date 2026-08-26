@@ -119,6 +119,10 @@ set(LINDBLAD_TEST_SOURCES
     test_r1213_residual_stability.cpp
 )
 
+# test_r1214_kak_diagnostic.cpp is present in the tree but deliberately absent
+# from the list above, so it is not compiled or run. Its assertions belong to
+# the test-suite release that extends it.
+
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this
 # TU's JacobiSVD/BDCSVD instantiations get IEEE semantics while the rest of
 # the suite keeps the project-wide -ffast-math. Mirrors the vendored-NLopt

@@ -374,9 +374,20 @@ After:   U3(phi, theta, lam) on q0       [1 gate]
   where $CX_{\text{basis}}$ is a diagonal unitary in Bell basis.
 - Number of CNOTs ≤ 3; often 2 or 1 for structured unitaries.
 
-**Benefit**: Reduces 2Q gate count for circuits with blocks of consecutive gates.
+**Benefit**: Reduces 2Q gate count for circuits with blocks of consecutive gates. This is enforced rather than assumed: a decomposition is kept only when it lowers the two-qubit gate count, with total instruction count as a tie-break. A block whose decomposition would not be cheaper is left exactly as it was.
 
-**Note**: Only applies KAK if block contains $\geq 2$ gates; single gates left unchanged (avoid losing CNOT).
+**Two independent gates decide the outcome**, and both are needed:
+
+- The **verification net** rebuilds the decomposition's 4×4 and requires it to match the block up to global phase. On mismatch the original instructions are kept, so the pass can never emit a wrong circuit.
+- The **count guard** then asks whether the valid decomposition is worth keeping.
+
+Two-qubit count is the metric because it is the only count that is stable at this point in the pipeline: the cleanup sweep that follows this pass at level 3 merges and cancels single-qubit gates, so a total-count comparison taken here would judge a circuit that no longer exists by the time it runs. Nothing downstream adds or removes two-qubit gates.
+
+**Weyl coordinates**: the interaction is emitted from coordinates reduced into the canonical Weyl chamber. Many coordinate triples describe the same operator up to local gates and they do not all cost the same, since a triple with a zero entry needs one fewer interaction rotation. The reduction moves are absorbed entirely into the local corrections, so iSWAP costs two rotations rather than three.
+
+**Block formation**: a block is a run of *adjacent* two-qubit gates on one pair. A single-qubit gate on either wire ends the run, so an entangler surrounded by local gates forms a block of one.
+
+**Note**: Only applies KAK if block contains $\geq 2$ gates; single gates left unchanged. Nothing is lost by that: a one-gate block holds a single two-qubit gate, so the count guard could only accept a replacement with fewer instructions overall, and a decomposition emitting an interaction rotation plus local corrections never has fewer.
 
 **Complexity**: $O(n)$ for block identification; $O(1)$ per block (fixed 4×4 decomposition)
 

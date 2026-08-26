@@ -20,17 +20,57 @@ The four methods are part of the `QuantumCircuit` class:
 
 ```cpp
 std::string to_qasm2(const QasmExportOptions& opts = {}) const;
-std::string to_qasm3() const;
+std::string to_qasm3(const QasmExportOptions& opts = {}) const;
 static QuantumCircuit from_qasm2(const std::string& qasm);
 static QuantumCircuit from_qasm3(const std::string& qasm);
 ```
 
-`QasmExportOptions` carries one knob:
+`QasmExportOptions` carries three knobs. In every case the circuit object is
+never modified; only the emitted text is affected.
 
 - `decompose_unrepresentable` (default `false`) — when set, `to_qasm2()`
   lowers `MCX` / `MCP` / `PERMUTATION` to standard gates at export time via
-  the shared exact decompositions instead of throwing. The circuit object is
-  never modified; only the emitted text is decomposed.
+  the shared exact decompositions instead of throwing.
+
+- `unitary_lowering` (default `UnitaryLowering::FormatDefault`): whether a
+  `UNITARY` instruction may be lowered to standard gates at export.
+  `FormatDefault` is a statement about what each format can represent rather
+  than an absence of choice: QASM 2 refuses, QASM 3 lowers. `Always` and
+  `Never` override both formats in the same direction, so a value means the
+  same thing wherever it is read.
+
+- `accept_global_phase_loss` (default `false`): QASM 2 only, and meaningful
+  only where lowering actually happens. A lowering that would drop a global
+  phase throws unless this is set. With it set the export proceeds, warns
+  through the diagnostic handler once per lowered instruction, and records the
+  dropped angle in the emitted text as a `// global phase: <alpha>` comment.
+  There is no QASM 3 counterpart because no QASM 3 lowering is lossy.
+
+### Why lowering and loss are separate consents
+
+Lowering a `UNITARY` restructures a circuit into gates the caller never wrote.
+It also cannot carry a global phase in QASM 2, because the single-qubit
+corrections land in `u(theta, phi, lambda)`, which spans SU(2) rather than U(2),
+and QASM 2 has nowhere to put the remainder.
+
+Those are different things to agree to, so they have separate settings. A
+caller can permit restructuring while still refusing to lose information, and
+that combination is not hypothetical: an operand already in SU(2) lowers
+exactly and no loss arises at all.
+
+QASM 3 needs only the first, since `gphase` restores the phase and the same
+decomposition is exact there.
+
+### Widths
+
+A one-qubit `UNITARY` lowers through an Euler decomposition to `u`. A two-qubit
+one lowers through the KAK decomposition to `u` / `rxx` / `ryy` / `rzz`, all of
+which both QASM 2 exporters and parsers already handle.
+
+Three or more qubits ALWAYS throw, in both formats and under every setting
+above, because no exact decomposition for them exists in this project. That
+refusal describes the operand rather than the options, and its message says so
+instead of naming a setting that could not help.
 
 ## QASM 2.0 Round-Trip
 
@@ -39,15 +79,16 @@ static QuantumCircuit from_qasm3(const std::string& qasm);
 - Emits `OPENQASM 2.0;` + `include "qelib1.inc";`
 - Declares `qreg q[n_qubits];` and (when present) `creg c[n_clbits];`
 - Each instruction is rendered as `name(params)? q[i] (, q[j])* ;`
-- A one-qubit `UNITARY` is Euler-decomposed to `u(theta, phi, lambda)`, which
-  preserves the map exactly (QASM 2.0 has no global-phase syntax, so the phase
-  is dropped; `to_qasm3()` keeps it via `gphase`)
-- A `UNITARY` on two or more qubits throws `std::runtime_error`. QASM 2.0 has no
-  literal-matrix syntax, so the operand has no faithful spelling, and no exact
-  lowering for one exists. `decompose_unrepresentable` does not change this: it
-  lowers the three high-level operations below and cannot reach a raw matrix.
-  Use `to_json()`, which round-trips a matrix losslessly, or decompose the
-  operand into standard gates before exporting
+- A `UNITARY` throws `std::runtime_error` at every width by default. QASM 2.0
+  has no literal-matrix syntax, so the operand has no faithful spelling of its
+  own and can only be restructured or refused. Set
+  `unitary_lowering = UnitaryLowering::Always` to lower one and two qubit
+  operands at export; `accept_global_phase_loss` is additionally required when
+  the operand carries a global phase, which QASM 2.0 cannot represent. Use
+  `to_json()`, which round-trips a matrix losslessly, or `to_qasm3()`, which
+  lowers exactly
+- `decompose_unrepresentable` governs `MCX` / `MCP` / `PERMUTATION` and does not
+  reach a raw matrix; `unitary_lowering` is the setting for that
 - `PARAM_*` instructions are rendered as `gate '<label>' omitted` comments
   because QASM 2.0 cannot express an unbound symbolic parameter; the output
   remains valid QASM 2.0
@@ -108,6 +149,14 @@ static QuantumCircuit from_qasm3(const std::string& qasm);
   degenerates to `p(λ)`). Round-trip: the parser restores `MCX` for `k ≥ 3`
   and `MCP` for `m ≥ 3`; smaller stacks canonicalise to the named
   `cx` / `ccx` / `cp` forms (identical unitaries)
+- A one-qubit `UNITARY` is Euler-decomposed to `u`, and a two-qubit one through
+  the KAK decomposition to `u` / `rxx` / `ryy` / `rzz`. Both are EXACT: any
+  global phase the decomposition leaves behind is emitted as `gphase(alpha)`,
+  which QASM 3 carries as a first-class instruction. Three or more qubits throw,
+  since no exact decomposition for them exists. Set
+  `unitary_lowering = UnitaryLowering::Never` to refuse instead of lowering,
+  which is the setting to use when the point of the export is to find out
+  whether a circuit still holds raw matrices
 - `PERMUTATION` has no QASM 3 primitive and is ALWAYS lowered at export:
   wire-relabeling maps become at most k−1 `swap`s; general basis maps lower
   by exact transposition synthesis whose multi-controlled steps are emitted
@@ -119,6 +168,18 @@ static QuantumCircuit from_qasm3(const std::string& qasm);
 `from_qasm3()` is backed by `QASM3Lexer` + `QASM3Parser` in
 `src/qasm/qasm3_parser.cpp`. The parser is production-grade for the
 Qiskit-exportable subset of QASM 3.
+
+`gphase(alpha)` is accepted. Uncontrolled, it is discarded: `QuantumCircuit`
+has no global-phase field, because circuits in this project are defined up to
+global phase, which is why equivalence is checked that way throughout. The
+emitted TEXT is still exact, so a consumer that models global phase reads the
+operand exactly; a round trip back through `QuantumCircuit` reproduces it up to
+that phase and no further.
+
+Under `ctrl @` it is NOT discarded. A controlled global phase applies only on
+the all-controls-one branch, which makes it a relative phase between branches
+and therefore observable, so it is parsed into `MCP` on the control operands.
+Dropping it there would silently change the operator.
 
 #### Tokenizer
 

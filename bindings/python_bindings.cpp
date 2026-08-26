@@ -137,7 +137,11 @@ PYBIND11_MODULE(lindblad_python, m) {
         .def("control", &lindblad::QuantumCircuit::control, py::arg("num_ctrl_qubits") = 1)
         // Export
         .def("to_qasm2", &lindblad::QuantumCircuit::to_qasm2)
-        .def("to_qasm3", &lindblad::QuantumCircuit::to_qasm3)
+        // Bound through a lambda rather than by address so the no-argument
+        // Python call keeps working: QasmExportOptions is not registered as a
+        // Python type, so pybind11 cannot materialise the C++ default argument.
+        .def("to_qasm3",
+             [](const lindblad::QuantumCircuit& c) { return c.to_qasm3(); })
         .def("to_json", &lindblad::QuantumCircuit::to_json)
         .def_static("from_json", &lindblad::QuantumCircuit::from_json)
         .def("to_ascii", &lindblad::QuantumCircuit::to_ascii)

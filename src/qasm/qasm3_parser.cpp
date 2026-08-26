@@ -1273,6 +1273,55 @@ private:
         // or pow_exp.
         if (name == "id") return;
 
+        // `gphase(a)` is a global phase, which QuantumCircuit has no field for:
+        // circuits here are defined UP TO global phase, which is why every
+        // equivalence check in the project compares that way. Uncontrolled,
+        // there is nothing observable to record and it is dropped, so a
+        // to_qasm3 -> from_qasm3 round trip reproduces the operator up to that
+        // phase and no further.
+        //
+        // Under `ctrl @` it stops being global. The phase then applies only on
+        // the all-controls-1 branch, which is a RELATIVE phase between branches
+        // and is observable, so dropping it there would silently change the
+        // operator. That case is exactly MCP (phase on the all-ones slice of
+        // its symmetric controls) and is emitted rather than discarded.
+        if (name == "gphase") {
+            if (params.size() != 1) {
+                throw std::runtime_error(
+                    "QASM3Parser: gphase expects exactly 1 parameter, got " +
+                    std::to_string(params.size()));
+            }
+            if (n_ctrl == 0) {
+                if (!qubits.empty()) {
+                    throw std::runtime_error(
+                        "QASM3Parser: uncontrolled gphase takes no qubit "
+                        "operands, got " + std::to_string(qubits.size()));
+                }
+                return;
+            }
+            if (!is_literal_constant(params[0])) {
+                throw std::runtime_error(
+                    "QASM3Parser: a controlled gphase needs a numeric angle "
+                    "(it becomes an observable relative phase); bind "
+                    "parameters first");
+            }
+            if (static_cast<int>(qubits.size()) != n_ctrl) {
+                throw std::runtime_error(
+                    "QASM3Parser: ctrl(" + std::to_string(n_ctrl) +
+                    ") @ gphase expects " + std::to_string(n_ctrl) +
+                    " control qubits, got " + std::to_string(qubits.size()));
+            }
+            // inv negates the angle and pow scales it; both commute with the
+            // control, so the stack collapses to a single angle.
+            Instruction inst;
+            inst.type = Instruction::GateType::MCP;
+            inst.qubits = qubits;
+            inst.params = {params[0].eval({}) * static_cast<double>(pow_exp) *
+                           (inv ? -1.0 : 1.0)};
+            emit_instruction(std::move(inst));
+            return;
+        }
+
         // Try a fast path that maps the modifier stack to a named gate.
         if (try_emit_named(name, params, qubits, n_ctrl, inv, pow_exp)) return;
 
