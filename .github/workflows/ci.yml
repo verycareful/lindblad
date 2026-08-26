@@ -3,11 +3,20 @@
 # The Clang 20 leg spans a compiler generation rather than a platform. Nothing
 # else in the matrix runs a compiler newer than clang 18, and a defect that only
 # a newer one exhibits would otherwise reach a user's build before ours.
-# Mirrors the README's standard build settings EXCEPT the -march choice: hosted
-# runners span hardware generations, so CI builds the pinned x86-64-v3 baseline
-# (the LINDBLAD_MARCH_NATIVE=OFF default) instead of -march=native, otherwise
-# numerical results would vary run-to-run with the machine a job lands on. Every
-# dependency is fetched by CMake (FetchContent), so a runner only needs a
+# Mirrors the README's standard build settings exactly, -march=native included
+# (LINDBLAD_MARCH_NATIVE=ON). CI validates the configuration the project
+# actually recommends and the maintainer actually builds; a green run on some
+# other configuration says less than it appears to.
+#
+# The cost is real and is accepted deliberately: hosted runners span hardware
+# generations, so the ISA -march=native resolves to varies with whichever
+# machine a job lands on. A leg can therefore change its vectorisation, and with
+# it the last bits of a floating-point result, with no change to the tree. Read
+# a one-test numerical difference between runs against that before reading it as
+# a regression, and pin any assertion that cannot tolerate a differently
+# vectorised build.
+#
+# Every dependency is fetched by CMake (FetchContent), so a runner only needs a
 # compiler + ninja + an OpenMP runtime (GCC bundles libgomp; clang's libomp is
 # separate).
 # `build-test-windows` runs only when the dispatch asks for it; see the note on
@@ -107,7 +116,7 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DCMAKE_CXX_COMPILER="${{ env.CXX }}"
-          -DLINDBLAD_MARCH_NATIVE=OFF
+          -DLINDBLAD_MARCH_NATIVE=ON
           -DLINDBLAD_BUILD_PYTHON=OFF
 
       # A failed configure prints only the message() text, not the compiler and
@@ -195,7 +204,7 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_CXX_COMPILER="${{ env.CXX }}"
-          -DLINDBLAD_MARCH_NATIVE=OFF
+          -DLINDBLAD_MARCH_NATIVE=ON
           -DLINDBLAD_BUILD_PYTHON=OFF
 
       # Same reasoning as the matrix job's copy of this step.
@@ -266,7 +275,7 @@ jobs:
           cmake -S . -B build-cov -G Ninja
           -DCMAKE_CXX_COMPILER=g++-13
           -DLINDBLAD_BUILD_COVERAGE=ON
-          -DLINDBLAD_MARCH_NATIVE=OFF
+          -DLINDBLAD_MARCH_NATIVE=ON
           -DLINDBLAD_BUILD_PYTHON=OFF
 
       - name: Build

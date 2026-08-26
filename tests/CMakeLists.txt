@@ -115,6 +115,8 @@ set(LINDBLAD_TEST_SOURCES
     test_r1211_margins.cpp
     test_r1211_backfill_r120.cpp
     test_r1212_guards.cpp
+    r1211_reference_residuals_strictfp.cpp
+    test_r1213_residual_stability.cpp
 )
 
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this
@@ -134,6 +136,17 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
     # linkage so each leg runs its own codegen; without that the linker merges
     # the two into one and both legs report on the same machine code.
     set_source_files_properties(test_r1201_strict_fp_nofast.cpp PROPERTIES
+        COMPILE_OPTIONS "-fno-fast-math")
+
+    # The R1211 reference residuals. A reference is an oracle, and under
+    # -ffast-math it is not one: at -march=x86-64-v3 Clang 18 transforms
+    # reference_unitarity_deviation into a computation returning a value no
+    # faithful evaluation order produces, so the suite compared the library
+    # against a corrupted number. Only the reference is quarantined; the tests
+    # calling it keep the project-wide flags, because the library's residuals
+    # are header-inlined and a strict copy of those could win the link and
+    # change which machine code the other suites exercise.
+    set_source_files_properties(r1211_reference_residuals_strictfp.cpp PROPERTIES
         COMPILE_OPTIONS "-fno-fast-math")
 endif()
 

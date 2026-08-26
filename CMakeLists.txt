@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.21.2 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.21.3 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.21.2")
+set(LINDBLAD_VERSION_LABEL "R.1.21.3")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -194,6 +194,19 @@ FetchContent_MakeAvailable(nlopt eigen)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     set_source_files_properties(src/simulators/mps_sim.cpp PROPERTIES
         COMPILE_OPTIONS "-fno-fast-math")
+
+    # Strict FP for the Class C residuals, same reasoning one level down: these
+    # are measurements rather than kernels. Each evaluates a near-cancellation
+    # (U†U - I), the shape fast-math perturbs hardest, and the number it
+    # produces is compared against the caller's atol and reported in the failure
+    # message for a caller to pick a tolerance from. Under -ffast-math the same
+    # Hadamard measured 1.2386923780787705e-16 at -march=native against the
+    # correct 2.2204460492503131e-16, so the verdict on a matrix sitting near
+    # atol depended on the target rather than on the matrix. The check costs a
+    # fraction of a percent of the kernel it guards, so buying reproducibility
+    # here is cheap.
+    set_source_files_properties(src/validate_physical.cpp PROPERTIES
+        COMPILE_OPTIONS "-fno-fast-math")
 endif()
 
 # Third-party hygiene for the vendored NLopt build:
@@ -248,6 +261,7 @@ target_compile_definitions(lindblad_banner_obj PRIVATE
 add_library(lindblad_core STATIC
     src/hw_info.cpp
     src/validation.cpp
+    src/validate_physical.cpp
     src/statevector.cpp
     src/gates/single_qubit.cpp
     src/gates/two_qubit.cpp

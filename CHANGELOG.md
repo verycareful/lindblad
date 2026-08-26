@@ -4,6 +4,85 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.21.3] - 2026-08-26
+
+The first CI dispatch carrying the R.1.21.1 validation suites came back red on
+two legs, and the cause was not the one it looked like. A physical-validity
+residual returned a different number depending on the `-march` the library was
+built with. The measurement was wrong, not the test.
+
+### Fixed
+
+- **A Class C residual depended on the compiler flags it was built with.** The
+  three physical-validity residuals evaluate `U†U - I` and its channel
+  equivalents, which are near-cancellations, and that is the shape a permissive
+  floating-point model perturbs hardest. Under the project-wide `-ffast-math`
+  the same Hadamard measured `1.2386923780787705e-16` at `-march=native`
+  against `2.2204460492503131e-16` at the pinned `x86-64-v3` baseline. The
+  second is the IEEE value; the first is not a value any faithful evaluation
+  order produces.
+
+  This is a measurement, and the number it produces is not incidental: it is
+  compared against the caller's `atol` and printed in the failure message so a
+  caller can choose a tolerance from it. An operand sitting near that tolerance
+  could therefore be accepted on one build and rejected on another, for no
+  reason but codegen.
+
+  `unitarity_deviation`, `kraus_tp_deviation` and `superop_tp_deviation` now
+  live in `src/validate_physical.cpp`, compiled `-fno-fast-math`. The policy
+  dispatch, message formatting and check entry points stay inline in the header
+  under the project-wide flags: only the arithmetic is quarantined. Same
+  reasoning as the existing `mps_sim.cpp` and NLopt quarantines, one level
+  down. The check already costs a fraction of a percent of the kernel it
+  guards, so buying reproducibility here is cheap.
+
+- **The test suite's own reference residual had the same defect.** It is now
+  defined in a translation unit compiled `-fno-fast-math`. A reference exists to
+  be an oracle, and one evaluated under a permissive model is not one. Only the
+  reference is quarantined, not the tests that call it, so the library's own
+  codegen remains what those tests exercise.
+
+### Changed
+
+- **CI builds the configuration the project documents.** All three configure
+  sites move to `LINDBLAD_MARCH_NATIVE=ON`, matching the README build line
+  rather than a pinned baseline no user is told to use. The cost is accepted
+  deliberately and recorded in the workflow: hosted runners span hardware
+  generations, so the ISA now varies with the machine a job lands on, and a
+  one-test numerical difference between runs should be read against that before
+  being read as a regression.
+
+  Worth stating plainly, because the reverse is the tempting conclusion: the
+  divergence between CI and the documented build is what exposed the defect
+  above. Two configurations disagreed, and only because they disagreed did
+  anyone look. Whether to keep a second configuration deliberately is filed as
+  an open question rather than settled here.
+
+### Tests
+
+Six tests in a new suite pin all three residuals to exact IEEE values.
+
+They compare against DERIVED QUANTITIES rather than against a second
+implementation, and that distinction is the whole point. R.1.21.1 already
+compared the library's upper-triangle walk against a full-walk reference, and
+that test PASSED at `-march=native` while both sides were wrong in the same
+way. Two implementations agreeing proves only that they agree; it cannot detect
+a transformation applied to both. Every expected value in the new suite is an
+exact multiple of the double epsilon, folded from `std::numeric_limits` and the
+project's own `INV_SQRT2`, so no expectation was transcribed from an observed
+run. A recorded output would have pinned whatever the build happened to
+produce, which is precisely the failure being fixed.
+
+The suite also pins the consequence rather than only the numbers: a verdict at
+the tolerance boundary must land the same way on every build.
+
+### Results
+
+2382 tests across 214 suites, all passed, on four legs: Clang 18.1.3 and
+GCC 13.3.0, each at `-march=native` and at the pinned `x86-64-v3` baseline.
+All four are recorded because the defect this release fixes was invisible to
+any single one of them.
+
 ## [R.1.21.2] - 2026-08-25
 
 The five defects R.1.21.1 filed are fixed and its fifteen deliberately red tests

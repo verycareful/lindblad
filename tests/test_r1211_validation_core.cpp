@@ -16,6 +16,8 @@
 #include "lindblad/constants.hpp"
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
+#include "r1211_reference_residuals.hpp"
+
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 
@@ -70,31 +72,14 @@ std::vector<Complex128> hadamard_matrix() {
 // -----------------------------------------------------------------------------
 // Independent references
 // -----------------------------------------------------------------------------
-// The library walks only the upper triangle of U†U, which is sound because U†U
-// is Hermitian. This reference walks every entry, so comparing the two is a
-// direct test of that argument rather than of the arithmetic they share.
-//
-// The running maximum here is NaN-sticky: once a NaN is seen it is never
-// displaced by a later finite value. Distinguishing this from the library's
-// behaviour is the subject of the R1211NonFinite suite below.
-double reference_unitarity_deviation(const std::vector<Complex128>& U,
-                                     std::size_t rows) {
-    double worst_sq = 0.0;
-    bool saw_nan = false;
-    for (std::size_t i = 0; i < rows; ++i) {
-        for (std::size_t j = 0; j < rows; ++j) {
-            Complex128 acc(0.0, 0.0);
-            for (std::size_t m = 0; m < rows; ++m)
-                acc = acc + U[m * rows + i].conj() * U[m * rows + j];
-            const Complex128 diff = acc - Complex128(i == j ? 1.0 : 0.0, 0.0);
-            const double d = diff.norm_sq();
-            if (std::isnan(d)) saw_nan = true;
-            else if (d > worst_sq) worst_sq = d;
-        }
-    }
-    if (saw_nan) return std::numeric_limits<double>::quiet_NaN();
-    return std::sqrt(worst_sq);
-}
+// reference_unitarity_deviation is declared in r1211_reference_residuals.hpp
+// and defined in a translation unit compiled with -fno-fast-math. It walks
+// every entry of U†U where the library walks only the upper triangle, so
+// comparing the two is a direct test of the Hermitian-symmetry argument rather
+// than of the arithmetic they share. That comparison is only meaningful if the
+// reference is evaluated under IEEE semantics; the header explains what the
+// permissive model does to it otherwise.
+using r1211ref::reference_unitarity_deviation;
 
 // Builds a superoperator from a Kraus set: S[(ro,co),(ri,ci)] = Σ_k K_k[ro,ri]·
 // conj(K_k[co,ci]). A trace-preserving Kraus set therefore yields a

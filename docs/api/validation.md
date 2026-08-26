@@ -82,6 +82,14 @@ different tolerance can read the number rather than guess it:
 apply_unitary: matrix is not unitary (max |U†U - I| = 3.7e-09, atol = 1e-12)
 ```
 
+That number is reproducible: the residual arithmetic is compiled under IEEE
+semantics rather than the project-wide fast-math flags, so the same operand
+measures the same on every target and compiler. The residuals evaluate
+`U†U - I` and its channel equivalents, which are near-cancellations, and a
+permissive floating-point model perturbs those enough to move a verdict for an
+operand sitting near `atol`. The policy dispatch around them is ordinary code
+and is not quarantined; only the measurement is.
+
 ## What is checked
 
 Unitarity of a caller-supplied matrix:

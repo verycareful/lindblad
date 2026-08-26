@@ -30,11 +30,10 @@
 //
 // A matrix carrying a non-finite entry is exactly what these checks exist to
 // catch, and two separate mechanisms are needed to catch one. The tolerance
-// comparison is written as !(dev <= tol) rather than (dev > tol), so a NaN
-// residual, which compares false against everything, is a failure rather than a
-// silent pass. Accumulating the residual needs more than that spelling: see
-// accumulate_worst, where a maximum taken over many entries has to latch a
-// non-finite one instead of comparing against it.
+// comparison below is written as !(dev <= tol) rather than (dev > tol), so a
+// NaN residual, which compares false against everything, is a failure rather
+// than a silent pass. Accumulating the residual needs more than that spelling,
+// and that half lives with the arithmetic in src/validate_physical.cpp.
 
 namespace lindblad {
 namespace detail {
@@ -122,89 +121,34 @@ inline void enforce_physical(double deviation, const ValidationOptions& v,
 // -----------------------------------------------------------------------------
 // Residuals
 // -----------------------------------------------------------------------------
-
-// A running maximum that a non-finite entry, once seen, is never displaced
-// from.
+// DEFINED in src/validate_physical.cpp, which is compiled with -fno-fast-math.
+// These are measurements, and a measurement has to give the same answer on
+// every target or it is not one. They evaluate U†U - I, a near-cancellation, and
+// that is exactly the shape a permissive floating-point model perturbs most:
+// under -ffast-math the same Hadamard yielded 1.2386923780787705e-16 at
+// -march=native against the correct 2.2204460492503131e-16, a 44% swing decided
+// by a compiler flag. A residual sitting near the caller's atol could then be
+// accepted on one build and rejected on another.
 //
-// Spelling a single comparison as !(d <= worst) makes a NaN a failure, since a
-// NaN compares false against everything. That is not sufficient for a RUNNING
-// maximum: once worst holds a NaN, !(d <= worst) is true for every later d as
-// well, so the next finite entry overwrites it. Only the last pair visited
-// would survive, and that pair is always the final diagonal one, which is why
-// position within the operand would decide whether a NaN is reported at all.
-//
-// Latching is done on the bit pattern rather than on comparison, so the
-// residual reports the non-finite operand under any floating-point model.
-inline void accumulate_worst(double& worst_sq, double d) {
-    if (!is_finite_strict(worst_sq)) return;
-    if (!is_finite_strict(d) || d > worst_sq) worst_sq = d;
-}
+// The policy dispatch below stays inline and stays under the project-wide
+// flags; only the arithmetic is quarantined. Same pattern as the mps_sim.cpp
+// and NLopt quarantines: numerical ALGORITHMS need IEEE semantics, kernel
+// arithmetic keeps fast-math.
 
 // max |(U†U - I)_ij|. U†U is Hermitian, so entry (j,i) is the conjugate of
 // (i,j) and carries the same magnitude; walking the upper triangle halves the
 // work without changing the maximum.
-inline double unitarity_deviation(const Complex128* U, std::size_t rows) {
-    double worst_sq = 0.0;
-    for (std::size_t i = 0; i < rows; ++i) {
-        for (std::size_t j = i; j < rows; ++j) {
-            Complex128 acc(0.0, 0.0);
-            for (std::size_t m = 0; m < rows; ++m)
-                acc += U[m * rows + i].conj() * U[m * rows + j];
-            const Complex128 diff = acc - Complex128(i == j ? 1.0 : 0.0, 0.0);
-            const double d = diff.norm_sq();
-            accumulate_worst(worst_sq, d);
-        }
-    }
-    return std::sqrt(worst_sq);
-}
+double unitarity_deviation(const Complex128* U, std::size_t rows);
 
 // max |(Σ_k K_k†K_k - I)_ij|, the trace-preservation residual of a Kraus set.
-inline double kraus_tp_deviation(
-    const std::vector<std::vector<Complex128>>& ops, std::size_t dim) {
-    std::vector<Complex128> sum(dim * dim, Complex128(0.0, 0.0));
-    for (const auto& K : ops) {
-        for (std::size_t i = 0; i < dim; ++i) {
-            for (std::size_t j = i; j < dim; ++j) {
-                Complex128 acc(0.0, 0.0);
-                for (std::size_t m = 0; m < dim; ++m)
-                    acc += K[m * dim + i].conj() * K[m * dim + j];
-                sum[i * dim + j] += acc;
-            }
-        }
-    }
-
-    double worst_sq = 0.0;
-    for (std::size_t i = 0; i < dim; ++i) {
-        for (std::size_t j = i; j < dim; ++j) {
-            const Complex128 diff =
-                sum[i * dim + j] - Complex128(i == j ? 1.0 : 0.0, 0.0);
-            const double d = diff.norm_sq();
-            accumulate_worst(worst_sq, d);
-        }
-    }
-    return std::sqrt(worst_sq);
-}
+double kraus_tp_deviation(const std::vector<std::vector<Complex128>>& ops,
+                          std::size_t dim);
 
 // A superoperator maps rho'[ro,co] = Σ_(ri,ci) S[(ro,co),(ri,ci)]·rho[ri,ci],
 // so preserving the trace of every rho means Σ_ro S[(ro,ro),(ri,ci)] = δ_ri,ci
 // at every input index pair. That sum over the output diagonal is the entire
 // condition, and it reads dim^3 of the 4^k x 4^k array once.
-inline double superop_tp_deviation(const Complex128* S, std::size_t dim) {
-    const std::size_t side = dim * dim;  // 4^k for a k-qubit channel
-    double worst_sq = 0.0;
-    for (std::size_t ri = 0; ri < dim; ++ri) {
-        for (std::size_t ci = 0; ci < dim; ++ci) {
-            const std::size_t in = ri * dim + ci;
-            Complex128 acc(0.0, 0.0);
-            for (std::size_t r = 0; r < dim; ++r)
-                acc += S[(r * dim + r) * side + in];
-            const Complex128 diff = acc - Complex128(ri == ci ? 1.0 : 0.0, 0.0);
-            const double d = diff.norm_sq();
-            accumulate_worst(worst_sq, d);
-        }
-    }
-    return std::sqrt(worst_sq);
-}
+double superop_tp_deviation(const Complex128* S, std::size_t dim);
 
 // -----------------------------------------------------------------------------
 // Check entry points
