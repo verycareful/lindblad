@@ -183,14 +183,22 @@ TEST(R1212QasmUnitary, NoPlaceholderGateDefinitionIsEmittedAnywhere) {
 }
 
 TEST(R1212QasmUnitary, OneQubitUnitariesAreUnaffected) {
-    // The Euler path was always correct and must stay reachable.
+    // The Euler path is correct and must stay reachable. Reaching it now takes
+    // the same consent every other width takes: the operand is representable
+    // only by being restructured, and that is the caller's call.
     constexpr double h = INV_SQRT2;
     QuantumCircuit qc(1);
     qc.unitary({Complex128(h, 0.0), Complex128(h, 0.0),
                 Complex128(h, 0.0), Complex128(-h, 0.0)}, {0}, "euler_me");
 
+    EXPECT_THROW((void)qc.to_qasm2(), std::runtime_error)
+        << "width does not exempt an operand from the export door";
+
+    QasmExportOptions opts;
+    opts.unitary_lowering = UnitaryLowering::Always;
+
     std::string qasm;
-    ASSERT_NO_THROW(qasm = qc.to_qasm2());
+    ASSERT_NO_THROW(qasm = qc.to_qasm2(opts));
     const Operator before = Operator::from_circuit(qc);
     const Operator after =
         Operator::from_circuit(QuantumCircuit::from_qasm2(qasm));

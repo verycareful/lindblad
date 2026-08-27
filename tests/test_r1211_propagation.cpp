@@ -273,17 +273,23 @@ TEST(R1211SerialisationLoss, QasmRoundTripMustNotSilentlyChangeTheOperator) {
 }
 
 TEST(R1211SerialisationLoss, QasmSingleQubitUnitaryRoundTripsFaithfully) {
-    // The one-qubit case is handled properly: it is Euler-decomposed to
-    // u(theta, phi, lambda), which preserves the map exactly. What comes back
-    // is a standard gate rather than a UNITARY, so it carries no policy, and
-    // that is correct rather than lossy: a named gate's unitarity is the
-    // library's own business. This passes today and pins the contrast with the
-    // multi-qubit case above.
+    // The one-qubit case is Euler-decomposed to u(theta, phi, lambda), which
+    // preserves the map exactly. What comes back is a standard gate rather
+    // than a UNITARY, so it carries no policy, and that is correct rather than
+    // lossy: a named gate's unitarity is the library's own business.
+    //
+    // The lowering is requested explicitly. Restructuring a circuit for export
+    // is the caller's decision at every width, so the one-qubit path is not a
+    // quiet exception to it, and this test asks for the same consent a
+    // two-qubit operand would need.
     QuantumCircuit qc(1);
     qc.unitary(good_1q(), {0}, "euler_me");
 
+    QasmExportOptions opts;
+    opts.unitary_lowering = UnitaryLowering::Always;
+
     const Operator before = Operator::from_circuit(qc);
-    const auto reimported = QuantumCircuit::from_qasm2(qc.to_qasm2());
+    const auto reimported = QuantumCircuit::from_qasm2(qc.to_qasm2(opts));
     const Operator after = Operator::from_circuit(reimported);
 
     EXPECT_EQ(count_unitaries(reimported), 0u)

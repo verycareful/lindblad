@@ -1380,9 +1380,17 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
                         "in a comment, or use to_qasm3(), which carries it exactly "
                         "via gphase");
                 }
-                // One warning per lowered instruction, through the shared sink
-                // so a caller can capture or silence it, and one comment in the
-                // text so the loss survives in the file itself.
+                // One warning per UNITARY OPERAND whose phase is dropped,
+                // not one per gate the lowering emits: the loss is a fact about
+                // the operand, and counting per emitted gate would tie the
+                // warning count to how many gates the decomposition happens to
+                // produce. It goes through the shared sink so a caller can
+                // capture or silence it, and the comment below puts the same
+                // number in the text so the loss survives in the file itself.
+                //
+                // Delivery is a separate matter: the warning channel
+                // deduplicates on message text, so several operands dropping an
+                // identical phase are delivered once and counted.
                 emit_warning(
                     "to_qasm2: dropped a global phase of " +
                     std::to_string(alpha) + " radians lowering the " +

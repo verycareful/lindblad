@@ -14,6 +14,7 @@ set(LINDBLAD_BENCH_SOURCES
     bench_qudit_sv.cpp
     bench_qudit_dm.cpp
     bench_scaling.cpp
+    bench_validation_cost.cpp
     bench_compare_sv.cpp
     bench_compare_dm.cpp
     bench_compare_mps.cpp

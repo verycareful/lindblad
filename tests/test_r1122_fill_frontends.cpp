@@ -27,6 +27,7 @@
 
 #include <gtest/gtest.h>
 
+#include "lindblad/constants.hpp"
 #include "lindblad/backends/local_backend.hpp"
 #include "lindblad/circuit.hpp"
 #include "lindblad/dag.hpp"
@@ -246,7 +247,7 @@ TEST(R1122FillFront, Qasm3ModifierMatrixFallbackCoversRotationBases) {
 
     // Exact classical identities for every stack.
     QuantumCircuit ref(2);
-    const double pi_2 = 1.5707963267948966;
+    const double pi_2 = PI_2;
     ref.z(0);              // Sdg^2 = P(-pi) = Z
     ref.sdg(0);            // Tdg^2 = Sdg
     ref.x(0);              // SX^2 = X

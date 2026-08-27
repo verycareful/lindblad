@@ -42,9 +42,19 @@ never modified; only the emitted text is affected.
 - `accept_global_phase_loss` (default `false`): QASM 2 only, and meaningful
   only where lowering actually happens. A lowering that would drop a global
   phase throws unless this is set. With it set the export proceeds, warns
-  through the diagnostic handler once per lowered instruction, and records the
-  dropped angle in the emitted text as a `// global phase: <alpha>` comment.
-  There is no QASM 3 counterpart because no QASM 3 lowering is lossy.
+  through the diagnostic handler, and records the dropped angle in the emitted
+  text as a `// global phase: <alpha>` comment. There is no QASM 3 counterpart
+  because no QASM 3 lowering is lossy.
+
+  The warning is raised once per `UNITARY` operand whose phase is dropped, not
+  once per gate the lowering emits. The loss is a property of the operand, and
+  counting per emitted gate would make the number of warnings depend on how many
+  gates the decomposition happened to produce.
+
+  Delivery is a separate question from emission. The diagnostic handler
+  deduplicates on message text, so several operands dropping an identical phase
+  are delivered once with the repeat counted at the next flush. A caller
+  counting warnings sees deliveries, not emissions.
 
 ### Why lowering and loss are separate consents
 

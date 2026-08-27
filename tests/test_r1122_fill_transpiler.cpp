@@ -25,6 +25,7 @@
 
 #include <gtest/gtest.h>
 
+#include "lindblad/constants.hpp"
 #include "lindblad/circuit.hpp"
 #include "lindblad/dag.hpp"
 #include "lindblad/operators.hpp"
@@ -388,7 +389,7 @@ TEST(R1122FillTrans, AsapAndAlapScheduleBarrierSynchronisation) {
 // =============================================================================
 
 TEST(R1122FillTrans, Optimize1qInversePairsCollapseToIdentity) {
-    const double pi_2 = 1.5707963267948966;
+    const double pi_2 = PI_2;
     std::vector<std::pair<std::string, Apply>> pairs = {
         {"xx", [](QuantumCircuit& q) { q.x(0).x(0); }},
         {"yy", [](QuantumCircuit& q) { q.y(0).y(0); }},

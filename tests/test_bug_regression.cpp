@@ -449,7 +449,23 @@ TEST(BugRegression, B7_ToQasm2UnitaryNotComment) {
     QuantumCircuit qc(1);
     qc.unitary(T_mat, {0}, "my_t");
 
-    const std::string qasm = qc.to_qasm2();
+    // A UNITARY is no longer exported without being asked for. OpenQASM 2.0
+    // has no literal-matrix syntax, so the only way to write one is to
+    // restructure it into standard gates, and that is a decision the caller
+    // makes rather than one made for them.
+    EXPECT_THROW((void)qc.to_qasm2(), std::runtime_error)
+        << "the export door is shut by default";
+
+    // B7's own claim, unchanged and still the point: once lowering IS
+    // requested, the operand must become real gates. Emitting it as a comment
+    // would drop it silently, which is what B7 was filed about.
+    QasmExportOptions opts;
+    opts.unitary_lowering = UnitaryLowering::Always;
+
+    // diag(1, e^{i pi/4}) is U(0, 0, pi/4) exactly, so nothing is lost and the
+    // loss consent is not needed here.
+    std::string qasm;
+    ASSERT_NO_THROW(qasm = qc.to_qasm2(opts));
 
     EXPECT_EQ(qasm.find("// gate"), std::string::npos)
         << "to_qasm2() emitted UNITARY as a comment (bug B7 open).\nQASM output:\n" << qasm;
@@ -478,12 +494,22 @@ TEST(BugRegression, B7_ToQasm2UnitaryRoundTrip) {
     QuantumCircuit qc(1);
     qc.unitary(S_mat, {0}, "my_s");
 
-    const std::string qasm = qc.to_qasm2();
+    EXPECT_THROW((void)qc.to_qasm2(), std::runtime_error)
+        << "the export door is shut by default";
+
+    // diag(1, i) is U(0, 0, pi/2) exactly, so the lowering is lossless and the
+    // round trip has to survive it intact.
+    QasmExportOptions opts;
+    opts.unitary_lowering = UnitaryLowering::Always;
+
+    std::string qasm;
+    ASSERT_NO_THROW(qasm = qc.to_qasm2(opts));
     const QuantumCircuit parsed = QuantumCircuit::from_qasm2(qasm);
 
     // If UNITARY was emitted as a comment it would be dropped → size() = 0.
     EXPECT_EQ(parsed.size(), 1)
-        << "UNITARY gate dropped on to_qasm2() round-trip (bug B7 open).";
+        << "UNITARY gate dropped on to_qasm2() round-trip (bug B7 open).\n"
+        << "QASM output:\n" << qasm;
 }
 
 // =============================================================================
@@ -796,7 +822,31 @@ TEST(BugRegression, B10_ToQasm2EmitsGlobalPhaseCommentForNonSU2) {
     QuantumCircuit qc(1);
     qc.unitary(mat, {0}, "phased_id");
 
-    const std::string qasm = qc.to_qasm2();
+    // B10's ruling is REVISED here, not withdrawn, and both halves are worth
+    // keeping legible.
+    //
+    // B10 said: a dropped global phase must not be invisible. That still
+    // stands, and the comment below is still the assertion that enforces it.
+    //
+    // What changed is when the drop is allowed to happen at all. Recording a
+    // loss in a comment tells a reader who opens the file; it does nothing for
+    // a caller who never opens it. So the loss now needs consent FIRST, and
+    // the comment is what that consent buys, rather than the whole answer.
+    EXPECT_THROW((void)qc.to_qasm2(), std::runtime_error)
+        << "the export door is shut by default";
+
+    QasmExportOptions lowering_only;
+    lowering_only.unitary_lowering = UnitaryLowering::Always;
+    EXPECT_THROW((void)qc.to_qasm2(lowering_only), std::runtime_error)
+        << "agreeing to restructure the circuit is not agreeing to lose a "
+           "phase; they are separate decisions and this operand is pure phase";
+
+    QasmExportOptions consented;
+    consented.unitary_lowering = UnitaryLowering::Always;
+    consented.accept_global_phase_loss = true;
+
+    std::string qasm;
+    ASSERT_NO_THROW(qasm = qc.to_qasm2(consented));
     EXPECT_NE(qasm.find("// global phase:"), std::string::npos)
         << "to_qasm2() dropped global phase silently (B10).\nQASM output:\n" << qasm;
 }
@@ -806,16 +856,29 @@ TEST(BugRegression, B10_ToQasm2NoCommentForSU2Gate) {
     // representation U[0,0]=0, U[0,1]=1 making alpha undefined → fallback path
     // emits 0). Use Hadamard's matrix directly which has alpha=0 in the
     // standard representation.
-    const double s = 1.0 / std::sqrt(2.0);
     const std::vector<Complex128> H_mat = {
-        {s,0}, {s,0},
-        {s,0}, {-s,0}
+        {INV_SQRT2, 0}, {INV_SQRT2, 0},
+        {INV_SQRT2, 0}, {-INV_SQRT2, 0}
     };
 
     QuantumCircuit qc(1);
     qc.unitary(H_mat, {0}, "h_as_unitary");
 
-    const std::string qasm = qc.to_qasm2();
+    EXPECT_THROW((void)qc.to_qasm2(), std::runtime_error)
+        << "the export door is shut by default, whatever the operand";
+
+    // The loss consent is deliberately NOT set. H is U(pi/2, 0, pi) exactly,
+    // so nothing is dropped and nothing needs consenting to. If this operand
+    // ever started demanding accept_global_phase_loss, that would mean the
+    // exporter had invented a phase that is not there, which is precisely the
+    // spurious comment B10 was filed about.
+    QasmExportOptions opts;
+    opts.unitary_lowering = UnitaryLowering::Always;
+
+    std::string qasm;
+    ASSERT_NO_THROW(qasm = qc.to_qasm2(opts))
+        << "an operand in SU(2) must lower without the loss consent";
+
     EXPECT_EQ(qasm.find("// global phase:"), std::string::npos)
         << "to_qasm2() emitted a spurious global-phase comment for an SU(2) "
            "matrix (B10).\nQASM output:\n" << qasm;

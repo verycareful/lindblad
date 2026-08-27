@@ -117,11 +117,11 @@ set(LINDBLAD_TEST_SOURCES
     test_r1212_guards.cpp
     r1211_reference_residuals_strictfp.cpp
     test_r1213_residual_stability.cpp
+    test_r1214_kak_diagnostic.cpp
+    test_r1221_policy_at_point_of_use.cpp
+    test_r1221_qasm_unitary.cpp
+    test_r1221_constants_rule.cpp
 )
-
-# test_r1214_kak_diagnostic.cpp is present in the tree but deliberately absent
-# from the list above, so it is not compiled or run. Its assertions belong to
-# the test-suite release that extends it.
 
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this
 # TU's JacobiSVD/BDCSVD instantiations get IEEE semantics while the rest of
@@ -178,6 +178,7 @@ target_include_directories(lindblad_tests
 target_compile_definitions(lindblad_tests
     PRIVATE
         LINDBLAD_TEST_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
+        LINDBLAD_SOURCE_ROOT="${PROJECT_SOURCE_DIR}"
         LINDBLAD_BENCH_QASM_DIR="${PROJECT_SOURCE_DIR}/benchmarks/compare/circuits"
 )
 

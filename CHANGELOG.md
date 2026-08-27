@@ -4,6 +4,138 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.22.1/1.1.22.1] - 2026-08-27
+
+The test release for R.1.22.0, which rewrote the two-qubit KAK decomposition and
+built an exact QASM export on top of it. That was a great deal of new
+floating-point work in a hot path, so this wave is deliberately broad: seeded
+sweeps over two different operand distributions, exact emitted angles derived
+from `constants.hpp` rather than read off a run, and determinism and idempotence
+properties that no operand-by-operand test can state.
+
+It found two defects, neither of them in the R.1.22.0 work. Both are pinned by
+tests that ship red on purpose, and both are scheduled for the next patch.
+
+The first is that a physical-validity policy is not read where the matrix is
+used. `Instruction` carries a `ValidationOptions`, and it survives every route
+that carries it: copy, compose, repeat, inverse, `control()`, and the DAG and
+JSON round trips. But three of the four places that apply a matrix never consult
+it, so a `UNITARY` added under `Validation::Ignore`, under `Validation::Warn`, or
+under a deliberately loosened tolerance is accepted when it enters the circuit
+and then rejected when the circuit is transpiled at optimisation level 3, run on
+the density-matrix backend at any width, or run on the MPS backend at three or
+more qubits. Nothing is computed incorrectly; a circuit the library accepted
+simply cannot run, under a setting whose only purpose is to permit it.
+
+The second is that the two-qubit lowering cannot accept an operand carrying a
+classical condition, because the routine it borrows to extract a 4x4 declines
+conditional instructions. That guard is correct for its other caller, where
+folding a conditional gate into a block of unconditional ones would be wrong,
+but it has no meaning for export. The lowering documents that it carries the
+condition onto every instruction it emits, and the code doing so is unreachable.
+The caller then reports the refusal as a numerical failure, which sends a reader
+looking for a problem in their matrix that is not there.
+
+### Version scheme
+
+Release labels now carry both forms, as `R.1.22.1/1.1.22.1`. The four components
+are Major A, Major B, Minor and Patch, which is what the CMake project version
+has always held; the `R.` label was the same number with the leading component
+dropped. Both forms appear through the R.1.23 line, after which the `R.` prefix
+is dropped, for parity with the CMake project version. Git tags never carry the
+slash.
+
+### Added
+
+- `benchmarks/bench_validation_cost.cpp` measures the per-call unitarity check
+  against the gate application across gate width and register size. The check is
+  cubic in the matrix dimension and so depends on the gate width alone, while the
+  application scales with the register size, which means whether the check is
+  negligible depends entirely on where a call sits. Measured: 34 ns against
+  roughly 17 ms for a 2-qubit operand on a 20-qubit register, and 24.3 ms against
+  12.1 us for a full-width 8-qubit operand, where the check costs 2016 times the
+  work it guards.
+
+### Changed
+
+- `docs/api/qasm.md` now states the QASM 2 global-phase warning contract
+  precisely. The warning is raised once per `UNITARY` operand whose phase is
+  dropped, not once per gate the lowering emits, because the loss is a property
+  of the operand and counting per emitted gate would tie the count to how many
+  gates the decomposition happened to produce. Delivery is documented separately,
+  since the diagnostic handler deduplicates on message text and a caller counting
+  warnings therefore sees deliveries rather than emissions.
+
+### Fixed
+
+- The two transcribed `pi/2` literals in `tests/test_r1122_fill_frontends.cpp`
+  and `tests/test_r1122_fill_transpiler.cpp` now use `PI_2` (#83).
+
+### Tests
+
+- `tests/test_r1214_kak_diagnostic.cpp` grew from 9 tests to 22. Two seeded
+  sweeps of 200 operands each: Haar on U(4) by QR of a complex Ginibre matrix,
+  and uniform in the Weyl coordinates, which Haar is not. Haar measure
+  concentrates away from the chamber boundary, which is exactly where the
+  square-root branch selection and the chamber folding are most delicate, so a
+  Haar sweep alone under-samples the region the decomposition finds hardest.
+  Both sweeps generate their operands from raw `mt19937_64` output rather than
+  from the standard distribution templates, which are implementation-defined and
+  would produce different operands on different standard libraries; the operands
+  are therefore bit-identical on every leg, so a leg that disagrees is
+  disagreeing about the decomposition rather than about its input.
+- Also there: seven chamber-boundary points including the iSWAP and SWAP corners
+  and coordinates just inside and just outside the boundary; an operand whose
+  determinant is not 1, for the SU(4) normalisation; determinism and idempotence
+  compared on a fingerprint that includes parameters at full precision, since a
+  tie broken by iteration order moves the angles while leaving the gate sequence
+  identical; the count guard over every entangler at block lengths 1 through 8;
+  and `transpile()` at level 3 asserting both that semantics survive and that the
+  two-qubit count never rises, which is the contract `docs/api/transpiler.md`
+  states and which nothing previously checked.
+- `EmittedInteractionAnglesAreExact` pins the emitted angles rather than only
+  counting them. CX, CZ, iSWAP and SWAP all sit at the same Weyl coordinate on
+  each of their non-zero axes, so every emitted rotation must carry exactly twice
+  that value, derived from `constants.hpp`. An angle read off a run and pasted
+  back would pin whatever that build produced, which is the failure mode an
+  earlier release spent a patch on.
+- `tests/test_r1221_qasm_unitary.cpp` is new, 20 tests. QASM 3 round trips at
+  both widths, `gphase` present exactly when the operand carries a phase, three
+  or more qubits refusing without naming an option that could not have helped,
+  and a circuit holding no `UNITARY` proved unaffected by every setting. For
+  QASM 2, all six door behaviours asserted at width 1 and width 2 from one table,
+  since the point of the R.1.22.0 change is that width stopped mattering, plus a
+  re-parse of the emitted text through `from_qasm2`. Exporting text that nothing
+  can read back is precisely the failure the previous release fixed.
+- `tests/test_r1221_policy_at_point_of_use.cpp` is new, 6 tests, and covers the
+  half of the validation contract nothing asked about: whether a policy is obeyed
+  where the matrix is used, rather than whether it survives being carried there.
+- `tests/test_r1221_constants_rule.cpp` is new. It walks the tracked sources,
+  masks comments, string literals, raw strings and character literals, and flags
+  any float literal of eight or more significant digits matching a value in
+  `constants.hpp`, reporting file, line and which constant. Masking rather than
+  exempting files by name is what lets QASM source text containing a truncated
+  angle pass legitimately, since there the literal is the input being parsed
+  rather than an expected value. It passes across the whole tree (#83).
+- The four QASM 2 export tests that R.1.22.0 left red are updated. Each keeps its
+  original question and now asks it through the export door. The bug they came
+  from argued that a dropped global phase must not be invisible; that still holds
+  and is still the assertion, but the drop now requires consent first, and the
+  comment recording it is what that consent buys rather than the whole answer.
+
+### Results
+
+2431 tests across 222 suites, 2425 passed and 6 failed, on Clang 18.1.3 and
+GCC 13.3.0 under Ubuntu 24.04, each at the documented native build (29.9 s and
+22.3 s) and at the pinned baseline (30.0 s and 23.1 s). All four legs produced
+byte-identical failure sets, so nothing in this release is compiler- or
+flag-dependent.
+
+The six failures are the pins described above: five on the validation policy not
+being read at the point of use, and one on the two-qubit lowering refusing a
+conditional operand. Both are scheduled for the next patch, where a single change
+addresses them together.
+
 ## [R.1.22.0] - 2026-08-26
 
 Issue #78 reported that the KAK decomposition inside `ConsolidateBlocks` failed

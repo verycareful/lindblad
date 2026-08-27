@@ -48,6 +48,14 @@ struct Lowered {
 // source instruction's classical condition and validation policy onto every
 // emitted instruction. nullopt when `inst` is not a 2-qubit operand this
 // module can represent, or when the decomposition fails verification.
+//
+// KNOWN GAP, pinned by R1221LoweringSeam.EveryEmittedInstructionCarriesConditionAndPolicy:
+// a CONDITIONAL operand never gets this far. The 4x4 extraction it relies on
+// declines any instruction carrying a classical condition, so the condition it
+// promises to carry is currently unreachable and the caller reports the refusal
+// as a numerical one. Neither exporter writes conditions into its text either,
+// so accepting them here without fixing that would emit gates whose condition
+// had silently vanished.
 std::optional<Lowered> lower_2q_unitary(const Instruction& inst);
 
 }  // namespace tqd
