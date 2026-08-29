@@ -134,7 +134,7 @@ std::vector<Complex128> apply_all(int nq,
                                   const std::vector<Instruction>& insts) {
     StatevectorSimulator sim;
     Statevector sv(nq);
-    sv.set_amplitudes(in);
+    sv.set_amplitudes(in, {Validation::Ignore});
     for (const auto& inst : insts) sim.apply_instruction(sv, inst);
     return sv.amplitudes();
 }

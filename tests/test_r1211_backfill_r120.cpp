@@ -39,10 +39,11 @@ std::array<Complex128, 16> cnot_16() {
 
 } // namespace
 
-// The R.1.20.3 half of this backfill is NOT here. Both BDC warnings latch
-// process-globally (warn_bdc_broken_once, and its qudit twin), so exactly one
-// test in the binary can ever observe the text, and two already do:
-// R1131Mps.BdcSelectionEmitsBrokenWarning and R1131Qudit.MpsBdcSelectionWarns.
+// The R.1.20.3 half of this backfill is NOT here. Each BDC warning latches
+// within its own layer (warn_bdc_broken_once, and its qudit twin), so exactly
+// one test PER LAYER can ever observe the text, and both of those already
+// exist: R1131Mps.BdcSelectionEmitsBrokenWarning and
+// R1131Qudit.MpsBdcSelectionWarns.
 // The assertion R.1.20.3 owed, that the message cites nothing a reader cannot
 // reach, is added to those two rather than duplicated into a suite that would
 // always find the latch already spent.

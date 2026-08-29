@@ -24,6 +24,11 @@ std::vector<Complex128> run_sv(const QuantumCircuit& qc) {
     return sim.run(qc, 0, 0).final_state.amplitudes();
 }
 
+// A deterministic, all-distinct, non-symmetric amplitude vector for nq qubits.
+// Not normalised: these kernels are exact amplitude permutations and phase
+// multiplies, so normalisation is irrelevant and distinct values expose any
+// index or stride mistake. Handing one over therefore opts out of the
+// normalization check, the same reason the apply_unitary calls below do.
 std::vector<Complex128> distinct_state(int nq) {
     const size_t dim = size_t(1) << nq;
     std::vector<Complex128> v(dim);
@@ -160,7 +165,7 @@ TEST(R1131Kernels, ApplyUnitaryManyGroups) {
     const auto in = distinct_state(nq);
 
     Statevector sv(nq);
-    sv.set_amplitudes(in);
+    sv.set_amplitudes(in, {Validation::Ignore});
     // distinct_matrix is deliberately not unitary, so the unitarity check is
     // opted out of here. What this test measures is index and stride
     // arithmetic, which a real unitary's symmetries would help conceal.
@@ -176,7 +181,7 @@ TEST(R1131Kernels, ApplyUnitaryFewGroupsLargeBlock) {
     const auto in = distinct_state(nq);
 
     Statevector sv(nq);
-    sv.set_amplitudes(in);
+    sv.set_amplitudes(in, {Validation::Ignore});
     // Not unitary by construction; see the note in ApplyUnitaryManyGroups.
     gates::apply_unitary(sv, targets, U, {Validation::Ignore});
     expect_amps_close(sv.amplitudes(), ref_unitary(in, targets, U));

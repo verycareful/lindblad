@@ -123,6 +123,10 @@ set(LINDBLAD_TEST_SOURCES
     test_r1221_constants_rule.cpp
     test_r1222_kernel_policy_rule.cpp
     test_r1222_conditional_export.cpp
+    test_v11231_normalization_policy.cpp
+    test_v11231_norm_sums.cpp
+    test_v11231_tolerance_rules.cpp
+    test_v11231_svd_ladder.cpp
 )
 
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this

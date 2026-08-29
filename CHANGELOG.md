@@ -4,6 +4,103 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.23.1] - 2026-08-29
+
+The test wave for the normalization repair and the shared truncation ladder
+(#56, #91). It closes the 19 deliberately failing tests the previous release
+shipped, and it answers the two tolerance questions that release left open by
+measuring them rather than reasoning about them.
+
+Both answers came back the same way: the tolerance stands, with more room than
+the design expected.
+
+### Tests
+
+- **The normalization policy surface, on every state class.** All four policies
+  are now exercised on all six of Statevector, DensityMatrix, MPSState,
+  QuditStatevector, QuditDensityMatrix and QuditMPS: Throw as the default, Warn
+  reporting without repairing, Fix repairing, Ignore measuring nothing, and all
+  four being indistinguishable on a state that is already normalized. Also
+  covered: `normalize()` refusing a zero or non-finite state rather than
+  returning it unchanged, the predicate answering without repairing and
+  honouring a custom tolerance, both `set_amplitudes` overloads, and the
+  guarantee that a refused hand-over leaves the object holding exactly what it
+  held before.
+
+- **The residual sums.** `is_normalizable` at its boundaries, both
+  `state_norm_sq` overloads against each other, `density_trace_real` ignoring
+  what it should, and the balanced-tree summation. The summation test does not
+  assert that a tree is more accurate; it builds a vector on which a single
+  running total provably loses every small term, computes that naive total in
+  the test itself to show it does, then shows the library recovers 99.8% of what
+  the total dropped. Every term is a power of two, so the exact answer is known
+  and no tolerance enters a test about accuracy.
+
+- **The truncation ladder, driven directly.** The shared entry point takes a raw
+  block, so its selection stage can now be handed a crafted matrix instead of
+  being reached only through a bond split that happens to misbehave. Covered:
+  the discarded-weight budget, the bond-dimension cap, the zero-block rescue,
+  descending order of what is kept, rank deficiency, exact degeneracy, both
+  storage orders, both backends, and the refusal to return a tensor when no
+  finite spectrum can be produced. This gives the in-house SVD work (#58) a
+  place to prove a replacement behaves the same.
+
+- **Two rules, enforced by walking the tree rather than trusting habit.** The
+  library uses absolute tolerances only, so a scan now fails if a relative one
+  is introduced anywhere. Matching splits identifiers into words rather than
+  searching for substrings, because `kClusterTol` and `kOrderTol` are ordinary
+  absolute tolerances whose spelling ends in the letters being hunted. A second
+  scan pins which public signatures still declare a tolerance default by hand
+  instead of taking the shared constant.
+
+- **Measured, and both results are better than the bounds that motivated the
+  work.** The normalization residual is flat at one unit in the last place
+  across the entire practical range, 2.2e-16 at 12 qubits through 2.2e-16 at 30,
+  against a bound that predicted 3e-14 at the top end and against a tolerance of
+  1e-12. A single running total was projected to reach 7.3e-12 there, which
+  would have put a correct state outside the tolerance. Density-matrix validity
+  on matrices that have evolved through noisy circuits, rather than been handed
+  over, reaches 1.4e-14 on the trace and 1.4e-16 on Hermiticity. The worst
+  residual anywhere in the suite is 3.7e-14, from a 768-gate composition.
+
+### Fixed
+
+- **Measured margins were recorded in a form nobody could read.** Every margin
+  went through a conversion that renders a double with six decimal places, so
+  every residual below 1e-6, which is all of them, was stored as `0.000000`; and
+  it was stored only into a report that an ordinary test run does not produce.
+  Margins now go through the formatter built for residuals and are printed as
+  well as recorded, so a captured run carries its own numbers and a later
+  decision about tightening a tolerance can be reviewed without repeating the
+  run.
+
+- **The margins suite repeated the framework tolerance by hand** instead of
+  taking it from the constant the library judges by, so the suite could have
+  gone on measuring against a number the library had stopped using.
+
+- **Four test comments described the broken-backend warning as latching once per
+  process.** It latches once per layer, which is why the qubit and qudit tests
+  can each see their own. One of the four then contradicted itself, stating that
+  exactly one test could ever observe the text and naming two.
+
+### Results
+
+2548 tests across 233 suites, all passed, on Clang 18.1.3 and GCC 13.3.0 under
+Ubuntu 24.04, each at the documented native build (28.5 s and 21.4 s). The gap
+between the two compilers is #72, still observed.
+
+Of the margins recorded, 32 of 40 are bit-identical across the two compilers.
+The eight that differ are exactly those whose measured input is itself the
+product of a long chain of library arithmetic, where the two compilers reassociate
+differently; every value whose input is an exact matrix or is built inside the
+test agrees exactly, including all of the normalization figures. The measurement
+is compiler-invariant, and only the thing being measured moves.
+
+One further test is defined and skipped unless requested. The large-register
+sweep needs about 17.2 GB at 30 qubits, which is more than a shared runner has,
+so it is opt-in rather than absent. It was run separately for this release and
+its results are reported above.
+
 ## [1.1.23.0] - 2026-08-29
 
 Two pieces of work that turned out to belong together. A qudit simulation could

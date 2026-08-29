@@ -205,7 +205,9 @@ TEST(R1131Qudit, MpsMeasureMatchesDenseDistribution) {
 
 // F-23 (qudit layer): selecting SVDMethod::BDC on the qudit MPS emits the loud
 // broken-BDCSVD warning. This is the ONLY qudit-MPS BDC selection in the test
-// binary, so warn_bdc_broken_once_qudit()'s process-global latch fires here.
+// binary, so warn_bdc_broken_once_qudit()'s latch fires here. That latch belongs
+// to the qudit layer alone: the qubit layer holds a separate one, so a qubit MPS
+// warning earlier in the run does not consume this one.
 TEST(R1131Qudit, MpsBdcSelectionWarns) {
     std::ostringstream capture;
     std::streambuf* old = std::cerr.rdbuf(capture.rdbuf());

@@ -237,8 +237,9 @@ TEST(R1121Operators, ExpectationBatchManyStatesMatchesLoopUnderOpenMP) {
         std::vector<Complex128> amps = {
             Complex128(0.3 + 0.01 * k, 0.1), Complex128(-0.2, 0.05 * k - 1.0),
             Complex128(0.4, -0.2), Complex128(0.1 * k - 3.0, 0.2)};
-        sv.set_amplitudes(amps);
-        sv.normalize();
+        // The amplitudes vary with k rather than being normalized, so the
+        // hand-over repairs them: Fix normalizes within the same call.
+        sv.set_amplitudes(amps, {Validation::Fix});
         store.push_back(std::move(sv));
     }
     std::vector<const Statevector*> ptrs;
@@ -272,8 +273,9 @@ TEST(R1121Operators, ExpectationValueMatchesQuadraticForm) {
     std::vector<Complex128> amps = {
         Complex128(0.5, 0.1), Complex128(-0.2, 0.4),
         Complex128(0.3, -0.3), Complex128(0.5, 0.2)};
-    sv.set_amplitudes(amps);
-    sv.normalize();
+    // The amplitudes are chosen to be distinct rather than normalized, so the
+    // hand-over repairs them: Fix normalizes within the same call.
+    sv.set_amplitudes(amps, {Validation::Fix});
     auto a = sv.amplitudes();
 
     // <psi|M|psi>

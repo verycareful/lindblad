@@ -23,9 +23,14 @@ namespace {
 
 constexpr double kTol = 1e-9;
 
-Statevector ket(const std::vector<Complex128>& amps) {
+// Build a state from raw amplitudes. The default policy is the library's own,
+// so a caller passing a vector that is not normalized is refused: every caller
+// below hands over an already-normalized vector and is held to that. The one
+// test that deliberately starts off-normalization passes Fix and says so.
+Statevector ket(const std::vector<Complex128>& amps,
+                ValidationOptions validation = {}) {
     Statevector sv(static_cast<int>(std::log2(amps.size())));
-    sv.set_amplitudes(amps);
+    sv.set_amplitudes(amps, validation);
     return sv;
 }
 
@@ -216,8 +221,8 @@ TEST(R1121QuantumInfo, PartialTraceNonContiguousUnsortedAndTraceAll) {
 TEST(R1121QuantumInfo, PartialTraceDensityAndStatevectorPathsAgree) {
     // An asymmetric, non-maximally-entangled 2-qubit state.
     auto sv = ket({Complex128(0.5, 0.1), Complex128(-0.2, 0.4),
-                   Complex128(0.3, -0.3), Complex128(0.5, 0.2)});
-    sv.normalize();
+                   Complex128(0.3, -0.3), Complex128(0.5, 0.2)},
+                  {Validation::Fix});
     auto rho = DensityMatrix::from_statevector(sv);
 
     auto from_sv = QuantumInfo::partial_trace(sv, {1});

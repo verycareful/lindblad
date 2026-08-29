@@ -135,7 +135,7 @@ TEST(R1131StructuredOps, ApplyMcxMatchesReference) {
         auto in = distinct_state(nq);
         const int target = 3;
         Statevector sv(nq);
-        sv.set_amplitudes(in);
+        sv.set_amplitudes(in, {Validation::Ignore});
         gates::apply_mcx(sv, controls, target);
         expect_amps_close(sv.amplitudes(), ref_mcx(in, controls, target));
     }
@@ -147,7 +147,7 @@ TEST(R1131StructuredOps, ApplyMcpMatchesReference) {
     const std::vector<int> qubits{0, 1, 3};
     const double lambda = 0.9123;
     Statevector sv(nq);
-    sv.set_amplitudes(in);
+    sv.set_amplitudes(in, {Validation::Ignore});
     gates::apply_mcp(sv, qubits, lambda);
     expect_amps_close(sv.amplitudes(), ref_mcp(in, qubits, lambda));
 }
@@ -158,7 +158,7 @@ TEST(R1131StructuredOps, ApplyPermutationMatchesReference) {
     const std::vector<int> qubits{1, 3};            // 2-qubit target subspace
     const std::vector<int> perm{2, 0, 3, 1};        // a non-identity bijection
     Statevector sv(nq);
-    sv.set_amplitudes(in);
+    sv.set_amplitudes(in, {Validation::Ignore});
     gates::apply_permutation(sv, qubits, perm);
     expect_amps_close(sv.amplitudes(), ref_perm(in, qubits, perm));
 }
@@ -168,8 +168,8 @@ TEST(R1131StructuredOps, PermutationSingleQubitEqualsX) {
     const int nq = 3;
     auto in = distinct_state(nq);
     Statevector a(nq), b(nq);
-    a.set_amplitudes(in);
-    b.set_amplitudes(in);
+    a.set_amplitudes(in, {Validation::Ignore});
+    b.set_amplitudes(in, {Validation::Ignore});
     gates::apply_permutation(a, {1}, {1, 0});
     gates::apply_x(b, 1);
     expect_amps_close(a.amplitudes(), b.amplitudes());
@@ -179,8 +179,8 @@ TEST(R1131StructuredOps, McxTwoControlsEqualsCcx) {
     const int nq = 3;
     auto in = distinct_state(nq);
     Statevector a(nq), b(nq);
-    a.set_amplitudes(in);
-    b.set_amplitudes(in);
+    a.set_amplitudes(in, {Validation::Ignore});
+    b.set_amplitudes(in, {Validation::Ignore});
     gates::apply_mcx(a, {0, 1}, 2);
     gates::apply_ccx(b, 0, 1, 2);
     expect_amps_close(a.amplitudes(), b.amplitudes());
@@ -358,7 +358,7 @@ TEST(R1131StructuredOps, InversePermutationInvertsMap) {
     const int nq = 2;
     auto in = distinct_state(nq);
     Statevector sv(nq);
-    sv.set_amplitudes(in);
+    sv.set_amplitudes(in, {Validation::Ignore});
     gates::apply_permutation(sv, {0, 1}, perm);
     gates::apply_permutation(sv, {0, 1}, iperm);
     expect_amps_close(sv.amplitudes(), in);

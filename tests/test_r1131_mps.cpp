@@ -6,8 +6,10 @@
 //
 // NOTE: this file is the ONLY place in the test binary that selects
 // SVDMethod::BDC on the qubit MPS layer. warn_bdc_broken_once() latches a
-// process-global flag, so the warning is guaranteed to fire here (first BDC
-// selection wins). Do not add BDC selection to other qubit-MPS tests.
+// static flag belonging to that layer alone, so the first BDC selection in the
+// qubit MPS wins and every later one is silent. The qudit layer carries its own
+// separate latch, which is what lets its twin test still see its own warning.
+// Do not add BDC selection to other qubit-MPS tests.
 
 #include <gtest/gtest.h>
 
@@ -126,8 +128,8 @@ TEST(R1131Mps, BdcSelectionEmitsBrokenWarning) {
     // The message must point at nothing the reader cannot reach. Selecting this
     // backend is exactly the case where the warning matters, since it announces
     // that results may be silently wrong, so a dangling pointer is worse than
-    // no pointer. Asserted here because warn_bdc_broken_once() latches
-    // process-globally: this is the only test that can ever see the text.
+    // no pointer. Asserted here because the qubit layer's latch fires exactly
+    // once: this is the only test that can ever see the text.
     for (const char* unreachable : {"docs/plans", "docs/superpowers",
                                     "Audit docs", ".md"}) {
         EXPECT_EQ(out.find(unreachable), std::string::npos)

@@ -28,11 +28,15 @@
 #include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/noise.hpp"
 #include "lindblad/operators.hpp"
+#include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
 
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -42,7 +46,9 @@ namespace {
 
 // The tolerance the Class C framework applies to a caller's matrix. Every
 // measurement below is held to this, not to the 1e-8 the older predicates use.
-constexpr double FRAMEWORK_ATOL = 1e-12;
+// Taken from the framework rather than repeated, so this suite cannot end up
+// measuring against a number the library has stopped using.
+constexpr double FRAMEWORK_ATOL = DEFAULT_PHYSICAL_ATOL;
 
 // The looser default currently carried by Operator::is_unitary and
 // KrausChannel::is_valid.
@@ -86,6 +92,40 @@ std::vector<double> angle_sweep() {
 
 } // namespace
 
+// -----------------------------------------------------------------------------
+// Reporting a measurement so it can actually be read
+// -----------------------------------------------------------------------------
+// RecordProperty on its own does not deliver a number to anyone. It writes to
+// the XML report, which a normal run does not produce, and std::to_string
+// renders a double with six decimal places, so every residual here, all of them
+// far below 1e-6, arrives as "0.000000".
+//
+// RecordProperty is qualified below because these macros are used from free
+// helper functions as well as from test bodies, and the unqualified name
+// resolves only inside a Test-derived class. It is a public static member, so
+// the qualified form works in both places.
+//
+// So a value goes through format_residual, which keeps significant digits, and
+// is printed as well as recorded. The tag is greppable on purpose: the archived
+// console capture then carries the margins on its own, which is what makes a
+// later tightening decision reviewable without re-running anything.
+#define REPORT_RESIDUAL(key, value)                                       \
+    do {                                                                  \
+        const std::string rk_ = (key);                                    \
+        const std::string rv_ = detail::format_residual(value);           \
+        ::testing::Test::RecordProperty(rk_, rv_);                        \
+        std::cout << "[ MARGIN   ] " << rk_ << " = " << rv_ << std::endl; \
+    } while (0)
+
+#define REPORT_WHERE(key, name)                                           \
+    do {                                                                  \
+        const std::string wk_ = (key);                                    \
+        const std::string wv_ = (name);                                   \
+        ::testing::Test::RecordProperty(wk_, wv_);                        \
+        std::cout << "[ MARGIN   ] " << wk_ << " = " << wv_ << std::endl; \
+    } while (0)
+
+
 // =============================================================================
 // Single-qubit gates
 // =============================================================================
@@ -116,8 +156,8 @@ TEST(R1211GateMargins, FixedSingleQubitGates) {
             << ", outside the framework's own tolerance";
     }
 
-    RecordProperty("worst_residual", std::to_string(worst.worst()));
-    RecordProperty("worst_gate", worst.worst_name());
+    REPORT_RESIDUAL("worst_residual", worst.worst());
+    REPORT_WHERE("worst_gate", worst.worst_name());
 }
 
 TEST(R1211GateMargins, ParametrisedSingleQubitGates) {
@@ -169,8 +209,8 @@ TEST(R1211GateMargins, ParametrisedSingleQubitGates) {
         }
     }
 
-    RecordProperty("worst_residual", std::to_string(worst.worst()));
-    RecordProperty("worst_gate", worst.worst_name());
+    REPORT_RESIDUAL("worst_residual", worst.worst());
+    REPORT_WHERE("worst_gate", worst.worst_name());
 }
 
 // =============================================================================
@@ -220,8 +260,8 @@ TEST(R1211GateMargins, FixedMultiQubitGates) {
             << c.name << " deviates by " << residual;
     }
 
-    RecordProperty("worst_residual", std::to_string(worst.worst()));
-    RecordProperty("worst_gate", worst.worst_name());
+    REPORT_RESIDUAL("worst_residual", worst.worst());
+    REPORT_WHERE("worst_gate", worst.worst_name());
 }
 
 TEST(R1211GateMargins, ParametrisedMultiQubitGates) {
@@ -269,8 +309,8 @@ TEST(R1211GateMargins, ParametrisedMultiQubitGates) {
         }
     }
 
-    RecordProperty("worst_residual", std::to_string(worst.worst()));
-    RecordProperty("worst_gate", worst.worst_name());
+    REPORT_RESIDUAL("worst_residual", worst.worst());
+    REPORT_WHERE("worst_gate", worst.worst_name());
 }
 
 // =============================================================================
@@ -297,8 +337,8 @@ TEST(R1211OperatorMargins, CompositionAccumulatesSlowly) {
                "the library's own products";
     }
 
-    RecordProperty("worst_residual", std::to_string(worst.worst()));
-    RecordProperty("worst_case", worst.worst_name());
+    REPORT_RESIDUAL("worst_residual", worst.worst());
+    REPORT_WHERE("worst_case", worst.worst_name());
 }
 
 TEST(R1211OperatorMargins, TensorProductsStayUnitary) {
@@ -319,8 +359,8 @@ TEST(R1211OperatorMargins, TensorProductsStayUnitary) {
             << factors << " tensor factors deviate by " << residual;
     }
 
-    RecordProperty("worst_residual", std::to_string(worst.worst()));
-    RecordProperty("worst_case", worst.worst_name());
+    REPORT_RESIDUAL("worst_residual", worst.worst());
+    REPORT_WHERE("worst_case", worst.worst_name());
 }
 
 TEST(R1211OperatorMargins, ComposeChainStaysUnitary) {
@@ -339,8 +379,8 @@ TEST(R1211OperatorMargins, ComposeChainStaysUnitary) {
             << steps << " compositions deviate by " << residual;
     }
 
-    RecordProperty("worst_residual", std::to_string(worst.worst()));
-    RecordProperty("worst_case", worst.worst_name());
+    REPORT_RESIDUAL("worst_residual", worst.worst());
+    REPORT_WHERE("worst_case", worst.worst_name());
 }
 
 // =============================================================================
@@ -369,8 +409,8 @@ TEST(R1211ChannelMargins, EveryBuiltInChannelIsTracePreserving) {
         measure("bit_phase_flip" + tag, NoiseChannels::bit_phase_flip(p));
     }
 
-    RecordProperty("worst_residual", std::to_string(worst.worst()));
-    RecordProperty("worst_channel", worst.worst_name());
+    REPORT_RESIDUAL("worst_residual", worst.worst());
+    REPORT_WHERE("worst_channel", worst.worst_name());
 }
 
 TEST(R1211ChannelMargins, TwoQubitDepolarizingIsTracePreserving) {
@@ -383,7 +423,7 @@ TEST(R1211ChannelMargins, TwoQubitDepolarizingIsTracePreserving) {
             << "two-qubit depolarizing at p = " << p << " deviates by "
             << residual;
     }
-    RecordProperty("worst_residual", std::to_string(worst.worst()));
+    REPORT_RESIDUAL("worst_residual", worst.worst());
 }
 
 TEST(R1211ChannelMargins, PauliAndResetChannels) {
@@ -412,8 +452,8 @@ TEST(R1211ChannelMargins, PauliAndResetChannels) {
             << "reset(" << p0 << ", " << p1 << ") deviates by " << residual;
     }
 
-    RecordProperty("worst_residual", std::to_string(worst.worst()));
-    RecordProperty("worst_channel", worst.worst_name());
+    REPORT_RESIDUAL("worst_residual", worst.worst());
+    REPORT_WHERE("worst_channel", worst.worst_name());
 }
 
 TEST(R1211ChannelMargins, ThermalRelaxationAcrossItsValidRegion) {
@@ -439,8 +479,8 @@ TEST(R1211ChannelMargins, ThermalRelaxationAcrossItsValidRegion) {
             }
         }
     }
-    RecordProperty("worst_residual", std::to_string(worst.worst()));
-    RecordProperty("worst_channel", worst.worst_name());
+    REPORT_RESIDUAL("worst_residual", worst.worst());
+    REPORT_WHERE("worst_channel", worst.worst_name());
 }
 
 TEST(R1211ChannelMargins, CoherentUnitaryIsBothUnitaryAndTracePreserving) {
@@ -465,7 +505,7 @@ TEST(R1211ChannelMargins, CoherentUnitaryIsBothUnitaryAndTracePreserving) {
             << "for a single Kraus operator the trace-preservation residual is "
                "the unitarity residual; they must not diverge";
     }
-    RecordProperty("worst_residual", std::to_string(worst.worst()));
+    REPORT_RESIDUAL("worst_residual", worst.worst());
 }
 
 // =============================================================================
@@ -510,4 +550,203 @@ TEST(R1211LegacyTolerances, TheLooseDefaultAcceptsWhatTheFrameworkRejects) {
     EXPECT_FALSE(op.is_unitary(FRAMEWORK_ATOL))
         << "the framework's constant rejects the same matrix, and every "
            "backend primitive already does";
+}
+
+// =============================================================================
+// DensityMatrix::is_valid on matrices that have EVOLVED
+// =============================================================================
+// The sweeps above measure operators the caller SUPPLIES. This one measures an
+// object the library produced: a density matrix carried through a noisy circuit,
+// where rounding has had a chance to accumulate across every gate and every
+// channel application. That is the case the earlier tightening never covered,
+// and the two in-tree callers of is_valid hand it essentially exact matrices,
+// so a green suite elsewhere is not evidence about this.
+//
+// Both residuals is_valid actually tests are recorded: the trace, and the worst
+// Hermiticity violation, which is |rho_ij - conj(rho_ji)| since the predicate
+// compares its square against atol squared.
+
+namespace {
+
+double trace_residual(const DensityMatrix& rho) {
+    return std::abs(detail::density_trace_real(rho.data.data(), rho.dim) - 1.0);
+}
+
+double hermiticity_residual(const DensityMatrix& rho) {
+    double worst = 0.0;
+    for (std::size_t i = 0; i < rho.dim; ++i) {
+        for (std::size_t j = i + 1; j < rho.dim; ++j) {
+            const Complex128 d =
+                rho.data[i * rho.dim + j] - rho.data[j * rho.dim + i].conj();
+            const double m = std::sqrt(d.norm_sq());
+            if (!(m <= worst)) worst = m;   // NaN-safe: a NaN becomes the worst
+        }
+    }
+    return worst;
+}
+
+// A circuit that entangles across the register and repeats, so depth means
+// accumulated arithmetic rather than a longer list of commuting gates.
+QuantumCircuit noisy_layers(int n_qubits, int depth) {
+    QuantumCircuit qc(n_qubits);
+    for (int d = 0; d < depth; ++d) {
+        for (int q = 0; q < n_qubits; ++q) qc.h(q);
+        for (int q = 0; q + 1 < n_qubits; ++q) qc.cx(q, q + 1);
+        for (int q = 0; q < n_qubits; ++q)
+            qc.rz(0.37 * static_cast<double>(d + 1) + 0.11 * static_cast<double>(q), q);
+    }
+    return qc;
+}
+
+NoiseModel damping_and_depolarizing() {
+    NoiseModel nm;
+    nm.add_all_qubit_quantum_error(NoiseChannels::depolarizing(0.01), "h");
+    nm.add_all_qubit_quantum_error(NoiseChannels::amplitude_damping(0.02), "rz");
+    nm.add_all_qubit_quantum_error(NoiseChannels::depolarizing(0.015, 2), "cx");
+    return nm;
+}
+
+} // namespace
+
+TEST(V11231EvolvedDensityMargin, TraceAndHermiticityHoldAcrossDepthAndWidth) {
+    WorstResidual worst_trace;
+    WorstResidual worst_herm;
+
+    const NoiseModel nm = damping_and_depolarizing();
+    DensityMatrixSimulator sim;
+
+    for (int nq : {2, 3, 4}) {
+        for (int depth : {1, 4, 16}) {
+            const std::string what =
+                "n=" + std::to_string(nq) + " depth=" + std::to_string(depth);
+            SCOPED_TRACE(what);
+
+            const auto res = sim.run(noisy_layers(nq, depth), nm, 0, 20260829);
+            ASSERT_TRUE(res.success) << res.error_message;
+            const DensityMatrix& rho = res.final_state;
+
+            worst_trace.observe(trace_residual(rho), what);
+            worst_herm.observe(hermiticity_residual(rho), what);
+
+            EXPECT_TRUE(rho.is_valid(FRAMEWORK_ATOL))
+                << "an evolved density matrix must satisfy the tolerance the "
+                   "predicate now judges by";
+        }
+    }
+
+    REPORT_RESIDUAL("worst_evolved_trace_residual", worst_trace.worst());
+    REPORT_WHERE("worst_evolved_trace_at", worst_trace.worst_name());
+    REPORT_RESIDUAL("worst_evolved_hermiticity_residual", worst_herm.worst());
+    REPORT_WHERE("worst_evolved_hermiticity_at", worst_herm.worst_name());
+
+    EXPECT_LE(worst_trace.worst(), FRAMEWORK_ATOL)
+        << "worst trace residual at " << worst_trace.worst_name();
+    EXPECT_LE(worst_herm.worst(), FRAMEWORK_ATOL)
+        << "worst Hermiticity residual at " << worst_herm.worst_name();
+}
+
+// The trace is what a noisy channel is most likely to move, so it is worth
+// measuring against a channel chosen to be lossy rather than a mild one.
+TEST(V11231EvolvedDensityMargin, StrongDampingStillPreservesTheTrace) {
+    NoiseModel nm;
+    nm.add_all_qubit_quantum_error(NoiseChannels::amplitude_damping(0.25), "h");
+    nm.add_all_qubit_quantum_error(NoiseChannels::phase_damping(0.25), "rz");
+
+    DensityMatrixSimulator sim;
+    WorstResidual worst;
+
+    for (int depth : {1, 8, 32}) {
+        const std::string what = "depth=" + std::to_string(depth);
+        const auto res = sim.run(noisy_layers(3, depth), nm, 0, 20260829);
+        ASSERT_TRUE(res.success) << res.error_message;
+        worst.observe(trace_residual(res.final_state), what);
+    }
+
+    REPORT_RESIDUAL("worst_damped_trace_residual", worst.worst());
+    EXPECT_LE(worst.worst(), FRAMEWORK_ATOL)
+        << "a trace-preserving channel must preserve the trace to the tolerance "
+           "the predicate uses, worst at " << worst.worst_name();
+}
+
+// =============================================================================
+// The normalization residual against register size
+// =============================================================================
+// state_norm_sq reduces over 2^n positive terms, so its error grows with the
+// register while the tolerance it is compared against does not. A balanced tree
+// is what keeps a correct state from being reported unnormalized by its own
+// measurement; this records where the residual actually sits rather than where
+// the bound says it should.
+//
+// ON THE UPPER LIMIT. The default sweep stops at 24, which is 268 MB, so the
+// suite stays runnable on a CI runner and on an ordinary machine. Thirty qubits
+// is 17.2 GB: large, but only a question of where the suite runs, so it lives
+// in the opt-in test below rather than being left out. Where neither is run,
+// the trend still carries: tree error grows like log2(N), so 24 to 30 adds a
+// quarter to the number of levels, not sixty-four times the error a running
+// total would have accumulated.
+
+namespace {
+
+// A normalized state of nq qubits whose amplitudes are neither representable
+// nor equal, so every partial sum rounds and small terms have to survive beside
+// large ones. A uniform superposition would be exact in binary and would
+// measure nothing at all. Returns how far the measured norm sits from 1, or a
+// non-finite value if the state could not be normalized.
+double normalization_residual(int nq) {
+    const std::size_t dim = std::size_t(1) << nq;
+    std::vector<Complex128> amps(dim);
+    for (std::size_t k = 0; k < dim; ++k) {
+        const double x = static_cast<double>(k + 1);
+        amps[k] = Complex128(1.0 / std::sqrt(x), 1.0 / (3.0 * x));
+    }
+    const double norm = std::sqrt(detail::state_norm_sq(amps.data(), dim));
+    if (!is_normalizable(norm)) return std::numeric_limits<double>::quiet_NaN();
+    for (Complex128& a : amps) {
+        a.real /= norm;
+        a.imag /= norm;
+    }
+    return std::abs(detail::state_norm_sq(amps.data(), dim) - 1.0);
+}
+
+void sweep_register_sizes(const std::vector<int>& sizes, const char* worst_key,
+                          const char* worst_where_key, WorstResidual& worst) {
+    for (int nq : sizes) {
+        const std::string what = "n=" + std::to_string(nq);
+        SCOPED_TRACE(what);
+        const double residual = normalization_residual(nq);
+        ASSERT_TRUE(is_finite_strict(residual)) << "could not normalize at " << what;
+        worst.observe(residual, what);
+        REPORT_RESIDUAL("norm_residual_" + what, residual);
+        EXPECT_LE(residual, FRAMEWORK_ATOL)
+            << "the measurement must not invent a violation at " << what;
+    }
+    REPORT_RESIDUAL(worst_key, worst.worst());
+    REPORT_WHERE(worst_where_key, worst.worst_name());
+}
+
+} // namespace
+
+TEST(V11231NormalizationMargin, TheResidualStaysFlatAcrossRegisterSize) {
+    WorstResidual worst;
+    sweep_register_sizes({12, 16, 20, 22, 24}, "worst_norm_residual",
+                         "worst_norm_residual_at", worst);
+}
+
+// The sweep above stops at 24 so the suite stays runnable everywhere: a CI
+// runner and an ordinary laptop cannot hold what the next sizes need. That is a
+// portability limit and not a physical one, so the large end is opt-in rather
+// than absent, and it reports through exactly the same channel.
+//
+//   n = 26   1.1 GB      n = 28   4.3 GB      n = 30   17.2 GB
+//
+// One size is held at a time, so peak resident memory is the largest of them.
+// Run with LINDBLAD_BIG_MARGIN_SWEEP=1 on a machine with the headroom.
+TEST(V11231NormalizationMargin, TheResidualAtLargeRegisterSizes) {
+    if (std::getenv("LINDBLAD_BIG_MARGIN_SWEEP") == nullptr) {
+        GTEST_SKIP() << "set LINDBLAD_BIG_MARGIN_SWEEP=1 to run this; it needs "
+                        "about 17.2 GB of memory at n=30";
+    }
+    WorstResidual worst;
+    sweep_register_sizes({26, 28, 30}, "worst_large_norm_residual",
+                         "worst_large_norm_residual_at", worst);
 }
