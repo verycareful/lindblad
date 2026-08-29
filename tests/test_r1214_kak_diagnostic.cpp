@@ -960,13 +960,13 @@ TEST(R1214KakDiagnostic, ACorruptedOperandIsHandedBackUnchanged) {
         << "  out: " << render(out);
 }
 
-// The pass recovers a UNITARY's 4x4 by pushing four basis states through
-// gates::apply_unitary, when the instruction already holds those sixteen
-// numbers in the same row-major layout. Reading them directly would be both
-// cheaper and free of the unitarity check that the simulation drags in.
+// The pass reads a UNITARY's 4x4 straight out of Instruction::matrix rather
+// than recovering it by pushing four basis states through gates::apply_unitary.
+// The two agree only because the instruction stores those sixteen numbers in
+// the same row-major layout the kernel would produce, which is an assumption
+// until something states it, so this states it.
 //
-// That equivalence is an assumption until something states it, so this states
-// it. The non-unitary case is the one that matters: a direct read has to
+// The non-unitary case is the one that matters: the direct read has to
 // reproduce the simulated result even for a matrix no check would accept, since
 // that is precisely the operand the substitution exists to handle.
 //

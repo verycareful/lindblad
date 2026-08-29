@@ -281,10 +281,35 @@ enum class UnitaryLowering {
 // no exact decomposition for them exists in this project. That refusal is a
 // statement about the operand, not about these options, and its message says
 // so rather than implying a flag would help.
+// Whether a classical condition on an instruction is written into the exported
+// text. FormatDefault differs per format for the same reason UnitaryLowering's
+// does: one format can say it without loss and the other cannot.
+//
+//   QASM 3 EMITS. `if (c[k] == v) { ... }` names one bit and takes a block, so
+//   any instruction's text goes inside it and nothing is lost. Its own parser
+//   reads that form, so the round trip is exact.
+//
+//   QASM 2 REFUSES. Its `if` compares a WHOLE classical register to an integer,
+//   so a single-bit condition has an exact spelling there only when the
+//   register IS that one bit. Wider registers can only drop it, and discarding
+//   control flow is something to ask about rather than assume.
+//
+// Under Always, a QASM 2 export takes the exact spelling where the register is
+// one bit wide, and otherwise emits the instruction unconditioned, warns once
+// through the diagnostic sink, and records the dropped condition in the text as
+// a `// dropped condition: c[k] == v` comment.
+enum class ConditionExport {
+    FormatDefault,  // QASM 2 refuses; QASM 3 emits
+    Always,         // emit in both formats
+    Never           // refuse in both formats
+};
+
 struct QasmExportOptions {
     bool decompose_unrepresentable = false; // lower MCX/MCP/PERMUTATION at export
 
     UnitaryLowering unitary_lowering = UnitaryLowering::FormatDefault;
+
+    ConditionExport condition_export = ConditionExport::FormatDefault;
 
     // QASM 2 only, and meaningful only where lowering actually happens. A
     // lowering that drops a global phase throws unless this is set; with it

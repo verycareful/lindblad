@@ -25,7 +25,7 @@ static QuantumCircuit from_qasm2(const std::string& qasm);
 static QuantumCircuit from_qasm3(const std::string& qasm);
 ```
 
-`QasmExportOptions` carries three knobs. In every case the circuit object is
+`QasmExportOptions` carries four knobs. In every case the circuit object is
 never modified; only the emitted text is affected.
 
 - `decompose_unrepresentable` (default `false`) — when set, `to_qasm2()`
@@ -55,6 +55,56 @@ never modified; only the emitted text is affected.
   deduplicates on message text, so several operands dropping an identical phase
   are delivered once with the repeat counted at the next flush. A caller
   counting warnings sees deliveries, not emissions.
+
+- `condition_export` (default `ConditionExport::FormatDefault`): whether an
+  instruction's classical condition is written into the emitted text.
+  `FormatDefault` again states what each format can represent: QASM 3 emits,
+  QASM 2 refuses. `Always` and `Never` override both formats in the same
+  direction.
+
+  The asymmetry is in the two `if` forms. QASM 3's names one bit and takes a
+  block, so any instruction's text goes inside it and the round trip is exact.
+  QASM 2's compares a whole classical register to an integer and takes a single
+  quantum operation, so a single-bit condition has an exact spelling there only
+  when the register is that one bit.
+
+  Under `Always`, a QASM 2 export takes that exact spelling where the register
+  is one bit wide, and otherwise emits the instruction unconditioned, warns
+  through the diagnostic handler, and records the loss in the text as a
+  `// dropped condition: c[k] == v` comment. An instruction that lowered into
+  several gates gets one `if` per emitted statement rather than a block, which
+  is equivalent because none of those gates writes a classical bit. That warning
+  reaches the caller through the same deduplicating handler described above.
+
+### Example — exporting a conditional circuit
+
+```cpp
+#include "lindblad/circuit.hpp"
+
+using namespace lindblad;
+
+QuantumCircuit qc(1, 1);
+qc.add_if(0, 1, Instruction::GateType::X, {0});   // X on q[0] when c[0] == 1
+
+// QASM 3 writes the condition and its parser reads that form back, so the
+// round trip is exact and no option is needed.
+const std::string q3 = qc.to_qasm3();
+//   if (c[0] == 1) {
+//     x q[0];
+//   }
+
+// QASM 2 refuses by default, because its `if` compares the whole register.
+// Here the register IS one bit, so Always takes the exact spelling.
+QasmExportOptions opts;
+opts.condition_export = ConditionExport::Always;
+const std::string q2 = qc.to_qasm2(opts);
+//   if (c == 1) x q[0];
+```
+
+Widen the register to `QuantumCircuit qc(1, 3)` and the same export emits
+`x q[0];` preceded by a `// dropped condition: c[0] == 1` comment, with a
+warning through the diagnostic handler: three bits have no exact spelling in
+OpenQASM 2.0.
 
 ### Why lowering and loss are separate consents
 
@@ -99,6 +149,14 @@ instead of naming a setting that could not help.
   lowers exactly
 - `decompose_unrepresentable` governs `MCX` / `MCP` / `PERMUTATION` and does not
   reach a raw matrix; `unitary_lowering` is the setting for that
+- A classical condition throws by default, because OpenQASM 2.0's `if`
+  compares a whole classical register rather than one bit. Set
+  `condition_export = ConditionExport::Always` to export anyway: a one-bit
+  register emits `if (c == v) <statement>;` exactly, and a wider one emits the
+  instruction unconditioned with the condition recorded as a
+  `// dropped condition: c[k] == v` comment and a warning. `barrier` is never
+  given an `if`, since the OpenQASM 2.0 grammar admits only a quantum operation
+  there
 - `PARAM_*` instructions are rendered as `gate '<label>' omitted` comments
   because QASM 2.0 cannot express an unbound symbolic parameter; the output
   remains valid QASM 2.0
@@ -142,6 +200,12 @@ instead of naming a setting that could not help.
 - `if (creg == n) ...` conditionals are NOT supported and surface as an
   unknown-gate error; import feedforward circuits through QASM 3, whose
   parser supports single-bit `if` conditions
+- That refusal is one-directional, and it is the reason a QASM 2 round trip of
+  a conditional circuit does not close. `to_qasm2()` under
+  `ConditionExport::Always` emits `if (c == v) ...` when the register is one bit
+  wide. The text is valid OpenQASM 2.0 and other tools read it, but
+  `from_qasm2()` does not. Use `to_qasm3()` / `from_qasm3()`, which close the
+  round trip, or `to_json()`
 
 ## QASM 3.0 Round-Trip
 
@@ -167,6 +231,11 @@ instead of naming a setting that could not help.
   `unitary_lowering = UnitaryLowering::Never` to refuse instead of lowering,
   which is the setting to use when the point of the export is to find out
   whether a circuit still holds raw matrices
+- A classical condition is emitted as `if (c[k] == v) { ... }` around the
+  instruction's text, which is the form `from_qasm3()` reads, so a conditional
+  circuit round-trips exactly. An instruction that lowered into several gates is
+  wrapped once, as a block. Set `condition_export = ConditionExport::Never` to
+  refuse a conditional instruction instead
 - `PERMUTATION` has no QASM 3 primitive and is ALWAYS lowered at export:
   wire-relabeling maps become at most k−1 `swap`s; general basis maps lower
   by exact transposition synthesis whose multi-controlled steps are emitted
@@ -428,7 +497,9 @@ QuantumCircuit qc = QuantumCircuit::from_qasm3(qasm);
 ## Related Source Files
 
 - `include/lindblad/circuit.hpp` — `Instruction`, `ParamExpr`,
-  `QuantumCircuit::{to_qasm2, to_qasm3, from_qasm2, from_qasm3, bind_parameters}`
+  `QuantumCircuit::{to_qasm2, to_qasm3, from_qasm2, from_qasm3, bind_parameters}`,
+  and the export knobs: `QasmExportOptions`, `UnitaryLowering`,
+  `ConditionExport`
 - `src/circuit.cpp` — `to_qasm2()`, `to_qasm3()` serialisers and the bridge
   glue for the two parsers
 - `src/qasm/qasm2_parser.cpp` — `QASM2Parser` line-oriented parser and

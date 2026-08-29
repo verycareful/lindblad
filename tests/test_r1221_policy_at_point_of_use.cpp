@@ -6,13 +6,13 @@
 // repeat, inverse, control() and the DAG and JSON round trips. Every test there
 // asks whether the setting arrives. None asks whether anything reads it.
 //
-// The distinction is not academic. The policy arrives perfectly at every
-// consumer, and three of four consumers then apply the matrix without
-// consulting it, so a circuit the library accepted becomes one that cannot run.
-// R1211Propagation could not see that, and one detail explains why: its
+// The distinction is not academic. A policy can arrive perfectly at every
+// consumer and still be dropped where the matrix is applied, which turns a
+// circuit the library accepted into one that cannot run. R1211Propagation
+// cannot see that, and one detail explains why: its
 // ControlOfAnOptedOutMatrixStaysRunnable asserts
-// QuantumCircuit::validate_physical(), the run() pre-flight, which happens to
-// be the single consumer implemented correctly.
+// QuantumCircuit::validate_physical(), the run() pre-flight, which is the one
+// consumer that reads the policy by construction.
 //
 // So the shape of every test below is the same and deliberately end to end:
 // build a circuit the library ACCEPTS because the caller opted out, then ask
@@ -125,8 +125,9 @@ TEST(R1221PolicyAtPointOfUse, StatevectorRunsAnOptedOutUnitary) {
         QuantumCircuit qc = opted_out(4, k, Validation::Ignore);
         const auto r = sim.run(qc, /*shots=*/0, /*seed=*/0);
         EXPECT_TRUE(accepted(r.success, r.error_message))
-            << "this backend forwards inst.validation to the kernel and is the "
-               "reference the others are measured against";
+            << "run() passes Ignore into apply_instruction at every call site "
+               "below its pre-flight; this is the shape the other backends are "
+               "measured against";
     }
 }
 
@@ -136,9 +137,10 @@ TEST(R1221PolicyAtPointOfUse, MpsRunsAnOptedOutUnitary) {
         MPSSimulator sim;
         QuantumCircuit qc = opted_out(4, k, Validation::Ignore);
         EXPECT_NO_THROW(sim.run(qc, /*max_bond_dim=*/64, /*shots=*/0, /*seed=*/0))
-            << "the 1- and 2-qubit paths pass Validation::Ignore to the kernel "
-               "explicitly; the 3-qubit path reaches the full-statevector "
-               "fallback, which applies the matrix without the caller's policy";
+            << "every width goes through mps_apply_instruction below run()'s "
+               "pre-flight: the 1- and 2-qubit paths reach the tensor kernels "
+               "and 3-qubit reaches the full-statevector fallback, and all of "
+               "them must apply the matrix under Ignore";
     }
 }
 
@@ -150,8 +152,9 @@ TEST(R1221PolicyAtPointOfUse, DensityMatrixRunsAnOptedOutUnitary) {
         QuantumCircuit qc = opted_out(4, k, Validation::Ignore);
         const auto r = sim.run(qc, noise, /*shots=*/0, /*seed=*/0);
         EXPECT_TRUE(accepted(r.success, r.error_message))
-            << "this backend pre-flights under the caller's policy and then "
-               "applies the matrix under a default one, at every width";
+            << "this backend pre-flights under the caller's policy, so the "
+               "gate loop below it must apply the matrix under Ignore rather "
+               "than re-judging it under a default, at every width";
     }
 }
 

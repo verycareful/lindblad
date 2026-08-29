@@ -930,7 +930,11 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
         auto apply_inst = [&](DensityMatrix& dm, size_t ii) {
             const auto& inst = circuit.instructions[ii];
             if (inst.type == Instruction::GateType::RESET) {
-                dm.apply_kraus({K0_reset, K1_reset}, inst.qubits);
+                // The reset operators are built here, not supplied, so their
+                // trace preservation is a property of this file rather than
+                // something a caller can get wrong.
+                dm.apply_kraus({K0_reset, K1_reset}, inst.qubits,
+                               {Validation::Ignore});
                 return;
             }
             for (const auto& re : inst_errors[ii])
@@ -940,7 +944,8 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                                              dm.dim);
             if (op_kind[ii] == 1)      dm.apply_permutation(op_perm[ii]);
             else if (op_kind[ii] == 2) dm.apply_mcp_phase(op_mask[ii], op_lambda[ii]);
-            else                       dm.apply_gate(gate_mats[ii], inst.qubits);
+            else                       dm.apply_gate(gate_mats[ii], inst.qubits,
+                                                     {Validation::Ignore});
             for (const auto& re : inst_errors[ii])
                 if (re.after_gate)
                     dm_superop_apply_inplace(dm.data.data(), re.superop,

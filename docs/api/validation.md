@@ -154,9 +154,18 @@ instructions directly. It runs before gate fusion, so a matrix is judged while
 it is still the caller's rather than after it has been multiplied into a block.
 
 Because the pre-flight has already judged every matrix, execution does not
-judge them again: the per-shot trajectory, the terminal-measurement pass, and
-the fusion builder all apply instructions under `Ignore`. Re-checking would
-measure the same unchanged matrix once per shot.
+judge them again. Every backend follows the same rule: below its `run()`
+pre-flight, each kernel call applies the matrix under `Ignore`, whether that is
+the statevector trajectory, the terminal-measurement pass, the fusion builder,
+the density-matrix gate loop, or the MPS dispatcher. Re-checking would measure
+the same unchanged matrix once per shot.
+
+The rule is about the route, not the backend. A primitive reached DIRECTLY,
+with no `run()` above it, has had no pre-flight, so it applies the caller's
+policy as given: `StatevectorSimulator::apply_instruction`,
+`DensityMatrix::apply_gate`, `MPSState::apply_single_qubit_gate` and
+`apply_two_qubit_gate` each take a `ValidationOptions` for that reason, and
+default it to `Throw`. `run()` passes `Ignore` into those same entry points.
 
 Instructions the library synthesises rather than receives carry `Ignore`. A
 fused block, a controlled-U built by repeated squaring in phase estimation, and

@@ -1221,11 +1221,13 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
                 T(l, keep, r).imag *= inv_norm;
             }
         if (outcome == 1) {
+            // Flipping the collapsed qubit to |1>. X is built here, so it
+            // carries Ignore like the other locally-built factors.
             const std::array<Complex128, 4> X_g = {
                 Complex128(0,0), Complex128(1,0),
                 Complex128(1,0), Complex128(0,0)
             };
-            mps.apply_single_qubit_gate(X_g, qubit);
+            mps.apply_single_qubit_gate(X_g, qubit, {Validation::Ignore});
         }
         return;
     }
@@ -1332,7 +1334,7 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
                 "direct MPS tensor-contraction path.");
         }
         auto sv = mps.to_statevector();
-        gates::apply_unitary(sv, inst.qubits, inst.matrix);
+        gates::apply_unitary(sv, inst.qubits, inst.matrix, {Validation::Ignore});
         mps = mps_from_sv(sv, mps.n_qubits, mps.max_bond_dim, mps.cutoff);
         return;
     }
@@ -1349,6 +1351,10 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
     } else if (inst.qubits.size() == 3) {
         int q0 = inst.qubits[0], q1 = inst.qubits[1], q2 = inst.qubits[2];
 
+        // The factors below are built here rather than supplied, so every
+        // application of them passes Ignore: their unitarity is a property of
+        // this file, and checking it once per gate per shot would measure the
+        // same four constants for the life of the run.
         constexpr double s2 = INV_SQRT2;
         const std::array<Complex128, 4> H_g = {
             Complex128(s2,0), Complex128(s2,0),
@@ -1367,21 +1373,21 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
 
         // CCX decomposition: standard 6-CNOT Toffoli
         auto apply_ccx = [&](int c1, int c2, int tgt) {
-            mps.apply_single_qubit_gate(H_g, tgt);
-            mps.apply_two_qubit_gate(CX_g, c2, tgt);
-            mps.apply_single_qubit_gate(Tdg_g, tgt);
-            mps.apply_two_qubit_gate(CX_g, c1, tgt);
-            mps.apply_single_qubit_gate(T_g, tgt);
-            mps.apply_two_qubit_gate(CX_g, c2, tgt);
-            mps.apply_single_qubit_gate(Tdg_g, tgt);
-            mps.apply_two_qubit_gate(CX_g, c1, tgt);
-            mps.apply_single_qubit_gate(T_g, c2);
-            mps.apply_single_qubit_gate(T_g, tgt);
-            mps.apply_single_qubit_gate(H_g, tgt);
-            mps.apply_two_qubit_gate(CX_g, c1, c2);
-            mps.apply_single_qubit_gate(T_g, c1);
-            mps.apply_single_qubit_gate(Tdg_g, c2);
-            mps.apply_two_qubit_gate(CX_g, c1, c2);
+            mps.apply_single_qubit_gate(H_g, tgt, {Validation::Ignore});
+            mps.apply_two_qubit_gate(CX_g, c2, tgt, {Validation::Ignore});
+            mps.apply_single_qubit_gate(Tdg_g, tgt, {Validation::Ignore});
+            mps.apply_two_qubit_gate(CX_g, c1, tgt, {Validation::Ignore});
+            mps.apply_single_qubit_gate(T_g, tgt, {Validation::Ignore});
+            mps.apply_two_qubit_gate(CX_g, c2, tgt, {Validation::Ignore});
+            mps.apply_single_qubit_gate(Tdg_g, tgt, {Validation::Ignore});
+            mps.apply_two_qubit_gate(CX_g, c1, tgt, {Validation::Ignore});
+            mps.apply_single_qubit_gate(T_g, c2, {Validation::Ignore});
+            mps.apply_single_qubit_gate(T_g, tgt, {Validation::Ignore});
+            mps.apply_single_qubit_gate(H_g, tgt, {Validation::Ignore});
+            mps.apply_two_qubit_gate(CX_g, c1, c2, {Validation::Ignore});
+            mps.apply_single_qubit_gate(T_g, c1, {Validation::Ignore});
+            mps.apply_single_qubit_gate(Tdg_g, c2, {Validation::Ignore});
+            mps.apply_two_qubit_gate(CX_g, c1, c2, {Validation::Ignore});
         };
 
         switch (inst.type) {
@@ -1389,29 +1395,30 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
                 apply_ccx(q0, q1, q2);
                 break;
             case GT::CCZ:
-                mps.apply_single_qubit_gate(H_g, q2);
+                mps.apply_single_qubit_gate(H_g, q2, {Validation::Ignore});
                 apply_ccx(q0, q1, q2);
-                mps.apply_single_qubit_gate(H_g, q2);
+                mps.apply_single_qubit_gate(H_g, q2, {Validation::Ignore});
                 break;
             case GT::CSWAP:
-                mps.apply_two_qubit_gate(CX_g, q2, q1);
+                mps.apply_two_qubit_gate(CX_g, q2, q1, {Validation::Ignore});
                 apply_ccx(q0, q1, q2);
-                mps.apply_two_qubit_gate(CX_g, q2, q1);
+                mps.apply_two_qubit_gate(CX_g, q2, q1, {Validation::Ignore});
                 break;
             case GT::RCCX:
-                mps.apply_single_qubit_gate(H_g, q2);
-                mps.apply_single_qubit_gate(T_g, q2);
-                mps.apply_two_qubit_gate(CX_g, q1, q2);
-                mps.apply_single_qubit_gate(Tdg_g, q2);
-                mps.apply_two_qubit_gate(CX_g, q0, q2);
-                mps.apply_single_qubit_gate(T_g, q2);
-                mps.apply_two_qubit_gate(CX_g, q1, q2);
-                mps.apply_single_qubit_gate(Tdg_g, q2);
-                mps.apply_single_qubit_gate(H_g, q2);
+                mps.apply_single_qubit_gate(H_g, q2, {Validation::Ignore});
+                mps.apply_single_qubit_gate(T_g, q2, {Validation::Ignore});
+                mps.apply_two_qubit_gate(CX_g, q1, q2, {Validation::Ignore});
+                mps.apply_single_qubit_gate(Tdg_g, q2, {Validation::Ignore});
+                mps.apply_two_qubit_gate(CX_g, q0, q2, {Validation::Ignore});
+                mps.apply_single_qubit_gate(T_g, q2, {Validation::Ignore});
+                mps.apply_two_qubit_gate(CX_g, q1, q2, {Validation::Ignore});
+                mps.apply_single_qubit_gate(Tdg_g, q2, {Validation::Ignore});
+                mps.apply_single_qubit_gate(H_g, q2, {Validation::Ignore});
                 break;
             case GT::UNITARY: {
                 auto sv = mps.to_statevector();
-                gates::apply_unitary(sv, inst.qubits, inst.matrix);
+                gates::apply_unitary(sv, inst.qubits, inst.matrix,
+                                     {Validation::Ignore});
                 mps = mps_from_sv(sv, mps.n_qubits, mps.max_bond_dim, mps.cutoff);
                 break;
             }

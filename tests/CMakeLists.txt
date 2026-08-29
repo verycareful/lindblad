@@ -121,6 +121,8 @@ set(LINDBLAD_TEST_SOURCES
     test_r1221_policy_at_point_of_use.cpp
     test_r1221_qasm_unitary.cpp
     test_r1221_constants_rule.cpp
+    test_r1222_kernel_policy_rule.cpp
+    test_r1222_conditional_export.cpp
 )
 
 # Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this

@@ -4,6 +4,117 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [R.1.22.2/1.1.22.2] - 2026-08-29
+
+R.1.22.1 shipped six tests red on purpose, pinning two defects it had found.
+This patch turns all six green, and closes a third defect that only became
+visible while fixing the second.
+
+### Fixed
+
+- **A physical-validity policy is now read where the matrix is used (#86).**
+  One rule holds across every backend: the policy is judged once in the `run()`
+  pre-flight, and every kernel call below it applies the matrix under `Ignore`.
+  The density-matrix gate loop at every width, and the MPS fallback at three or
+  more qubits, were re-judging under a default `Throw`, so a `UNITARY` added
+  under `Validation::Ignore` or `Validation::Warn` was accepted when it entered
+  the circuit and then refused when the circuit ran. Nothing computed a wrong
+  number; a circuit the library accepted simply could not run, under a setting
+  whose only purpose is to permit it.
+
+  The statevector backend already worked this way and is deliberately unchanged.
+  Its per-instruction entry point is public, so a caller stepping a circuit by
+  hand has had no pre-flight above them and must keep their own policy. The rule
+  is about the route rather than the backend: a primitive reached directly
+  applies the policy it was given, and `run()` passes `Ignore` into those same
+  entry points.
+
+  Thirty further call sites now pass `Ignore` explicitly. Each applies an
+  operator this library builds rather than receives, the reset Kraus pair and
+  the factors in the MPS CCX, CCZ, CSWAP and RCCX decompositions, so each was
+  paying a unitarity check per gate per shot on a matrix that cannot change.
+
+  Closes #86.
+
+- **An optimisation pass no longer decides whether a program runs.**
+  ConsolidateBlocks recovered a `UNITARY`'s 4x4 by pushing four basis states
+  through the gate kernel, which dragged in a unitarity check the caller may
+  have opted out of. It now reads `Instruction::matrix`, which already holds
+  those sixteen numbers in the same row-major layout. That is cheaper, it
+  removes the check as a side effect rather than suppressing it, and a pass that
+  cannot factor an operand hands it back instead of refusing to run.
+
+- **A conditional two-qubit `UNITARY` lowers (#89).** The lowering stopped
+  borrowing the 4x4 extraction whose guard declines conditional instructions.
+  That guard is correct for its other caller, where folding a conditional gate
+  into a block of unconditional ones would change the circuit, and meaningless
+  for export. Closes #89.
+
+- **Neither QASM exporter wrote a classical condition, for any gate type.**
+  Found while closing #89, and much wider than it. `to_qasm2()` and `to_qasm3()`
+  emitted no `if` at all: every mention of the condition inside them copied the
+  field onto a lowered instruction, and the emit loops then wrote gates without
+  it. So a conditional `x`, `cx` or `u` exported with its condition gone, no
+  error, no comment, for the life of both exporters. The parsers were never the
+  problem, and QASM 3 reads the form its exporter now writes, so text into a
+  circuit carried the condition while a circuit into text dropped it.
+
+  No test caught it because the two features were never crossed. Sixteen test
+  files build conditional circuits and two of those also export; no single test
+  did both.
+
+- **#83 is closed here, having been fixed in R.1.22.1.** Both transcribed
+  `pi/2` literals took `PI_2` in that release, and the tree-wide scan for
+  transcribed constants shipped with it and passes. The issue stayed open at
+  that cut by oversight, not because anything was outstanding. Closes #83.
+
+### Added
+
+- **`QasmExportOptions::condition_export`**, taking `ConditionExport` with
+  `FormatDefault`, `Always` and `Never`, mirroring `unitary_lowering`.
+  `FormatDefault` states what each format can represent rather than an absence
+  of choice: QASM 3 emits, QASM 2 refuses.
+
+  The asymmetry is in the two `if` forms. QASM 3 names one bit and takes a
+  block, so an instruction's text goes inside it and the round trip is exact.
+  OpenQASM 2.0 compares a WHOLE classical register to an integer and takes a
+  single quantum operation, so a single-bit condition has an exact spelling
+  there only when the register is that one bit. Under `Always` a QASM 2 export
+  takes that exact spelling where it exists, and otherwise emits the instruction
+  unconditioned, warns through the diagnostic handler, and records the loss in
+  the text as a `// dropped condition: c[k] == v` comment. An instruction that
+  lowered into several gates gets one `if` per emitted statement, which is
+  equivalent because none of those gates writes a classical bit.
+
+- **A source scan asserting that no internal kernel call omits its validation
+  policy.** The defect behind #86 survived two releases because the parameter
+  carrying the policy is defaulted, so omitting it is not a compile error and
+  the compiler could point at none of the sites needing a decision. The scan
+  counts arguments at every call to a kernel entry point that takes a
+  `ValidationOptions`, which is robust to how a correct site spells its
+  argument. The qudit primitives are out of scope until #88 gives their callers
+  a policy to forward.
+
+- **A conditional-export test suite**, crossing a conditional circuit with an
+  export in every test, which is the crossing the older suites could not make.
+
+### Changed
+
+- `docs/api/validation.md` states the read-once rule as one rule across every
+  backend, and states the half that decides the statevector case: a primitive
+  reached directly has had no pre-flight, so it applies the caller's policy as
+  given.
+- `docs/api/qasm.md` documents `condition_export` in the options list and in
+  both export sections, and records that a QASM 2 round trip of a conditional
+  circuit does not close, because `from_qasm2()` does not read the `if` form
+  `to_qasm2()` can now emit. `to_qasm3()` and `to_json()` both carry it.
+
+### Results
+
+2441 tests across 224 suites, all passed, on Clang 18.1.3 and GCC 13.3.0 under
+Ubuntu 24.04, each at the documented native build (33.1 s and 21.1 s). The gap
+between the two compilers is #72, still observed.
+
 ## [R.1.22.1/1.1.22.1] - 2026-08-27
 
 The test release for R.1.22.0, which rewrote the two-qubit KAK decomposition and

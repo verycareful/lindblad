@@ -46,16 +46,22 @@ struct Lowered {
 
 // Lowers a 2-qubit UNITARY instruction onto its own operands, carrying the
 // source instruction's classical condition and validation policy onto every
-// emitted instruction. nullopt when `inst` is not a 2-qubit operand this
-// module can represent, or when the decomposition fails verification.
+// emitted instruction. A conditional operand lowers like any other: every gate
+// in the sequence carries the same condition, so the block fires or does not
+// fire as a whole.
 //
-// KNOWN GAP, pinned by R1221LoweringSeam.EveryEmittedInstructionCarriesConditionAndPolicy:
-// a CONDITIONAL operand never gets this far. The 4x4 extraction it relies on
-// declines any instruction carrying a classical condition, so the condition it
-// promises to carry is currently unreachable and the caller reports the refusal
-// as a numerical one. Neither exporter writes conditions into its text either,
-// so accepting them here without fixing that would emit gates whose condition
-// had silently vanished.
+// The operand must BE a UNITARY carrying sixteen entries. The matrix is read
+// from `Instruction::matrix` rather than reconstructed, so a gate whose 4x4 is
+// implied by its type rather than stored has nothing here to read.
+//
+// nullopt on anything else, and on a decomposition that does not verify against
+// the operand. Callers must treat that as "cannot lower" rather than falling
+// back to anything approximate.
+//
+// Conditioning each emitted instruction is equivalent to conditioning the
+// sequence as a block: the emitted alphabet is quantum gates only, none of
+// which writes a classical bit, so the condition cannot change between the
+// first instruction and the last.
 std::optional<Lowered> lower_2q_unitary(const Instruction& inst);
 
 }  // namespace tqd

@@ -1211,6 +1211,84 @@ bool lower_unitary_here(const QasmExportOptions& opts,
     return format_lowers_by_default;
 }
 
+// Whether this export writes a classical condition into its text.
+bool emit_conditions_here(const QasmExportOptions& opts,
+                          bool format_emits_by_default) {
+    switch (opts.condition_export) {
+        case ConditionExport::Always: return true;
+        case ConditionExport::Never:  return false;
+        case ConditionExport::FormatDefault: break;
+    }
+    return format_emits_by_default;
+}
+
+// A QASM 2 `if` takes one quantum operation, not a block, so an instruction
+// that lowered into several gates gets one `if` per emitted statement. That is
+// equivalent to conditioning the group: lowering produces quantum gates only,
+// none of which writes a classical bit, so the condition cannot change between
+// the first statement and the last.
+//
+// Two line kinds are left alone. A comment carries no operation, and
+// `if (...) // text` is not a statement. A `barrier` is a directive rather
+// than a qop, which the OpenQASM 2.0 grammar does not admit after an `if`.
+std::string qasm2_condition_prefix(const std::string& body, int value) {
+    const std::string guard = "if (c == " + std::to_string(value) + ") ";
+    std::ostringstream out;
+    std::size_t pos = 0;
+    while (pos < body.size()) {
+        const std::size_t eol = body.find('\n', pos);
+        const std::size_t end = (eol == std::string::npos) ? body.size() : eol + 1;
+        const std::string line = body.substr(pos, end - pos);
+        const std::size_t first = line.find_first_not_of(" \t");
+        const bool statement =
+            first != std::string::npos &&
+            line.compare(first, 2, "//") != 0 &&
+            line.compare(first, 7, "barrier") != 0;
+        if (statement) out << line.substr(0, first) << guard << line.substr(first);
+        else           out << line;
+        pos = end;
+    }
+    return out.str();
+}
+
+// QASM 3 conditions a block, so the instruction's text goes inside one whatever
+// it lowered into.
+std::string qasm3_condition_block(const std::string& body, int clbit, int value) {
+    std::ostringstream out;
+    out << "if (c[" << clbit << "] == " << value << ") {\n";
+    std::size_t pos = 0;
+    while (pos < body.size()) {
+        const std::size_t eol = body.find('\n', pos);
+        const std::size_t end = (eol == std::string::npos) ? body.size() : eol + 1;
+        const std::string line = body.substr(pos, end - pos);
+        if (line.find_first_not_of(" \t\n") != std::string::npos) out << "  ";
+        out << line;
+        pos = end;
+    }
+    if (!body.empty() && body.back() != '\n') out << "\n";
+    out << "}\n";
+    return out.str();
+}
+
+// One instruction's text is built in `body` and moved into `out` when this goes
+// out of scope. The flush being a destructor is what lets every emission branch
+// end an instruction with `continue`, as they all did before conditions were
+// written at all. clbit < 0 means the text is emitted as it stands.
+struct EmittedInstruction {
+    std::ostringstream& out;
+    std::ostringstream& body;
+    bool qasm3;
+    int clbit;
+    int value;
+
+    ~EmittedInstruction() {
+        const std::string text = body.str();
+        if (clbit < 0) { out << text; return; }
+        out << (qasm3 ? qasm3_condition_block(text, clbit, value)
+                      : qasm2_condition_prefix(text, value));
+    }
+};
+
 // Above two qubits no exact decomposition exists anywhere in this project, so
 // no export option can make the operand representable. Both exporters say so
 // in the same words, and neither names a flag, because naming one would send
@@ -1227,12 +1305,12 @@ bool lower_unitary_here(const QasmExportOptions& opts,
 }  // namespace
 
 std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
-    std::ostringstream oss;
-    oss << "OPENQASM 2.0;\n";
-    oss << "include \"qelib1.inc\";\n";
-    oss << "qreg q[" << n_qubits << "];\n";
+    std::ostringstream out;
+    out << "OPENQASM 2.0;\n";
+    out << "include \"qelib1.inc\";\n";
+    out << "qreg q[" << n_qubits << "];\n";
     if (n_clbits > 0) {
-        oss << "creg c[" << n_clbits << "];\n";
+        out << "creg c[" << n_clbits << "];\n";
     }
 
     // R.1.18.0: opt-in export-time lowering of MCX/MCP/PERMUTATION. The
@@ -1262,6 +1340,42 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
     }
 
     for (const auto& inst : *insts) {
+        // Built in its own buffer so a classical condition can wrap the
+        // finished text; `emitted` flushes it into `out` on scope exit.
+        std::ostringstream oss;
+        int cond_clbit = -1;
+        if (inst.condition_clbit >= 0) {
+            if (!emit_conditions_here(opts, /*format_emits_by_default=*/false)) {
+                throw std::runtime_error(
+                    "to_qasm2: the instruction '" + inst.gate_name() + "' carries "
+                    "a classical condition. OpenQASM 2.0's `if` compares a whole "
+                    "classical register rather than one bit, so a single-bit "
+                    "condition has an exact spelling here only when the register "
+                    "IS that one bit. Set QasmExportOptions::condition_export = "
+                    "ConditionExport::Always to export anyway, which takes the "
+                    "exact spelling where it exists and otherwise drops the "
+                    "condition and records it in a comment. to_qasm3() and "
+                    "to_json() both carry it exactly");
+            }
+            if (n_clbits == 1) {
+                cond_clbit = inst.condition_clbit;
+            } else {
+                emit_warning(
+                    "to_qasm2: dropped the classical condition c[" +
+                    std::to_string(inst.condition_clbit) + "] == " +
+                    std::to_string(inst.condition_value) + " on '" +
+                    inst.gate_name() + "', because OpenQASM 2.0 conditions a "
+                    "whole classical register and this circuit declares " +
+                    std::to_string(n_clbits) + " classical bits");
+                oss << "// dropped condition: c[" << inst.condition_clbit
+                    << "] == " << inst.condition_value
+                    << " (OpenQASM 2.0 conditions a whole classical register)"
+                    << "\n";
+            }
+        }
+        EmittedInstruction emitted{out, oss, /*qasm3=*/false, cond_clbit,
+                                   inst.condition_value};
+
         std::string gname = inst.gate_name();
 
         if (inst.type == Instruction::GateType::BARRIER) {
@@ -1456,16 +1570,16 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
         oss << ";\n";
     }
 
-    return oss.str();
+    return out.str();
 }
 
 std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
-    std::ostringstream oss;
-    oss << "OPENQASM 3.0;\n";
-    oss << "include \"stdgates.inc\";\n";
-    oss << "qubit[" << n_qubits << "] q;\n";
+    std::ostringstream out;
+    out << "OPENQASM 3.0;\n";
+    out << "include \"stdgates.inc\";\n";
+    out << "qubit[" << n_qubits << "] q;\n";
     if (n_clbits > 0) {
-        oss << "bit[" << n_clbits << "] c;\n";
+        out << "bit[" << n_clbits << "] c;\n";
     }
 
     // R.1.18.0: PERMUTATION has no QASM 3 primitive, so it is ALWAYS lowered
@@ -1503,6 +1617,22 @@ std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
     }
 
     for (const auto& inst : *insts) {
+        // As in to_qasm2: one buffer per instruction, wrapped on scope exit.
+        std::ostringstream oss;
+        int cond_clbit = -1;
+        if (inst.condition_clbit >= 0) {
+            if (!emit_conditions_here(opts, /*format_emits_by_default=*/true)) {
+                throw std::runtime_error(
+                    "to_qasm3: the instruction '" + inst.gate_name() + "' carries "
+                    "a classical condition and QasmExportOptions::condition_export "
+                    "is Never. QASM 3 writes it exactly as an if block, so clear "
+                    "that setting to export it");
+            }
+            cond_clbit = inst.condition_clbit;
+        }
+        EmittedInstruction emitted{out, oss, /*qasm3=*/true, cond_clbit,
+                                   inst.condition_value};
+
         std::string gname = inst.gate_name();
 
         if (inst.type == Instruction::GateType::BARRIER) {
@@ -1663,7 +1793,7 @@ std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
         oss << ";\n";
     }
 
-    return oss.str();
+    return out.str();
 }
 
 // Forward declarations of the bridge functions in qasm{2,3}_parser.cpp

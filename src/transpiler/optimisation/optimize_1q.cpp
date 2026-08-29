@@ -323,13 +323,45 @@ DAGCircuit CXCancellation::run(const DAGCircuit& dag, const TranspilationContext
 // This limits 2Q gate count to 3 CX (or fewer if interaction coefficients are zero).
 // =============================================================================
 
-// Helper: build 4x4 from instruction via basis-column statevector simulation.
-// Returns nullopt for anything that cannot (or must not) be consolidated:
-// classically-conditioned gates and unknown gate types. The previous identity
-// fallback silently DELETED unsupported gates from consolidated blocks.
+// The 4x4 a UNITARY instruction already holds. Instruction::matrix stores it
+// row-major with bit 0 of the index addressing qubits[0], which is how Eigen is
+// indexed below, so this is a copy rather than a conversion.
+//
+// Reading the matrix beats rebuilding it by simulation on two counts. The
+// operand does not have to be unitary, which matters because an optimisation
+// pass must decline what it cannot factor rather than decide whether a program
+// runs, and the kernel that would rebuild it enforces unitarity under whatever
+// policy it was handed. And four basis-state applications are not paid to
+// recover sixteen numbers already in hand.
+// R1214KakDiagnostic.BasisColumnSimulationEqualsTheStoredMatrix holds the two
+// against each other, for a unitary operand and a non-unitary one.
+static std::optional<Eigen::Matrix4cd> stored_2q_matrix(const Instruction& inst) {
+    if (inst.type != Instruction::GateType::UNITARY) return std::nullopt;
+    if (inst.matrix.size() != 16) return std::nullopt;
+
+    Eigen::Matrix4cd U;
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            const Complex128& e = inst.matrix[static_cast<size_t>(row) * 4 + col];
+            U(row, col) = std::complex<double>(e.real, e.imag);
+        }
+    }
+    return U;
+}
+
+// The 4x4 of a 2-qubit instruction, for consolidation. A UNITARY carries its
+// matrix as data; every other supported type is a rule, so its matrix is
+// recovered by pushing the four basis states through the gate.
+//
+// Returns nullopt for anything that cannot (or must not) be consolidated: a
+// classically-conditioned gate, since folding one that may not fire into a
+// block that always does changes the circuit, and an unknown gate type, which
+// has no 4x4 here at all. Callers hand such an instruction back untouched; an
+// identity fallback would delete it from the circuit.
 static std::optional<Eigen::Matrix4cd> instruction_to_4x4(const Instruction& inst) {
     using GT = Instruction::GateType;
     if (inst.condition_clbit >= 0) return std::nullopt;
+    if (inst.type == GT::UNITARY) return stored_2q_matrix(inst);
     Eigen::Matrix4cd U = Eigen::Matrix4cd::Zero();
 
     for (int col = 0; col < 4; ++col) {
@@ -353,10 +385,6 @@ static std::optional<Eigen::Matrix4cd> instruction_to_4x4(const Instruction& ins
             case GT::RXX:   gates::apply_rxx(basis, 0, 1, p[0]); break;
             case GT::RYY:   gates::apply_ryy(basis, 0, 1, p[0]); break;
             case GT::RZZ:   gates::apply_rzz(basis, 0, 1, p[0]); break;
-            case GT::UNITARY:
-                if (inst.matrix.size() != 16) return std::nullopt;
-                gates::apply_unitary(basis, {0, 1}, inst.matrix);
-                break;
             default: return std::nullopt;
         }
         for (int row = 0; row < 4; ++row) {
@@ -790,7 +818,10 @@ namespace tqd {
 std::optional<Lowered> lower_2q_unitary(const Instruction& inst) {
     if (inst.qubits.size() != 2) return std::nullopt;
 
-    const auto u4 = instruction_to_4x4(inst);
+    // Not instruction_to_4x4: that routine declines a classically-conditioned
+    // operand, which is right for consolidation and wrong here. A condition is
+    // carried onto every emitted instruction below, so lowering one is exact.
+    const auto u4 = stored_2q_matrix(inst);
     if (!u4) return std::nullopt;
 
     // Both the 4x4 above and the circuit below live on qubits [0, 1]; the
