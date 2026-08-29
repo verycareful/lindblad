@@ -97,8 +97,15 @@ Throws `std::invalid_argument` if `d < 2` or `n_qudits < 1`.
 | Method | Description |
 |---|---|
 | `initialize()` | Reset to `\|0…0⟩` |
-| `normalize()` | Renormalise to unit norm |
+| `normalize()` | Renormalise to unit norm. Throws when there is no norm to divide out |
 | `norm_sq()` | Sum of `\|amplitude[i]\|²` |
+| `is_normalized(atol)` | Predicate: is the norm within `atol` of 1? Does not repair or throw |
+| `check_normalized(validation)` | Apply a validation policy; `Fix` renormalizes in place |
+
+`normalize()` refuses rather than returning quietly. The two states it rejects,
+zero and non-finite, are exactly those where dividing by the norm produces
+garbage instead of a state, and handing back an unnormalized state from a call
+named `normalize` would tell the caller nothing.
 | `apply_1qudit(q, U)` | Apply a d × d row-major gate `U` to qudit `q` |
 | `apply_2qudit(q0, q1, U)` | Apply a d² × d² row-major gate `U` to qudits `(q0, q1)`, `q0 != q1` |
 | `measure(seed)` | Sample one outcome; returns a length-`n_qudits` vector of digits in `{0..d-1}` |

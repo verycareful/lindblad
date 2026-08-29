@@ -38,6 +38,48 @@ void accumulate_worst(double& worst_sq, double d) {
     if (!is_finite_strict(d) || d > worst_sq) worst_sq = d;
 }
 
+// Pairwise summation, for the residuals that reduce over the whole state.
+//
+// Normalization is the only physical property here whose residual comes from a
+// LONG sum. Every other one reduces over a handful of entries: a dot product
+// down a 4x4, where a running total is already exact far inside the tolerance.
+// A state's norm reduces over 2^n terms, all of them positive, so nothing
+// cancels and the dropped low bits simply accrue.
+//
+// A single running total drifts like sqrt(N)·eps, which is 2.3e-13 at 20 qubits
+// but 7.3e-12 at 30, and the tolerance it is compared against is 1e-12. The
+// project's tolerances are ABSOLUTE with no relative counterpart anywhere, so
+// one number has to mean the same thing at every register size. A correct
+// 30-qubit state reported as unnormalized would be the measurement inventing
+// the violation it reports.
+//
+// Summing as a balanced binary tree puts each term through about log2(N)
+// additions instead of N, which bounds the error at roughly
+// (log2(N/kBlock) + kBlock)·eps: about 3e-14 at 30 qubits, thirty times inside
+// the tolerance, for the SAME number of additions as the naive loop. Only the
+// order changes.
+//
+// The shape is fixed by the length alone, so this is also fully deterministic:
+// no reduction tree chosen by a thread count, no dependence on vector width. A
+// parallel reduction would be faster and would let the verdict move with how
+// many cores happened to be free, which is exactly what a check must not do.
+//
+// kBlock stops the recursion where call overhead would start to dominate; the
+// block itself is summed straight, and its length bounds that part of the error.
+constexpr std::size_t kPairwiseBlock = 128;
+
+template <typename Term>
+double pairwise_sum(Term term, std::size_t lo, std::size_t hi) {
+    const std::size_t n = hi - lo;
+    if (n <= kPairwiseBlock) {
+        double s = 0.0;
+        for (std::size_t i = lo; i < hi; ++i) s += term(i);
+        return s;
+    }
+    const std::size_t mid = lo + n / 2;
+    return pairwise_sum(term, lo, mid) + pairwise_sum(term, mid, hi);
+}
+
 } // namespace
 
 // max |(U†U - I)_ij|. U†U is Hermitian, so entry (j,i) is the conjugate of
@@ -104,6 +146,35 @@ double superop_tp_deviation(const Complex128* S, std::size_t dim) {
         }
     }
     return std::sqrt(worst_sq);
+}
+
+// Σ |a_i|² over separate real and imaginary arrays (the SoA statevector).
+// Summed as a tree; see pairwise_sum for why the order is load-bearing. The
+// kernels that evolve the state keep their vectorised sweeps, and this is the
+// measurement, which has to answer the same on every build and at every width.
+double state_norm_sq(const double* real, const double* imag, std::size_t n) {
+    return pairwise_sum(
+        [real, imag](std::size_t i) {
+            return real[i] * real[i] + imag[i] * imag[i];
+        },
+        0, n);
+}
+
+// Σ |a_i|² over interleaved amplitudes. Same contract as the overload above.
+double state_norm_sq(const Complex128* amps, std::size_t n) {
+    return pairwise_sum(
+        [amps](std::size_t i) {
+            return amps[i].real * amps[i].real + amps[i].imag * amps[i].imag;
+        },
+        0, n);
+}
+
+// Re Tr(ρ) = Σ_i ρ[i][i].real, reading the diagonal of a row-major dim x dim
+// matrix. Summed as a tree for the same reason as the norms above: the diagonal
+// of a 30-qubit ρ is itself 2^30 entries.
+double density_trace_real(const Complex128* rho, std::size_t dim) {
+    return pairwise_sum(
+        [rho, dim](std::size_t i) { return rho[i * dim + i].real; }, 0, dim);
 }
 
 } // namespace detail

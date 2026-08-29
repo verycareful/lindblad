@@ -106,9 +106,30 @@ void QuditDensityMatrix::symmetrize() {
 
 void QuditDensityMatrix::normalize() {
     const double tr = trace();
-    if (std::abs(tr) < 1e-15) return;
+    // Refuses rather than returning quietly, for the same reason the state
+    // classes do. A density matrix is normalized by its trace, so a zero or
+    // non-finite trace leaves nothing to divide by.
+    if (!is_normalizable(std::abs(tr))) {
+        throw std::runtime_error(
+            "QuditDensityMatrix::normalize: no trace to divide out; it is zero "
+            "or non-finite");
+    }
     const double inv = 1.0 / tr;
     for (auto& v : rho) { v.real *= inv; v.imag *= inv; }
+}
+
+bool QuditDensityMatrix::is_normalized(double atol) const {
+    return std::abs(detail::density_trace_real(rho.data(), dim) - 1.0) <= atol;
+}
+
+void QuditDensityMatrix::check_normalized(ValidationOptions validation) {
+    // Returns before measuring under Ignore: reading the diagonal is O(dim).
+    if (validation.policy == Validation::Ignore) return;
+    if (detail::check_trace_normalized(
+            detail::density_trace_real(rho.data(), dim), validation,
+            "QuditDensityMatrix::check_normalized")) {
+        normalize();
+    }
 }
 
 double QuditDensityMatrix::trace() const {

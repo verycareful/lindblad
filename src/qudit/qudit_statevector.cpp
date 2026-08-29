@@ -44,12 +44,32 @@ void QuditStatevector::initialize() {
 }
 
 void QuditStatevector::normalize() {
-    double n = std::sqrt(norm_sq());
-    if (n < 1e-15) return;
-    double inv = 1.0 / n;
+    const double n = std::sqrt(norm_sq());
+    // Refuses rather than returning quietly: handing back an unnormalized state
+    // from a call named normalize tells the caller nothing at all.
+    if (!is_normalizable(n)) {
+        throw std::runtime_error(
+            "QuditStatevector::normalize: no norm to divide out; the state is "
+            "zero or non-finite");
+    }
+    const double inv = 1.0 / n;
     for (auto& a : amplitudes) {
         a.real *= inv;
         a.imag *= inv;
+    }
+}
+
+bool QuditStatevector::is_normalized(double atol) const {
+    return std::abs(detail::state_norm_sq(amplitudes.data(), dim) - 1.0) <= atol;
+}
+
+void QuditStatevector::check_normalized(ValidationOptions validation) {
+    // Returns before measuring under Ignore: the sum is a full d^n sweep.
+    if (validation.policy == Validation::Ignore) return;
+    if (detail::check_normalized(
+            detail::state_norm_sq(amplitudes.data(), dim), validation,
+            "QuditStatevector::check_normalized")) {
+        normalize();
     }
 }
 

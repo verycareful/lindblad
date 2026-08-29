@@ -44,6 +44,11 @@ namespace detail {
 // subject names the failure, residual names the measured quantity so a caller
 // can see what the number refers to, and noun names the property in the
 // message Fix produces where no repair exists.
+//
+// `residual` carries the COMPLETE expression, brackets and any maximum
+// included, because not every property reduces over something. A matrix
+// property reports the worst entry and says so; a state's normalization is one
+// number and would be misdescribed by a maximum it does not take.
 
 struct PhysicalProperty {
     const char* subject;
@@ -52,12 +57,22 @@ struct PhysicalProperty {
 };
 
 inline constexpr PhysicalProperty UNITARITY{
-    "matrix is not unitary", "U†U - I", "unitarity"};
+    "matrix is not unitary", "max |U†U - I|", "unitarity"};
 inline constexpr PhysicalProperty KRAUS_TRACE_PRESERVING{
-    "channel is not trace preserving", "Σ K†K - I", "trace preservation"};
-inline constexpr PhysicalProperty SUPEROP_TRACE_PRESERVING{
-    "superoperator is not trace preserving", "Σ_r S[(r,r),(i,j)] - δ_ij",
+    "channel is not trace preserving", "max |Σ K†K - I|",
     "trace preservation"};
+inline constexpr PhysicalProperty SUPEROP_TRACE_PRESERVING{
+    "superoperator is not trace preserving",
+    "max |Σ_r S[(r,r),(i,j)] - δ_ij|", "trace preservation"};
+
+// A state's normalization and a density matrix's are separate properties
+// because they are separate residuals, measured over different objects. They
+// share a noun because a caller asking for the repair is asking for the same
+// thing either way: divide the object by what it currently sums to.
+inline constexpr PhysicalProperty STATE_NORMALIZATION{
+    "state is not normalized", "|⟨ψ|ψ⟩ - 1|", "normalization"};
+inline constexpr PhysicalProperty DENSITY_NORMALIZATION{
+    "density matrix is not normalized", "|Tr(ρ) - 1|", "normalization"};
 
 // -----------------------------------------------------------------------------
 // Message formatting
@@ -74,9 +89,9 @@ inline std::string format_residual(double x) {
 
 inline std::string physical_message(const char* ctx, const PhysicalProperty& p,
                                     double deviation, double atol) {
-    return std::string(ctx) + ": " + p.subject + " (max |" + p.residual +
-           "| = " + format_residual(deviation) + ", atol = " +
-           format_residual(atol) + ")";
+    return std::string(ctx) + ": " + p.subject + " (" + p.residual + " = " +
+           format_residual(deviation) + ", atol = " + format_residual(atol) +
+           ")";
 }
 
 [[noreturn]] inline void throw_not_physical(const char* ctx,
@@ -118,6 +133,36 @@ inline void enforce_physical(double deviation, const ValidationOptions& v,
     throw_not_physical(ctx, p, deviation, v.atol);
 }
 
+// The same dispatch for a property that HAS a repair, which the three above do
+// not. It cannot perform the repair itself: it sees a residual, not the object,
+// and the repair belongs to whatever owns the data. So it reports back instead.
+//
+// Returns true when the caller must repair, which happens under Fix and only
+// under Fix. Every other outcome is settled here:
+//   - within tolerance: false, and the four policies are indistinguishable
+//   - Warn: reported, then false. Warn describes, it does not repair, so the
+//     caller proceeds with the object still violating the property.
+//   - Throw: does not return.
+//   - Ignore: never arrives, the entry points return before measuring.
+inline bool enforce_physical_repairable(double deviation,
+                                        const ValidationOptions& v,
+                                        const char* ctx,
+                                        const PhysicalProperty& p) {
+    if (deviation <= v.atol) return false;  // a NaN deviation falls through
+
+    switch (v.policy) {
+        case Validation::Warn:
+            emit_warning(physical_message(ctx, p, deviation, v.atol));
+            return false;
+        case Validation::Fix:
+            return true;
+        case Validation::Throw:
+        case Validation::Ignore:
+            break;
+    }
+    throw_not_physical(ctx, p, deviation, v.atol);
+}
+
 // -----------------------------------------------------------------------------
 // Residuals
 // -----------------------------------------------------------------------------
@@ -149,6 +194,25 @@ double kraus_tp_deviation(const std::vector<std::vector<Complex128>>& ops,
 // at every input index pair. That sum over the output diagonal is the entire
 // condition, and it reads dim^3 of the 4^k x 4^k array once.
 double superop_tp_deviation(const Complex128* S, std::size_t dim);
+
+// Σ |a_i|², summed as a balanced tree. Quarantined for the reason above and one
+// more specific to it: this sum runs over 2^n positive terms, so nothing
+// cancels and the dropped low bits accrue. A single running total drifts like
+// sqrt(N)·eps, which at 30 qubits is seven times the tolerance it is compared
+// against, and the project's tolerances are absolute with no relative
+// counterpart, so one number must mean the same thing at every register size.
+// Tree order costs no extra arithmetic and holds the error near 3e-14.
+//
+// Two overloads because there are two state layouts: the qubit statevector
+// keeps real and imaginary parts in separate aligned arrays for SIMD, and
+// everything else stores interleaved Complex128.
+double state_norm_sq(const double* real, const double* imag, std::size_t n);
+double state_norm_sq(const Complex128* amps, std::size_t n);
+
+// Re Tr(ρ) over a dim x dim row-major matrix. The imaginary part is not
+// summed: a Hermitian ρ has a real trace by construction, and a caller whose ρ
+// is not Hermitian has a problem that normalization is not the repair for.
+double density_trace_real(const Complex128* rho, std::size_t dim);
 
 // -----------------------------------------------------------------------------
 // Check entry points
@@ -185,6 +249,32 @@ inline void check_superop_tp(const std::vector<Complex128>& S, std::size_t dim,
     if (v.policy == Validation::Ignore || dim == 0) return;
     enforce_physical(superop_tp_deviation(S.data(), dim), v, ctx,
                      SUPEROP_TRACE_PRESERVING);
+}
+
+// -----------------------------------------------------------------------------
+// Normalization checks
+// -----------------------------------------------------------------------------
+// These RETURN whether the caller must repair, rather than acting, because the
+// repair rescales the object and only the object's owner can do that. `norm_sq`
+// is ⟨ψ|ψ⟩ and `trace` is Re Tr(ρ), both measured through the quarantined sums
+// above, or through a layer's own contraction where the state is not a flat
+// array. Ignore returns before anything is judged.
+//
+// A non-finite measurement yields a non-finite deviation, which fails the
+// tolerance comparison and is therefore reported rather than passed over.
+
+inline bool check_normalized(double norm_sq, const ValidationOptions& v,
+                             const char* ctx) {
+    if (v.policy == Validation::Ignore) return false;
+    return enforce_physical_repairable(std::abs(norm_sq - 1.0), v, ctx,
+                                       STATE_NORMALIZATION);
+}
+
+inline bool check_trace_normalized(double trace, const ValidationOptions& v,
+                                   const char* ctx) {
+    if (v.policy == Validation::Ignore) return false;
+    return enforce_physical_repairable(std::abs(trace - 1.0), v, ctx,
+                                       DENSITY_NORMALIZATION);
 }
 
 } // namespace detail

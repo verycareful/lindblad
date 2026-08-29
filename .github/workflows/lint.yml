@@ -1,0 +1,95 @@
+# Static-analysis gate.
+#
+# clang-tidy only. Formatting is deliberately not gated here: this tree is
+# hand-formatted, a whole-tree reformat would rewrite 94 of 104 files, and that
+# is a change to make on its own branch with nothing else in it rather than a
+# condition attached to every commit.
+#
+# Two scopes, because a gate on an existing tree has two jobs at two different
+# times. `full` is the one-off baseline: it reports everything the tree does not
+# yet satisfy, which is what you need once, to see the size of the problem.
+# `diff` is the steady state: only the lines a change actually touched, so the
+# gate stays useful without anyone clearing a backlog first.
+#
+# Default is `diff`. A gate that reports a backlog on every run gets skimmed and
+# then ignored, and a check nobody reads is worse than no check, because it
+# looks like coverage.
+#
+# Manual dispatch only, matching ci.yml. Nothing here runs unless asked.
+name: Lint
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "full = whole tree (report only), diff = changed lines (gate)"
+        required: true
+        type: choice
+        options: [diff, full]
+        default: diff
+      base:
+        description: "Diff scope: the ref to compare against"
+        required: false
+        type: string
+        default: "HEAD~1"
+
+jobs:
+  tidy:
+    name: clang-tidy (${{ inputs.scope }})
+    runs-on: ubuntu-24.04
+    env:
+      # NLopt's build-time helper scripts declare a CMake floor below 3.5, which
+      # CMake 4 rejects. Same reason ci.yml sets this.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The diff scope resolves a base revision, which a shallow clone
+          # cannot do.
+          fetch-depth: 0
+
+      - name: Install toolchain
+        run: |
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 20
+          # clang-tools-20 carries the driver scripts (run-clang-tidy,
+          # clang-tidy-diff); clang-tidy-20 alone installs only the binary.
+          sudo apt-get install -y clang-tidy-20 clang-tools-20 libomp-20-dev ninja-build
+          clang-tidy-20 --version
+          # Locate the diff driver rather than assuming its path: the packaging
+          # has moved it between /usr/bin and /usr/share/clang across releases.
+          TIDY_DIFF=$(command -v clang-tidy-diff-20.py \
+                      || echo /usr/share/clang/clang-tidy-diff-20.py)
+          echo "TIDY_DIFF=$TIDY_DIFF" >> "$GITHUB_ENV"
+          ls -l "$TIDY_DIFF"
+
+      # Configure only, no build: clang-tidy needs the compile database to know
+      # each file's flags and include paths, and generating it does not require
+      # compiling anything.
+      - name: Generate the compile database
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-20 \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DLINDBLAD_BUILD_PYTHON=OFF
+
+      - name: Run clang-tidy
+        run: |
+          set -o pipefail
+          if [ "${{ inputs.scope }}" = "full" ]; then
+            # Report only. The first baseline run is expected to find a backlog;
+            # surfacing it is the point, and failing the job on it would mean
+            # the baseline could never be run at all.
+            run-clang-tidy-20 -p build -quiet \
+              $(git ls-files 'src/**/*.cpp') | tee tidy.log || true
+            echo "findings: $(grep -c 'warning:' tidy.log || true)"
+          else
+            git diff -U0 '${{ inputs.base }}' -- '*.cpp' '*.hpp' \
+              | python3 "$TIDY_DIFF" -p1 -path build -quiet | tee tidy.log
+            if grep -q "warning:" tidy.log; then
+              echo "::error::clang-tidy findings on changed lines"
+              exit 1
+            fi
+          fi

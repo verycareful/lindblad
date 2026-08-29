@@ -34,19 +34,36 @@ An enum class naming what to do when a physical property does not hold.
 - `Fix`: repair and continue where a repair is defined, otherwise throw.
 - `Ignore`: skip the check entirely. The only policy that costs nothing.
 
-`Fix` currently has no repair defined for any property, so it throws
-`std::invalid_argument` naming the property it could not repair. Trace
-preservation has no cheap canonical repair and is expected to keep throwing;
-saying so is preferred to a `Fix` that quietly returns an unphysical result
-under a policy that promised to correct it.
+`Fix` repairs normalization: a state or density matrix handed over out of
+normalization is divided by what it actually sums to, and the call continues
+with a correct object.
+
+For the properties that have no cheap canonical repair, unitarity and trace
+preservation, `Fix` throws `std::invalid_argument` naming the property it could
+not repair. Saying so is preferred to a `Fix` that quietly returns an unphysical
+result under a policy that promised to correct it.
+
+`Fix` also throws on the two states that cannot be repaired at all. A zero state
+offers no direction to normalize toward, and a non-finite one has a NaN norm, so
+dividing by either manufactures garbage rather than recovering a state.
 
 ## ValidationOptions
 
 A trivially copyable aggregate carrying the two knobs.
 
 - `Validation policy`: defaults to `Throw`.
-- `double atol`: absolute tolerance on the worst entry of the residual.
-  Defaults to `1e-12`.
+- `double atol`: absolute tolerance on the residual. Defaults to
+  `DEFAULT_PHYSICAL_ATOL`, which is `1e-12`.
+
+`DEFAULT_PHYSICAL_ATOL` is the one number every physical-validity check in the
+library judges against, and predicates over the same properties default to it
+too (`Operator::is_unitary`, `KrausChannel::is_valid`, `DensityMatrix::is_valid`,
+and `is_normalized` on every state class). Asking "is this valid?" and letting a
+policy judge it therefore agree by construction rather than by coincidence.
+
+There is no relative tolerance anywhere in this library. `atol` is absolute, so
+one number has to mean the same thing at every register size, which is a
+constraint on how residuals are measured rather than on the number itself.
 
 Construct it inline at a call site:
 
@@ -117,12 +134,42 @@ all-zero superoperator and leave a state whose trace is zero. `Ignore` means the
 caller accepts an operand whose physics is off by more than `atol`; it cannot
 also mean they accept losing the state.
 
+Normalization of a caller-supplied state:
+
+- `Statevector::set_amplitudes`, both overloads: `⟨ψ|ψ⟩ = 1`
+
+Plus `check_normalized(ValidationOptions)` on every state class, which a caller
+invokes on a state they already hold rather than one they are handing over:
+`Statevector`, `DensityMatrix`, `MPSState`, `QuditStatevector`,
+`QuditDensityMatrix` and `QuditMPS`. The density-matrix classes measure
+`Tr(ρ) = 1` instead, which is the same idea over a different object.
+
+Each class also carries `is_normalized(atol)`, a plain predicate that answers
+without repairing and without throwing. A non-finite state answers false.
+
 The Clifford backend has no arbitrary-matrix entry point, so nothing there
 carries a policy.
 
-Full-state normalization is deliberately not on this list. It is a full `2^n`
-sweep per gate and it drifts under ordinary unitary evolution, so it stays
-available through explicit checkers a caller invokes on purpose.
+### Why normalization is checked at hand-over and not per gate
+
+A supplied matrix is unitary or it is not, and it never changes afterwards. A
+state's norm drifts as gates are applied, because floating-point arithmetic
+rounds. So a check that fired after every gate would eventually reject states
+that nothing is wrong with, and would pay a full `2^n` sweep each time to do it.
+
+Checking where a caller hands a whole state over has neither problem: the state
+has not drifted yet, it is a claim rather than a computation, and the cost is
+paid once.
+
+Every reference simulator makes the same call. Qiskit validates in
+`StatePreparation` and raises unless `normalize=True`; Cirq raises from
+`validate_normalized_state_vector`; PennyLane raises from `qml.StatePrep` unless
+`normalize=True`. None of the three checks per gate.
+
+The library's own outputs are exempt for the same reason: the final-state copy
+inside the statevector simulator passes `Ignore`, because those amplitudes carry
+whatever rounding the circuit accumulated and are not a caller's claim about
+anything.
 
 ## What it costs
 

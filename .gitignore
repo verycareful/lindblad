@@ -2,6 +2,8 @@
 /build/
 /build-clang/
 /build-clang-nomarch/
+/build-clang20/
+/build-clang20-nomarch/
 /build-cov/
 /build-gcc13/
 /build-gcc13-nomarch/
@@ -79,3 +81,8 @@ CLAUDE.md
 # Python virtual environments
 /.venv/
 /venv/
+
+# clang-format config: the tree is hand-formatted and a whole-tree reformat
+# would touch 94 of 104 files. Kept local until that is done deliberately on
+# its own branch.
+.clang-format

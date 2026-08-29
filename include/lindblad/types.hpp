@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <new>
 
@@ -67,6 +68,28 @@ inline double quiet_nan_strict() noexcept {
     double x;
     std::memcpy(&x, &kQuietNaNBits, sizeof x);
     return x;
+}
+
+// =============================================================================
+// is_normalizable - is there a norm here that can be divided out?
+// =============================================================================
+// Normalising a state divides every amplitude by its norm (a density matrix, by
+// its trace). That is meaningful only while the norm is a real positive number
+// carrying information, and two states have no repair at all:
+//
+//   - the zero state: there is no direction to normalize toward, and the
+//     division is by zero;
+//   - a non-finite state: the norm is NaN, and dividing by it spreads the NaN
+//     across every amplitude rather than removing it.
+//
+// The floor is machine epsilon rather than a chosen decimal. Epsilon is the
+// spacing of doubles at 1.0, so a norm at or below it is not distinguishable
+// from zero at the scale a normalized state occupies; scaling such a state up
+// to unit norm would manufacture a direction out of rounding error rather than
+// recover one. Callers pass the norm, not its square.
+inline bool is_normalizable(double norm) noexcept {
+    return is_finite_strict(norm) &&
+           norm > std::numeric_limits<double>::epsilon();
 }
 
 // =============================================================================

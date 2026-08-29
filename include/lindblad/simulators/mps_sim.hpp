@@ -83,6 +83,29 @@ public:
     double truncation_error() const { return total_truncation_error; }
     int current_max_bond_dim() const;
 
+    // ⟨ψ|ψ⟩, by transfer-matrix contraction along the chain. There is no flat
+    // amplitude array to sweep here, so this costs O(n·chi³) rather than the
+    // O(2^n) a dense state would, and it is the only way to read the norm
+    // without materialising the state.
+    double norm_sq() const;
+
+    // Rescale tensors[0] so ⟨ψ|ψ⟩ == 1. One site carries the whole factor,
+    // which is exact: the norm is multilinear in the tensors, so scaling any
+    // single one scales the state. Throws when there is no norm to divide out,
+    // a zero or non-finite state, rather than returning it unchanged.
+    void normalize();
+
+    // True when the norm is 1 to within atol. A predicate: it answers, it does not
+    // repair and it does not throw, and a non-finite state answers false.
+    bool is_normalized(double atol = DEFAULT_PHYSICAL_ATOL) const;
+
+    // Judge this state's normalization under a validation policy. Fix
+    // renormalizes in place; Warn reports it and leaves the state as it is;
+    // Throw raises; Ignore measures nothing, so opting out costs one branch
+    // rather than a full pass. Fix on a state with nothing to divide out
+    // throws rather than returning it unrepaired.
+    void check_normalized(ValidationOptions validation = {});
+
     // SVD ladder observability.
     //
     // svd_truncate runs SELECT -> VERIFY -> FALLBACK -> THROW: it distrusts the

@@ -1,0 +1,87 @@
+# Publishes a GitHub Release for a version tag, with the notes taken from
+# CHANGELOG.md rather than retyped.
+#
+# The release page and the changelog are then the same text by construction.
+# They cannot drift, a typo has one place to be fixed, and nobody has to
+# remember to copy anything at the moment they are least likely to be careful.
+#
+# Deliberately SEPARATE from ci.yml, and deliberately not on every push. Pushing
+# a tag is an act with intent behind it; running a build is not always. The test
+# matrix stays manual-dispatch so a commit can land without it, which matters for
+# a release that ships known-red tests on purpose. This workflow fires only when
+# a version tag appears, or when it is dispatched by hand to republish one.
+name: Release
+
+on:
+  push:
+    # Four-component version tags only, e.g. 1.1.23.0, with no prefix: that is
+    # the form `git tag` takes in this project. A tag that is not a version
+    # (a scratch marker, an annotation) does not publish anything.
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to publish a release for"
+        required: true
+        type: string
+
+# Creating a release writes to the repository. Nothing else here needs a token,
+# so nothing else is granted.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: publish release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Resolve the tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.tag.outputs.value }}
+
+      # A tag that disagrees with the tree it points at is a release-ordering
+      # mistake: the version strings are supposed to be set BEFORE the work
+      # starts, so a mismatch means the tag was cut against a tree that still
+      # carries the previous label. Catching it here costs one grep; not
+      # catching it publishes a release whose binaries announce another version.
+      - name: Check the tag matches the tree
+        run: |
+          TAG='${{ steps.tag.outputs.value }}'
+          TREE=$(sed -n 's/^set(LINDBLAD_VERSION_LABEL "\(.*\)")/\1/p' CMakeLists.txt)
+          echo "tag:  $TAG"
+          echo "tree: $TREE"
+          if [ "$TAG" != "$TREE" ]; then
+            echo "::error::tag $TAG does not match LINDBLAD_VERSION_LABEL $TREE"
+            exit 1
+          fi
+
+      # Fails when the section is missing or empty, which is what an unwritten
+      # set of release notes looks like. Better to stop here than to publish a
+      # release page with nothing on it.
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          python3 tools/changelog_section.py '${{ steps.tag.outputs.value }}' \
+            > release-notes.md
+          echo "--- notes that will be published ---"
+          cat release-notes.md
+
+      # gh ships on the runner, so this needs no third-party action and nothing
+      # to pin or audit.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ steps.tag.outputs.value }}' \
+            --title '${{ steps.tag.outputs.value }}' \
+            --notes-file release-notes.md \
+            --verify-tag

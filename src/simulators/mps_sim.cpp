@@ -17,6 +17,7 @@
 #include "lindblad/circuit.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
+#include "lindblad/detail/svd_truncate.hpp"
 #include "lindblad/gates.hpp"
 
 #include <Eigen/Dense>
@@ -26,6 +27,7 @@
 #include <cassert>
 #include <cmath>
 #include <chrono>
+#include <complex>
 #include <cstdint>
 #include <limits>
 #include <numeric>
@@ -38,6 +40,10 @@ namespace lindblad {
 // Emit a one-time, very visible warning when the (currently broken) BDCSVD
 // backend is selected. Eigen's BDCSVD produces inaccurate results for
 // complex/degenerate inputs; Jacobi is the accurate default.
+//
+// The latch is per layer rather than per process: the qudit MPS carries its own
+// so that selecting BDC there is reported even when a qubit simulation in the
+// same process already warned. Two backends, two things a caller needs told.
 static void warn_bdc_broken_once() {
     static bool warned = false;
     if (warned) return;
@@ -83,6 +89,14 @@ MPSState::MPSState(int n_qubits, int max_bond_dim, double cutoff)
 // Truncates to max_bond_dim singular values above cutoff threshold.
 // =============================================================================
 
+// svd_truncate - adapter onto the shared verified truncation
+//
+// The ladder itself (SELECT -> VERIFY -> FALLBACK -> THROW, and why each rung
+// exists) lives in include/lindblad/detail/svd_truncate.hpp and is shared with
+// the qudit layer, so the two cannot drift apart in what they guarantee. What
+// stays here is this layer's storage convention and its own counters: the
+// blocks are row-major, the caller wants V-dagger rather than V, and the
+// running truncation error and rescue counts belong to this state object.
 void MPSState::svd_truncate(
     const std::vector<Complex128>& M,
     int rows, int cols,
@@ -91,326 +105,44 @@ void MPSState::svd_truncate(
     std::vector<Complex128>& Vt_out,
     int& new_rank
 ) {
-    // Complex128 {double real, double imag} is layout-identical to std::complex<double>.
-    // Zero-copy Eigen::Map avoids the O(rows*cols) element-by-element copy before SVD.
-    using EigenCMatrix = Eigen::Matrix<std::complex<double>, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
-    Eigen::Map<const EigenCMatrix> mat(
-        reinterpret_cast<const std::complex<double>*>(M.data()),
-        rows, cols
-    );
-
-    // SVD backend: Jacobi by default (accurate, avoids the BDCSVD accuracy
-    // defect), BDC opt-in for speed at large chi. Compute into shared locals so
-    // the truncation logic below is backend-agnostic.
-    Eigen::MatrixXcd U_eigen, V_eigen;
-    Eigen::VectorXd S_eigen;
-    if (svd_method == SVDMethod::BDC) {
-        warn_bdc_broken_once();
-        Eigen::BDCSVD<EigenCMatrix> svd(mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        S_eigen = svd.singularValues();
-        U_eigen = svd.matrixU();
-        V_eigen = svd.matrixV();
-    } else {
-        Eigen::JacobiSVD<EigenCMatrix> svd(mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        S_eigen = svd.singularValues();
-        U_eigen = svd.matrixU();
-        V_eigen = svd.matrixV();
-    }
-
-    // ------------------------------------------------------------------
-    // SELECT -> VERIFY -> FALLBACK -> THROW  (issue #44)
-    //
-    // Eigen 3.4.0's SVD on degenerate rank-deficient inputs (the 13-qubit
-    // Shor IQFT two-site thetas, spectrum {1,1,1,1,0,...}) returns broken
-    // factorisations whose SHAPE MORPHS with tiny input and codegen
-    // perturbations — observed across seven diagnostic runs: NaN inside
-    // null-space singular vectors (both FP models), non-finite entries
-    // interleaved into S displacing real sigmas, a KEPT singular vector
-    // that is wrong but perfectly finite (fidelity fell to (3/4)^2 with
-    // zero truncation error), and an all-non-finite S. Unmarked garbage
-    // cannot be pattern-matched away, so this routine TRUSTS NOTHING:
-    //   1. SELECT: every bit-level-finite sigma is a candidate, wherever it
-    //      sits in S (immune to ordering corruption); truncate by DISCARDED
-    //      WEIGHT (below); cap at max_bond_dim; gather matching U/V columns
-    //      individually.
-    //   2. VERIFY: kept slice bit-finite AND the Frobenius identity
-    //        ||M - U_k S_k V_k^H||_F <= sqrt(discarded) + c*N*eps*||M||_F
-    //      which holds with EQUALITY at zero slack for any true truncated
-    //      SVD, the allowance being only the backward error a stable SVD is
-    //      entitled to (see the gate itself for the sizing). Every failure
-    //      mode observed so far trips it. Costs one rank-slice GEMM — small
-    //      next to the SVD itself, and correctness outranks it (golden rule
-    //      #1 over #2).
-    //   3. FALLBACK on failure: recompute via the Gram route (M^H M or
-    //      M M^H, whichever is smaller, SelfAdjointEigenSolver — robust on
-    //      exactly-degenerate Hermitian input), sigma = sqrt(max(lambda,0)),
-    //      partner factor built only for kept sigmas (no tiny divisions).
-    //      Effective floor sqrt(eps)*sigma_max: Gram squares the condition
-    //      number, so smaller sigmas are noise there; the extra discarded
-    //      weight is honestly accounted in truncation_error().
-    //   4. THROW if the fallback fails verification too — never continue
-    //      with a corrupt tensor (silent NaN propagation is exactly how
-    //      issue #44 manifests).
-    // Which rung ran is otherwise invisible to the caller, since a rescued
-    // bond and a clean one produce equally valid tensors. svd_call_count()
-    // and gram_fallback_count() report it.
-    // Reproducers: tests/diag_r1160_matrices.hpp and the DiagR1160* suites.
-    // ------------------------------------------------------------------
-
     ++svd_calls;
+    if (svd_method == SVDMethod::BDC) warn_bdc_broken_once();
 
-    double m_fro_sq = 0.0;
-    for (const auto& c : M) m_fro_sq += c.real * c.real + c.imag * c.imag;
+    const detail::SvdTruncation r = detail::svd_truncate_verified(
+        M.data(), rows, cols, detail::MatrixOrder::RowMajor,
+        max_bond_dim, cutoff, svd_method, "MPS svd_truncate");
 
-    double pending_discarded = 0.0;
-    double pending_resid_excess = 0.0;
+    const int k = r.rank;
+    new_rank = k;
 
-    // TRUNCATION RULE — discarded weight, not a magnitude threshold.
-    //
-    // `cutoff` is the fraction of total weight (sum of sigma^2) that truncation
-    // may throw away. Comparing each sigma against `cutoff` as an ABSOLUTE
-    // magnitude instead would ask a question about the noise rather than about
-    // the data: a value's distance from a fixed constant depends on the scale of
-    // the matrix it came from AND on how the target rounded its way there. On
-    // one 13-qubit state that counts 12 significant directions on x86-64 and 17
-    // on arm64 — twelve real sigmas at 2.9e-01, everything else numerical zero,
-    // and a fixed threshold sitting inside the noise band instead of inside the
-    // eleven-order gap above it.
-    //
-    // A weight fraction is scale-free, so the same spectrum classifies
-    // identically on any target, and it bounds the physical error directly
-    // instead of proxying it. Note the budget is a CEILING, not a quota: on a
-    // bimodal spectrum (stabiliser, GHZ, Shor) there is nothing between the
-    // noise and the budget, so nothing extra is discarded and the result is
-    // bit-for-bit what the magnitude rule produced.
-    //
-    // `sigma_floor` is a separate concept and NOT a truncation knob: it rejects
-    // values that are not trustworthy data at all (the Gram route squares the
-    // condition number, so anything under sqrt(eps)*sigma_max there is noise
-    // regardless of how much weight it carries). Weight below it is still
-    // honestly counted as discarded.
+    S_out.resize(static_cast<size_t>(k));
+    for (int i = 0; i < k; ++i) S_out[static_cast<size_t>(i)] = r.S(i);
 
-    auto attempt = [&](const Eigen::VectorXd& S_try,
-                       const Eigen::MatrixXcd& U_try,
-                       const Eigen::MatrixXcd& V_try,
-                       double sigma_floor) -> bool {
-        const int md = static_cast<int>(S_try.size());
-        std::vector<std::pair<double, int>> fs;  // (sigma, source index)
-        fs.reserve(static_cast<size_t>(md));
-        double below_floor = 0.0;  // weight rejected as untrustworthy
-        for (int i = 0; i < md; ++i) {
-            const double s = S_try(i);
-            // A NaN sigma satisfies 's > sigma_floor' and would be kept,
-            // growing chi with garbage.
-            if (!is_finite_strict(s)) continue;  // artifact, not weight
-            if (s > sigma_floor) fs.push_back({s, i});
-            else                 below_floor += s * s;
+    U_out.resize(static_cast<size_t>(rows) * k);
+    for (int row = 0; row < rows; ++row) {
+        for (int c = 0; c < k; ++c) {
+            const auto z = r.U(row, c);
+            U_out[static_cast<size_t>(row) * k + c] =
+                Complex128(z.real(), z.imag());
         }
-        std::stable_sort(fs.begin(), fs.end(), [](const auto& a, const auto& b) {
-            return a.first > b.first;
-        });
-
-        // Walk up from the smallest survivor, dropping while the running
-        // discarded weight stays inside the budget. Weight already rejected by
-        // sigma_floor counts against it, so a Gram route that lost a lot to the
-        // validity floor does not then also truncate aggressively.
-        double total = below_floor;
-        for (const auto& p : fs) total += p.first * p.first;
-        const double budget = cutoff * total;
-
-        int k = static_cast<int>(fs.size());
-        {
-            double d = below_floor;
-            while (k > 1) {
-                const double w = fs[static_cast<size_t>(k - 1)].first *
-                                 fs[static_cast<size_t>(k - 1)].first;
-                if (d + w > budget) break;
-                d += w;
-                --k;
-            }
-        }
-        k = std::min<int>(k, max_bond_dim);
-        if (k == 0) {
-            // Numerically-zero matrix or fully corrupt spectrum: keep the
-            // single largest finite sigma if one exists at all.
-            int best = -1;
-            double best_val = -1.0;
-            for (int i = 0; i < md; ++i) {
-                const double s = S_try(i);
-                if (is_finite_strict(s) && s > best_val) {
-                    best_val = s;
-                    best = i;
-                }
-            }
-            if (best < 0) return false;
-            // The rescued sigma may have sat below sigma_floor, in which case
-            // its weight is already in below_floor. It is now KEPT, so take it
-            // back out or it would be counted as kept and discarded at once.
-            if (!(best_val > sigma_floor)) below_floor -= best_val * best_val;
-            fs.assign(1, {best_val, best});
-            k = 1;
-        }
-
-        // Discarded weight = every finite sigma NOT kept (beyond-rank AND
-        // below-floor; non-finite entries are artifacts, not weight).
-        //
-        // Sum the discarded buckets DIRECTLY. Do not compute this as
-        // `total - kept`: for a normalised state both are ~1.0 while the real
-        // difference is ~1e-30, so the subtraction cannot resolve it and
-        // returns multiples of eps instead — truncation_error() then reports
-        // ~1e-15 of phantom loss for a bond that discarded nothing. Adding up
-        // the small values keeps every term at its own scale.
-        double discarded = below_floor;
-        for (size_t i = static_cast<size_t>(k); i < fs.size(); ++i)
-            discarded += fs[i].first * fs[i].first;
-
-        // Gather (descending sigma order: downstream conventions unchanged).
-        S_out.resize(static_cast<size_t>(k));
-        U_out.resize(static_cast<size_t>(rows) * k);
-        Vt_out.resize(static_cast<size_t>(k) * cols);
-        for (int r = 0; r < k; ++r) {
-            const int src = fs[static_cast<size_t>(r)].second;
-            S_out[static_cast<size_t>(r)] = fs[static_cast<size_t>(r)].first;
-            for (int row = 0; row < rows; ++row) {
-                const auto u = U_try(row, src);
-                U_out[static_cast<size_t>(row) * k + r] =
-                    Complex128(u.real(), u.imag());
-            }
-            for (int c = 0; c < cols; ++c) {
-                const auto v = std::conj(V_try(c, src));  // row r of V^dagger
-                Vt_out[static_cast<size_t>(r) * cols + c] =
-                    Complex128(v.real(), v.imag());
-            }
-        }
-
-        // Verify 1: kept slice bit-finite.
-        for (int i = 0; i < k; ++i)
-            if (!is_finite_strict(S_out[static_cast<size_t>(i)])) return false;
-        for (const auto& c : U_out)
-            if (!is_finite_strict(c.real) || !is_finite_strict(c.imag)) return false;
-        for (const auto& c : Vt_out)
-            if (!is_finite_strict(c.real) || !is_finite_strict(c.imag)) return false;
-
-        // Verify 2: Frobenius identity of the truncated factorisation.
-        //
-        // ||M - U_k S_k V_k^H||_F^2 == discarded holds with EQUALITY for a
-        // truncated SVD in exact arithmetic, so the slack added to `discarded`
-        // is the entire allowance a COMPUTED factorisation gets. Size it from
-        // the backward error a stable SVD is entitled to and no larger: the
-        // standard bound is ||M - U S V^H||_F <= c * N * eps * ||M||_F with N
-        // the larger dimension, and this compares squared norms, so the bound
-        // enters squared.
-        //
-        // c is generous because the two errors are not symmetric: a false
-        // REJECT costs one Gram recomputation, while a false ACCEPT is a wrong
-        // state that nothing downstream will catch. Even so the gate lands far
-        // below the defects this ladder exists for. On the degenerate
-        // rank-deficient thetas of a 13-qubit period-finding circuit, Eigen
-        // 3.4.0 has been measured returning a factorisation whose excess over
-        // the identity is 7.4e-16 of ||M||_F^2 (a 2.7e-8 relative
-        // reconstruction error, which is not backward-stable at any dimension)
-        // while a healthy factorisation of the same matrices measures 2.8e-30.
-        // Ten orders of clearance above, four below.
-        Eigen::Map<const EigenCMatrix> Um(
-            reinterpret_cast<const std::complex<double>*>(U_out.data()), rows, k);
-        Eigen::Map<const EigenCMatrix> Vtm(
-            reinterpret_cast<const std::complex<double>*>(Vt_out.data()), k, cols);
-        Eigen::Map<const Eigen::VectorXd> Sm(S_out.data(), k);
-        const double resid =
-            (mat - Um * Sm.asDiagonal() * Vtm).squaredNorm();
-        if (!is_finite_strict(resid)) return false;
-        constexpr double kBackwardErrorSlack = 64.0;
-        const double bwd = kBackwardErrorSlack *
-                           static_cast<double>(std::max(rows, cols)) *
-                           std::numeric_limits<double>::epsilon();
-        // The comparison is stated and made in the AMPLITUDE domain:
-        //   ||M - U_k S_k V_k^H||_F <= sqrt(discarded) + bwd * ||M||_F
-        // Squaring it here would drop the cross term
-        // 2*bwd*sqrt(discarded*||M||_F^2), which is the dominant allowance
-        // whenever truncation is heavy. That term is not optional slack: with
-        // `discarded` at the scale of ||M||_F^2, resid and discarded are two
-        // large nearly-equal quantities computed by different routes, so their
-        // difference carries FIRST-order rounding (~eps*discarded) while a
-        // squared-domain bound offers only second-order room. It vanishes as
-        // discarded -> 0, so a bond that truncated nothing is still held to
-        // the strict backward-error bound alone.
-        const double allowed =
-            std::sqrt(discarded) + bwd * std::sqrt(m_fro_sq);
-        if (resid > allowed * allowed + 1e-18) return false;
-
-        new_rank = k;
-        pending_discarded = discarded;
-        // Excess over a perfect truncated SVD, which satisfies the Frobenius
-        // identity with EQUALITY (resid == discarded). Subtracting `discarded`
-        // leaves only the factorisation's own error, so the figure means the
-        // same thing on a bond that truncated heavily and one that truncated
-        // nothing. Clamped because the two sides are computed differently and
-        // can cross by an ulp when both are dust.
-        pending_resid_excess =
-            (m_fro_sq > 0.0) ? std::max(0.0, resid - discarded) / m_fro_sq : 0.0;
-        return true;
-    };
-
-    // Direct SVD: no validity floor. A backend SVD resolves sigmas down to
-    // ~eps*sigma_max, so every finite value it reports is trustworthy data;
-    // how much of it to keep is the weight budget's decision alone.
-    if (!attempt(S_eigen, U_eigen, V_eigen, 0.0)) {
-        // Gram-route fallback.
-        const bool tall = rows >= cols;
-        const Eigen::MatrixXcd G =
-            tall ? Eigen::MatrixXcd(mat.adjoint() * mat)
-                 : Eigen::MatrixXcd(mat * mat.adjoint());
-        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(G);
-        if (es.info() != Eigen::Success) {
-            throw std::runtime_error(
-                "MPS svd_truncate: Gram-route eigendecomposition failed on a " +
-                std::to_string(rows) + "x" + std::to_string(cols) + " matrix");
-        }
-        const int gd = static_cast<int>(es.eigenvalues().size());
-        Eigen::VectorXd Sg(gd);
-        for (int i = 0; i < gd; ++i) {
-            // Eigenvalues ascend; emit sigmas descending.
-            Sg(i) = std::sqrt(std::max(0.0, es.eigenvalues()(gd - 1 - i)));
-        }
-        // Validity floor for THIS route only (not a truncation knob): the Gram
-        // matrix squares the condition number, so sigmas under sqrt(eps) times
-        // sigma_max carry no information here however much weight they hold.
-        // Relative to sigma_max, so it means the same thing on every target.
-        constexpr double kGramValidityFloorRel = 1.5e-8;  // ~sqrt(DBL_EPSILON)
-        const double smax = (gd > 0) ? Sg(0) : 0.0;
-        const double floor_g = kGramValidityFloorRel * smax;
-
-        Eigen::MatrixXcd Ug(rows, gd), Vg(cols, gd);
-        if (tall) {
-            for (int i = 0; i < gd; ++i) Vg.col(i) = es.eigenvectors().col(gd - 1 - i);
-            for (int i = 0; i < gd; ++i) {
-                if (Sg(i) > floor_g) Ug.col(i) = (mat * Vg.col(i)) / Sg(i);
-                else Ug.col(i).setZero();  // never selected: below the floor
-            }
-        } else {
-            for (int i = 0; i < gd; ++i) Ug.col(i) = es.eigenvectors().col(gd - 1 - i);
-            for (int i = 0; i < gd; ++i) {
-                if (Sg(i) > floor_g) Vg.col(i) = (mat.adjoint() * Ug.col(i)) / Sg(i);
-                else Vg.col(i).setZero();
-            }
-        }
-
-        if (!attempt(Sg, Ug, Vg, floor_g)) {
-            throw std::runtime_error(
-                "MPS svd_truncate: both the SVD backend and the "
-                "Gram-eigendecomposition fallback failed verification on a " +
-                std::to_string(rows) + "x" + std::to_string(cols) +
-                " matrix (non-finite or non-reconstructing factorisation); "
-                "refusing to continue with a corrupt tensor");
-        }
-        // Counted only here, past the throw: gram_fallback_count() reports
-        // rescues that succeeded, and a failed rescue does not return.
-        ++gram_fallbacks;
     }
 
-    total_truncation_error += pending_discarded;
+    // Row c of V-dagger is the conjugate of column c of V.
+    Vt_out.resize(static_cast<size_t>(k) * cols);
+    for (int c = 0; c < k; ++c) {
+        for (int col = 0; col < cols; ++col) {
+            const auto z = std::conj(r.V(col, c));
+            Vt_out[static_cast<size_t>(c) * cols + col] =
+                Complex128(z.real(), z.imag());
+        }
+    }
+
+    // Counted past the throw, so this reports rescues that SUCCEEDED: a failed
+    // rescue does not return.
+    if (r.used_gram_fallback) ++gram_fallbacks;
+    total_truncation_error += r.discarded_weight;
     max_verify_resid_excess =
-        std::max(max_verify_resid_excess, pending_resid_excess);
+        std::max(max_verify_resid_excess, r.residual_excess);
 }
 
 // =============================================================================
@@ -599,6 +331,81 @@ int MPSState::current_max_bond_dim() const {
         max_chi = std::max(max_chi, std::max(t.bond_left, t.bond_right));
     }
     return max_chi;
+}
+
+// ⟨ψ|ψ⟩ by left-to-right transfer-matrix contraction:
+//   E_{q+1}[aR', aR] = Σ_{phys, aL', aL} conj(A_q[aL', phys, aR'])
+//                                        · E_q[aL', aL] · A_q[aL, phys, aR]
+// with E_0 = [[1]]. The chain closes on a 1x1 because the final right bond is
+// 1, so the last entry IS the norm. Its imaginary part is zero by construction
+// (the contraction is ⟨ψ|ψ⟩) and is discarded rather than checked.
+//
+// A_q is reshaped once per site into a (2·chi_L) x chi_R matrix so each step is
+// two matrix products rather than a five-deep index loop.
+double MPSState::norm_sq() const {
+    Eigen::MatrixXcd E(1, 1);
+    E(0, 0) = std::complex<double>(1.0, 0.0);
+
+    for (int q = 0; q < n_qubits; ++q) {
+        const MPSTensor& T = tensors[static_cast<size_t>(q)];
+        const int chi_L = T.bond_left;
+        const int chi_R = T.bond_right;
+
+        // Row index (phys · chi_L + aL) keeps the left bond contiguous, which
+        // is what lets E multiply each physical block as one dense product.
+        Eigen::MatrixXcd A_left(2 * chi_L, chi_R);
+        for (int phys = 0; phys < 2; ++phys)
+            for (int aL = 0; aL < chi_L; ++aL)
+                for (int aR = 0; aR < chi_R; ++aR) {
+                    const Complex128& c = T(aL, phys, aR);
+                    A_left(phys * chi_L + aL, aR) =
+                        std::complex<double>(c.real, c.imag);
+                }
+
+        Eigen::MatrixXcd tmp(2 * chi_L, chi_R);
+        for (int phys = 0; phys < 2; ++phys)
+            tmp.block(phys * chi_L, 0, chi_L, chi_R) =
+                E * A_left.block(phys * chi_L, 0, chi_L, chi_R);
+
+        E = A_left.adjoint() * tmp;
+    }
+
+    return E(0, 0).real();
+}
+
+void MPSState::normalize() {
+    const double n = std::sqrt(norm_sq());
+    // Refuses rather than returning quietly, matching every other state class:
+    // handing back an unnormalized state from a call named normalize reports
+    // nothing to a caller who asked for exactly one thing.
+    if (!is_normalizable(n)) {
+        throw std::runtime_error(
+            "MPSState::normalize: no norm to divide out; the state is zero or "
+            "non-finite");
+    }
+    const double inv = 1.0 / n;
+    for (Complex128& c : tensors[0].data) {
+        c.real *= inv;
+        c.imag *= inv;
+    }
+}
+
+// norm_sq() is the measurement here, unlike the dense classes: this whole
+// translation unit is compiled under strict FP, so the contraction already
+// gives the same answer on every target.
+bool MPSState::is_normalized(double atol) const {
+    return std::abs(norm_sq() - 1.0) <= atol;
+}
+
+void MPSState::check_normalized(ValidationOptions validation) {
+    // Returns before measuring under Ignore. The measurement is an O(n·chi³)
+    // contraction, which is the most expensive of any state class here, so the
+    // opt-out matters most on this one.
+    if (validation.policy == Validation::Ignore) return;
+    if (detail::check_normalized(norm_sq(), validation,
+                                 "MPSState::check_normalized")) {
+        normalize();
+    }
 }
 
 // =============================================================================

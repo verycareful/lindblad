@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.22.2 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.23.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "R.1.22.2/1.1.22.2")
+set(LINDBLAD_VERSION_LABEL "1.1.23.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -179,21 +179,41 @@ set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(nlopt eigen)
 
-# Strict FP for the MPS simulator TU (R.1.16.0, issue #44). Eigen is
-# header-only, so mps_sim.cpp's JacobiSVD instantiation inherits this
-# directory's -ffast-math; under that codegen, on degenerate rank-deficient
-# MPS thetas (13-qubit Shor IQFT), Eigen 3.4.0 returned internally
-# inconsistent factorizations whose damage reached the KEPT singular
-# channels as finite-but-wrong data — undetectable by any truncation-side
-# check. Under strict FP the same input yields an exact kept slice with
-# garbage confined to discardable null-space columns (proven by the
-# DiagR1160StrictFP suite), which svd_truncate's hardened selection then
-# handles. Same pattern as the NLopt -fno-fast-math quarantine below:
-# numerical ALGORITHMS need IEEE semantics; kernel arithmetic keeps
-# fast-math. Later flags override earlier ones, so this TU keeps -O3/-march.
+# Strict FP for every TU that instantiates an Eigen SVD (R.1.16.0, issue #44;
+# R.1.23.0, issue #91). Eigen is header-only, so each of these files
+# instantiates JacobiSVD into itself and inherits this directory's
+# -ffast-math; under that codegen, on degenerate rank-deficient MPS thetas
+# (13-qubit Shor IQFT), Eigen 3.4.0 returned internally inconsistent
+# factorizations whose damage reached the KEPT singular channels as
+# finite-but-wrong data — undetectable by any truncation-side check. Under
+# strict FP the same input yields an exact kept slice with garbage confined to
+# discardable null-space columns (proven by the DiagR1160StrictFP suite), which
+# a hardened selection then handles.
+#
+# svd_truncate.cpp owns the factorisation for both MPS layers and is the
+# primary reason the flag exists. A truncation-side check cannot substitute for
+# it: under -ffast-math the corruption arrives finite and self-consistent, so
+# there is nothing for a check to see. The check and the flag guard different
+# halves, and the routine needs both. It sits in its own TU so the flag travels
+# with the code rather than with whichever file includes the header.
+#
+# The two layer TUs stay on the list as well. The evidence that the flag
+# changes their results was gathered at whole-TU granularity (a qudit bond
+# split returning a finite, self-consistent, wrong state under -ffast-math on
+# one compiler, correct under strict FP), and it has not been narrowed to the
+# factorisation alone. Both files also carry contraction and environment
+# arithmetic of the same near-cancellation shape. Narrowing the list is a
+# measurement nobody has made, not a cleanup.
+#
+# Same pattern as the NLopt -fno-fast-math quarantine below: numerical
+# ALGORITHMS need IEEE semantics; kernel arithmetic keeps fast-math. Later
+# flags override earlier ones, so these TUs keep -O3/-march.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    set_source_files_properties(src/simulators/mps_sim.cpp PROPERTIES
-        COMPILE_OPTIONS "-fno-fast-math")
+    set_source_files_properties(
+        src/svd_truncate.cpp
+        src/simulators/mps_sim.cpp
+        src/qudit/qudit_mps.cpp
+        PROPERTIES COMPILE_OPTIONS "-fno-fast-math")
 
     # Strict FP for the Class C residuals, same reasoning one level down: these
     # are measurements rather than kernels. Each evaluates a near-cancellation
@@ -262,6 +282,7 @@ add_library(lindblad_core STATIC
     src/hw_info.cpp
     src/validation.cpp
     src/validate_physical.cpp
+    src/svd_truncate.cpp
     src/statevector.cpp
     src/gates/single_qubit.cpp
     src/gates/two_qubit.cpp

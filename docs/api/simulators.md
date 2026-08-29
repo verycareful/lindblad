@@ -208,6 +208,20 @@ class DensityMatrix {
 - Purity: $\gamma = \text{Tr}(\rho^2) \in [0, 1]$; $\gamma = 1$ iff pure, $\gamma = 1/2^n$ iff maximally mixed
 - Complexity: $O(4^n)$ space for $n$ qubits
 
+**Validity and normalization**:
+
+- `trace()` returns $\text{Tr}(\rho)$, `purity()` returns $\text{Tr}(\rho^2)$
+- `is_valid(atol)` checks trace and Hermiticity, at the framework tolerance.
+  Positive semi-definiteness is NOT verified: a full check needs an
+  eigendecomposition and is $O(4^n)$
+- `normalize()` divides every entry by the trace. It throws when there is no
+  trace to divide out, a zero or non-finite matrix, rather than returning the
+  matrix unchanged
+- `is_normalized(atol)` is a predicate over $\text{Tr}(\rho) = 1$ alone: it
+  answers, and neither repairs nor throws
+- `check_normalized(validation)` applies a validation policy, with `Fix`
+  renormalizing in place
+
 ### Density Matrix Initialization
 
 Pure state conversion:
@@ -495,6 +509,20 @@ class MPSState {
     SVDMethod svd_method = SVDMethod::Jacobi;  // SVD backend (R.1.13)
 };
 ```
+
+**Norm and normalization**:
+
+- `norm_sq()` contracts the transfer matrix along the chain, $O(n \cdot \chi^3)$.
+  There is no flat amplitude array to sweep, so this is the only way to read the
+  norm without materialising the state
+- `normalize()` rescales the first site tensor, which is exact because the norm
+  is multilinear in the tensors. It throws when there is no norm to divide out,
+  a zero or non-finite state, rather than returning the state unchanged
+- `is_normalized(atol)` answers without repairing or throwing
+- `check_normalized(validation)` applies a policy, with `Fix` renormalizing.
+  Under `Ignore` the contraction does not run at all, which matters more here
+  than on the dense classes because this measurement is the most expensive of
+  any state type in the library
 
 **SVD backend (R.1.13, audit F-23)**: `svd_method` (declared in
 `lindblad/types.hpp`, shared with the qudit MPS) selects the truncation SVD.

@@ -1,0 +1,51 @@
+# A deliberately narrow starting set.
+#
+# clang-tidy on a tree this size will surface a backlog on its first run, and a
+# gate whose first run reports thousands of findings gets suppressed rather than
+# fixed. So this enables the two families that find real defects (bugprone,
+# performance) and leaves the two that mostly express taste (readability,
+# modernize) switched off until the first pass has been triaged.
+#
+# Widen it deliberately, one family at a time, once the tree is clean against
+# what is here. A check that is enabled and universally ignored is worse than a
+# check that is off, because it teaches everyone to skim the output.
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -performance-avoid-endl
+
+# Warnings are findings, not build failures, until the backlog is cleared. The
+# workflow decides whether a finding fails the job; this file only decides what
+# counts as a finding.
+WarningsAsErrors: ''
+
+# Only this project's own headers. Eigen, NLopt, GoogleTest and Google Benchmark
+# are fetched dependencies: their findings are not ours to fix, and they would
+# swamp the ones that are.
+HeaderFilterRegex: '.*/(include/lindblad|src)/.*'
+
+# No format style: .clang-format is deliberately not tracked, because this tree
+# is hand-formatted and a whole-tree reformat is its own piece of work. Without
+# this set to none, clang-tidy would try to format the fixes it suggests using a
+# config that is not in the repository.
+FormatStyle: none
+
+CheckOptions:
+  # The three excluded checks above, and why:
+  #
+  # bugprone-easily-swappable-parameters fires on every function taking two
+  # ints, which in a library addressing qubits by index is most of them. It
+  # cannot distinguish `(int q0, int q1)` where the order is the documented
+  # convention from one where it is an accident.
+  #
+  # bugprone-narrowing-conversions fires throughout the index arithmetic, where
+  # size_t to int conversions are bounded by register width and already guarded
+  # at the public entry points.
+  #
+  # performance-avoid-endl is a stylistic preference about stream flushing that
+  # does not apply to code printing a handful of diagnostic lines.
+  - key: bugprone-signed-char-misuse.CharTypdefsToIgnore
+    value: ''

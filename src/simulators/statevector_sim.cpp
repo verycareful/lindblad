@@ -659,8 +659,15 @@ StatevectorSimulator::Result StatevectorSimulator::run(
 
         // Copy simulated state to result (callers own result.final_state;
         // sv_work stays in the cache for the next call).
+        //
+        // Ignore, because this is not a hand-over: these amplitudes are the
+        // library's own output, and their norm carries whatever rounding the
+        // circuit accumulated. Checking here would judge a circuit's arithmetic
+        // against a caller's tolerance and could make run() throw on a
+        // simulation that did nothing wrong.
         result.final_state = Statevector(circuit.n_qubits);
-        result.final_state.set_amplitudes(sv_work->real_parts, sv_work->imag_parts, sv_work->dim);
+        result.final_state.set_amplitudes(sv_work->real_parts, sv_work->imag_parts,
+                                          sv_work->dim, {Validation::Ignore});
         result.success = true;
 
     } catch (const std::exception& e) {

@@ -1,4 +1,5 @@
 #include "lindblad/statevector.hpp"
+#include "lindblad/detail/validate_physical.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -104,22 +105,43 @@ void Statevector::initialize_basis(size_t k) {
     real_parts[k] = 1.0;
 }
 
-void Statevector::set_amplitudes(const double* real, const double* imag, size_t count) {
+// Both overloads judge the policy against the CALLER'S buffer before writing
+// anything, so a hand-over this refuses leaves the object holding whatever it
+// held before rather than the amplitudes just rejected. Under Fix the copy
+// happens first and normalize() runs on the result, which is the same state
+// either way and avoids scaling the caller's memory.
+void Statevector::set_amplitudes(const double* real, const double* imag,
+                                 size_t count, ValidationOptions validation) {
     if (count != dim) {
         throw std::invalid_argument("Amplitude count must match dimension");
     }
+    bool repair = false;
+    if (validation.policy != Validation::Ignore) {
+        repair = detail::check_normalized(
+            detail::state_norm_sq(real, imag, count), validation,
+            "Statevector::set_amplitudes");
+    }
     std::memcpy(real_parts, real, dim * sizeof(double));
     std::memcpy(imag_parts, imag, dim * sizeof(double));
+    if (repair) normalize();
 }
 
-void Statevector::set_amplitudes(const std::vector<Complex128>& amplitudes) {
+void Statevector::set_amplitudes(const std::vector<Complex128>& amplitudes,
+                                 ValidationOptions validation) {
     if (amplitudes.size() != dim) {
         throw std::invalid_argument("Amplitude count must match dimension");
+    }
+    bool repair = false;
+    if (validation.policy != Validation::Ignore) {
+        repair = detail::check_normalized(
+            detail::state_norm_sq(amplitudes.data(), amplitudes.size()),
+            validation, "Statevector::set_amplitudes");
     }
     for (size_t i = 0; i < dim; ++i) {
         real_parts[i] = amplitudes[i].real;
         imag_parts[i] = amplitudes[i].imag;
     }
+    if (repair) normalize();
 }
 
 // =============================================================================
@@ -184,16 +206,42 @@ double Statevector::norm() const {
 }
 
 void Statevector::normalize() {
-    double n = norm();
-    if (n < 1e-15) {
-        throw std::runtime_error("Cannot normalize zero state");
+    const double n = norm();
+    // Refuses rather than returning quietly. A caller who asked for
+    // normalization and got an unnormalized state back has been told nothing,
+    // and the two states this rejects (zero, and non-finite) are precisely the
+    // ones where dividing by the norm produces garbage rather than a state.
+    if (!is_normalizable(n)) {
+        throw std::runtime_error(
+            "Statevector::normalize: no norm to divide out; the state is zero "
+            "or non-finite");
     }
-    double inv_n = 1.0 / n;
+    const double inv_n = 1.0 / n;
 
     #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (size_t i = 0; i < dim; ++i) {
         real_parts[i] *= inv_n;
         imag_parts[i] *= inv_n;
+    }
+}
+
+// Measured through the quarantined sum rather than through norm_sq() above:
+// this value is compared against a tolerance, and norm_sq()'s OpenMP reduction
+// splits the sum across threads, so its last bits depend on the thread count.
+// A verdict that changes with how many cores happened to be free is not one.
+bool Statevector::is_normalized(double atol) const {
+    return std::abs(detail::state_norm_sq(real_parts, imag_parts, dim) - 1.0) <=
+           atol;
+}
+
+void Statevector::check_normalized(ValidationOptions validation) {
+    // Returns before measuring under Ignore. The sum is a full 2^n sweep, and
+    // opting out of a check is meant to cost a branch rather than a pass.
+    if (validation.policy == Validation::Ignore) return;
+    if (detail::check_normalized(
+            detail::state_norm_sq(real_parts, imag_parts, dim), validation,
+            "Statevector::check_normalized")) {
+        normalize();
     }
 }
 

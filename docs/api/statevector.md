@@ -38,13 +38,57 @@ Initialization helpers:
 - `amplitudes()` returns a full vector copy of amplitudes
 - `probability(index)` and `probabilities()` compute |amp|^2
 
-No normalization check is enforced; callers are responsible for maintaining
-normalized states.
+## Setting Amplitudes
+
+```cpp
+void set_amplitudes(const double* real, const double* imag, size_t count,
+                    ValidationOptions validation = {});
+void set_amplitudes(const std::vector<Complex128>& amplitudes,
+                    ValidationOptions validation = {});
+```
+
+This is the one point at which a caller hands a whole state over, so it is where
+normalization is judged. The default policy is `Throw`, matching every other
+physical-validity check.
+
+- `Throw` (default): an unnormalized hand-over raises `std::invalid_argument`
+  naming the residual and the tolerance
+- `Fix`: the amplitudes are accepted and renormalized
+- `Warn`: reported through the warning handler, then accepted unchanged
+- `Ignore`: no check, at the cost of one branch
+
+```cpp
+sv.set_amplitudes(amps);                            // must already be normalized
+sv.set_amplitudes(amps, {Validation::Fix});         // normalize on the way in
+sv.set_amplitudes(amps, {Validation::Ignore});      // deliberately unnormalized
+```
+
+`Ignore` is the right choice when the amplitudes are not meant to be a physical
+state, for instance when probing index arithmetic with a deliberately arbitrary
+vector.
+
+The policy is judged against the caller's buffer before anything is written, so
+a hand-over that is refused leaves the object holding whatever it held before,
+not the amplitudes that were just rejected.
 
 ## Norm and Normalization
 
-- `norm_sq()` and `norm()` compute the squared norm and norm
-- `normalize()` scales to unit norm and throws if norm < 1e-15
+- `norm_sq()` and `norm()` compute the squared norm and norm. Both use an
+  OpenMP reduction, so their last bits depend on the thread count. They are for
+  computation, not for comparing against a tolerance.
+- `normalize()` scales to unit norm. It throws `std::runtime_error` when there
+  is no norm to divide out, which is a zero or non-finite state. It does not
+  return an unnormalized state quietly, because a caller who asked for
+  normalization and received none has been told nothing.
+- `is_normalized(atol)` is a predicate: it answers, and neither repairs nor
+  throws. A non-finite state answers false. Defaults to `DEFAULT_PHYSICAL_ATOL`.
+- `check_normalized(validation)` applies a policy to the state as it stands,
+  with the same four behaviours as `set_amplitudes` above.
+
+`is_normalized` and `check_normalized` measure through a summation that does not
+depend on thread count or vector width, which is why they do not simply call
+`norm_sq()`. A verdict that moved with the number of free cores would not be a
+verdict.
 
 ## Inner Product
 

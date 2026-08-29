@@ -27,7 +27,8 @@ static inline Complex128 from_std(const std::complex<double>& z) noexcept {
 }
 
 // One-time loud warning when the (currently broken) BDCSVD backend is selected
-// on the qudit MPS. Mirrors the qubit-layer warning.
+// on the qudit MPS. The latch is per layer, so this fires even when a qubit MPS
+// in the same process has already warned about its own selection.
 static void warn_bdc_broken_once_qudit() {
     static bool warned = false;
     if (warned) return;
@@ -39,27 +40,6 @@ static void warn_bdc_broken_once_qudit() {
         "  results may be SILENTLY WRONG.\n"
         "  Use SVDMethod::Jacobi (the default) until fixed.\n"
         "***************************************************************");
-}
-
-// SVD with the selected backend. Jacobi is accurate (default); BDC is faster
-// but currently broken, so it warns loudly. Writes thin U, singular values S,
-// and V (not V^dagger).
-static void qmps_svd(const Eigen::MatrixXcd& M, SVDMethod method,
-                     Eigen::MatrixXcd& U, Eigen::VectorXd& S, Eigen::MatrixXcd& V) {
-    if (method == SVDMethod::BDC) {
-        warn_bdc_broken_once_qudit();
-        Eigen::BDCSVD<Eigen::MatrixXcd> svd(
-            M, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        U = svd.matrixU();
-        S = svd.singularValues();
-        V = svd.matrixV();
-    } else {
-        Eigen::JacobiSVD<Eigen::MatrixXcd> svd(
-            M, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        U = svd.matrixU();
-        S = svd.singularValues();
-        V = svd.matrixV();
-    }
 }
 
 // =============================================================================
@@ -149,6 +129,32 @@ size_t QuditMPS::ipow(size_t base, int exp) noexcept {
     return result;
 }
 
+// Every bond split in this class goes through here, which is what keeps the
+// four call sites from selecting a rank four different ways. The ladder itself
+// (SELECT -> VERIFY -> FALLBACK -> THROW, and why each rung exists) is shared
+// with the qubit layer; see include/lindblad/detail/svd_truncate.hpp.
+//
+// Eigen matrices are column-major and Complex128 is layout-identical to
+// std::complex<double>, so the block is mapped in place rather than copied.
+detail::SvdTruncation QuditMPS::truncate_block(const Eigen::MatrixXcd& M,
+                                               const char* ctx) {
+    ++svd_calls;
+    if (svd_method == SVDMethod::BDC) warn_bdc_broken_once_qudit();
+    detail::SvdTruncation r = detail::svd_truncate_verified(
+        reinterpret_cast<const Complex128*>(M.data()),
+        static_cast<int>(M.rows()), static_cast<int>(M.cols()),
+        detail::MatrixOrder::ColMajor, max_bond_dim, svd_cutoff, svd_method,
+        ctx);
+
+    // Counted past the throw, so this reports rescues that SUCCEEDED: a failed
+    // rescue does not return.
+    if (r.used_gram_fallback) ++gram_fallbacks;
+    total_truncation_error += r.discarded_weight;
+    max_verify_resid_excess =
+        std::max(max_verify_resid_excess, r.residual_excess);
+    return r;
+}
+
 QuditMPS::QuditMPS(int n_qudits_, int d_, int max_bond_dim_, double svd_cutoff_)
     : n_qudits(n_qudits_), d(d_),
       max_bond_dim(max_bond_dim_), svd_cutoff(svd_cutoff_)
@@ -205,31 +211,12 @@ QuditMPS::QuditMPS(const QuditStatevector& sv,
                                      static_cast<size_t>(d)]);
 
     for (int q = 0; q < n_qudits - 1; ++q) {
-        Eigen::MatrixXcd U, V;
-        Eigen::VectorXd S;
-        qmps_svd(M, svd_method, U, S, V);
-
-        // Discarded-weight truncation, identical to MPSState::svd_truncate:
-        // svd_cutoff is the fraction of total weight (sum of sigma^2) a split
-        // may throw away, NOT a magnitude threshold. The qudit layer mirrors
-        // the qubit layer at general d, and that has to extend to what a bond
-        // dimension means; a magnitude rule also makes retained chi depend on
-        // the input's scale and on how the target rounded its way there.
-        const int full_rank = static_cast<int>(S.size());
-        double total = 0.0;
-        for (int i = 0; i < full_rank; ++i) total += S(i) * S(i);
-        const double budget = svd_cutoff * total;
-
-        int chi = full_rank;
-        double discarded = 0.0;
-        while (chi > 1) {
-            const double w = S(chi - 1) * S(chi - 1);
-            if (discarded + w > budget) break;
-            discarded += w;
-            --chi;
-        }
-        if (chi > max_bond_dim) chi = max_bond_dim;
-        if (chi == 0) chi = 1;
+        const detail::SvdTruncation split =
+            truncate_block(M, "QuditMPS statevector decomposition");
+        const Eigen::MatrixXcd& U = split.U;
+        const Eigen::MatrixXcd& V = split.V;
+        const Eigen::VectorXd& S = split.S;
+        const int chi = split.rank;
 
         // Left tensor: shape (d, chi_L, chi) from leftmost chi columns of U.
         // The residual matrix M is built with rows ordered (left-bond major):
@@ -388,10 +375,35 @@ double QuditMPS::norm_sq() const {
 
 void QuditMPS::normalize() {
     const double n2 = norm_sq();
-    if (n2 < 1e-30) return;
-    const double inv = 1.0 / std::sqrt(n2);
+    const double n = std::sqrt(n2);
+    // Refuses rather than returning quietly, matching the other state classes.
+    // The guard is on the norm rather than its square so that every layer
+    // rejects the same set of states: squaring first would put the effective
+    // floor at the square root of this one.
+    if (!is_normalizable(n)) {
+        throw std::runtime_error(
+            "QuditMPS::normalize: no norm to divide out; the state is zero or "
+            "non-finite");
+    }
+    const double inv = 1.0 / n;
     auto& T0 = tensors[0];
     for (auto& v : T0.data) { v.real *= inv; v.imag *= inv; }
+}
+
+// norm_sq() is the measurement, as in the qubit MPS: this translation unit is
+// compiled under strict FP, so the contraction is already target-independent.
+bool QuditMPS::is_normalized(double atol) const {
+    return std::abs(norm_sq() - 1.0) <= atol;
+}
+
+void QuditMPS::check_normalized(ValidationOptions validation) {
+    // Returns before measuring under Ignore: the measurement is a transfer
+    // matrix contraction down the whole chain.
+    if (validation.policy == Validation::Ignore) return;
+    if (detail::check_normalized(norm_sq(), validation,
+                                 "QuditMPS::check_normalized")) {
+        normalize();
+    }
 }
 
 // =============================================================================
@@ -477,26 +489,12 @@ void QuditMPS::split_two_sites(int q, const Eigen::MatrixXcd& Theta) {
         Theta.cols() != static_cast<Eigen::Index>(d) * chi_R)
         throw std::runtime_error("split_two_sites: shape mismatch");
 
-    Eigen::MatrixXcd U, V;
-    Eigen::VectorXd S;
-    qmps_svd(Theta, svd_method, U, S, V);
-
-    // Discarded-weight truncation: see the statevector constructor above.
-    const int full_rank = static_cast<int>(S.size());
-    double total = 0.0;
-    for (int i = 0; i < full_rank; ++i) total += S(i) * S(i);
-    const double budget = svd_cutoff * total;
-
-    int chi = full_rank;
-    double discarded = 0.0;
-    while (chi > 1) {
-        const double w = S(chi - 1) * S(chi - 1);
-        if (discarded + w > budget) break;
-        discarded += w;
-        --chi;
-    }
-    if (chi > max_bond_dim) chi = max_bond_dim;
-    if (chi == 0) chi = 1;
+    const detail::SvdTruncation split =
+        truncate_block(Theta, "QuditMPS two-site split");
+    const Eigen::MatrixXcd& U = split.U;
+    const Eigen::MatrixXcd& V = split.V;
+    const Eigen::VectorXd& S = split.S;
+    const int chi = split.rank;
 
     // Left tensor: shape (d, chi_L, chi) from leftmost chi columns of U.
     MPSSiteTensor Tq(d, chi_L, chi);
@@ -802,19 +800,12 @@ void QuditMPS::left_canonicalize() {
         // M = as_left_matrix has shape (d * chi_L, chi_R).
         Eigen::MatrixXcd M = Tq.as_left_matrix();
 
-        Eigen::MatrixXcd U, V;
-        Eigen::VectorXd S;
-        qmps_svd(M, svd_method, U, S, V);
-
-        const int full_rank = static_cast<int>(S.size());
-        const double smax = (full_rank > 0) ? S(0) : 0.0;
-        const double threshold = smax * svd_cutoff;
-        int chi = 0;
-        for (int i = 0; i < full_rank; ++i) {
-            if (S(i) > threshold && chi < max_bond_dim) ++chi;
-            else break;
-        }
-        if (chi == 0) chi = 1;
+        const detail::SvdTruncation split =
+            truncate_block(M, "QuditMPS left canonicalisation");
+        const Eigen::MatrixXcd& U = split.U;
+        const Eigen::MatrixXcd& V = split.V;
+        const Eigen::VectorXd& S = split.S;
+        const int chi = split.rank;
 
         // tensors[q] = U_truncated reshaped from (d*chi_L, chi) back to (d, chi_L, chi).
         const int chi_L = Tq.chi_L;
@@ -865,19 +856,12 @@ void QuditMPS::right_canonicalize() {
         // M = as_right_matrix has shape (chi_L, d * chi_R).
         Eigen::MatrixXcd M = Tq.as_right_matrix();
 
-        Eigen::MatrixXcd U, V;
-        Eigen::VectorXd S;
-        qmps_svd(M, svd_method, U, S, V);
-
-        const int full_rank = static_cast<int>(S.size());
-        const double smax = (full_rank > 0) ? S(0) : 0.0;
-        const double threshold = smax * svd_cutoff;
-        int chi = 0;
-        for (int i = 0; i < full_rank; ++i) {
-            if (S(i) > threshold && chi < max_bond_dim) ++chi;
-            else break;
-        }
-        if (chi == 0) chi = 1;
+        const detail::SvdTruncation split =
+            truncate_block(M, "QuditMPS right canonicalisation");
+        const Eigen::MatrixXcd& U = split.U;
+        const Eigen::MatrixXcd& V = split.V;
+        const Eigen::VectorXd& S = split.S;
+        const int chi = split.rank;
 
         // tensors[q] = V^dagger_truncated reshaped from (chi, d*chi_R) -> (d, chi, chi_R).
         const int chi_R = Tq.chi_R;

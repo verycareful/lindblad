@@ -4,6 +4,151 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.23.0] - 2026-08-29
+
+Two pieces of work that turned out to belong together. A qudit simulation could
+return amplitudes that were finite, plausible and wrong with nothing reported,
+and fixing it meant giving both matrix-product-state layers one shared guarantee
+instead of two that had quietly drifted apart. Separately, `Validation::Fix`
+gains its first real repair: a state handed to the library unnormalized can now
+be corrected rather than only refused.
+
+This release ships 19 deliberately failing tests. They are the price of
+`set_amplitudes` refusing an unnormalized state by default, and Results says
+exactly what they are.
+
+### Fixed
+
+- **The qudit MPS could discard most of a state and report nothing (#91).** On
+  the failing case the simulated state retained one sixteenth of its overlap
+  with the reference: 0.0625 where 1 is correct. Every amplitude stayed finite,
+  so no guard fired and nothing was raised. A caller got a wrong answer with no
+  signal that anything had happened.
+
+  The cause was that the qudit truncation trusted the singular values it was
+  handed, at four separate sites. The qubit layer stopped doing that when the
+  same class of defect was found there, and the qudit layer was never migrated.
+
+  The fix has two halves, and the first is not the obvious one. Under
+  `-ffast-math` the corruption reaches the KEPT singular channels as
+  finite-but-wrong data, which no truncation-side check can detect, so
+  `qudit_mps.cpp` joins the strict floating-point quarantine the qubit
+  translation unit has carried for precisely this reason. That alone turns the
+  affected leg green, and it is still not sufficient: it removes the condition
+  that makes the corruption invisible without adding the check. So the select,
+  verify, fall back and throw ladder now runs on every qudit bond split as well.
+
+  That ladder is no longer duplicated. It lives in `src/svd_truncate.cpp`, which
+  both layers call, so the guarantee cannot diverge again and the strict
+  floating-point requirement travels with the code rather than depending on
+  which file included it. It also gives the in-house SVD work (#58) a seam to
+  plug into, and makes the ladder reachable for tests that want to drive its
+  fallback and throw rungs directly.
+
+  Closes #91.
+
+- **Three of the four `normalize()` implementations returned silently.** Asking
+  to normalize a zero state left the qudit statevector, qudit density matrix and
+  qudit MPS unchanged, reporting nothing at all; only the qubit statevector
+  refused. A non-finite state slipped past all four, because a NaN norm compares
+  false against any threshold, and each then divided by NaN and produced an
+  all-NaN state in silence. All four now refuse, through one shared
+  normalizability test.
+
+### Added
+
+- **`Validation::Fix` repairs state normalization (#56).** Normalization becomes
+  a physical-validity property like unitarity and trace preservation, measured
+  as two residuals: a state's norm and a density matrix's trace. Under `Fix` the
+  object is divided by what it actually sums to and the call continues. Under
+  `Throw`, the default, it is refused with the residual and tolerance named.
+  `Warn` reports and proceeds unchanged; `Ignore` measures nothing.
+
+  `Fix` refuses the two objects it cannot repair. A zero state offers no
+  direction to normalize toward, and a non-finite one has a NaN norm, so
+  dividing by either manufactures garbage instead of recovering a state.
+
+  All six state classes carry `is_normalized(atol)`, a predicate that answers
+  without repairing or throwing, and `check_normalized(validation)`, which
+  applies a policy to a state already held. `Statevector::set_amplitudes` takes
+  a `ValidationOptions` and defaults to `Throw`.
+
+  The check fires where a caller HANDS A STATE OVER, and deliberately not after
+  every gate. A supplied matrix is unitary or it is not and never changes, while
+  a state's norm drifts as gates are applied, so a per-gate check would
+  eventually reject states that nothing is wrong with, at a full sweep each
+  time. Qiskit, Cirq and PennyLane all validate at state preparation and none of
+  them checks per gate. The library's own outputs are exempt for the same
+  reason: the final-state copy inside the statevector simulator opts out,
+  because those amplitudes carry the circuit's accumulated rounding and are not
+  a claim by anyone.
+
+  Closes #56.
+
+- **`DensityMatrix::normalize()`, `MPSState::norm_sq()` and
+  `MPSState::normalize()`**, none of which existed. The MPS norm is a
+  transfer-matrix contraction along the chain, since there is no flat amplitude
+  array to sweep.
+
+- **Both MPS layers report which rung of the truncation ladder ran.**
+  `svd_call_count()`, `gram_fallback_count()` and `max_verify_residual_excess()`
+  were available on the qubit layer only. A rescued bond and a clean one produce
+  equally valid tensors, so without these a state that took the primary path
+  throughout is indistinguishable from one rescued on every bond.
+
+- **Release automation.** Pushing a version tag publishes a GitHub Release whose
+  body is that version's section of this file, so the two cannot disagree and
+  nobody retypes anything. It verifies the tag against the version in the tree
+  first and refuses on a mismatch. Part of #62.
+
+- **A clang-tidy gate**, manual dispatch like the rest of CI, with a `diff`
+  scope that holds changed lines and a `full` scope that reports on the tree
+  without failing. Part of #62.
+
+- **`docs/api/hw-info.md` and `docs/api/dag.md`**, for two public headers that
+  had no page.
+
+### Changed
+
+- **`DensityMatrix::is_valid` now judges at the framework tolerance**, joining
+  `Operator::is_unitary` and `KrausChannel::is_valid`. It was the last
+  physical-validity predicate still at the looser legacy value. That tolerance
+  now has a name, `DEFAULT_PHYSICAL_ATOL`, which both the checks and the
+  predicates over the same properties derive from, so asking whether something
+  is valid and letting a policy judge it agree by construction.
+
+- **Normalization residuals sum as a balanced tree.** This is the first
+  physical-validity check whose residual comes from a long sum: the others
+  reduce over a handful of matrix entries, while a state's norm reduces over
+  every amplitude, all positive, so nothing cancels and dropped low bits accrue.
+  A single running total drifts far enough at large register sizes to reject a
+  correct state against an absolute tolerance. Tree order costs no extra
+  arithmetic and does not depend on thread count or vector width, so the verdict
+  is the same on every machine.
+
+- **`docs/MasterDocumentation.md` is now the single source for how anything
+  under `docs/` is written**, covering the tree layout, the required sections
+  per page type, the API section order and the formatting rules. It is public,
+  so a contributor can read the rules they are held to.
+
+### Results
+
+2441 tests across 224 suites, 2422 passed and 19 failed, on Clang 18.1.3 and
+GCC 13.3.0 under Ubuntu 24.04, each at the documented native build (30.7 s and
+21.3 s). The gap between the two compilers is #72, still observed.
+
+The 19 failures are intentional and are the same 19 on both compilers, verified
+name by name. Each is a test handing `set_amplitudes` a deliberately
+unnormalized state, which now refuses by default: either a vector built to
+exercise index and stride arithmetic rather than physics, or one normalized on
+the line immediately after, which is what `Validation::Fix` now does in one
+call. Every reported residual lies between 0.07 and 1127.56, which is eleven to
+fifteen orders of magnitude above the tolerance, so none is a correct state
+rejected by too tight a bound. Each throws in the test body before any library
+computation runs, and no numerical mismatch, crash or failed assertion on a
+computed value appears in either run. The test-only release that follows adds
+the explicit opt-out at each of the 13 call sites involved.
+
 ## [R.1.22.2/1.1.22.2] - 2026-08-29
 
 R.1.22.1 shipped six tests red on purpose, pinning two defects it had found.

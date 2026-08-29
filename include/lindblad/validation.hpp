@@ -38,6 +38,11 @@ enum class Validation {
 // ValidationOptions - the per-primitive knobs
 // -----------------------------------------------------------------------------
 
+// The tolerance every physical-validity check defaults to, and the value a
+// predicate over the same property should default to as well, so that asking
+// "is this valid?" and letting a policy judge it agree by construction.
+inline constexpr double DEFAULT_PHYSICAL_ATOL = 1e-12;
+
 struct ValidationOptions {
     Validation policy = Validation::Throw;
 
@@ -47,7 +52,7 @@ struct ValidationOptions {
     // all; 1e-12 is loose enough to accept a deeply composed or fused matrix,
     // which holds unitarity to around 1e-13, and tight enough to reject
     // anything that drifted for a reason.
-    double atol = 1e-12;
+    double atol = DEFAULT_PHYSICAL_ATOL;
 };
 
 // The fusion pre-pass copies an Instruction per fused block, and an

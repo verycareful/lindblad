@@ -60,6 +60,10 @@ Deep dive: [docs/api/simulators.md](api/simulators.md)
 Mathematical constants (`PI`, `INV_SQRT2`, ...) live in one header for the whole
 library: [docs/api/constants.md](api/constants.md)
 
+The statevector simulator derives its gate-fusion engagement point from the
+machine's last-level cache size rather than a hardcoded width:
+[docs/api/hw-info.md](api/hw-info.md)
+
 ### Minimal examples
 
 **Exact statevector**:
@@ -103,7 +107,10 @@ Transpiler classes and types:
 
 High-level entry point: `transpile(circuit, coupling_map, basis_gates, optimization_level)`
 
-Deep dive: [docs/api/transpiler.md](api/transpiler.md)
+Every pass runs over `DAGCircuit`, the graph form of a circuit in which two
+gates are independent exactly when no path joins them.
+
+Deep dives: [docs/api/transpiler.md](api/transpiler.md), [docs/api/dag.md](api/dag.md)
 
 ### Minimal example
 

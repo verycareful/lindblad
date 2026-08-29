@@ -60,6 +60,39 @@ double DensityMatrix::trace() const {
     return tr;
 }
 
+void DensityMatrix::normalize() {
+    const double tr = trace();
+    // Refuses rather than returning quietly: a caller who asked for
+    // normalization and received an unnormalized matrix has been told nothing.
+    // The two states rejected here, zero and non-finite, are the ones where
+    // dividing by the trace yields garbage rather than a density matrix.
+    if (!is_normalizable(std::abs(tr))) {
+        throw std::runtime_error(
+            "DensityMatrix::normalize: no trace to divide out; it is zero or "
+            "non-finite");
+    }
+    const double inv = 1.0 / tr;
+    for (auto& z : data) {
+        z.real *= inv;
+        z.imag *= inv;
+    }
+}
+
+bool DensityMatrix::is_normalized(double atol) const {
+    return std::abs(detail::density_trace_real(data.data(), dim) - 1.0) <= atol;
+}
+
+void DensityMatrix::check_normalized(ValidationOptions validation) {
+    // Returns before measuring under Ignore: reading the diagonal is O(dim),
+    // and opting out of a check should cost a branch rather than a pass.
+    if (validation.policy == Validation::Ignore) return;
+    if (detail::check_trace_normalized(
+            detail::density_trace_real(data.data(), dim), validation,
+            "DensityMatrix::check_normalized")) {
+        normalize();
+    }
+}
+
 double DensityMatrix::purity() const {
     // Tr(rho^2)
     double pur = 0.0;

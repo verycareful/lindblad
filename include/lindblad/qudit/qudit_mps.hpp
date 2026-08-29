@@ -2,6 +2,7 @@
 
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
+#include "lindblad/detail/svd_truncate.hpp"
 #include "lindblad/qudit/qudit_statevector.hpp"
 
 #include <Eigen/Dense>
@@ -86,6 +87,17 @@ public:
     // Rescale tensors[0] so the state has unit norm.
     void normalize();
 
+    // True when the norm is 1 to within atol. A predicate: it answers, it does not
+    // repair and it does not throw, and a non-finite state answers false.
+    bool is_normalized(double atol = DEFAULT_PHYSICAL_ATOL) const;
+
+    // Judge this state's normalization under a validation policy. Fix
+    // renormalizes in place; Warn reports it and leaves the state as it is;
+    // Throw raises; Ignore measures nothing, so opting out costs one branch
+    // rather than a full pass. Fix on a state with nothing to divide out
+    // throws rather than returning it unrepaired.
+    void check_normalized(ValidationOptions validation = {});
+
     // --- Gate / oracle / measurement API ---------------------------------------
 
     // d x d unitary on qudit q.  Row-major: U[row*d + col].
@@ -127,8 +139,45 @@ public:
     // Singular values are absorbed into the left neighbour.
     void right_canonicalize();
 
+    // --- Truncation and SVD-ladder observability --------------------------------
+    //
+    // Every bond split runs SELECT -> VERIFY -> FALLBACK -> THROW: the
+    // factorisation the SVD backend returns is measured against the block it
+    // came from, and recomputed through an independent route when it does not
+    // reconstruct. Both outcomes yield equally valid tensors, so a rescued
+    // state is indistinguishable from a clean one without these counters.
+
+    // Total weight (sum of sigma^2) discarded across every split so far.
+    double truncation_error() const { return total_truncation_error; }
+
+    // svd_call_count() is the denominator: a bond split calls the truncation
+    // once, so a bare fallback count means nothing without it.
+    // gram_fallback_count() counts only the rescues that SUCCEEDED; a Gram
+    // route that also fails verification throws rather than returning.
+    std::size_t svd_call_count() const { return svd_calls; }
+    std::size_t gram_fallback_count() const { return gram_fallbacks; }
+
+    // Worst factorisation error the VERIFY rung accepted, as a fraction of
+    // ||M||_F^2, maximised over splits. A perfect truncated SVD satisfies the
+    // Frobenius identity with equality, so this reports the excess over that
+    // ideal rather than the raw residual, and a clean run sits at the square of
+    // machine epsilon.
+    double max_verify_residual_excess() const { return max_verify_resid_excess; }
+
 private:
     static size_t ipow(size_t base, int exp) noexcept;
+
+    double total_truncation_error = 0.0;
+    std::size_t svd_calls = 0;
+    std::size_t gram_fallbacks = 0;
+    double max_verify_resid_excess = 0.0;
+
+    // The single truncation path for every bond split in this class. Runs the
+    // shared verified factorisation over `M` and folds the outcome into the
+    // counters above, so no site can accumulate them differently or skip them.
+    // ctx names the call site in any exception message.
+    detail::SvdTruncation truncate_block(const Eigen::MatrixXcd& M,
+                                         const char* ctx);
 
     // Build the (d*chi_L) x (d*chi_R) "two-site tensor"
     //   Theta[sigma_q * chi_L + aL, sigma_{q+1} * chi_R + aR]

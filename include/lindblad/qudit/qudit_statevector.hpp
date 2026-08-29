@@ -37,6 +37,17 @@ public:
     // Renormalise so that norm_sq() == 1.0
     void normalize();
 
+    // True when the norm is 1 to within atol. A predicate: it answers, it does not
+    // repair and it does not throw, and a non-finite state answers false.
+    bool is_normalized(double atol = DEFAULT_PHYSICAL_ATOL) const;
+
+    // Judge this state's normalization under a validation policy. Fix
+    // renormalizes in place; Warn reports it and leaves the state as it is;
+    // Throw raises; Ignore measures nothing, so opting out costs one branch
+    // rather than a full pass. Fix on a state with nothing to divide out
+    // throws rather than returning it unrepaired.
+    void check_normalized(ValidationOptions validation = {});
+
     // Sum of |amplitude[i]|^2 — should be 1.0 for a valid state
     double norm_sq() const;
 

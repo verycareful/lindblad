@@ -19,8 +19,14 @@ Use this order of detail:
 2. `docs/Architecture.md` — subsystem map and runtime flow
 3. `docs/APIOverview.md` — public headers and class-level reference index
 4. `docs/algorithms/*.md` — one page per algorithm family or public algorithm
-5. `docs/api/*.md` — optional deep dives for public classes, options, results, and helper methods
+5. `docs/api/*.md` — deep dives for public classes, options, results, and helper methods: one page per major class or subsystem
 6. `docs/BuildAndTest.md` and `docs/DevelopmentGuide.md` — contributor workflow and validation
+
+This whole tree is public and ships with the repository. Nothing that exists
+only on a maintainer's machine belongs in it, and no page may cite a path a
+reader cloning the project would not find. A reference a reader cannot follow is
+worse than no reference, because it tells them something exists and then denies
+them access to it.
 
 ## Required Structure for Every Algorithm Page
 
@@ -47,20 +53,6 @@ For low-level helpers, include only the sections that matter, but always documen
 - what it expects as input
 - what can go wrong
 
-## Required Structure for Method and Class Pages
-
-For any page documenting a public class, method, `Options`, or `Result` type, include:
-
-- what the API is for
-- the header to include
-- the namespace
-- required fields or arguments
-- default values if they matter
-- return type or result shape
-- exceptions, assertions, or preconditions
-- example usage
-- related algorithm page
-
 ## Documentation Style Rules
 
 - Prefer direct, practical language.
@@ -72,6 +64,69 @@ For any page documenting a public class, method, `Options`, or `Result` type, in
 - Explain whether the simulator path is exact, sampled, noisy, or optimized.
 - Do not hide edge cases in footnotes.
 - It is acceptable for docs to be long if that prevents ambiguity.
+
+## Formatting Rules
+
+These are binding for every file under `docs/`. Where an older page disagrees,
+the page is wrong, not this list.
+
+- **Title.** One `# Title` on the first line, plain. No badge, byline, status
+  line, or metadata block above or below it.
+- **Headings.** `## Section` then `### Subsection`. Do not skip a level.
+- **Tables are allowed.** Use one where the content really is a grid: the same
+  few short attributes repeated across many items, where a reader wants to scan
+  down a column and compare. Prefer a bullet list when any cell needs a sentence
+  rather than a phrase, because a table cell that has to hold an explanation
+  makes every other row taller and harder to read. Pick whichever the content
+  is, not whichever looks tidier.
+- **Fenced code carries a language tag.** ` ```cpp `, ` ```powershell `,
+  ` ```bash `, ` ```text `. An untagged fence loses highlighting and tells the
+  reader nothing about what they are looking at. Use ` ```text ` for output,
+  trees and anything that is not a language.
+- **No release or version numbers in prose.** Do not write `R.1.x`, `1.1.x`,
+  "since ...", or "as of ...". A page describes what the code does now. Release
+  attribution belongs in `CHANGELOG.md`, which is the one place a reader can
+  follow it. Older pages carry grandfathered references; do not add more, and do
+  not sweep the existing ones except when rewriting that sentence anyway.
+- **Lists.** Bullets for unordered facts, numbers for ordered steps. Do not
+  number a list whose order does not matter.
+- **Nothing aspirational.** A page describes what the code does today. Do not
+  document a planned option, a partially landed feature, or an intention. A
+  reader cannot tell the difference between a described feature and a wished-for
+  one, so a single aspirational sentence makes the whole page untrustworthy.
+  Planned work belongs in the tracker, not here.
+- **No em dashes and no double hyphens**, in docs as everywhere else. Use a
+  colon for an explanatory pause, a comma for a soft break, parentheses for an
+  aside, `->` for flow, a single hyphen for a label separator, or two sentences.
+  Existing occurrences are grandfathered and are not a defect to sweep.
+
+## Required Structure for Method and Class Pages
+
+Any page documenting a public class, method, `Options` or `Result` type carries
+these, in this order. The order is the one a reader needs it in: what to
+include, where it lives, what the type is, how to configure it, then what you
+can call on it.
+
+1. What the API is for
+2. Header to include
+3. Namespace
+4. Struct or class definition
+5. Constructors
+6. `Options` and `Result` types: every field, its meaning, and its default
+   wherever the default carries weight
+7. Methods, with their required arguments named individually rather than
+   summarised
+8. Exceptions, assertions and preconditions
+9. Example usage
+10. Related algorithm or API pages
+
+`Options` and `Result` come BEFORE the methods deliberately. On most pages here
+the configuration struct carries more surface than the calls that take it, and a
+reader who meets `run(circuit, options)` before knowing what `options` holds has
+to read the page twice.
+
+Every page states its include line and its namespace explicitly, however obvious
+they seem. A reader who cannot compile the example cannot use the page.
 
 ## Algorithm Documentation Map
 
@@ -103,7 +158,7 @@ When adding a new doc:
 3. Write the page closest to the public API.
 4. Add concrete usage examples.
 5. Cross-link the README, API overview, and any related algorithm pages.
-6. Update `changes_version.md` with one line per modified file.
+6. Record the change wherever this project tracks in-progress work.
 7. Remove or rewrite older docs only if they are superseded by the new pages.
 
 ## Reusable Workflow for Updating Existing Documentation
@@ -129,15 +184,22 @@ The recommended recovery order is:
 5. Read the corresponding tests in `tests/`
 6. Write or update the matching doc page
 
-## Current Priority
+## Standing Priorities
 
-The initial algorithm documentation pass (BV family, QAOA, MAQAOA, QPE, Grover, Deutsch-Jozsa, Simon, QFT including semi-classical variant, Shor) is complete. Remaining priorities as of R.1.8.0:
+Every algorithm family listed in the map above has a page. What remains is
+upkeep rather than a first pass, so these are standing obligations rather than a
+queue that empties:
 
-1. Ensure all algorithm pages meet the full required-section checklist above.
-2. Keep API deep-dive pages (`docs/api/*.md`) in sync with header changes.
-3. Expand `docs/Architecture.md` and `docs/APIOverview.md` as new subsystems are added.
-4. Add a noise model workflow guide: `docs/api/noise.md` documents the API, but a dedicated tutorial page showing `NoiseModel` → `DensityMatrixSimulator` → `Estimator` (noisy VQE / QAOA) is absent.
-5. Add a transpiler pass cookbook page (`docs/api/transpiler.md` exists but covers the API, not recipes).
+1. Hold every algorithm page to the full required-section checklist above.
+2. Keep API deep-dive pages (`docs/api/*.md`) in step with header changes. A
+   header that gains an option and a page that does not mention it is the most
+   common way this tree goes stale.
+3. Grow `docs/Architecture.md` and `docs/APIOverview.md` as subsystems are added.
+4. Add a noise workflow guide. `docs/api/noise.md` documents the API, but there
+   is no tutorial page walking `NoiseModel` into `DensityMatrixSimulator` into
+   `Estimator` for a noisy VQE or QAOA run.
+5. Add a transpiler pass cookbook. `docs/api/transpiler.md` covers the API
+   surface rather than recipes for assembling passes.
 
 ## Notes for Future Sessions
 

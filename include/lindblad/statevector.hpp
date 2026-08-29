@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lindblad/types.hpp"
+#include "lindblad/validation.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -49,9 +50,23 @@ public:
     // Set from a specific computational basis state |k⟩
     void initialize_basis(size_t k);
 
-    // Set from external data
-    void set_amplitudes(const double* real, const double* imag, size_t count);
-    void set_amplitudes(const std::vector<Complex128>& amplitudes);
+    // Set from external data.
+    //
+    // validation = policy and tolerance for the normalization of the supplied
+    // amplitudes. This is the point at which a caller hands a whole state over,
+    // which is why the check lives here and not on the evolution path: a state
+    // handed over is a claim, while a state the library evolved drifts by its
+    // own rounding and would fail a check that nothing is wrong with.
+    //
+    // The default is Throw, matching every other physical-validity property.
+    // Fix renormalizes the amplitudes that were given; Ignore restores the
+    // unchecked behaviour at the cost of one branch. The policy is judged
+    // against the CALLER'S buffer before anything is written, so a rejected
+    // hand-over leaves this object exactly as it was.
+    void set_amplitudes(const double* real, const double* imag, size_t count,
+                        ValidationOptions validation = {});
+    void set_amplitudes(const std::vector<Complex128>& amplitudes,
+                        ValidationOptions validation = {});
 
     // Get amplitude at index
     Complex128 amplitude(size_t index) const;
@@ -71,8 +86,20 @@ public:
     // Norm
     double norm() const;
 
-    // Normalise the state
+    // Normalise the state. Throws when there is no norm to divide out, a zero
+    // or non-finite state, rather than returning it unchanged.
     void normalize();
+
+    // True when ⟨ψ|ψ⟩ is 1 to within atol. A predicate: it answers, it does not
+    // repair and it does not throw, and a non-finite state answers false.
+    bool is_normalized(double atol = DEFAULT_PHYSICAL_ATOL) const;
+
+    // Judge this state's normalization under a validation policy. Fix
+    // renormalizes in place; Warn reports it and leaves the state as it is;
+    // Throw raises; Ignore measures nothing, so opting out costs one branch
+    // rather than a sweep of the amplitudes. Fix on a state with no norm to
+    // divide out throws rather than returning it unrepaired.
+    void check_normalized(ValidationOptions validation = {});
 
     // Number of qubits
     int num_qubits() const { return n_qubits; }

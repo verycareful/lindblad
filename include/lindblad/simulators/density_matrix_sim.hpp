@@ -40,9 +40,30 @@ public:
     // Properties
     double trace() const;
     double purity() const;  // Tr(rho^2)
+
+    // Divide every entry by the trace, so Tr(rho) == 1. Throws when there is no
+    // trace to divide out, which is a zero or non-finite matrix: those are the
+    // two cases where the division produces garbage rather than a state.
+    void normalize();
+
+    // True when Tr(rho) is 1 to within atol. A predicate: it answers, it does not
+    // repair and it does not throw, and a non-finite matrix answers false.
+    bool is_normalized(double atol = DEFAULT_PHYSICAL_ATOL) const;
+
+    // Judge this matrix's normalization under a validation policy. Fix
+    // renormalizes in place; Warn reports it and leaves the matrix as it is;
+    // Throw raises; Ignore measures nothing, so opting out costs one branch
+    // rather than a full pass. Fix on a matrix with nothing to divide out
+    // throws rather than returning it unrepaired.
+    void check_normalized(ValidationOptions validation = {});
+
     // Checks trace==1 and Hermiticity only. Positive semi-definiteness is NOT verified
     // (full PSD check requires eigendecomposition and is O(4^N)).
-    bool is_valid(double atol = 1e-8) const;
+    //
+    // Judged at the framework tolerance, the same one every other
+    // physical-validity check in the library uses, so that one number means one
+    // thing across the whole validity family.
+    bool is_valid(double atol = DEFAULT_PHYSICAL_ATOL) const;
 
     // Gate application: rho -> U.rho.U†
     // validation = policy and tolerance for the unitarity of U.
