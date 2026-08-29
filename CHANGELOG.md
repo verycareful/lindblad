@@ -17,6 +17,19 @@ This release ships 19 deliberately failing tests. They are the price of
 `set_amplitudes` refusing an unnormalized state by default, and Results says
 exactly what they are.
 
+### Version scheme
+
+Release labels now carry the four-component form alone, `1.1.23.0`, for parity
+with the CMake project version. The dual `R.X.Y.Z/1.X.Y.Z` form existed so the
+change was readable from either side, and it ran through the 1.1.22 line as
+planned; the `R.` prefix appears in no label from here on.
+
+The git tags are the part worth knowing about. Every tag before this one carries
+the prefix, so `1.1.23.0` is the first in the repository's history without it,
+and anything selecting tags by pattern has to accept both shapes to span the
+boundary. The README badge, `CITATION.cff` and the version printed at the end of
+a test run all carry the same four components.
+
 ### Fixed
 
 - **The qudit MPS could discard most of a state and report nothing (#91).** On
