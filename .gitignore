@@ -65,9 +65,13 @@ CLAUDE.md
 # that .gitattributes states, and both the CI hygiene job and the committed
 # tests/tools/test_line_endings.py run it, so a clone without it fails its own
 # suite.
+# Third exception, same reason again: changelog_section.py is what the release
+# workflow runs to turn a version tag into a GitHub Release body, so a clone
+# without it cannot publish a release at all.
 /tools/*
 !/tools/bench_report.py
 !/tools/check_line_endings.py
+!/tools/changelog_section.py
 
 # Comparison-benchmark working outputs (repo root during a run; archive to
 # local/outputs/ with a date prefix afterwards)
