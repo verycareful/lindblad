@@ -293,7 +293,7 @@ TEST(R1122FillAlgo, MaqaoaMixerWeightsAndBuildCircuit) {
     std::vector<double> params(static_cast<size_t>(m.num_parameters(ring_cost_3q())));
     for (size_t i = 0; i < params.size(); ++i)
         params[i] = 0.1 * static_cast<double>(i + 1);
-    // Empty mixer = the paper ansatz; custom mixers throw (pinned elsewhere).
+    // Empty mixer = the paper ansatz.
     auto qc = m.build_circuit(ring_cost_3q(), {}, params);
     EXPECT_EQ(qc.n_qubits, 3);
     EXPECT_FALSE(qc.instructions.empty());
@@ -302,24 +302,29 @@ TEST(R1122FillAlgo, MaqaoaMixerWeightsAndBuildCircuit) {
     EXPECT_TRUE(sim.run(qc, 0, 1).success) << "built circuit must be executable";
 }
 
-TEST(R1122FillAlgo, MaqaoaRejectsCustomMixerHamiltonian) {
-    // Design decision (R.1.12.2): the MA-QAOA mixer is definitionally the
-    // fixed per-qubit RX (Herrman et al. 2022); beta customisation happens
-    // via options. A custom mixer Hamiltonian must fail LOUDLY, never be
-    // silently ignored, until the designed custom-mixer feature lands
-    // (tracked in the project TODO).
+TEST(R1122FillAlgo, MaqaoaSupportsCustomMixerHamiltonian) {
+    // Custom mixers are applied as an ordered per-term product, not rejected
+    // and not silently replaced by the default per-qubit RX mixer.
     SparsePauliOp cost = ring_cost_3q();
-    SparsePauliOp x_mixer(std::vector<PauliString>{
-        PauliString("XII"), PauliString("IXI"), PauliString("IIX")});
+    SparsePauliOp xy_mixer(std::vector<PauliString>{
+        PauliString("XYI", Complex128(1.0, 0.0))});
 
     MAQAOA m;
     m.options.p = 1;
     m.options.max_iterations = 3;
     m.options.seed = 5;
-    EXPECT_THROW(m.optimize(cost, x_mixer), std::invalid_argument);
+    EXPECT_NO_THROW({
+        auto res = m.optimize(cost, xy_mixer);
+        EXPECT_FALSE(res.counts.empty());
+    });
 
-    std::vector<double> params(static_cast<size_t>(m.num_parameters(cost)), 0.1);
-    EXPECT_THROW(m.build_circuit(cost, x_mixer, params), std::invalid_argument);
+    const int n_params = m.num_parameters(cost, xy_mixer);
+    std::vector<double> params(static_cast<size_t>(n_params), 0.0);
+    params[3] = 0.37;  // p=1, [3 gammas][3 betas], XYI picks beta of qubit/orbit 0
+    auto qc = m.build_circuit(cost, xy_mixer, params);
+    EXPECT_EQ(qc.n_qubits, 3);
+    EXPECT_EQ(count_type(qc, GT::RX), 0) << "custom mixer must not be ignored";
+    EXPECT_GT(count_type(qc, GT::SDG), 0) << "XY term needs basis change";
 
     // The default (empty) mixer path is the paper ansatz and must still run.
     auto res = m.optimize(cost);

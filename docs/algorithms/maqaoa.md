@@ -153,7 +153,10 @@ The most important fields are:
 ### `MAQAOA::num_parameters`
 
 - Computes the total parameter count for the current Hamiltonian and option set
-- The result depends on layer count, gamma layout, orbit sharing, and mixer structure
+- Signature: `num_parameters(cost_hamiltonian, mixer_hamiltonian = {})`
+- The result depends on layer count, gamma layout, and orbit sharing; custom
+  mixers use the same beta count with dispatch by each term's lowest active
+  qubit (or its orbit index)
 
 ## Example Code
 

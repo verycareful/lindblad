@@ -158,7 +158,7 @@ static double computational_basis_cost(
 static void evolve_into(
     Statevector& sv,
     const SparsePauliOp& cost,
-    const SparsePauliOp& /*mixer: always empty, guarded at the public entry points*/,
+    const SparsePauliOp& mixer,
     const std::vector<double>& params,
     int p,
     const std::vector<int>& term_orbit_map,
@@ -170,7 +170,8 @@ static void evolve_into(
 ) {
     const int nq          = cost.n_qubits();
     const int cost_terms  = static_cast<int>(cost.terms.size());
-    const bool use_orbits = !orbit_assignments.empty();
+    const bool use_orbits = (static_cast<int>(orbit_assignments.size()) == nq);
+    const bool has_custom_mixer = !mixer.terms.empty();
 
     sv.initialize();
     if (!initial_thetas.empty() &&
@@ -245,21 +246,66 @@ static void evolve_into(
             }
         }
 
-        // Mixer unitary: one beta per orbit (or per qubit in standard mode).
-        // The mixer is DEFINITIONALLY the per-qubit transverse-field RX
-        // (MA-QAOA, Herrman et al. 2022): U_B(beta_l) = prod_i RX(2*beta_l_i).
-        // Every mixer customisation happens through the beta parameters
-        // (options.mixer_weights for PI-MA-QAOA scaling,
-        // options.orbit_assignments for power-orbit sharing). Custom mixer
-        // Hamiltonians are rejected with a throw at the public entry points
-        // pending the designed feature (see project TODO).
+        // Mixer unitary:
+        // - default (empty mixer): fixed per-qubit transverse-field RX
+        //   U_B(beta_l) = prod_i RX(2*beta_l_i) (MA-QAOA paper ansatz)
+        // - custom mixer: ordered product of per-term rotations
+        //   exp(-i*beta*c_k*P_k), exact when mixer terms commute and a
+        //   first-order Trotter step otherwise.
+        //
+        // Beta dispatch for custom terms follows the default MA-QAOA sharing:
+        // the lowest active qubit of each mixer term selects its beta index
+        // (or that qubit's orbit index when orbit sharing is enabled).
         for (int i = 0; i < n_mixer_orbits; ++i) {
             layer_betas[i] = (param_idx < static_cast<int>(params.size()))
                              ? params[param_idx++] : 0.0;
         }
-        for (int q = 0; q < nq; ++q) {
-            const int beta_idx = use_orbits ? orbit_assignments[q] : q;
-            gates::apply_rx(sv, q, 2.0 * layer_betas[beta_idx]);
+
+        if (!has_custom_mixer) {
+            for (int q = 0; q < nq; ++q) {
+                const int beta_idx = use_orbits ? orbit_assignments[q] : q;
+                gates::apply_rx(sv, q, 2.0 * layer_betas[beta_idx]);
+            }
+            continue;
+        }
+
+        for (const auto& term : mixer.terms) {
+            std::vector<int> aq;
+            for (int q = 0; q < nq; ++q) {
+                if (term.pauli[q] != 'I') aq.push_back(q);
+            }
+            if (aq.empty()) continue;
+
+            const int beta_idx = use_orbits ? orbit_assignments[aq[0]] : aq[0];
+            const double beta  = layer_betas[beta_idx];
+            const double angle = 2.0 * beta * term.coeff.real;
+
+            if (aq.size() == 1) {
+                const int q = aq[0];
+                if (term.pauli[q] == 'X') gates::apply_rx(sv, q, angle);
+                else if (term.pauli[q] == 'Y') gates::apply_ry(sv, q, angle);
+                else gates::apply_rz(sv, q, angle);
+            } else {
+                for (int q : aq) {
+                    if      (term.pauli[q] == 'X') gates::apply_h(sv, q);
+                    else if (term.pauli[q] == 'Y') {
+                        gates::apply_sdg(sv, q);
+                        gates::apply_h(sv, q);
+                    }
+                }
+                for (size_t i = 0; i + 1 < aq.size(); ++i)
+                    gates::apply_cx(sv, aq[i], aq[i + 1]);
+                gates::apply_rz(sv, aq.back(), angle);
+                for (int i = static_cast<int>(aq.size()) - 2; i >= 0; --i)
+                    gates::apply_cx(sv, aq[i], aq[i + 1]);
+                for (int q : aq) {
+                    if      (term.pauli[q] == 'X') gates::apply_h(sv, q);
+                    else if (term.pauli[q] == 'Y') {
+                        gates::apply_h(sv, q);
+                        gates::apply_s(sv, q);
+                    }
+                }
+            }
         }
     }
 }
@@ -408,8 +454,15 @@ static double layer_objective(unsigned n, const double* x, double* /*grad*/, voi
 // num_parameters
 // =============================================================================
 
-int MAQAOA::num_parameters(const SparsePauliOp& cost_hamiltonian) const {
+int MAQAOA::num_parameters(
+    const SparsePauliOp& cost_hamiltonian,
+    const SparsePauliOp& mixer_hamiltonian
+) const {
     int nq = cost_hamiltonian.n_qubits();
+    if (!mixer_hamiltonian.terms.empty() && mixer_hamiltonian.n_qubits() != nq) {
+        throw std::invalid_argument(
+            "MAQAOA::num_parameters: cost and mixer Hamiltonians must have the same number of qubits");
+    }
 
     int cost_params, mixer_params;
     if (!options.orbit_assignments.empty() &&
@@ -441,22 +494,11 @@ MAQAOA::Result MAQAOA::optimize(
     result.wall_time_seconds = 0.0;
 
     const int nq = cost_hamiltonian.n_qubits();
-
-    // Fail loud on custom mixers (silent ignoring is not acceptable in this
-    // project). The MA-QAOA mixer is definitionally the fixed per-qubit RX
-    // (Herrman et al. 2022); customise the betas via options.mixer_weights
-    // and options.orbit_assignments. First-class custom-mixer support is
-    // planned but must be designed first: see the MAQAOA entry in the
-    // project TODO and its tracking issue.
-    if (!mixer_hamiltonian_in.terms.empty()) {
-        throw std::invalid_argument(
-            "MAQAOA::optimize: custom mixer Hamiltonians are not supported "
-            "(the MA-QAOA mixer is the fixed per-qubit RX; customise betas "
-            "via options.mixer_weights / options.orbit_assignments)");
-    }
-    // Always empty past the guard; threaded to evolve_into as plumbing for
-    // the planned custom-mixer feature.
     SparsePauliOp mixer = mixer_hamiltonian_in;
+    if (!mixer.terms.empty() && mixer.n_qubits() != nq) {
+        throw std::invalid_argument(
+            "MAQAOA::optimize: cost and mixer Hamiltonians must have the same number of qubits");
+    }
 
     // Precompute orbit data once for the entire run (Change 6)
     const bool use_orbits = (!options.orbit_assignments.empty() &&
@@ -479,7 +521,7 @@ MAQAOA::Result MAQAOA::optimize(
     }
 
     const int params_per_layer = n_cost_params_per_layer + n_mixer_orbits;
-    const int n_params         = options.p * params_per_layer;
+    const int n_params         = num_parameters(cost_hamiltonian, mixer);
     constexpr double kPi       = PI;
     constexpr double kBound    = 2.0 * kPi;
 
@@ -767,15 +809,11 @@ QuantumCircuit MAQAOA::build_circuit(
     const SparsePauliOp& mixer_hamiltonian,
     const std::vector<double>& params
 ) const {
-    // Fail loud on custom mixers; see the guard in optimize().
-    if (!mixer_hamiltonian.terms.empty()) {
-        throw std::invalid_argument(
-            "MAQAOA::build_circuit: custom mixer Hamiltonians are not "
-            "supported (the MA-QAOA mixer is the fixed per-qubit RX; "
-            "customise betas via options.mixer_weights / "
-            "options.orbit_assignments)");
-    }
     int nq = cost_hamiltonian.n_qubits();
+    if (!mixer_hamiltonian.terms.empty() && mixer_hamiltonian.n_qubits() != nq) {
+        throw std::invalid_argument(
+            "MAQAOA::build_circuit: cost and mixer Hamiltonians must have the same number of qubits");
+    }
     QuantumCircuit qc(nq);
 
     if (!options.initial_thetas.empty() &&
@@ -873,11 +911,49 @@ QuantumCircuit MAQAOA::build_circuit(
                              params[param_idx++] : 0.0;
         }
 
-        // Fixed per-qubit RX mixer by definition (see evolve_into); custom
-        // mixers are rejected at the entry guard above.
-        for (int q = 0; q < nq; ++q) {
-            int beta_idx = use_orbits ? options.orbit_assignments[q] : q;
-            qc.rx(2.0 * layer_betas[beta_idx], q);
+        if (mixer_hamiltonian.terms.empty()) {
+            for (int q = 0; q < nq; ++q) {
+                int beta_idx = use_orbits ? options.orbit_assignments[q] : q;
+                qc.rx(2.0 * layer_betas[beta_idx], q);
+            }
+            continue;
+        }
+
+        for (const auto& term : mixer_hamiltonian.terms) {
+            std::vector<int> active_qubits;
+            for (int q = 0; q < nq; ++q) {
+                if (term.pauli[q] != 'I') active_qubits.push_back(q);
+            }
+            if (active_qubits.empty()) continue;
+
+            const int beta_idx = use_orbits
+                ? options.orbit_assignments[active_qubits[0]]
+                : active_qubits[0];
+            const double beta = layer_betas[beta_idx];
+            const double angle = 2.0 * beta * term.coeff.real;
+
+            if (active_qubits.size() == 1) {
+                const int q = active_qubits[0];
+                if (term.pauli[q] == 'X') qc.rx(angle, q);
+                else if (term.pauli[q] == 'Y') qc.ry(angle, q);
+                else qc.rz(angle, q);
+            } else {
+                for (int q : active_qubits) {
+                    if (term.pauli[q] == 'X') qc.h(q);
+                    else if (term.pauli[q] == 'Y') { qc.sdg(q); qc.h(q); }
+                }
+                for (size_t i = 0; i + 1 < active_qubits.size(); ++i) {
+                    qc.cx(active_qubits[i], active_qubits[i + 1]);
+                }
+                qc.rz(angle, active_qubits.back());
+                for (int i = static_cast<int>(active_qubits.size()) - 2; i >= 0; --i) {
+                    qc.cx(active_qubits[i], active_qubits[i + 1]);
+                }
+                for (int q : active_qubits) {
+                    if (term.pauli[q] == 'X') qc.h(q);
+                    else if (term.pauli[q] == 'Y') { qc.h(q); qc.s(q); }
+                }
+            }
         }
     }
 

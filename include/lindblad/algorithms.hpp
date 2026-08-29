@@ -195,14 +195,12 @@ public:
 
     MAQAOA() = default;
 
-    // The mixer is the fixed per-qubit transverse-field RX of MA-QAOA
-    // (Herrman et al. 2022): U_B(beta_l) = prod_i RX(2*beta_l_i). Customise
-    // it through the beta machinery (options.mixer_weights for PI-MA-QAOA
-    // scaling, options.orbit_assignments for power-orbit sharing). Passing a
-    // non-empty mixer_hamiltonian THROWS std::invalid_argument, here and in
-    // build_circuit: silent ignoring is not acceptable, and first-class
-    // custom-mixer support is planned but not yet designed (see the project
-    // TODO / tracking issue).
+    // Default mixer is the fixed per-qubit transverse-field RX of MA-QAOA
+    // (Herrman et al. 2022): U_B(beta_l) = prod_i RX(2*beta_l_i). When a
+    // custom mixer_hamiltonian is provided, MAQAOA applies the ordered product
+    // of per-term rotations exp(-i*beta*c_k*P_k) each layer (exact for
+    // commuting terms, first-order Trotter otherwise), with beta dispatch by
+    // lowest active qubit (or that qubit's orbit when orbit sharing is enabled).
     Result optimize(
         const SparsePauliOp& cost_hamiltonian,
         const SparsePauliOp& mixer_hamiltonian = {}
@@ -214,7 +212,10 @@ public:
         const std::vector<double>& params
     ) const;
 
-    int num_parameters(const SparsePauliOp& cost_hamiltonian) const;
+    int num_parameters(
+        const SparsePauliOp& cost_hamiltonian,
+        const SparsePauliOp& mixer_hamiltonian = {}
+    ) const;
 };
 
 // =============================================================================

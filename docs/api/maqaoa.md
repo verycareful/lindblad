@@ -86,7 +86,10 @@ Fields:
 Signature:
 
 ```cpp
-int num_parameters(const SparsePauliOp& cost_hamiltonian) const;
+int num_parameters(
+    const SparsePauliOp& cost_hamiltonian,
+    const SparsePauliOp& mixer_hamiltonian = {}
+) const;
 ```
 
 Behavior:
@@ -108,11 +111,14 @@ Result optimize(
 
 Behavior (verified against `src/algorithms/maqaoa.cpp`):
 
-- The mixer is the fixed per-qubit transverse-field RX of MA-QAOA
-  (Herrman et al. 2022); customise the betas via `options.mixer_weights`
-  and `options.orbit_assignments`. A non-empty `mixer_hamiltonian` throws
-  `std::invalid_argument` (the parameter exists for QAOA signature parity;
-  first-class custom-mixer support is planned but not yet designed)
+- Empty `mixer_hamiltonian` uses the fixed per-qubit transverse-field RX
+  MA-QAOA mixer (Herrman et al. 2022)
+- Non-empty `mixer_hamiltonian` is applied as an ordered product of per-term
+  rotations `exp(-i*beta*c_k*P_k)` (exact for commuting terms, first-order
+  Trotter otherwise)
+- Beta dispatch for custom mixer terms is by the term's lowest active qubit
+  (or that qubit's orbit in orbit-sharing mode), preserving the canonical
+  MA-QAOA parameter count
 - Parameter layout per layer: `[gammas..., betas...]`
 - Uses COBYLA with bounds `[-2*pi, 2*pi]` and initial step size `0.3`
 - If `estimator.options.noise_model` is non-ideal, evaluates with `DensityMatrixSimulator`
@@ -143,9 +149,8 @@ Behavior:
 
 - Initializes with `H|0>` on each qubit unless `initial_thetas` is provided
 - Uses orbit or term-indexed gamma dispatch depending on options
-- Applies per-orbit or per-qubit mixer `Rx` rotations
-- A non-empty `mixer_hamiltonian` throws `std::invalid_argument`, matching
-  `optimize`
+- Empty mixer: applies per-orbit/per-qubit `Rx` rotations
+- Non-empty mixer: applies ordered per-term Pauli rotations
 - Kept for API compatibility and offline inspection; hot path uses direct evolution
 
 ## Example
