@@ -92,13 +92,15 @@ double QuditStatevector::norm_sq() const {
 // base = outer + inner               (first element of this group, qudit q = 0)
 // amplitudes[base + k*stride]        (element where qudit q = k)
 
-void QuditStatevector::apply_1qudit(int q, const std::vector<Complex128>& U,
+void QuditStatevector::apply_1qudit(int q, const std::vector<Complex128>& U_in,
                                     ValidationOptions validation) {
     detail::check_qudit(q, n_qudits, "QuditStatevector::apply_1qudit");
-    detail::check_size(U.size(), static_cast<size_t>(d) * static_cast<size_t>(d),
+    detail::check_size(U_in.size(), static_cast<size_t>(d) * static_cast<size_t>(d),
                        "QuditStatevector::apply_1qudit", "matrix");
-    detail::check_unitary(U, static_cast<size_t>(d), validation,
-                          "QuditStatevector::apply_1qudit");
+    std::vector<Complex128> U_fixed;
+    const std::vector<Complex128>& U = detail::check_unitary_fixing(
+        U_in, static_cast<size_t>(d), validation,
+        "QuditStatevector::apply_1qudit", U_fixed);
     const size_t stride = ipow(static_cast<size_t>(d), q);
     const size_t block  = stride * static_cast<size_t>(d);  // = d^(q+1)
     const long long n_outer = static_cast<long long>(dim / block);
@@ -145,16 +147,18 @@ void QuditStatevector::apply_1qudit(int q, const std::vector<Complex128>& U,
 // indices with divisions.
 
 void QuditStatevector::apply_2qudit(int q0, int q1,
-                                    const std::vector<Complex128>& U,
+                                    const std::vector<Complex128>& U_in,
                                     ValidationOptions validation) {
     detail::check_qudit(q0, n_qudits, "QuditStatevector::apply_2qudit");
     detail::check_qudit(q1, n_qudits, "QuditStatevector::apply_2qudit");
     detail::check_distinct2(q0, q1, "QuditStatevector::apply_2qudit", "qudits");
-    detail::check_size(U.size(),
+    detail::check_size(U_in.size(),
                        static_cast<size_t>(d) * d * d * d,
                        "QuditStatevector::apply_2qudit", "matrix");
-    detail::check_unitary(U, static_cast<size_t>(d) * static_cast<size_t>(d),
-                          validation, "QuditStatevector::apply_2qudit");
+    std::vector<Complex128> U_fixed;
+    const std::vector<Complex128>& U = detail::check_unitary_fixing(
+        U_in, static_cast<size_t>(d) * static_cast<size_t>(d), validation,
+        "QuditStatevector::apply_2qudit", U_fixed);
 
     const size_t stride0 = ipow(static_cast<size_t>(d), q0);
     const size_t stride1 = ipow(static_cast<size_t>(d), q1);
@@ -224,22 +228,22 @@ void QuditStatevector::apply_2qudit(int q0, int q1,
 //   - write back
 
 void QuditStatevector::apply_kqudit(const std::vector<int>& qudits,
-                                    const std::vector<Complex128>& U,
+                                    const std::vector<Complex128>& U_in,
                                     ValidationOptions validation)
 {
     const int k = static_cast<int>(qudits.size());
     if (k < 1) return;
-    if (k == 1) { apply_1qudit(qudits[0], U, validation); return; }
-    if (k == 2) { apply_2qudit(qudits[0], qudits[1], U, validation); return; }
+    // Delegating with the caller's operand, not a repaired one: the entry point
+    // it lands in runs the same policy and owns the repair for its own arity.
+    if (k == 1) { apply_1qudit(qudits[0], U_in, validation); return; }
+    if (k == 2) { apply_2qudit(qudits[0], qudits[1], U_in, validation); return; }
 
     detail::check_qudits(qudits, n_qudits, "QuditStatevector::apply_kqudit");
     {
         size_t dk = 1;
         for (int i = 0; i < k; ++i) dk *= static_cast<size_t>(d);
-        detail::check_size(U.size(), dk * dk,
+        detail::check_size(U_in.size(), dk * dk,
                            "QuditStatevector::apply_kqudit", "matrix");
-        detail::check_unitary(U, dk, validation,
-                              "QuditStatevector::apply_kqudit");
     }
 
     // Validate distinctness
@@ -259,6 +263,13 @@ void QuditStatevector::apply_kqudit(const std::vector<int>& qudits,
     // dk = d^k = total subspace dimension
     size_t dk = 1;
     for (int i = 0; i < k; ++i) dk *= static_cast<size_t>(d);
+
+    // The unitarity check and its repair sit here rather than beside the size
+    // check above, because the size check computes dk in its own scope while
+    // this needs the one that outlives it. Still ahead of every read of U.
+    std::vector<Complex128> U_fixed;
+    const std::vector<Complex128>& U = detail::check_unitary_fixing(
+        U_in, dk, validation, "QuditStatevector::apply_kqudit", U_fixed);
 
     // Build a list of (subspace_index, flat_offset) pairs:
     // subspace_index ranges over [0, dk); qudits[0] is the LEAST significant

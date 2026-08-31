@@ -12,6 +12,7 @@
 #include "lindblad/operators.hpp"
 #include "lindblad/types.hpp"
 
+#include <optional>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -293,7 +294,7 @@ void dm_bra_apply_inplace(Complex128* __restrict data,
 // OpenMP-parallel and streams contiguous rows.
 // =============================================================================
 
-void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
+void DensityMatrix::apply_gate(const std::vector<Complex128>& U_in,
                                 const std::vector<int>& qubits,
                                 ValidationOptions validation) {
     detail::check_qubits(qubits, n_qubits, "DensityMatrix::apply_gate");
@@ -301,11 +302,13 @@ void DensityMatrix::apply_gate(const std::vector<Complex128>& U,
     const int k = static_cast<int>(qubits.size());
     const size_t sub_dim = size_t(1) << k;
 
-    if (U.size() != sub_dim * sub_dim) {
+    if (U_in.size() != sub_dim * sub_dim) {
         throw std::invalid_argument("Gate matrix size mismatch");
     }
 
-    detail::check_unitary(U, sub_dim, validation, "DensityMatrix::apply_gate");
+    std::vector<Complex128> U_fixed;
+    const std::vector<Complex128>& U = detail::check_unitary_fixing(
+        U_in, sub_dim, validation, "DensityMatrix::apply_gate", U_fixed);
 
     std::vector<size_t> sub_off, bg;
     dm_build_tables(n_qubits, dim, qubits, sub_off, bg);
@@ -812,7 +815,7 @@ static bool dm_measures_are_terminal(const QuantumCircuit& circuit) {
 }
 
 DensityMatrixSimulator::Result DensityMatrixSimulator::run(
-    const QuantumCircuit& circuit,
+    const QuantumCircuit& circuit_in,
     const NoiseModel& noise_model,
     int shots,
     uint64_t seed
@@ -825,8 +828,14 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
 
         // Pre-flight: reject any out-of-range operand index up front so the
         // failure surfaces through Result rather than reaching a kernel.
-        circuit.validate_operands();
-        circuit.validate_physical();
+        circuit_in.validate_operands();
+        // Under Fix a repaired copy is executed and the caller's circuit is
+        // left exactly as it was handed over; every other policy binds straight
+        // to it and nothing is copied.
+        std::optional<QuantumCircuit> repaired_storage =
+            circuit_in.validated_physical();
+        const QuantumCircuit& circuit =
+            repaired_storage ? *repaired_storage : circuit_in;
 
         // Execution strategy (see docs/api/simulators.md, Execution semantics):
         // per-shot trajectories whenever a classical condition exists OR a

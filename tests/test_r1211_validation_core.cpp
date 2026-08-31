@@ -798,9 +798,9 @@ TEST(R1211Guards, CheckEntryPointsAcceptValidOperandsUnderThrow) {
 // overwrites the NaN. Detection therefore survives only when the non-finite
 // entry is the last one examined, which is the final column.
 //
-// These are RED on purpose. The contract is what the header states, so that is
-// what is asserted; the fix belongs in R.1.21.2 and these tests are what will
-// confirm it.
+// The contract is what the header states, and these hold the implementation to
+// it at every index rather than at the one an ordering accident happens to
+// reach.
 
 TEST(R1211NonFinite, NanIsDetectedAtEveryPosition) {
     // The residual for the index pair (i, j) is NaN whenever column i or column

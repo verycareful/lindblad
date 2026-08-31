@@ -4,6 +4,109 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.24.2] - 2026-08-31
+
+The release that closes the 1.1.24 line. The previous one shipped twenty-four
+deliberately failing tests, and this turns all of them green by making the
+library do what they assert.
+
+Both defects were the same shape: a diagnostic that said something the library
+itself contradicts elsewhere. `Validation::Fix` reported that no repair existed
+for unitarity, at fourteen of the fifteen entry points that check it, while the
+fifteenth repaired and shipped the projection. And the circuit builder stored a
+matrix of any size without comment, while every builder beside it rejects a
+malformed operand where it is handed over.
+
+### Fixed
+
+- **`Validation::Fix` repairs unitarity wherever it is asked to (#96).** The
+  repair is the unitary polar factor, which the library has computed since the
+  previous release; what was missing was the fourteen entry points reaching it.
+  Each now measures, and under `Fix` on an operand outside tolerance projects a
+  copy and applies that. The caller's matrix is untouched at every one of them,
+  which is what a `const` reference has to mean.
+
+  The cost objection that argued against this does not survive checking. A
+  backend reads each instruction's policy once at its pre-flight and then
+  applies every gate under `Ignore`, so those entry points are reachable with a
+  live policy only from a direct call, and extending the repair costs nothing
+  per gate per shot.
+
+- **A repair reaching a `const` pre-flight had nowhere to run.**
+  `validate_physical()` cannot repair, so an instruction that arrived without
+  passing the repairing constructor, by import, by `compose`, or by being
+  appended to the public instruction vector, was refused a correction that
+  exists. `run()` now performs the repair into a copy of the circuit that only
+  that run executes: the caller's circuit is never modified, no backend
+  signature moved, and a circuit needing no repair allocates nothing. The same
+  mechanism gate fusion already uses to execute something other than what it was
+  given.
+
+  This is one half of #87, which stays open. That issue is about when the policy
+  is read at all, and its other half concerns a matrix synthesised after the
+  pre-flight has walked the instruction list. Nothing synthesises one today, so
+  nothing is unchecked; the boundary is now stated in the validation page rather
+  than left to be inferred from call sites.
+
+- **`QuantumCircuit::unitary` accepted a structurally invalid operand (#97).**
+  It validated its qubit indices at once and then stored a matrix of any size,
+  leaving an instruction that cannot be executed inside a public vector for
+  anything reading the circuit to find. It now rejects the shape where the
+  operand is handed over, as `permute` and the multi-control builders do, and
+  the check runs before the physical one because measuring unitarity on a
+  wrong-sized buffer reads past its end.
+
+- **Two test files described their own passing tests as deliberately failing.**
+  Both named issues fixed six days earlier, so a reader had no way to tell a
+  known-red test from a stale sentence (#74, #75).
+
+### Added
+
+- **A one-time note when a repair does not persist.** An entry point that
+  borrows its operand repairs a copy, so a caller looping over a bent matrix
+  pays a projection every iteration with nothing to tell them why. The note
+  fires from the borrowing paths and the per-run pre-flight, stays silent on the
+  storing path where the cost is genuinely paid once, and names that path as the
+  way to avoid the repeat. Delivery is once per accounting rather than once per
+  process, so a caller who flushes to start fresh hears it again.
+
+- **`QuantumCircuit::validated_physical()`**, the repairing pre-flight. Returns
+  a repaired copy only when a repair actually ran, and nothing otherwise, so a
+  backend can point at whichever circuit is live and execute through it.
+  `validate_physical()` keeps its signature and its behaviour for callers who
+  want to check without executing.
+
+### Changed
+
+- **The three per-file strict floating-point switches are removed.** They were a
+  bisect tool for locating which translation unit needed IEEE semantics on the
+  matrix-product-state path. That bisect ran, and the answer was none of them:
+  the defect was in how discarded weight was counted rather than in the
+  arithmetic. Three build configurations nobody exercises rot unnoticed, and
+  recreating one against a file actually under suspicion is three lines.
+
+### Results
+
+2646 tests across 246 suites, 2645 passed and 1 skipped, none failed, on Clang
+18.1.3 (28.9 s) and GCC 13.3.0 (23.6 s) under Ubuntu 24.04 at the documented
+native build. The gap between the two is #72, still observed.
+
+The skip is the large-register margin sweep, which needs about 17.2 GB at 30
+qubits and is opt-in rather than absent.
+
+Sixteen of the new tests cover what closing the two defects required rather than
+the defects themselves, because a plausible implementation of each is wrong in a
+way the twenty-four cannot see. That a borrowed operand comes back untouched.
+That the matrix applied is the repaired one and not the original, which the
+fixtures make visible by projecting to the identity, so an unrepaired
+application scales an amplitude instead of leaving the register alone. That the
+pre-flight carries its repair into what executes, rather than measuring it and
+discarding it, which would leave a run using the bent matrix while reporting
+success. And that the note fires from the paths where the repair evaporates and
+not from the one where it sticks, which is the inverse of what placing it inside
+the projection would have produced.
+
+
 ## [1.1.24.1] - 2026-08-31
 
 The test wave for the Eigen seam, the unitary repair (#57) and the verified

@@ -20,6 +20,7 @@
 #include "lindblad/detail/eigen_backend.hpp"
 #include "lindblad/gates.hpp"
 
+#include <optional>
 #include <Eigen/Dense>
 
 #include <algorithm>
@@ -152,12 +153,13 @@ void MPSState::svd_truncate(
 // =============================================================================
 
 void MPSState::apply_single_qubit_gate(
-    const std::array<Complex128, 4>& U, int qubit,
+    const std::array<Complex128, 4>& U_in, int qubit,
     ValidationOptions validation
 ) {
     detail::check_qubit(qubit, n_qubits, "MPSState::apply_single_qubit_gate");
-    detail::check_unitary(U.data(), 2, validation,
-                          "MPSState::apply_single_qubit_gate");
+    std::array<Complex128, 4> U_fixed;
+    const std::array<Complex128, 4>& U = detail::check_unitary_fixing(
+        U_in, 2, validation, "MPSState::apply_single_qubit_gate", U_fixed);
     auto& T = tensors[qubit];
     MPSTensor result(T.bond_left, T.bond_right);
 
@@ -282,14 +284,15 @@ void MPSState::apply_swap_adjacent(int q) {
 // =============================================================================
 
 void MPSState::apply_two_qubit_gate(
-    const std::array<Complex128, 16>& U, int q1, int q2,
+    const std::array<Complex128, 16>& U_in, int q1, int q2,
     ValidationOptions validation
 ) {
     detail::check_qubit(q1, n_qubits, "MPSState::apply_two_qubit_gate");
     detail::check_qubit(q2, n_qubits, "MPSState::apply_two_qubit_gate");
     detail::check_distinct2(q1, q2, "MPSState::apply_two_qubit_gate");
-    detail::check_unitary(U.data(), 4, validation,
-                          "MPSState::apply_two_qubit_gate");
+    std::array<Complex128, 16> U_fixed;
+    const std::array<Complex128, 16>& U = detail::check_unitary_fixing(
+        U_in, 4, validation, "MPSState::apply_two_qubit_gate", U_fixed);
 
     // Ensure q1 < q2
     bool swapped = (q1 > q2);
@@ -1373,7 +1376,7 @@ static std::string mps_sample(
 }
 
 MPSSimulator::Result MPSSimulator::run(
-    const QuantumCircuit& circuit, int max_bond_dim,
+    const QuantumCircuit& circuit_in, int max_bond_dim,
     int shots, uint64_t seed
 ) {
     ScopedWarningFlush flush_on_exit;
@@ -1384,13 +1387,19 @@ MPSSimulator::Result MPSSimulator::run(
     detail::check_require(max_bond_dim >= 1, "MPSSimulator::run",
                           "max_bond_dim must be >= 1 (got " +
                               std::to_string(max_bond_dim) + ")");
-    Result result(circuit.n_qubits);
-    result.final_state = MPSState(circuit.n_qubits, max_bond_dim);
+    Result result(circuit_in.n_qubits);
+    result.final_state = MPSState(circuit_in.n_qubits, max_bond_dim);
 
     // Pre-flight: reject any out-of-range operand index up front (this backend
     // surfaces errors by throwing, consistent with its other run() guards).
-    circuit.validate_operands();
-    circuit.validate_physical();
+    circuit_in.validate_operands();
+    // Under Fix a repaired copy is executed and the caller's circuit is left
+    // exactly as it was handed over; every other policy binds straight to it and
+    // nothing is copied.
+    std::optional<QuantumCircuit> repaired_storage =
+        circuit_in.validated_physical();
+    const QuantumCircuit& circuit =
+        repaired_storage ? *repaired_storage : circuit_in;
 
     auto t_start = std::chrono::high_resolution_clock::now();
     std::mt19937_64 rng(seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed);

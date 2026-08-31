@@ -2,6 +2,7 @@
 #include "lindblad/circuit.hpp"
 #include "lindblad/detail/validate.hpp"
 
+#include <optional>
 #include <cmath>
 #include <random>
 #include <stdexcept>
@@ -413,16 +414,23 @@ static bool clifford_measures_are_terminal(const QuantumCircuit& circuit) {
 }
 
 CliffordSimulator::Result CliffordSimulator::run(
-    const QuantumCircuit& circuit, int shots, uint64_t seed
+    const QuantumCircuit& circuit_in, int shots, uint64_t seed
 ) {
     using GT = Instruction::GateType;
     ScopedWarningFlush flush_on_exit;
-    Result result(circuit.n_qubits);
+    Result result(circuit_in.n_qubits);
 
     // Pre-flight: reject any out-of-range operand index up front (this backend
     // surfaces errors by throwing).
-    circuit.validate_operands();
-    circuit.validate_physical();
+    circuit_in.validate_operands();
+    // Under Fix a repaired copy is executed and the caller's circuit is left
+    // exactly as it was handed over; every other policy binds straight to it and
+    // nothing is copied.
+    std::optional<QuantumCircuit> repaired_storage =
+        circuit_in.validated_physical();
+    const QuantumCircuit& circuit =
+        repaired_storage ? *repaired_storage : circuit_in;
+
 
     const int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
     const double pi = PI;

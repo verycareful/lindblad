@@ -188,7 +188,7 @@ void apply_rccx(Statevector& sv, int c1, int c2, int tgt) {
 void apply_unitary(
     Statevector& sv,
     const std::vector<int>& targets,
-    const std::vector<Complex128>& matrix,
+    const std::vector<Complex128>& matrix_in,
     ValidationOptions validation
 ) {
     detail::check_qubits(targets, sv.n_qubits, "unitary");
@@ -196,15 +196,20 @@ void apply_unitary(
     const int k = static_cast<int>(targets.size());
     const size_t block_size = 1ULL << k;
 
-    if (matrix.size() != block_size * block_size) {
+    if (matrix_in.size() != block_size * block_size) {
         throw std::invalid_argument(
             "Unitary matrix size mismatch: expected " +
             std::to_string(block_size * block_size) +
-            ", got " + std::to_string(matrix.size())
+            ", got " + std::to_string(matrix_in.size())
         );
     }
 
-    detail::check_unitary(matrix, block_size, validation, "unitary");
+    // Under Fix the repair lands in `fixed` and `matrix` binds to it; under
+    // every other policy `matrix` is the caller's operand and nothing is
+    // copied. The caller's own matrix is never modified either way.
+    std::vector<Complex128> fixed;
+    const std::vector<Complex128>& matrix = detail::check_unitary_fixing(
+        matrix_in, block_size, validation, "unitary", fixed);
 
     // Precompute target masks
     std::vector<size_t> target_masks(k);

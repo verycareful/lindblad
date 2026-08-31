@@ -12,16 +12,13 @@
 // route that loses it is one that rebuilds, and rebuilding without carrying
 // the field is an oversight at that site rather than a property of the design.
 //
-// Two routes currently lose it, and the tests asserting otherwise are RED on
-// purpose: `control()` and the JSON round trip each keep the matrix and reset
-// the policy that governs it, which turns a circuit the caller legitimately
-// opted out of into one that will not run. That is issue #74, owed to
-// R.1.21.2. The contract is what is asserted here, not the behaviour.
-//
-// QASM is a third route, and investigating it turned up something worse than a
-// lost policy: to_qasm2 writes a multi-qubit UNITARY as a custom gate whose
-// body is a literal `cx`, so the operator itself is silently replaced. That is
-// issue #75, and the test asserting otherwise is RED too.
+// Three routes are covered here because each rebuilds rather than copies, and
+// each is a place the field can go missing without any other symptom.
+// `control()` and the JSON round trip both keep the matrix, so a lost policy
+// would turn a circuit the caller legitimately opted out of into one that will
+// not run (#74). QASM is the third, and it can lose more than the policy: an
+// exporter that writes a multi-qubit UNITARY as a custom gate whose body is a
+// literal `cx` replaces the operator itself (#75).
 
 #include <gtest/gtest.h>
 

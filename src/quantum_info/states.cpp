@@ -4,6 +4,7 @@
 #include "lindblad/gates.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
 
+#include <optional>
 #include <stdexcept>
 
 namespace lindblad {
@@ -12,11 +13,18 @@ namespace lindblad {
 // Operator
 // =============================================================================
 
-Operator Operator::from_circuit(const QuantumCircuit& circuit) {
+Operator Operator::from_circuit(const QuantumCircuit& circuit_in) {
     // Judge the circuit's supplied matrices once, here, rather than once per
     // basis column below: the columns re-apply the same instructions 2^n times
     // and the verdict cannot differ between them.
-    circuit.validate_physical();
+    // Under Fix a repaired copy is executed and the caller's circuit is left
+    // exactly as it was handed over; every other policy binds straight to it and
+    // nothing is copied.
+    std::optional<QuantumCircuit> repaired_storage =
+        circuit_in.validated_physical();
+    const QuantumCircuit& circuit =
+        repaired_storage ? *repaired_storage : circuit_in;
+
 
     size_t dim = 1ULL << circuit.n_qubits;
     std::vector<Complex128> mat(dim * dim, Complex128(0.0, 0.0));

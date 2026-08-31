@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.24.1 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.24.2 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "1.1.24.1")
+set(LINDBLAD_VERSION_LABEL "1.1.24.2")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -175,21 +175,10 @@ set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(nlopt eigen)
 
-# The three MPS TUs take the project-wide -ffast-math. Every factorisation they
-# reach is performed in eigen_backend.cpp and checked by the reconstruction
-# residual in svd_verify.cpp, both strict unconditionally below, so what these
-# files hold is contraction, environment and selection arithmetic.
-#
-# The switches are DIAGNOSTIC ONLY: a strict build of one of these locates a
-# defect, it never ships around one. One per file, because a two-build bisect
-# names the file where a single list-wide switch cannot.
-option(LINDBLAD_STRICT_FP_SVD_TRUNCATE
-       "DIAGNOSTIC: build src/svd_truncate.cpp -fno-fast-math" OFF)
-option(LINDBLAD_STRICT_FP_MPS_SIM
-       "DIAGNOSTIC: build src/simulators/mps_sim.cpp -fno-fast-math" OFF)
-option(LINDBLAD_STRICT_FP_QUDIT_MPS
-       "DIAGNOSTIC: build src/qudit/qudit_mps.cpp -fno-fast-math" OFF)
-
+# The three MPS translation units take the project-wide -ffast-math. Every
+# factorisation they reach is performed in eigen_backend.cpp and checked by the
+# reconstruction residual in svd_verify.cpp, both strict unconditionally below,
+# so what these files hold is contraction, environment and selection arithmetic.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # Unconditionally strict, and NOT under any of the options above. These two
     # TUs are what a released configuration is measured AGAINST: eigen_backend.cpp
@@ -202,18 +191,6 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang
         src/svd_verify.cpp
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math")
 
-    if(LINDBLAD_STRICT_FP_SVD_TRUNCATE)
-        set_source_files_properties(src/svd_truncate.cpp PROPERTIES
-            COMPILE_OPTIONS "-fno-fast-math")
-    endif()
-    if(LINDBLAD_STRICT_FP_MPS_SIM)
-        set_source_files_properties(src/simulators/mps_sim.cpp PROPERTIES
-            COMPILE_OPTIONS "-fno-fast-math")
-    endif()
-    if(LINDBLAD_STRICT_FP_QUDIT_MPS)
-        set_source_files_properties(src/qudit/qudit_mps.cpp PROPERTIES
-            COMPILE_OPTIONS "-fno-fast-math")
-    endif()
 
     # Strict FP for the Class C residuals, same reasoning one level down: these
     # are measurements rather than kernels. Each evaluates a near-cancellation

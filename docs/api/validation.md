@@ -52,10 +52,25 @@ landing outside it raises `std::invalid_argument` rather than returning. A
 projection that silently failed to converge would hand back an operand as
 unphysical as the one it replaced, under a policy that promised a correction.
 
-`QuantumCircuit::unitary` applies the repair to the matrix it stores, so the
-projection runs once when the instruction is built rather than once per shot,
-and every later use of that instruction sees the repaired operand. The caller's
-own matrix is not modified.
+Every entry point that checks unitarity applies the repair, and none of them
+modifies the caller's matrix. What differs is how long the repair lasts, which
+is a property of whether the entry point stores its operand or borrows it.
+
+`QuantumCircuit::unitary` stores. It keeps the projected matrix on the
+instruction, so the projection runs once when the instruction is built rather
+than once per shot, and every later use of that instruction sees the repaired
+operand.
+
+A primitive borrows. `gates::apply_unitary`, `DensityMatrix::apply_gate`, the
+`MPSState` gate methods and the qudit equivalents take a `const` reference,
+project a copy, apply that copy and discard it. The repair is correct for that
+call and does not persist, so a loop over the same operand pays a projection
+each time. The library reports this once through the warning channel, naming the
+storing route as the way to pay the cost once instead.
+
+A `run()` repairs at its pre-flight, into a copy of the circuit that only that
+run executes. The circuit the caller holds is unchanged, so a second run repairs
+again and reports again.
 
 For trace preservation, which has no cheap canonical repair, `Fix` throws
 `std::invalid_argument` naming the property it could not repair. Saying so is
@@ -237,6 +252,24 @@ Instructions the library synthesises rather than receives carry `Ignore`. A
 fused block, a controlled-U built by repeated squaring in phase estimation, and
 a decomposition product are the library's own arithmetic, not a caller's
 declaration, and their distance from exact unitarity is accumulated rounding.
+
+### When the policy is read
+
+`run()` reads each instruction's `ValidationOptions` exactly once, in the
+pre-flight, over the instructions present at that moment. It then applies every
+gate under `Ignore`, so an unchanged matrix is not re-measured once per gate per
+shot. Under `Fix` the pre-flight also performs the repair, and the run executes
+a repaired copy rather than the circuit the caller passed.
+
+What falls outside that window is anything that comes into being after the
+pre-flight has walked the list. No current path builds a caller-scale matrix
+mid-run, so nothing is unchecked today; the boundary is stated because a future
+path that synthesised one would have to check it at the point of synthesis, the
+policy having already been read and set aside.
+
+Calling a primitive directly is outside the window in the other direction: there
+is no pre-flight above it, so it reads the policy you hand it, which is why those
+entry points take a `ValidationOptions` and default it to `Throw`.
 
 Two consequences of the policy living on the instruction are worth knowing:
 

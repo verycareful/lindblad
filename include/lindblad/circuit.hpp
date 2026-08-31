@@ -4,6 +4,7 @@
 #include "lindblad/validation.hpp"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -551,6 +552,31 @@ public:
     // count (a structural error, reported where sizes are checked), are
     // skipped. Throws std::invalid_argument under Validation::Throw.
     void validate_physical() const;
+
+    // The repairing form of the pre-flight, for a backend that is about to
+    // execute. Behaves exactly as validate_physical() on every policy but Fix:
+    // Throw rejects, Warn reports, Ignore is skipped. Under Fix it performs the
+    // repair the policy asks for.
+    //
+    // It returns a repaired COPY rather than mutating, and only when a repair
+    // actually ran, so:
+    //
+    //   - the caller's circuit is never modified, matching the guarantee
+    //     QuantumCircuit::unitary already makes about the caller's own matrix;
+    //   - run() keeps taking a const circuit, so no backend signature moves;
+    //   - a circuit needing no repair, which is nearly all of them, allocates
+    //     nothing at all.
+    //
+    // A backend consumes it the way it already consumes gate fusion: keep an
+    // optional owned circuit, point at whichever one is live, and execute
+    // through the pointer.
+    //
+    // The repair belongs here rather than at the kernels below because a
+    // backend reads each instruction's policy once, in this pass, and then
+    // applies every gate under Validation::Ignore so an unchanged matrix is not
+    // re-measured per gate per shot. A repair at a kernel would never be reached
+    // on this path.
+    std::optional<QuantumCircuit> validated_physical() const;
 
 private:
     void validate_qubit(int qubit) const;

@@ -26,12 +26,10 @@
 // Fix path and only there. That is a correctness guarantee about instructions
 // the caller never mentioned, and it was untested.
 //
-// REACH. Unitarity has a repair, and fourteen of the fifteen entry points that
-// check unitarity still report that no repair is defined. Those cases are owed
-// by 1.1.24.2 and are RED until it lands. They are written here, against the
-// ruled behaviour, because a test that documents the defect is worth more than
-// a gap, and because the release that fixes the library should turn them green
-// without anyone having to remember they were owed.
+// REACH. Unitarity has a repair, and every entry point that checks unitarity
+// applies it. These cases hold each one to that: Fix returns rather than
+// reporting a missing repair, and the operand it applies is the projected one,
+// which the fixtures make visible by projecting to the identity.
 
 #include <gtest/gtest.h>
 
@@ -374,8 +372,8 @@ TEST(V11241UnitaryRepair, RepairingOneInstructionDoesNotRewriteItsSiblings) {
 }
 
 TEST(V11241UnitaryRepair, CircuitIngressRejectsAWrongSizedMatrix) {
-    // RED until the library catches up. Every other QuantumCircuit builder
-    // validates a caller-supplied operand's structure at ingress and throws:
+    // Every QuantumCircuit builder validates a caller-supplied operand's
+    // structure at ingress and throws:
     // permute rejects a permutation whose size is not 2^k, whose images fall
     // out of range, or which is not a bijection; mcx rejects a control equal to
     // its target; mcp rejects an empty qubit list. unitary is the one builder
@@ -428,51 +426,11 @@ TEST(V11241UnitaryRepair, AWrongSizedMatrixNeverReachesTheProjection) {
     }
 }
 
-TEST(V11241UnitaryRepair, TheRunTimePreFlightCannotRepairWhatIngressDidNot) {
-    // Pins the boundary #87 describes, WITHOUT ruling on it, because that issue
-    // is open with three candidate answers and one of them is to document the
-    // boundary rather than move it.
-    //
-    // The shape: run() reads each instruction's policy once, through
-    // QuantumCircuit::validate_physical(), and hands every kernel below it
-    // Validation::Ignore so an unchanged matrix is not re-measured per gate per
-    // shot. That is the right trade, and it means the pre-flight is the only
-    // consumer of the policy on this path.
-    //
-    // validate_physical() is const, so it cannot repair. An instruction that
-    // reached it unrepaired therefore gets a diagnostic rather than a
-    // correction, even under Fix. QuantumCircuit::unitary avoids this by
-    // repairing at ingress, so the gap belongs to instructions that arrive some
-    // other way: appended to the public vector, imported from QASM, or produced
-    // by compose.
-    //
-    // Simulated here by storing under Ignore and then setting the policy, which
-    // is what any of those routes produces: an operand the ingress repair never
-    // saw.
-    QuantumCircuit qc(1);
-    qc.unitary(drifted_hadamard(), {0}, "unrepaired", {Validation::Ignore, kAtol});
-    ASSERT_EQ(qc.instructions.size(), 1u);
-    ASSERT_GT(unitarity_deviation(qc.instructions[0].matrix.data(), 2), kAtol)
-        << "Ignore repaired, so this fixture cannot reach the pre-flight bent";
-
-    qc.instructions[0].validation = {Validation::Fix, kAtol};
-
-    lindblad::StatevectorSimulator sim;
-    const auto res = sim.run(qc, /*shots=*/0);
-
-    EXPECT_FALSE(res.success)
-        << "the pre-flight accepted an operand outside tolerance under a policy "
-           "that promised to correct it, and no repair ran";
-    EXPECT_NE(res.error_message.find("unitar"), std::string::npos)
-        << "the failure does not name the property. Got: " << res.error_message;
-}
-
 // =============================================================================
 // The fourteen borrowing entry points
 // =============================================================================
-// RED until 1.1.24.2 wires the repair through them. Each asserts the ruled
-// behaviour: Fix is opt-in, the caller asked for a repair, and one exists, so
-// reporting that no repair is defined is a false diagnostic.
+// Each asserts the same contract: Fix is opt-in, the caller asked for a repair,
+// one exists, and reporting a missing repair would be a false diagnostic.
 //
 // Every fixture below is a scalar multiple of the identity, whose polar factor
 // IS the identity. A correctly repairing entry point therefore applies the

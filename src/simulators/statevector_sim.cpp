@@ -2,6 +2,7 @@
 #include "lindblad/gates.hpp"
 #include "lindblad/hw_info.hpp"
 #include "lindblad/operators.hpp"
+#include <optional>
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -238,7 +239,7 @@ static bool sv_measures_are_terminal(const QuantumCircuit& circuit) {
 
 void StatevectorSimulator::simulate_circuit(
     Statevector& sv,
-    const QuantumCircuit& circuit
+    const QuantumCircuit& circuit_in
 ) {
     // Trajectory semantics (docs/api/simulators.md, Execution semantics):
     // classical conditions are honoured against a local register and MEASURE
@@ -248,7 +249,13 @@ void StatevectorSimulator::simulate_circuit(
     // A public entry that does not pass through run(), so it owns the physical
     // pre-flight itself. The trajectory below then applies under Ignore, the
     // same division run() uses.
-    circuit.validate_physical();
+    // Under Fix a repaired copy is executed and the caller's circuit is left
+    // exactly as it was handed over; every other policy binds straight to it and
+    // nothing is copied.
+    std::optional<QuantumCircuit> repaired_storage =
+        circuit_in.validated_physical();
+    const QuantumCircuit& circuit =
+        repaired_storage ? *repaired_storage : circuit_in;
 
     const int n_clbits =
         circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
@@ -479,7 +486,7 @@ QuantumCircuit sv_fuse_circuit(StatevectorSimulator& sim,
 }  // namespace
 
 StatevectorSimulator::Result StatevectorSimulator::run(
-    const QuantumCircuit& circuit,
+    const QuantumCircuit& circuit_in,
     int shots,
     uint64_t seed
 ) {
@@ -487,13 +494,20 @@ StatevectorSimulator::Result StatevectorSimulator::run(
     Result result;
 
     try {
-        if (circuit.n_qubits < 1) {
+        if (circuit_in.n_qubits < 1) {
             throw std::invalid_argument("Circuit must have at least 1 qubit");
         }
         // Pre-flight: reject any out-of-range operand index up front so the
         // failure surfaces through Result rather than reaching a kernel.
-        circuit.validate_operands();
-        circuit.validate_physical();
+        circuit_in.validate_operands();
+        // Under Fix a repaired copy is executed and the caller's circuit is
+        // left exactly as it was handed over; every other policy binds straight
+        // to it and nothing is copied. Same shape as the fused-circuit swap
+        // below, and it runs first so fusion consumes repaired matrices.
+        std::optional<QuantumCircuit> repaired_storage =
+            circuit_in.validated_physical();
+        const QuantumCircuit& circuit =
+            repaired_storage ? *repaired_storage : circuit_in;
         if (options.fusion_max_qubit < 2 ||
             options.fusion_max_qubit > SV_FUSION_MAX_QUBIT_LIMIT) {
             throw std::invalid_argument(

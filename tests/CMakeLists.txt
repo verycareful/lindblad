@@ -133,6 +133,7 @@ set(LINDBLAD_TEST_SOURCES
     test_v11241_truncation.cpp
     test_v11241_seam_rules.cpp
     test_eigen_svd_pin.cpp
+    test_v11242_repair_reach.cpp
 )
 
 # The R.1.16.0 diagnostic's strict leg. This flag governs the file's OWN

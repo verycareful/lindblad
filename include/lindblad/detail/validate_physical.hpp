@@ -4,6 +4,7 @@
 #include "lindblad/validation.hpp"
 #include "lindblad/detail/unitary_repair.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -285,6 +286,81 @@ inline void repair_unitary(Complex128* U, std::size_t rows,
             format_residual(after) + " after, atol " + format_residual(v.atol) +
             ")");
     }
+}
+
+// -----------------------------------------------------------------------------
+// check_unitary_fixing - the repairing form for an entry point that BORROWS
+// -----------------------------------------------------------------------------
+// An entry point that stores its operand repairs once and keeps the result, so
+// every later use sees the repaired matrix. QuantumCircuit::unitary is the only
+// one that does. Everything else takes a const reference, applies it and lets it
+// go, so a repair there fixes one call and evaporates: the caller still holds
+// the operand it handed over, and a loop pays a projection every iteration
+// without ever being told why.
+//
+// Hence the note, which is emitted here and NOT inside repair_unitary. The
+// projection is shared with the storing path, where the cost is paid once and a
+// note would be wrong; what deserves reporting is borrowing, which is a property
+// of the entry point rather than of the arithmetic.
+//
+// Once-only delivery comes from the warning channel, which already suppresses a
+// message it has already delivered until the next flush, rather than from a
+// latch here. One text for every entry point, so the channel collapses them to
+// one report however many sites raise it, and a caller that flushes to start a
+// fresh accounting hears it again, which is what flushing is for. A local latch
+// would defeat that and could not be reset at all.
+inline void warn_unitary_repaired_once() {
+    emit_warning(
+        "note: Validation::Fix repaired a matrix that was not unitary. The "
+        "repair applies to this call and the matrix you passed is unchanged, so "
+        "a loop over it, or a circuit run more than once, pays one projection "
+        "every time. QuantumCircuit::unitary repairs the matrix it stores when "
+        "the instruction is built, so correcting the operand at its source "
+        "avoids the repeat entirely.");
+}
+
+// Measures unitarity and, under Fix on an operand outside tolerance, repairs a
+// COPY into `storage` and returns a reference to it. Every other policy behaves
+// exactly as check_unitary does and returns the caller's operand untouched.
+//
+// Storage is passed in rather than returned so the common path allocates
+// nothing: an operand already inside tolerance, and any policy that is not Fix,
+// never materialises a copy. That matters because these entry points are the
+// per-gate kernels.
+inline const Complex128* check_unitary_fixing(const Complex128* U,
+                                              std::size_t rows,
+                                              const ValidationOptions& v,
+                                              const char* ctx,
+                                              std::vector<Complex128>& storage) {
+    if (!unitary_needs_repair(U, rows, v, ctx)) return U;
+    warn_unitary_repaired_once();
+    storage.assign(U, U + rows * rows);
+    repair_unitary(storage.data(), rows, v, ctx);
+    return storage.data();
+}
+
+inline const std::vector<Complex128>& check_unitary_fixing(
+    const std::vector<Complex128>& U, std::size_t rows,
+    const ValidationOptions& v, const char* ctx,
+    std::vector<Complex128>& storage) {
+    if (!unitary_needs_repair(U.data(), rows, v, ctx)) return U;
+    warn_unitary_repaired_once();
+    storage = U;
+    repair_unitary(storage.data(), rows, v, ctx);
+    return storage;
+}
+
+// The fixed-size form, for the MPS gate entry points whose operands are arrays.
+template <std::size_t N>
+inline const std::array<Complex128, N>& check_unitary_fixing(
+    const std::array<Complex128, N>& U, std::size_t rows,
+    const ValidationOptions& v, const char* ctx,
+    std::array<Complex128, N>& storage) {
+    if (!unitary_needs_repair(U.data(), rows, v, ctx)) return U;
+    warn_unitary_repaired_once();
+    storage = U;
+    repair_unitary(storage.data(), rows, v, ctx);
+    return storage;
 }
 
 // An empty operator list returns without measuring, because rejecting it

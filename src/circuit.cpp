@@ -1,5 +1,6 @@
 #include "lindblad/circuit.hpp"
 #include "lindblad/operators.hpp"
+#include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 
 #include "visualisation/document.hpp"
@@ -225,6 +226,51 @@ void QuantumCircuit::validate_physical() const {
         detail::check_unitary(m, rows, inst.validation,
                               inst.gate_name().c_str());
     }
+}
+
+std::optional<QuantumCircuit> QuantumCircuit::validated_physical() const {
+    // Nothing is copied until a repair is actually owed. `unitary_needs_repair`
+    // returns false for an operand already inside tolerance and for every policy
+    // but Fix, so a circuit that needs no repair walks the instruction list,
+    // measures what validate_physical() would have measured, and allocates
+    // nothing.
+    std::optional<QuantumCircuit> repaired;
+
+    for (std::size_t i = 0; i < instructions.size(); ++i) {
+        const Instruction& inst = instructions[i];
+        if (inst.type != Instruction::GateType::UNITARY) continue;
+        if (inst.validation.policy == Validation::Ignore) continue;
+
+        const std::vector<Complex128>& m = inst.matrix;
+        const std::size_t rows = std::size_t(1) << inst.qubits.size();
+        if (m.size() != rows * rows) continue;
+
+        // Throws under Throw and reports under Warn, exactly as the const form
+        // does; returns true only under Fix on an operand outside tolerance.
+        if (!detail::unitary_needs_repair(m.data(), rows, inst.validation,
+                                          inst.gate_name().c_str())) {
+            continue;
+        }
+
+        // Same note as a borrowing kernel raises, and for the same reason: the
+        // repair lands in the copy this call executes, the caller's circuit
+        // still holds the operand it handed over, and a circuit run twice pays
+        // the projection twice.
+        detail::warn_unitary_repaired_once();
+
+        if (!repaired) repaired = *this;
+
+        // Into a fresh buffer, then assigned. An Instruction's matrix is
+        // copy-on-write and the copy above shares every buffer with this
+        // circuit, so writing through it would rewrite the caller's matrix,
+        // which is the one thing this form exists to avoid.
+        std::vector<Complex128> fixed(m);
+        detail::repair_unitary(fixed.data(), rows, inst.validation,
+                               inst.gate_name().c_str());
+        repaired->instructions[i].matrix = std::move(fixed);
+    }
+
+    return repaired;
 }
 
 void QuantumCircuit::add_param_name(const std::string& pname) {
@@ -472,10 +518,19 @@ QuantumCircuit& QuantumCircuit::unitary(const std::vector<Complex128>& matrix,
     inst.label = label;
     inst.validation = validation;
 
-    // A wrong-size matrix is a structural error, reported where the size is
-    // checked. Measuring unitarity on it would read past the operand, so the
-    // physical check only runs on an operand whose shape already holds.
+    // Shape is checked here rather than deferred to whichever kernel eventually
+    // applies the gate. Every other builder on this class rejects a malformed
+    // operand where it is handed over: permute refuses a permutation whose
+    // length is not 2^k, whose images are out of range, or which is not a
+    // bijection, and mcx and mcp refuse a control equal to its target and an
+    // empty qubit list. Deferring would leave an instruction that cannot be
+    // executed inside `instructions`, which is public, where anything reading
+    // the circuit finds it and takes it for valid.
     //
+    // It also has to come before the physical check, because measuring
+    // unitarity on a wrong-sized operand reads past its end.
+    detail::check_size(matrix.size(), rows * rows, "unitary", "matrix");
+
     // Under Fix the repaired matrix is what gets stored, so the projection runs
     // once here rather than per shot and every later use of this instruction
     // sees the repaired operand. The copy is taken only on that path: a
@@ -483,8 +538,7 @@ QuantumCircuit& QuantumCircuit::unitary(const std::vector<Complex128>& matrix,
     // repairing in place would rewrite a matrix other instructions are reading.
     // Assigning rebinds this instruction to a fresh buffer and leaves theirs
     // alone.
-    if (matrix.size() == rows * rows &&
-        detail::unitary_needs_repair(matrix.data(), rows, validation,
+    if (detail::unitary_needs_repair(matrix.data(), rows, validation,
                                      "unitary")) {
         std::vector<Complex128> repaired(matrix);
         detail::repair_unitary(repaired.data(), rows, validation, "unitary");

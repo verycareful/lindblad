@@ -412,13 +412,15 @@ void QuditMPS::check_normalized(ValidationOptions validation) {
 // apply_1qudit — O(d^2 * chi_L * chi_R)
 // =============================================================================
 
-void QuditMPS::apply_1qudit(int q, const std::vector<Complex128>& U,
+void QuditMPS::apply_1qudit(int q, const std::vector<Complex128>& U_in,
                             ValidationOptions validation) {
     detail::check_qudit(q, n_qudits, "QuditMPS::apply_1qudit");
-    detail::check_size(U.size(), static_cast<size_t>(d) * static_cast<size_t>(d),
+    detail::check_size(U_in.size(), static_cast<size_t>(d) * static_cast<size_t>(d),
                        "QuditMPS::apply_1qudit", "matrix");
-    detail::check_unitary(U, static_cast<size_t>(d), validation,
-                          "QuditMPS::apply_1qudit");
+    std::vector<Complex128> U_fixed;
+    const std::vector<Complex128>& U = detail::check_unitary_fixing(
+        U_in, static_cast<size_t>(d), validation, "QuditMPS::apply_1qudit",
+        U_fixed);
 
     auto& T = tensors[static_cast<size_t>(q)];
     const int chi_L = T.chi_L;
@@ -523,14 +525,16 @@ void QuditMPS::split_two_sites(int q, const detail::DenseMatrix& Theta) {
 // apply_2qudit_adjacent — d^2 x d^2 gate on sites (q, q+1)
 // =============================================================================
 
-void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U,
+void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U_in,
                                      ValidationOptions validation) {
     detail::check_qudit(q, n_qudits, "QuditMPS::apply_2qudit_adjacent");
     detail::check_qudit(q + 1, n_qudits, "QuditMPS::apply_2qudit_adjacent");
     const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
-    detail::check_size(U.size(), d2 * d2,
+    detail::check_size(U_in.size(), d2 * d2,
                        "QuditMPS::apply_2qudit_adjacent", "matrix");
-    detail::check_unitary(U, d2, validation, "QuditMPS::apply_2qudit_adjacent");
+    std::vector<Complex128> U_fixed;
+    const std::vector<Complex128>& U = detail::check_unitary_fixing(
+        U_in, d2, validation, "QuditMPS::apply_2qudit_adjacent", U_fixed);
 
     detail::DenseMatrix Theta = contract_two_sites(q);
     const int chi_L = tensors[static_cast<size_t>(q)].chi_L;
@@ -600,14 +604,16 @@ void QuditMPS::apply_swap(int q) {
 // apply_2qudit — arbitrary pair (q0, q1); SWAP chain for non-adjacent pairs
 // =============================================================================
 
-void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U,
+void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U_in,
                             ValidationOptions validation) {
     detail::check_qudit(q0, n_qudits, "QuditMPS::apply_2qudit");
     detail::check_qudit(q1, n_qudits, "QuditMPS::apply_2qudit");
     detail::check_distinct2(q0, q1, "QuditMPS::apply_2qudit", "qudits");
     const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
-    detail::check_size(U.size(), d2 * d2, "QuditMPS::apply_2qudit", "matrix");
-    detail::check_unitary(U, d2, validation, "QuditMPS::apply_2qudit");
+    detail::check_size(U_in.size(), d2 * d2, "QuditMPS::apply_2qudit", "matrix");
+    std::vector<Complex128> U_fixed;
+    const std::vector<Complex128>& U = detail::check_unitary_fixing(
+        U_in, d2, validation, "QuditMPS::apply_2qudit", U_fixed);
 
     // Normalise so q0 < q1, exchanging the two digit roles of U if necessary
     // (valid in any fixed digit convention: it relabels which operand owns

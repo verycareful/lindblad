@@ -233,14 +233,16 @@ void QuditDensityMatrix::apply_to_bra(int q, const std::vector<Complex128>& U)
 // apply_1qudit — ρ → U_q ρ U_q†
 // =============================================================================
 
-void QuditDensityMatrix::apply_1qudit(int q, const std::vector<Complex128>& U,
+void QuditDensityMatrix::apply_1qudit(int q, const std::vector<Complex128>& U_in,
                                       ValidationOptions validation)
 {
     detail::check_qudit(q, n_qudits, "QuditDensityMatrix::apply_1qudit");
-    detail::check_size(U.size(), static_cast<size_t>(d) * static_cast<size_t>(d),
+    detail::check_size(U_in.size(), static_cast<size_t>(d) * static_cast<size_t>(d),
                        "QuditDensityMatrix::apply_1qudit", "matrix");
-    detail::check_unitary(U, static_cast<size_t>(d), validation,
-                          "QuditDensityMatrix::apply_1qudit");
+    std::vector<Complex128> U_fixed;
+    const std::vector<Complex128>& U = detail::check_unitary_fixing(
+        U_in, static_cast<size_t>(d), validation,
+        "QuditDensityMatrix::apply_1qudit", U_fixed);
     apply_to_ket(q, U);
     apply_to_bra(q, U);
 }
@@ -356,16 +358,18 @@ void QuditDensityMatrix::apply_to_bra_2q(int q0, int q1,
 // =============================================================================
 
 void QuditDensityMatrix::apply_2qudit(int q0, int q1,
-                                      const std::vector<Complex128>& U,
+                                      const std::vector<Complex128>& U_in,
                                       ValidationOptions validation)
 {
     detail::check_qudit(q0, n_qudits, "QuditDensityMatrix::apply_2qudit");
     detail::check_qudit(q1, n_qudits, "QuditDensityMatrix::apply_2qudit");
     detail::check_distinct2(q0, q1, "QuditDensityMatrix::apply_2qudit", "qudits");
-    detail::check_size(U.size(), static_cast<size_t>(d) * d * d * d,
+    detail::check_size(U_in.size(), static_cast<size_t>(d) * d * d * d,
                        "QuditDensityMatrix::apply_2qudit", "matrix");
-    detail::check_unitary(U, static_cast<size_t>(d) * static_cast<size_t>(d),
-                          validation, "QuditDensityMatrix::apply_2qudit");
+    std::vector<Complex128> U_fixed;
+    const std::vector<Complex128>& U = detail::check_unitary_fixing(
+        U_in, static_cast<size_t>(d) * static_cast<size_t>(d), validation,
+        "QuditDensityMatrix::apply_2qudit", U_fixed);
     apply_to_ket_2q(q0, q1, U);
     apply_to_bra_2q(q0, q1, U);
 }
