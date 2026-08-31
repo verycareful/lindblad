@@ -34,6 +34,7 @@
 using namespace lindblad;
 using r1211::expect_accepts_valid;
 using r1211::expect_rejects_invalid;
+using r1211::expect_repairs_invalid;
 using r1211::expect_tolerance_is_honoured;
 using r1211::WarningProbe;
 
@@ -144,7 +145,7 @@ DensityMatrix fresh(int n) {
 // =============================================================================
 
 TEST(R1211DmGate, SingleQubitPolicyMatrix) {
-    expect_rejects_invalid("DensityMatrix::apply_gate k=1", [](ValidationOptions v) {
+    expect_repairs_invalid("DensityMatrix::apply_gate k=1", [](ValidationOptions v) {
         auto rho = fresh(3);
         rho.apply_gate(bad_1q(), {1}, v);
     });
@@ -155,7 +156,7 @@ TEST(R1211DmGate, SingleQubitPolicyMatrix) {
 }
 
 TEST(R1211DmGate, TwoQubitPolicyMatrix) {
-    expect_rejects_invalid("DensityMatrix::apply_gate k=2", [](ValidationOptions v) {
+    expect_repairs_invalid("DensityMatrix::apply_gate k=2", [](ValidationOptions v) {
         auto rho = fresh(3);
         rho.apply_gate(bad_2q(), {0, 2}, v);
     });

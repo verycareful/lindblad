@@ -117,6 +117,16 @@ std::vector<double> angle_sweep() {
         std::cout << "[ MARGIN   ] " << rk_ << " = " << rv_ << std::endl; \
     } while (0)
 
+// One point of a sweep, so the CURVE is readable and not only its maximum.
+//
+// A worst value is a single point, and every sweep here whose worst lands on
+// its deepest case is still climbing where the sweep stops: the maximum alone
+// cannot say whether the next depth would clear the tolerance. The loops
+// already compute every value and discarded all but one, so recording each is
+// the whole change. The archived capture then carries the slope, which is what
+// a later question about a deeper circuit actually needs.
+#define REPORT_CURVE_POINT(key, x, value)                                     do {                                                                          const std::string ck_ = std::string(key) + "@" + (x);                     const std::string cv_ = detail::format_residual(value);                   ::testing::Test::RecordProperty(ck_, cv_);                                std::cout << "[ MARGIN   ] " << ck_ << " = " << cv_ << std::endl;     } while (0)
+
 #define REPORT_WHERE(key, name)                                           \
     do {                                                                  \
         const std::string wk_ = (key);                                    \
@@ -330,6 +340,8 @@ TEST(R1211OperatorMargins, CompositionAccumulatesSlowly) {
         }
         const double residual = gate_residual(qc);
         worst.observe(residual, "depth " + std::to_string(depth));
+        REPORT_CURVE_POINT("composition_residual", std::to_string(depth),
+                           residual);
         EXPECT_LE(residual, FRAMEWORK_ATOL)
             << "a " << depth
             << "-layer composition deviates by " << residual
@@ -355,6 +367,8 @@ TEST(R1211OperatorMargins, TensorProductsStayUnitary) {
         const double residual =
             detail::unitarity_deviation(accumulated.data.data(), rows);
         worst.observe(residual, std::to_string(factors) + " factors");
+        REPORT_CURVE_POINT("tensor_residual", std::to_string(factors),
+                           residual);
         EXPECT_LE(residual, FRAMEWORK_ATOL)
             << factors << " tensor factors deviate by " << residual;
     }
@@ -375,6 +389,8 @@ TEST(R1211OperatorMargins, ComposeChainStaysUnitary) {
         left = left.compose(right);
         const double residual = detail::unitarity_deviation(left.data.data(), 4);
         worst.observe(residual, std::to_string(steps) + " compositions");
+        REPORT_CURVE_POINT("compose_chain_residual", std::to_string(steps),
+                           residual);
         EXPECT_LE(residual, FRAMEWORK_ATOL)
             << steps << " compositions deviate by " << residual;
     }
@@ -659,7 +675,10 @@ TEST(V11231EvolvedDensityMargin, StrongDampingStillPreservesTheTrace) {
         const std::string what = "depth=" + std::to_string(depth);
         const auto res = sim.run(noisy_layers(3, depth), nm, 0, 20260829);
         ASSERT_TRUE(res.success) << res.error_message;
-        worst.observe(trace_residual(res.final_state), what);
+        const double residual = trace_residual(res.final_state);
+        worst.observe(residual, what);
+        REPORT_CURVE_POINT("damped_trace_residual", std::to_string(depth),
+                           residual);
     }
 
     REPORT_RESIDUAL("worst_damped_trace_residual", worst.worst());

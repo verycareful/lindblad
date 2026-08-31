@@ -70,9 +70,14 @@ void expect_amps_close(const std::vector<Complex128>& a,
 
 } // namespace
 
-TEST(R1131Mps, DefaultSvdMethodIsJacobi) {
+// The default backend, pinned. Truncation values move with it, so a default
+// that drifts silently changes every state the MPS engine produces; the qudit
+// layer carries its own copy of this assertion.
+TEST(R1131Mps, DefaultSvdMethodIsBdc) {
     MPSState mps(3);
-    EXPECT_EQ(mps.svd_method, SVDMethod::Jacobi);
+    EXPECT_EQ(mps.svd_method, SVDMethod::BDC)
+        << "the qubit MPS SVD default moved. Truncation values shift with the "
+           "backend, so this is a behaviour change and not a preference.";
 }
 
 // F-6: the two-site GEMM contraction (adjacent and SWAP-chained non-adjacent)
@@ -104,32 +109,43 @@ TEST(R1131Mps, SamplingReproducesGhzDistribution) {
     EXPECT_GT(res.counts["111"], 1200);
 }
 
-// The loud, one-time BDC-broken warning must be emitted to std::cerr when
-// SVDMethod::BDC is selected and an SVD is performed.
-TEST(R1131Mps, BdcSelectionEmitsBrokenWarning) {
+// Selecting the non-default backend emits a one-time note saying what it
+// costs. A caller who chose Jacobi for accuracy reasons is opting out of the
+// faster algorithm without being told, which is the thing the note prevents.
+//
+// The latch fires once per layer, and this is the only qubit-MPS Jacobi
+// selection in the binary, so this test is the only one that can ever observe
+// the qubit text.
+TEST(R1131Mps, JacobiSelectionEmitsSlowerNote) {
     std::ostringstream capture;
     std::streambuf* old = std::cerr.rdbuf(capture.rdbuf());
 
     {
         MPSState mps(2);
-        mps.svd_method = SVDMethod::BDC;
+        mps.svd_method = SVDMethod::Jacobi;
         mps.apply_single_qubit_gate(hadamard(), 0);
-        mps.apply_two_qubit_gate(cnot(), 0, 1);   // forces svd_truncate -> warn
+        mps.apply_two_qubit_gate(cnot(), 0, 1);   // forces svd_truncate -> note
     }
 
     std::cerr.rdbuf(old);
     const std::string out = capture.str();
-    EXPECT_NE(out.find("BDC"), std::string::npos)
-        << "BDC warning was not emitted; got: [" << out << "]";
-    EXPECT_NE(out.find("BROKEN"), std::string::npos);
     EXPECT_NE(out.find("Jacobi"), std::string::npos)
-        << "warning should direct users to the Jacobi default";
+        << "the note was not emitted; got: [" << out << "]";
+    EXPECT_NE(out.find("BDC is the default"), std::string::npos)
+        << "the note must name what the caller is opting out of; got: [" << out
+        << "]";
+    EXPECT_NE(out.find("qubit MPS"), std::string::npos)
+        << "the note must name its layer, since the qudit layer latches "
+           "separately and a reader seeing one needs to know which; got: ["
+        << out << "]";
+    EXPECT_EQ(out.find("BROKEN"), std::string::npos)
+        << "nothing here is broken: both backends are accepted by the verify "
+           "rung on the first attempt, and the note is about speed; got: ["
+        << out << "]";
 
-    // The message must point at nothing the reader cannot reach. Selecting this
-    // backend is exactly the case where the warning matters, since it announces
-    // that results may be silently wrong, so a dangling pointer is worse than
-    // no pointer. Asserted here because the qubit layer's latch fires exactly
-    // once: this is the only test that can ever see the text.
+    // The message must point at nothing the reader cannot reach. A note that
+    // cites a path absent from a published clone sends the reader nowhere, and
+    // the latch means no other test can catch it.
     for (const char* unreachable : {"docs/plans", "docs/superpowers",
                                     "Audit docs", ".md"}) {
         EXPECT_EQ(out.find(unreachable), std::string::npos)

@@ -1,11 +1,16 @@
 // diag_r1160_matrices.hpp — shared builders for the R.1.16.0 (#44) SVD
-// diagnostics. TEMPORARY diagnostic infrastructure, header-only ON PURPOSE:
-// Eigen is header-only, so each including TU instantiates JacobiSVD/BDCSVD
-// under ITS OWN compile flags. test_diag_r1160_mps_shor.cpp includes this
-// under the project-wide -ffast-math; test_diag_r1160_strictfp.cpp includes
-// it under -fno-fast-math (per-source CMake override). Comparing the two
-// answers "is the SVD failure a fast-math casualty or a genuine Eigen bug"
-// with everything else held constant.
+// diagnostics. Header-only because these are matrix builders and report
+// formatters; the arithmetic is ordinary and every including TU may have its
+// own copy.
+//
+// NO DECOMPOSITION HAPPENS HERE. Eigen is header-only, so a TU naming JacobiSVD
+// emits its own weak symbol and the linker keeps exactly one per binary, chosen
+// by mangled name. Compile flags are not part of that name, so a per-file
+// -fno-fast-math governs which variant a TU EMITS and never which one survives
+// the link, and a suite judging Eigen from inside this binary would be reading
+// link order rather than the dependency. Every factorisation below therefore
+// goes through lindblad::detail::eigen_backend, the one strict translation unit
+// in the tree, which leaves nothing to merge.
 //
 // Builders:
 //   build_poison_theta()  — the EXACT 8x8 complex matrix fed to
@@ -28,6 +33,8 @@
 #include "lindblad/qudit/qudit_gates.hpp"
 #include "lindblad/qudit/qudit_statevector.hpp"
 #include "lindblad/simulators/mps_sim.hpp"
+
+#include "lindblad/detail/eigen_backend.hpp"
 
 #include <Eigen/Dense>
 
@@ -59,6 +66,39 @@ inline bool vector_bad(const Eigen::VectorXd& v) {
     for (Eigen::Index i = 0; i < v.size(); ++i)
         if (fp_bad(v(i))) return true;
     return false;
+}
+
+// --- The decomposition seam --------------------------------------------------
+// Eigen stores MatrixXcd column-major, so data() reaches the backend with no
+// transpose and the factors come back in the layout these reports already read.
+
+// Thin SVD. U is rows x k, V is cols x k as V rather than V-dagger, and S is
+// descending, with k = min(rows, cols). False means the backend refused, in
+// which case the outputs are unspecified.
+inline bool seam_svd(const Eigen::MatrixXcd& M, lindblad::SVDMethod method,
+                     Eigen::VectorXd& S, Eigen::MatrixXcd& U,
+                     Eigen::MatrixXcd& V) {
+    const int rows = static_cast<int>(M.rows());
+    const int cols = static_cast<int>(M.cols());
+    const int k = std::min(rows, cols);
+    S.resize(k);
+    U.resize(rows, k);
+    V.resize(cols, k);
+    return lindblad::detail::svd_thin(M.data(), rows, cols,
+                                      lindblad::detail::MatrixOrder::ColMajor,
+                                      method, U.data(), S.data(), V.data());
+}
+
+// Self-adjoint eigendecomposition. Eigenvalues ASCENDING, which is the
+// backend's own order; the Gram route below reverses them explicitly.
+inline bool seam_eigh(const Eigen::MatrixXcd& G, Eigen::VectorXd& evals,
+                      Eigen::MatrixXcd& evecs) {
+    const int n = static_cast<int>(G.rows());
+    evals.resize(n);
+    evecs.resize(n, n);
+    return lindblad::detail::eigh(G.data(), n,
+                                  lindblad::detail::MatrixOrder::ColMajor,
+                                  evals.data(), evecs.data());
 }
 
 // --- Poison theta (13-qubit Shor, first-NaN SVD input) ----------------------
@@ -186,17 +226,21 @@ inline Eigen::MatrixXcd build_bdcsvd_bug_matrix() {
             M0(x0, c) = std::complex<double>(a.real, a.imag);
         }
 
-    Eigen::JacobiSVD<Eigen::MatrixXcd> svd0(
-        M0, Eigen::ComputeThinU | Eigen::ComputeThinV);
-    const auto& s0 = svd0.singularValues();
+    Eigen::VectorXd s0;
+    Eigen::MatrixXcd U0, V0;
+    // Jacobi for the peel, deliberately: this factorisation BUILDS the
+    // reproducer, so it must be the backend that is correct on this input
+    // rather than the one under test. BDCSVD is what mishandles the result.
+    if (!seam_svd(M0, lindblad::SVDMethod::Jacobi, s0, U0, V0)) {
+        return Eigen::MatrixXcd();  // empty: matrix_bad() reports the failure
+    }
     int k0 = 0;
     for (Eigen::Index i = 0; i < s0.size(); ++i) k0 += (s0(i) > 1e-12) ? 1 : 0;
     // Residual block = S * V^dagger (k0 x 216), reshaped so site 1's digit
     // joins the row index: M[(alpha*6 + x1), c2] with c2 over the last two
     // qudits (36 columns).
     Eigen::MatrixXcd block =
-        s0.head(k0).asDiagonal() *
-        svd0.matrixV().leftCols(k0).adjoint();  // k0 x 216
+        s0.head(k0).asDiagonal() * V0.leftCols(k0).adjoint();  // k0 x 216
 
     const int rest1 = 36;
     Eigen::MatrixXcd M1(k0 * d, rest1);
@@ -297,19 +341,33 @@ inline SvdReport report_from_factors(const Eigen::MatrixXcd& M,
     return r;
 }
 
-template <typename SVD>
-SvdReport run_svd_report(const Eigen::MatrixXcd& M) {
-    SVD svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
-    return report_from_factors(M, svd.singularValues(), svd.matrixU(),
-                               svd.matrixV());
+// A backend that refuses to factorise is reported as corrupt rather than as an
+// empty report, because every caller reads `corrupt` first and a silent zero
+// spectrum would read as a clean answer.
+inline SvdReport run_svd_report(const Eigen::MatrixXcd& M,
+                                lindblad::SVDMethod method) {
+    Eigen::VectorXd S;
+    Eigen::MatrixXcd U, V;
+    if (!seam_svd(M, method, S, U, V)) {
+        SvdReport r;
+        r.s_bad = true;
+        r.corrupt = true;
+        r.frob_sq = M.squaredNorm();
+        return r;
+    }
+    return report_from_factors(M, S, U, V);
 }
 
-// In-test replication of the R.1.16.0 svd_truncate Gram fallback route
-// (G = M^H M or M M^H on the smaller side, SelfAdjointEigenSolver, sigmas
+// In-test replication of the svd_truncate Gram fallback route: G = M^H M or
+// M M^H on the smaller side, eigendecomposed through the seam, sigmas
 // descending from sqrt(max(lambda, 0)), partner factor built only above the
-// sqrt(eps)-scaled floor). Validates the rescue MATH standalone under each
-// including TU's FP flags; the library WIRING (engagement counter + direct
-// seam) is tracked as follow-up work in the plans.
+// sqrt(eps)-scaled floor.
+//
+// Replicated rather than called because the library route is reachable only
+// when the primary factorisation fails verification, which is precisely the
+// condition this suite cannot manufacture. This pins the rescue MATH; the
+// library's own wiring of it stays unpinned until the ladder can be handed a
+// factorisation instead of computing one.
 inline SvdReport run_gram_route_report(const Eigen::MatrixXcd& M) {
     const auto rows = M.rows();
     const auto cols = M.cols();
@@ -317,27 +375,30 @@ inline SvdReport run_gram_route_report(const Eigen::MatrixXcd& M) {
     const Eigen::MatrixXcd G =
         tall ? Eigen::MatrixXcd(M.adjoint() * M)
              : Eigen::MatrixXcd(M * M.adjoint());
-    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(G);
+    Eigen::VectorXd evals;
+    Eigen::MatrixXcd evecs;
     SvdReport fail;  // default report reads as failure: rank 0, kept_slice_bad
-    if (es.info() != Eigen::Success) return fail;
+    if (!seam_eigh(G, evals, evecs)) return fail;
 
-    const int gd = static_cast<int>(es.eigenvalues().size());
+    // The backend returns eigenvalues ascending; sigmas descend, so every read
+    // of both is reversed here rather than the vectors being sorted in place.
+    const int gd = static_cast<int>(evals.size());
     Eigen::VectorXd S(gd);
     for (int i = 0; i < gd; ++i) {
-        S(i) = std::sqrt(std::max(0.0, es.eigenvalues()(gd - 1 - i)));
+        S(i) = std::sqrt(std::max(0.0, evals(gd - 1 - i)));
     }
     const double smax = (gd > 0) ? S(0) : 0.0;
     const double floor_g = std::max(1e-12, 1.5e-8 * smax);
 
     Eigen::MatrixXcd U(rows, gd), V(cols, gd);
     if (tall) {
-        for (int i = 0; i < gd; ++i) V.col(i) = es.eigenvectors().col(gd - 1 - i);
+        for (int i = 0; i < gd; ++i) V.col(i) = evecs.col(gd - 1 - i);
         for (int i = 0; i < gd; ++i) {
             if (S(i) > floor_g) U.col(i) = (M * V.col(i)) / S(i);
             else U.col(i).setZero();
         }
     } else {
-        for (int i = 0; i < gd; ++i) U.col(i) = es.eigenvectors().col(gd - 1 - i);
+        for (int i = 0; i < gd; ++i) U.col(i) = evecs.col(gd - 1 - i);
         for (int i = 0; i < gd; ++i) {
             if (S(i) > floor_g) V.col(i) = (M.adjoint() * U.col(i)) / S(i);
             else V.col(i).setZero();

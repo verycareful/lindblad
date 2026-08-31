@@ -425,19 +425,27 @@ TEST(QFTConvention, QPE_SGate_PhaseQuarter_N2eval_TopBitstringIs_101) {
 // `mod_pow(2, r, 21) == 1`.
 // =============================================================================
 
-TEST(QFTConvention, Shor_N21_a2_Diagnostic_PrintExtractedM) {
+TEST(QFTConvention, Shor_N21_a2_PeaksLandWhereTheOrderPredicts) {
     const uint64_t a = 2, N = 21;
     const int n_target = 5;
     const int n_eval = 2 * n_target + 1;  // = 11
     const int total = n_eval + n_target;  // = 16
     const size_t Nm = 1ULL << n_eval;     // 2048
 
+    // The order is derived rather than asserted from memory: r is the least
+    // exponent with a^r == 1 (mod N), and every expectation below is a function
+    // of it, so this test states the theory and not a previous run's output.
+    uint64_t r = 0;
+    for (uint64_t e = 1; e < N; ++e) {
+        uint64_t acc = 1;
+        for (uint64_t i = 0; i < e; ++i) acc = (acc * a) % N;
+        if (acc == 1) { r = e; break; }
+    }
+    ASSERT_GT(r, 1u) << "a=" << a << " has no order mod N=" << N;
+
     backends::LocalBackend::Config cfg;
     cfg.simulator = backends::LocalBackend::SimType::STATEVECTOR;
     backends::LocalBackend backend(cfg);
-
-    std::cout << "\n[DIAGNOSTIC] Shor full-pipeline N=" << N << " a=" << a
-              << " n_eval=" << n_eval << " (expected useful m near 341 or 1707)\n";
 
     auto circuit = Shor::build_period_finding_circuit(a, N, n_eval, n_target);
     circuit.measure_all();
@@ -450,35 +458,64 @@ TEST(QFTConvention, Shor_N21_a2_Diagnostic_PrintExtractedM) {
         for (const auto& [bits, count] : br.counts) {
             if (count > best_count) { best_count = count; best = bits; }
         }
+        ASSERT_EQ(best.size(), static_cast<size_t>(total))
+            << "seed " << seed << ": counts key is not the full register";
+
         // Apply Shor's LSB-convention extraction.
         uint64_t m = 0;
         for (int q = 0; q < n_eval && q < total; ++q) {
             if (best[total - 1 - q] == '1') m |= (1ULL << q);
         }
+
+        // The eigenvalue phases are k/r, so the ideal peaks sit at
+        // round(k * 2^n_eval / r). The mode over a shot batch must land on one
+        // of those integers or its immediate neighbour: the sinc envelope puts
+        // almost all of a peak's weight on the nearest bin, and the neighbour is
+        // reachable only when k * 2^n_eval / r falls near a half-integer.
+        uint64_t nearest = 0;
+        for (uint64_t k = 0; k < r; ++k) {
+            const uint64_t ideal =
+                static_cast<uint64_t>(std::llround(
+                    static_cast<double>(k) * static_cast<double>(Nm) /
+                    static_cast<double>(r)));
+            const uint64_t dist = (m > ideal) ? (m - ideal) : (ideal - m);
+            if (k == 0 || dist < nearest) nearest = dist;
+        }
+        EXPECT_LE(nearest, 1u)
+            << "seed " << seed << ": the peak landed at m=" << m
+            << ", which is " << nearest << " away from every multiple of "
+            << Nm << "/" << r << ". A peak off the predicted lattice means the "
+            << "evaluation register is not holding the phase the theory says, "
+            << "which is a convention or a controlled-U defect rather than "
+            << "sampling noise.";
+
         double phi_est = static_cast<double>(m) / static_cast<double>(Nm);
-        // Try cf convergents to see which r is returned (if any).
         auto convs = Shor::cf_convergents(phi_est, N);
         uint64_t found_r = 0;
-        for (const auto& [s, r] : convs) {
-            if (r == 0 || r >= N) continue;
-            // Local mod_pow.
-            uint64_t base = a % N, exp = r, result = 1;
+        for (const auto& [sv, rv] : convs) {
+            if (rv == 0 || rv >= N) continue;
+            uint64_t base = a % N, exp = rv, result = 1;
             while (exp > 0) {
                 if (exp & 1) result = (result * base) % N;
                 base = (base * base) % N;
                 exp >>= 1;
             }
-            if (result == 1) { found_r = r; break; }
+            if (result == 1) { found_r = rv; break; }
         }
-        if (found_r > 0) ++valid_cf_count;
-        std::cout << "  seed=" << seed
-                  << "  best=" << best
-                  << "  (count " << best_count << "/128)"
-                  << "  m=" << m
-                  << "  φ=" << phi_est
-                  << "  cf→r=" << found_r << "\n";
+        if (found_r > 0) {
+            ++valid_cf_count;
+            EXPECT_EQ(r % found_r, 0u)
+                << "seed " << seed << ": recovered " << found_r
+                << ", which is not a divisor of the true order " << r;
+        }
     }
-    std::cout << "  → " << valid_cf_count
-              << "/10 seeds produced a valid r\n";
-    SUCCEED();
+
+    // Recovery cannot succeed on every seed by construction: the k=0 peak
+    // carries phase 0, whose convergents yield no usable denominator, and it is
+    // a legitimate outcome of the measurement. What must hold is that the
+    // continued-fraction stage recovers the order at all, since a pipeline that
+    // never does is indistinguishable from one that produces noise.
+    EXPECT_GE(valid_cf_count, 1)
+        << "no seed recovered the order across 10 batches of 128 shots, so "
+           "either the peaks are wrong or the convergent search is";
 }

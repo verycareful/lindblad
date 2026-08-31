@@ -203,34 +203,47 @@ TEST(R1131Qudit, MpsMeasureMatchesDenseDistribution) {
     }
 }
 
-// F-23 (qudit layer): selecting SVDMethod::BDC on the qudit MPS emits the loud
-// broken-BDCSVD warning. This is the ONLY qudit-MPS BDC selection in the test
-// binary, so warn_bdc_broken_once_qudit()'s latch fires here. That latch belongs
-// to the qudit layer alone: the qubit layer holds a separate one, so a qubit MPS
-// warning earlier in the run does not consume this one.
-TEST(R1131Qudit, MpsBdcSelectionWarns) {
+// F-23 (qudit layer): the qudit MPS carries the same default as the qubit
+// layer, and selecting the other backend notes what it costs. This is the ONLY
+// qudit-MPS Jacobi selection in the test binary, so the latch behind
+// warn_jacobi_slower_once_qudit() fires here. That latch belongs to the qudit
+// layer alone: the qubit layer holds a separate one, so a qubit MPS note
+// earlier in the run does not consume this one.
+TEST(R1131Qudit, MpsDefaultSvdMethodIsBdc) {
+    QuditMPS mps(2, 2);
+    EXPECT_EQ(mps.svd_method, SVDMethod::BDC)
+        << "the qudit MPS SVD default moved, and it must track the qubit layer: "
+           "the two run the same truncation ladder and a caller comparing them "
+           "would be comparing backends instead.";
+}
+
+TEST(R1131Qudit, MpsJacobiSelectionEmitsSlowerNote) {
     std::ostringstream capture;
     std::streambuf* old = std::cerr.rdbuf(capture.rdbuf());
 
     {
         QuditMPS mps(2, 2);
-        mps.svd_method = SVDMethod::BDC;
+        mps.svd_method = SVDMethod::Jacobi;
         std::vector<Complex128> U(16, Complex128(0, 0));   // 4x4 identity (d^2)
         for (int i = 0; i < 4; ++i) U[static_cast<size_t>(i * 4 + i)] = Complex128(1, 0);
-        mps.apply_2qudit_adjacent(0, U);                    // -> qmps_svd -> warn
+        mps.apply_2qudit_adjacent(0, U);                    // -> qmps_svd -> note
     }
 
     std::cerr.rdbuf(old);
     const std::string out = capture.str();
-    EXPECT_NE(out.find("BDC"), std::string::npos)
-        << "qudit BDC warning not emitted; got: [" << out << "]";
-    EXPECT_NE(out.find("BROKEN"), std::string::npos);
-    EXPECT_NE(out.find("qudit"), std::string::npos);
+    EXPECT_NE(out.find("Jacobi"), std::string::npos)
+        << "qudit note not emitted; got: [" << out << "]";
+    EXPECT_NE(out.find("BDC is the default"), std::string::npos)
+        << "the note must name what the caller is opting out of; got: [" << out
+        << "]";
+    EXPECT_NE(out.find("qudit"), std::string::npos)
+        << "the note must name its layer; got: [" << out << "]";
+    EXPECT_EQ(out.find("BROKEN"), std::string::npos)
+        << "nothing here is broken: the note is about speed; got: [" << out
+        << "]";
 
-    // The message must point at nothing the reader cannot reach. Selecting this
-    // backend is exactly the case where the warning matters, since it announces
-    // that results may be silently wrong, so a dangling pointer is worse than
-    // no pointer. Asserted here rather than in a suite of its own because the
+    // The message must point at nothing the reader cannot reach. A note citing
+    // a path absent from a published clone sends the reader nowhere, and the
     // latch above means this is the only test that can ever see the text.
     for (const char* unreachable : {"docs/plans", "docs/superpowers",
                                     "Audit docs", ".md"}) {

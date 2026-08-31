@@ -1,8 +1,9 @@
 // =============================================================================
 // detail::svd_truncate_verified - SELECT -> VERIFY -> FALLBACK -> THROW
 // =============================================================================
-// Contract and the reason this file is quarantined: include/lindblad/detail/
-// svd_truncate.hpp. Everything here is the implementation of that ladder.
+// Contract, and which pieces of the ladder are compiled strict and why:
+// include/lindblad/detail/svd_truncate.hpp. Everything here is the
+// implementation of that ladder, under the project-wide flags.
 
 #include "lindblad/detail/svd_truncate.hpp"
 

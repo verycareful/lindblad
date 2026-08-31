@@ -391,9 +391,11 @@ void MPSState::normalize() {
     }
 }
 
-// norm_sq() is the measurement here, unlike the dense classes: this whole
-// translation unit is compiled under strict FP, so the contraction already
-// gives the same answer on every target.
+// norm_sq() is the measurement here, unlike the dense classes, because there is
+// nothing else to measure: an MPS holds no flat amplitude array, so there is no
+// sum for the strict-FP balanced summation to quarantine. The contraction runs
+// under the project-wide flags like the rest of this file, which is why the
+// tolerance carries the target-dependence the dense path does not have to.
 bool MPSState::is_normalized(double atol) const {
     return std::abs(norm_sq() - 1.0) <= atol;
 }

@@ -506,7 +506,7 @@ class MPSState {
     std::vector<MPSTensor> tensors;
     int max_bond_dim;    // chi parameter
     double cutoff;       // max fraction of weight truncation may discard
-    SVDMethod svd_method = SVDMethod::Jacobi;  // SVD backend (R.1.13)
+    SVDMethod svd_method = SVDMethod::BDC;     // SVD backend
 };
 ```
 

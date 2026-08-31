@@ -3,11 +3,19 @@
 // R.1.21.1 test wave - the shared Class C policy contract.
 //
 // Nineteen entry points take a ValidationOptions, and every one of them owes
-// the same four promises: Throw rejects, Warn reports and proceeds, Fix says
-// no repair exists, Ignore does not look. Stating that contract once here and
-// applying it per entry point keeps the per-backend files to the part that
-// actually differs, which is how each primitive is reached and what a violating
-// operand looks like for it.
+// the same promises on three policies: Throw rejects, Warn reports and
+// proceeds, Ignore does not look. Stating that contract once here and applying
+// it per entry point keeps the per-backend files to the part that actually
+// differs, which is how each primitive is reached and what a violating operand
+// looks like for it.
+//
+// Fix is the policy that splits, so it has two helpers rather than one. Where
+// the property has a repair, Fix performs it and returns; where it has none,
+// Fix says so and throws. Unitarity is repaired by polar projection and
+// normalization by division, so those entry points take
+// expect_repairs_invalid. Trace preservation has no cheap canonical repair, so
+// its entry points take expect_rejects_invalid. Choosing the wrong one is not a
+// style question: it asserts the opposite thing about the same policy.
 //
 // The helpers take a callable rather than an operand so the caller can build a
 // fresh state per invocation. That matters: each policy is exercised by a
@@ -109,6 +117,60 @@ void expect_rejects_invalid(const char* label, Apply apply_with) {
                         "promised a correction";
         EXPECT_NE(out.message.find("no repair defined"), std::string::npos)
             << label << ": Fix must say a repair is missing. Got: "
+            << out.message;
+    }
+    {
+        WarningProbe probe;
+        const auto out = call_under(apply_with, lindblad::Validation::Ignore);
+        EXPECT_FALSE(out.threw)
+            << label << ": Ignore checked anyway. Message: " << out.message;
+        EXPECT_EQ(probe.count(), 0u)
+            << label << ": Ignore reported something; it is the one policy "
+                        "that costs nothing and says nothing";
+    }
+}
+
+// The same contract for an entry point whose property HAS a repair. Three of
+// the four policies behave identically to the case above and are asserted the
+// same way; Fix is the one that differs, and it differs completely. A repair
+// exists, the caller opted into it, so the call must carry it out and return
+// rather than report that no repair is defined.
+//
+// What "repaired" means cannot be stated here, because it differs per entry
+// point: a stored instruction matrix, a statevector, a density matrix. This
+// asserts the POLICY contract, and each call site asserts the effect where it
+// can actually see it.
+template <typename Apply>
+void expect_repairs_invalid(const char* label, Apply apply_with) {
+    {
+        const auto out = call_under(apply_with, lindblad::Validation::Throw);
+        EXPECT_TRUE(out.threw)
+            << label << ": Throw accepted a physically invalid operand";
+        EXPECT_FALSE(out.message.empty())
+            << label << ": Throw gave an empty diagnostic";
+    }
+    {
+        WarningProbe probe;
+        const auto out = call_under(apply_with, lindblad::Validation::Warn);
+        EXPECT_FALSE(out.threw)
+            << label << ": Warn threw; a policy that throws is Throw. Message: "
+            << out.message;
+        EXPECT_GE(probe.count(), 1u)
+            << label << ": Warn proceeded without reporting anything, which is "
+                        "indistinguishable from Ignore";
+    }
+    {
+        const auto out = call_under(apply_with, lindblad::Validation::Fix);
+        EXPECT_FALSE(out.threw)
+            << label
+            << ": Fix declined to repair a property that has a repair and "
+               "ships one, so the caller was refused a correction it asked for "
+               "and the library can perform. Message: "
+            << out.message;
+        EXPECT_EQ(out.message.find("no repair defined"), std::string::npos)
+            << label
+            << ": the diagnostic claims no repair exists for a property whose "
+               "repair is implemented and reachable. Got: "
             << out.message;
     }
     {

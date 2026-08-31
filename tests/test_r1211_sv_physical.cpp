@@ -33,6 +33,7 @@
 using namespace lindblad;
 using r1211::expect_accepts_valid;
 using r1211::expect_rejects_invalid;
+using r1211::expect_repairs_invalid;
 using r1211::expect_tolerance_is_honoured;
 using r1211::WarningProbe;
 
@@ -109,7 +110,7 @@ Instruction make_unitary_instruction(const std::vector<Complex128>& m,
 // =============================================================================
 
 TEST(R1211SvKernel, SingleQubitPolicyMatrix) {
-    expect_rejects_invalid("apply_unitary k=1", [](ValidationOptions v) {
+    expect_repairs_invalid("apply_unitary k=1", [](ValidationOptions v) {
         Statevector sv(3);
         gates::apply_unitary(sv, {1}, bad_1q(), v);
     });
@@ -120,7 +121,7 @@ TEST(R1211SvKernel, SingleQubitPolicyMatrix) {
 }
 
 TEST(R1211SvKernel, TwoQubitPolicyMatrix) {
-    expect_rejects_invalid("apply_unitary k=2", [](ValidationOptions v) {
+    expect_repairs_invalid("apply_unitary k=2", [](ValidationOptions v) {
         Statevector sv(4);
         gates::apply_unitary(sv, {0, 2}, bad_2q(), v);
     });
@@ -131,7 +132,7 @@ TEST(R1211SvKernel, TwoQubitPolicyMatrix) {
 }
 
 TEST(R1211SvKernel, ThreeQubitPolicyMatrix) {
-    expect_rejects_invalid("apply_unitary k=3", [](ValidationOptions v) {
+    expect_repairs_invalid("apply_unitary k=3", [](ValidationOptions v) {
         Statevector sv(4);
         gates::apply_unitary(sv, {0, 1, 3}, bad_3q(), v);
     });
@@ -211,7 +212,7 @@ TEST(R1211SvKernel, IgnoreStillAppliesTheMatrix) {
 // =============================================================================
 
 TEST(R1211SvCircuitIngress, PolicyMatrixAtIngress) {
-    expect_rejects_invalid("QuantumCircuit::unitary", [](ValidationOptions v) {
+    expect_repairs_invalid("QuantumCircuit::unitary", [](ValidationOptions v) {
         QuantumCircuit qc(2);
         qc.unitary(bad_1q(), {0}, "probe", v);
     });
@@ -407,7 +408,7 @@ TEST(R1211SvDispatch, ThreeArgumentFormOverridesTheInstructionsPolicy) {
 
 TEST(R1211SvDispatch, PolicyMatrixThroughTheDispatcher) {
     StatevectorSimulator sim;
-    expect_rejects_invalid("apply_instruction", [&sim](ValidationOptions v) {
+    expect_repairs_invalid("apply_instruction", [&sim](ValidationOptions v) {
         Statevector sv(2);
         auto inst = make_unitary_instruction(bad_1q(), {0});
         sim.apply_instruction(sv, inst, v);

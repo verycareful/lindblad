@@ -177,9 +177,10 @@ inline bool enforce_physical_repairable(double deviation,
 // accepted on one build and rejected on another.
 //
 // The policy dispatch below stays inline and stays under the project-wide
-// flags; only the arithmetic is quarantined. Same pattern as the mps_sim.cpp
-// and NLopt quarantines: numerical ALGORITHMS need IEEE semantics, kernel
-// arithmetic keeps fast-math.
+// flags; only the arithmetic is quarantined. Same pattern as the vendored NLopt
+// and the decomposition backend: a numerical ALGORITHM whose result decides an
+// accept or a reject needs IEEE semantics, while kernel arithmetic keeps
+// fast-math.
 
 // max |(U†U - I)_ij|. U†U is Hermitian, so entry (j,i) is the conjugate of
 // (i,j) and carries the same magnitude; walking the upper triangle halves the

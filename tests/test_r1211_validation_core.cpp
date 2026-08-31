@@ -28,7 +28,9 @@
 #include <vector>
 
 using namespace lindblad;
+using detail::DENSITY_NORMALIZATION;
 using detail::KRAUS_TRACE_PRESERVING;
+using detail::STATE_NORMALIZATION;
 using detail::SUPEROP_TRACE_PRESERVING;
 using detail::UNITARITY;
 
@@ -505,10 +507,16 @@ TEST(R1211Dispatch, WarnReportsOnceAndProceeds) {
     }
 }
 
-TEST(R1211Dispatch, FixReportsThatNoRepairExists) {
-    // Every property is unrepaired in this release. A Fix that quietly did
-    // nothing would return an unphysical result under a policy that promised a
-    // correction, so it must say so instead.
+// Fix has two dispatchers, and which one an entry point calls is the whole of
+// whether a repair happens. The pair below states both halves, because either
+// alone reads as a claim about the properties rather than about the routing.
+//
+// enforce_physical is the non-repairing one. It holds no repair for ANY
+// property, so under Fix it says so and throws; a Fix that quietly did nothing
+// would return an unphysical result under a policy that promised a correction.
+// This is a fact about the dispatcher and not about which properties are
+// repairable, and the test below covers that.
+TEST(R1211Dispatch, TheNonRepairingDispatcherSaysItHoldsNoRepair) {
     for (const auto& prop : {UNITARITY, KRAUS_TRACE_PRESERVING,
                              SUPEROP_TRACE_PRESERVING}) {
         const auto out = dispatch(1e-6, {Validation::Fix, 1e-12}, prop);
@@ -516,8 +524,49 @@ TEST(R1211Dispatch, FixReportsThatNoRepairExists) {
         EXPECT_NE(out.message.find("no repair defined"), std::string::npos)
             << "got: " << out.message;
         EXPECT_NE(out.message.find(prop.noun), std::string::npos)
-            << "the message must name which property has no repair; got: "
+            << "the message must name which property it could not repair; got: "
             << out.message;
+    }
+}
+
+// enforce_physical_repairable is what an entry point calls when the property
+// HAS a repair, and its Fix branch returns true so the caller performs one.
+// Three properties reach it: unitarity through the polar projection, and both
+// normalizations through division by what the object actually sums to.
+//
+// Trace preservation is deliberately absent. There is no cheap canonical
+// nearest trace-preserving Kraus set: unlike unitarity, which has the polar
+// factor as a unique closed-form answer, it is a constrained optimisation over
+// the whole operator list. Reporting beats guessing.
+TEST(R1211Dispatch, TheRepairingDispatcherHandsFixBackToTheCaller) {
+    for (const auto& prop : {UNITARITY, STATE_NORMALIZATION,
+                             DENSITY_NORMALIZATION}) {
+        EXPECT_TRUE(detail::enforce_physical_repairable(
+            1e-6, {Validation::Fix, 1e-12}, CTX, prop))
+            << prop.noun
+            << ": Fix did not ask the caller to repair a property that has a "
+               "repair";
+        EXPECT_FALSE(detail::enforce_physical_repairable(
+            1e-15, {Validation::Fix, 1e-12}, CTX, prop))
+            << prop.noun
+            << ": an operand already inside tolerance was sent for repair, "
+               "which costs a factorisation and changes nothing";
+    }
+}
+
+TEST(R1211Dispatch, TheRepairingDispatcherLeavesTheOtherPoliciesAlone) {
+    // Only Fix differs between the two dispatchers. Throw still rejects, Warn
+    // still reports without repairing, and neither may quietly become the
+    // repairing path just because one is available.
+    EXPECT_THROW(detail::enforce_physical_repairable(
+                     1e-6, {Validation::Throw, 1e-12}, CTX, UNITARITY),
+                 std::invalid_argument);
+    {
+        WarningCapture cap;
+        EXPECT_FALSE(detail::enforce_physical_repairable(
+            1e-6, {Validation::Warn, 1e-12}, CTX, UNITARITY))
+            << "Warn asked for a repair; Warn describes and does not repair";
+        EXPECT_GE(cap.lines().size(), 1u) << "Warn reported nothing";
     }
 }
 

@@ -4,6 +4,162 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.24.1] - 2026-08-31
+
+The test wave for the Eigen seam, the unitary repair (#57) and the verified
+statevector reconstruction (#93). It closes the four contract tests the previous
+release shipped red, and it deliberately ships twenty-four more, because writing
+them turned up two places where the library's own diagnostics say something that
+is not true.
+
+The seam brought its own problem with it. Routing every decomposition through
+one strict translation unit fixed the library; the test binary was never fixed,
+so its per-file floating-point flags governed nothing and any suite judging
+Eigen from inside it was reading link order. That is repaired here, and the two
+structural properties the seam rests on are now enforced by walking the tree
+rather than by having been checked once.
+
+### Tests
+
+- **The decomposition seam's own contract.** Thin shapes, reconstruction,
+  descending singular values, orthonormal factors, `V` returned as `V` rather
+  than its adjoint, both backends agreeing on a spectrum, refusal on non-finite
+  input, ascending eigenvalues, the spectrum-only path, and the reconstruction
+  residual against the weight a truncation discarded. The storage-order
+  parameter is asserted through reconstruction and never through the spectrum,
+  because reading a square buffer in the wrong order yields the transpose and a
+  transpose carries identical singular values; only the vectors differ. Every
+  fixture is deliberately non-symmetric for the same reason, and the
+  self-adjoint case is deliberately complex, since a real Hermitian matrix is
+  its own transpose and cannot detect the flip at all.
+
+- **The library's own dense storage, and the qudit matricisations that now
+  cross it.** Column-major layout asserted against the buffer, since that is
+  what lets a factor reach the backend without a transpose, plus both site
+  tensor reshapes round-tripped over every index triple rather than at one
+  value, on shapes whose three dimensions are all different. A conversion that
+  touches only element access is exactly the kind that transposes an index and
+  returns something wrong, finite and self-consistent.
+
+- **The unitary repair (#57).** The projection lands inside tolerance; the
+  distance to it equals the sum of squared deviations of the spectrum from one,
+  which is what makes "nearest" an assertion rather than a description; a
+  refused repair leaves the caller's buffer byte-identical rather than partly
+  written; and repairing one instruction does not rewrite a sibling sharing the
+  same copy-on-write buffer, which is a guarantee about instructions the caller
+  never mentioned.
+
+- **The truncation accounting, and the reconstruction path that now shares it
+  (#93).** Weight the bond cap or the budget dropped, weight the rescue's floor
+  rejected, and the distinction between them, over a fixture whose singular
+  values are exact powers of two so every expected weight is exact. The
+  statevector reconstruction is exercised at a cap it genuinely exceeds, which
+  the existing coverage could not do: its only test routed a three-qubit gate
+  whose bond dimension never approached the cap, so the truncating path was
+  never entered.
+
+- **Two structural rules, enforced by walking the tree.** No header names an
+  Eigen type, and no translation unit outside the backend instantiates a
+  decomposition. Both were established and then checked by hand once. The
+  second is an allow-list rather than a search for a forbidden spelling,
+  because the failure is a new instantiation somewhere nobody thought to look;
+  a third case fails if an allow-list entry stops matching real code, so an
+  exemption cannot outlive the thing it exempts.
+
+- **The frozen reproducers, and a pin suite that measures one thing.** The two
+  matrices behind the historical SVD failures (#44 and the degenerate
+  divide-and-conquer case) are committed as exact literals
+  and the pin suite is split: one half puts frozen literals to the pinned Eigen,
+  where a failure is attributable to the dependency alone, and the other keeps
+  the inputs this library builds, where a failure may belong to either side.
+  The two answer different questions and used to share a name. A drift check
+  compares the built block's spectrum against the frozen one, which is what
+  freezing a reproducer buys.
+
+- **Every remaining test that printed a number instead of judging it.** A
+  full-pipeline period-finding diagnostic ended in an unconditional pass while
+  computing, and discarding, the recovery count; it now derives the order and
+  requires every peak to land on the lattice that order predicts. The qudit
+  truncation probe asserted only that its amplitudes were finite, which is blind
+  to the failure mode this library keeps meeting, since #91 retained a sixteenth
+  of its overlap with every amplitude finite. Both backends are now asserted on
+  the degenerate reference matrix rather than one being printed as
+  documentation. And the margin sweeps record every point rather than the worst,
+  so a capture carries the growth curve instead of one number from its end.
+
+### Fixed
+
+- **The test binary merged Eigen instantiations across translation units, so
+  its per-file strict floating-point flags governed nothing.** Eigen is
+  header-only, its instantiations carry vague linkage, and the linker keeps one
+  definition per mangled name for the whole binary with compile flags no part of
+  that name. Three sites in the shared diagnostic helpers now call the library's
+  backend instead of instantiating their own, leaving one emitter in the tree.
+  The build comment asserting the flag delivered IEEE semantics to Eigen is
+  corrected; the neighbouring comment about a second pair is not, because those
+  helpers contain no Eigen and that pair is a genuine two-model experiment.
+
+- **Comments describing a floating-point quarantine that no longer exists.**
+  Two files justified measuring a norm through a chain contraction on the
+  grounds that the translation unit was compiled under strict floating point and
+  the result was therefore target-independent. Those files took the
+  project-wide flags in the previous release, so the claim was false and the
+  conclusion drawn from it was the opposite of the truth. The real reason is
+  that a matrix product state holds no flat amplitude array, so there is no sum
+  to quarantine.
+
+- **Header comments naming the previous SVD default.** Two in the qubit
+  simulator called the divide-and-conquer backend a broken opt-in, one line
+  above a field initialised to it, and an API page showed the same in a struct
+  listing that its own prose contradicted two lines below.
+
+### Deliberately failing
+
+Twenty-four tests fail on purpose, identically on both compilers. They assert
+behaviour the library does not have yet, and each is closed by a library change
+already scoped.
+
+- **Seventeen say `Validation::Fix` should repair unitarity wherever it is
+  asked to.** The repair exists and ships: the nearest unitary in the Frobenius
+  sense, obtained from one thin decomposition. Exactly one of the entry points
+  that check unitarity applies it. The rest report that no repair is defined for
+  a property that demonstrably has one, and narrowing that message is not
+  available either, because the simulator entry points are public and reached
+  with no circuit above them, so there is no earlier point at which the repair
+  could have happened. This is #87 seen from the other side: the pre-flight that
+  reads a policy once per run is `const` and so cannot repair either.
+
+- **One says a circuit should reject a wrong-sized matrix when it is handed
+  one.** Every neighbouring builder does: the permutation builder refuses a
+  container whose size is wrong, whose images are out of range, or which is not
+  a bijection, and the multi-control builders refuse a control equal to its
+  target or an empty qubit list. The unitary builder validates its qubit indices
+  the same way and then stores a structurally invalid matrix without comment,
+  leaving it in a public vector for anything reading the circuit to find.
+
+### Results
+
+2631 tests across 243 suites, 2606 passed, 24 failed by design and 1 skipped,
+on Clang 18.1.3 (31.4 s) and GCC 13.3.0 (23.0 s) under Ubuntu 24.04 at the
+documented native build. Both compilers produced identical failure lists. The
+gap between the two is #72, still observed.
+
+The skip is the large-register margin sweep, which needs about 17.2 GB at 30
+qubits and is opt-in rather than absent.
+
+One measurement is worth recording, because it decided what a test could
+assert. Fidelity against a dense reference after a long truncating gate path is
+not comparable across builds: two runs at different bond caps diverge after the
+first truncation and approximate different trajectories thereafter, so deep in
+the truncated regime the value is codegen-dependent. Measured on both compilers
+at matched flags, the two smallest caps differ by factors of 3 and 8, a middle
+cap by 14 percent, the largest truncating cap by 0.33 percent, and the covering
+cap not at all. Each build is internally deterministic over twenty runs, so the
+spread is code generation rather than instability. The truncation tests
+therefore assert integers, sign changes, a bound derived from the run's own
+reported budget, and exactness where no truncation occurs.
+
+
 ## [1.1.24.0] - 2026-08-31
 
 Eigen moves behind a seam, and that turns out to be a correctness change rather

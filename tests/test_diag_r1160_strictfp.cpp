@@ -1,25 +1,26 @@
-// TEMPORARY DIAGNOSTIC (R.1.16.0, issue #44) — STRICT-FP twin.
+// The R.1.16.0 (#44) diagnostic's strict leg.
 //
-// This TU is compiled with -fno-fast-math (per-source override in
-// tests/CMakeLists.txt) while test_diag_r1160_mps_shor.cpp compiles under
-// the project-wide -ffast-math. Eigen is header-only, so each TU
-// instantiates JacobiSVD/BDCSVD under its own flags: identical inputs,
-// identical Eigen version, only the FP model differs. Together the two
-// suites answer, with everything else held constant:
-//   1. Does JacobiSVD on the EXACT first-NaN Shor matrix (poison theta)
-//      misbehave under fast-math and behave under strict FP?  -> #44 root
-//      cause is the FP model, and strict-FP on mps_sim.cpp is the fix.
-//   2. Does BDCSVD on the R.1.11.2 bug matrix (36x36 degenerate complex)
-//      recover under strict FP?  -> the "Eigen BDCSVD accuracy bug"
-//      (local note, worked around via JacobiSVD) was a fast-math casualty,
-//      not an Eigen defect — re-evaluate BDC after the fix.
-//      If it stays wrong here, it is a genuine Eigen bug and the note's
-//      upstream-report plan stands.
+// This TU compiles -fno-fast-math (per-source override in tests/CMakeLists.txt)
+// while test_diag_r1160_mps_shor.cpp compiles the same shared helpers under the
+// project-wide -ffast-math. The flag governs THIS FILE's arithmetic: how it
+// reads a factorisation into a report and how it evaluates an assertion.
 //
-// A third check calls the LIBRARY's own gate application (lindblad_core is
-// compiled with fast-math regardless of this TU's flags): it must still
-// corrupt, proving the defect lives in the library TU's codegen, not in
-// anything this test does differently.
+// It does not govern Eigen's, and no per-file flag can. Eigen is header-only,
+// so its instantiations carry vague linkage: every naming TU emits its own weak
+// symbol, the linker keeps one per binary chosen by mangled name, and compile
+// flags are no part of that name. Every factorisation these two suites perform
+// therefore goes through lindblad::detail::eigen_backend, which is strict
+// inside its own translation unit and is the tree's only emitter.
+// test_v11241_seam_rules.cpp fails if a second one appears.
+//
+// What the pair still answers is narrower than it once claimed, and still worth
+// having: whether the SUITE's own reading of a factorisation depends on the
+// floating-point model it was compiled under. Two legs agreeing is what makes
+// these reports evidence rather than an artifact of the flags the reader was
+// built with.
+//
+// The three probes below the retired marker are the audit trail of the
+// R.1.16.0 investigation and are not compiled.
 
 #include <gtest/gtest.h>
 
@@ -59,7 +60,7 @@ TEST(DiagR1160StrictFP, JacobiPoisonKeptSliceIsCleanAndExact) {
     ASSERT_FALSE(matrix_bad(theta)) << "poison theta reconstruction corrupt "
                                        "before any SVD — library evolution "
                                        "differs from the probe run";
-    const auto r = run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(theta);
+    const auto r = run_svd_report(theta, lindblad::SVDMethod::Jacobi);
     print_report("strict/jacobi/poison", r);
 
     EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-12);
@@ -74,8 +75,8 @@ TEST(DiagR1160StrictFP, JacobiPoisonKeptSliceIsCleanAndExact) {
 TEST(DiagR1160StrictFP, BdcOnR1112BugMatrix) {
     const auto M = build_bdcsvd_bug_matrix();
     ASSERT_FALSE(matrix_bad(M));
-    const auto rb = run_svd_report<Eigen::BDCSVD<Eigen::MatrixXcd>>(M);
-    const auto rj = run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(M);
+    const auto rb = run_svd_report(M, lindblad::SVDMethod::BDC);
+    const auto rj = run_svd_report(M, lindblad::SVDMethod::Jacobi);
     print_report("strict/bdc/simon36", rb);
     print_report("strict/jacobi/simon36", rj);
 
@@ -140,7 +141,7 @@ TEST(DiagR1160StrictFP, LibraryGateApplicationStillCorruptsUnderItsOwnFlags) {
 TEST(R1161StrictFP, PoisonThetaKeptSliceContract) {
     const auto theta = build_poison_theta();
     ASSERT_FALSE(matrix_bad(theta));
-    const auto r = run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(theta);
+    const auto r = run_svd_report(theta, lindblad::SVDMethod::Jacobi);
     print_report("r1161-strict/jacobi/poison", r);
 
     const bool accepted = !r.kept_slice_bad && r.trunc_recon_err >= 0.0 &&
@@ -162,21 +163,37 @@ TEST(R1161StrictFP, PoisonThetaKeptSliceContract) {
     }
 }
 
-// Strict-FP twin of R1161MpsShor.Simon36JacobiReference. The BDCSVD leg
-// stays print-only: the R.1.16.0 diagnosis showed it bit-identically wrong
-// under strict FP (a genuine Eigen 3.4.0 defect, tracked for upstream
-// reporting); if a future Eigen fixes it, this printout is how we notice.
+// Twin of R1161MpsShor.Simon36JacobiReference.
+// Both backends are asserted. The 36x36 Simon residual is the matrix whose
+// BDCSVD factorisation violated the Frobenius identity on Eigen 3.4.0, returning
+// a spurious singular value in place of a real one while every entry stayed
+// finite. The pinned Eigen returns the correct spectrum, so the leg that used to
+// be printed is now held to the same bar as the reference, and a pin that
+// reintroduces the defect fails here rather than being noticed in a printout.
+//
+// The Frobenius identity is what carries these assertions. A wrong spectrum that
+// is entirely finite has nothing to pattern-match on: only the norm catches it,
+// which is why the sum is compared against the matrix rather than the factors
+// being scanned.
 TEST(R1161StrictFP, Simon36JacobiReference) {
     const auto M = build_bdcsvd_bug_matrix();
     ASSERT_FALSE(matrix_bad(M));
-    const auto rj = run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(M);
-    const auto rb = run_svd_report<Eigen::BDCSVD<Eigen::MatrixXcd>>(M);
+    const auto rj = run_svd_report(M, lindblad::SVDMethod::Jacobi);
+    const auto rb = run_svd_report(M, lindblad::SVDMethod::BDC);
     print_report("r1161-strict/jacobi/simon36", rj);
-    print_report("r1161-strict/bdc/simon36", rb);  // documentation only
-    EXPECT_FALSE(rj.corrupt);
-    EXPECT_EQ(rj.rank, 12);
-    EXPECT_NEAR(rj.sum_sq, rj.frob_sq, 1e-10);
-    EXPECT_LT(rj.recon_err, 1e-10);
+    print_report("r1161-strict/bdc/simon36", rb);
+    for (const auto* leg : {&rj, &rb}) {
+        const bool jacobi = (leg == &rj);
+        const char* which = jacobi ? "jacobi" : "bdc";
+        EXPECT_FALSE(leg->corrupt) << which << ": factorisation corrupt";
+        EXPECT_EQ(leg->rank, 12) << which << ": retained rank";
+        EXPECT_NEAR(leg->sum_sq, leg->frob_sq, 1e-10)
+            << which << ": sum of sigma^2 is " << leg->sum_sq
+            << " against ||M||_F^2 " << leg->frob_sq
+            << ", so the spectrum is wrong rather than imprecise";
+        EXPECT_LT(leg->recon_err, 1e-10)
+            << which << ": U S V^H does not reconstruct M";
+    }
 }
 
 // The library's own evolution through the original poison region must now

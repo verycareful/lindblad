@@ -32,6 +32,7 @@
 using namespace lindblad;
 using r1211::expect_accepts_valid;
 using r1211::expect_rejects_invalid;
+using r1211::expect_repairs_invalid;
 using r1211::expect_tolerance_is_honoured;
 
 namespace {
@@ -95,7 +96,7 @@ std::size_t pow_size(int d, int k) {
 
 TEST(R1211QuditSv, Apply1quditPolicyMatrix) {
     const int d = 3;
-    expect_rejects_invalid("QuditStatevector::apply_1qudit", [](ValidationOptions v) {
+    expect_repairs_invalid("QuditStatevector::apply_1qudit", [](ValidationOptions v) {
         QuditStatevector sv(4, d);
         sv.apply_1qudit(1, bad_matrix(pow_size(d, 1)), v);
     });
@@ -107,7 +108,7 @@ TEST(R1211QuditSv, Apply1quditPolicyMatrix) {
 
 TEST(R1211QuditSv, Apply2quditPolicyMatrix) {
     const int d = 3;
-    expect_rejects_invalid("QuditStatevector::apply_2qudit", [](ValidationOptions v) {
+    expect_repairs_invalid("QuditStatevector::apply_2qudit", [](ValidationOptions v) {
         QuditStatevector sv(4, d);
         sv.apply_2qudit(0, 2, bad_matrix(pow_size(d, 2)), v);
     });
@@ -119,7 +120,7 @@ TEST(R1211QuditSv, Apply2quditPolicyMatrix) {
 
 TEST(R1211QuditSv, ApplyKquditPolicyMatrix) {
     const int d = 3;
-    expect_rejects_invalid("QuditStatevector::apply_kqudit", [](ValidationOptions v) {
+    expect_repairs_invalid("QuditStatevector::apply_kqudit", [](ValidationOptions v) {
         QuditStatevector sv(4, d);
         sv.apply_kqudit({0, 1, 3}, bad_matrix(pow_size(d, 3)), v);
     });
@@ -180,7 +181,7 @@ TEST(R1211QuditSv, StructureCheckSurvivesIgnore) {
 
 TEST(R1211QuditMps, Apply1quditPolicyMatrix) {
     const int d = 3;
-    expect_rejects_invalid("QuditMPS::apply_1qudit", [](ValidationOptions v) {
+    expect_repairs_invalid("QuditMPS::apply_1qudit", [](ValidationOptions v) {
         QuditMPS mps(4, d);
         mps.apply_1qudit(1, bad_matrix(pow_size(d, 1)), v);
     });
@@ -192,7 +193,7 @@ TEST(R1211QuditMps, Apply1quditPolicyMatrix) {
 
 TEST(R1211QuditMps, Apply2quditAdjacentPolicyMatrix) {
     const int d = 3;
-    expect_rejects_invalid("QuditMPS::apply_2qudit_adjacent", [](ValidationOptions v) {
+    expect_repairs_invalid("QuditMPS::apply_2qudit_adjacent", [](ValidationOptions v) {
         QuditMPS mps(4, d);
         mps.apply_2qudit_adjacent(1, bad_matrix(pow_size(d, 2)), v);
     });
@@ -204,7 +205,7 @@ TEST(R1211QuditMps, Apply2quditAdjacentPolicyMatrix) {
 
 TEST(R1211QuditMps, Apply2quditPolicyMatrix) {
     const int d = 3;
-    expect_rejects_invalid("QuditMPS::apply_2qudit", [](ValidationOptions v) {
+    expect_repairs_invalid("QuditMPS::apply_2qudit", [](ValidationOptions v) {
         QuditMPS mps(4, d);
         mps.apply_2qudit(0, 3, bad_matrix(pow_size(d, 2)), v);
     });
@@ -243,7 +244,7 @@ TEST(R1211QuditMps, CheckHoldsAcrossDimensions) {
 
 TEST(R1211QuditDm, Apply1quditPolicyMatrix) {
     const int d = 3;
-    expect_rejects_invalid("QuditDensityMatrix::apply_1qudit", [](ValidationOptions v) {
+    expect_repairs_invalid("QuditDensityMatrix::apply_1qudit", [](ValidationOptions v) {
         QuditDensityMatrix rho(3, d);
         rho.apply_1qudit(1, bad_matrix(pow_size(d, 1)), v);
     });
@@ -255,7 +256,7 @@ TEST(R1211QuditDm, Apply1quditPolicyMatrix) {
 
 TEST(R1211QuditDm, Apply2quditPolicyMatrix) {
     const int d = 3;
-    expect_rejects_invalid("QuditDensityMatrix::apply_2qudit", [](ValidationOptions v) {
+    expect_repairs_invalid("QuditDensityMatrix::apply_2qudit", [](ValidationOptions v) {
         QuditDensityMatrix rho(3, d);
         rho.apply_2qudit(0, 2, bad_matrix(pow_size(d, 2)), v);
     });

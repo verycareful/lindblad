@@ -12,13 +12,13 @@
 //                        the state <= max_bond_dim, so fidelity against the
 //                        dense reference MUST be 1 and any deviation is a
 //                        defect of the R.1.16.0 class);
-//   R1161QuditFrontier — probes at and beyond the exact regime, print-only
-//                        verdicts plus known-good invariants (finiteness,
-//                        norm). If a frontier probe reports a
-//                        manifestation, port the R.1.16.0
-//                        select-verify-fallback to qudit_mps.cpp (tracked
-//                        as the latent-pattern TODO item) and promote the
-//                        probe to an assertion in that release.
+//   R1161QuditFrontier — cases at and beyond the exact regime. Values are
+//                        still printed, because the fidelity curve is worth
+//                        reading, but each is also asserted: inside the exact
+//                        regime against 1, and beyond it against the
+//                        monotonicity of the cap, which holds whatever the
+//                        state and so needs no expected number carried over
+//                        from a previous run.
 //
 // All gates go through the GATE path (apply_1qudit / apply_2qudit), not the
 // dense constructor, because the two-site SVD split is the code under test.
@@ -95,6 +95,31 @@ struct GateOp {
     int q0, q1;
     const std::vector<Complex128>* U;
 };
+
+// The widest bond the run actually reached. An integer, so unlike a fidelity it
+// is identical on every compiler and every flag setting, which is what makes it
+// usable as the guard on a truncating path.
+int gate_path_max_bond(int n, int d, const std::vector<GateOp>& ops,
+                       int max_bond, double* discarded_out = nullptr,
+                       double* dust_bound_out = nullptr) {
+    QuditMPS mps(n, d, max_bond);
+    for (const auto& op : ops) {
+        if (op.two) mps.apply_2qudit(op.q0, op.q1, *op.U);
+        else        mps.apply_1qudit(op.q0, *op.U);
+    }
+    if (discarded_out) *discarded_out = mps.truncation_error();
+    // The most a run can discard without the cap ever binding. svd_cutoff is a
+    // FRACTION of a block's weight, each block of a normalised state carries at
+    // most unit weight, and truncation_error() sums one contribution per split.
+    // So the budget alone cannot account for more than cutoff * splits, and a
+    // covering cap has nothing else to reject with.
+    if (dust_bound_out)
+        *dust_bound_out =
+            mps.svd_cutoff * static_cast<double>(mps.svd_call_count());
+    int widest = 1;
+    for (const auto& t : mps.tensors) widest = std::max(widest, t.chi_R);
+    return widest;
+}
 
 double gate_path_fidelity(int n, int d, const std::vector<GateOp>& ops,
                           int max_bond, bool* corrupt_out = nullptr) {
@@ -232,7 +257,7 @@ TEST(R1161QuditStress, LongSeededChainExact) {
 }
 
 // =============================================================================
-// R1161QuditFrontier — probes; print verdicts, assert only known-good bars
+// R1161QuditFrontier — at and beyond the exact regime; values printed, all asserted
 // =============================================================================
 
 // Simon-style state one size beyond the R.1.11.2 case (n=3 query digits at
@@ -274,14 +299,16 @@ TEST(R1161QuditFrontier, SimonD6N3RoundTripProbe) {
               << "[qudit-frontier] Simon d=6 n=3 round trip: fid=" << fid
               << "  norm^2=" << norm_sq
               << (corrupt ? "  <-- NON-FINITE" : "") << "\n";
-    std::cout << "[qudit-frontier] verdict: "
-              << ((corrupt || fid < 0.999999)
-                      ? "MANIFESTATION — port the R.1.16.0 fix to qudit_mps"
-                      : "clean")
-              << "\n";
-    // Known-good bars only (the fid is the probe's informational payload).
     EXPECT_FALSE(corrupt);
     EXPECT_NEAR(norm_sq, 1.0, 1e-6);
+    // This case is INSIDE the exact regime, so its fidelity is not
+    // informational. Every bond of a 3-site chain carries Schmidt rank at most
+    // d = 6, far under the cap of 64, so nothing truncates and the round trip
+    // is lossless in exact arithmetic. A shortfall is a defect rather than a
+    // cost of truncation, which is why it is asserted and not printed.
+    EXPECT_NEAR(fid, 1.0, 1e-9)
+        << "a dense round trip that truncates nothing lost overlap with the "
+           "state it came from";
 }
 
 // Deliberately BEYOND the exact regime: d=3, n=8 (chi_max = 81 > cap 64),
@@ -303,12 +330,108 @@ TEST(R1161QuditFrontier, BeyondExactRegimeTruncationProbe) {
         ops.push_back({true, a, b, (step % 2 == 0) ? &SUM : &CP});
     }
 
-    bool corrupt = false;
-    const double fid = gate_path_fidelity(n, d, ops, 64, &corrupt);
-    std::cout << std::fixed << std::setprecision(12)
-              << "[qudit-frontier] beyond-exact d=3 n=8 (chi_max 81 > 64): "
-                 "fid vs dense = "
-              << fid << (corrupt ? "  <-- NON-FINITE" : "") << "\n";
-    EXPECT_FALSE(corrupt)
-        << "truncation may lose fidelity but must NEVER produce garbage";
+    // The only qudit case where truncation actually engages, so it is the only
+    // guard the qudit truncation path has. A non-finite check cannot be that
+    // guard: the failure this library keeps meeting is an answer that is
+    // finite, self-consistent and wrong, and #91 retained a sixteenth of its
+    // overlap with every amplitude finite.
+    //
+    // WHAT IS PROVEN HERE, and what is not, because the distinction decides
+    // which assertions are worth anything.
+    //
+    // There is no independent reference for a TRUNCATED result. The dense
+    // statevector is the reference for the exact one, and nothing in the tree
+    // can say what fidelity a given cap ought to produce. So a fidelity value
+    // in the truncated regime cannot be checked for correctness, only for
+    // change. truncation_error() does not close that gap either: it is a
+    // running sum of discarded weight over every split, documented as such, and
+    // it reaches 53.7 here across eighty gates, so the textbook
+    // fidelity >= 1 - discarded bound is vacuous.
+    //
+    // Nor is an ordering across caps assertable. Two runs at different caps
+    // diverge after the first truncation and approximate different
+    // trajectories, so deep in the truncated regime the value is numerical
+    // noise: measured on two compilers at matched flags, the two smallest caps
+    // differ by 3x and 8x, chi=32 by 14%, chi=64 by 0.33%, and chi=81 not at
+    // all. Each build is internally deterministic, twenty runs apiece, so the
+    // spread is codegen rather than instability.
+    //
+    // What IS proven is the pairing at the exact cap: the library reports
+    // discarding exactly nothing AND reproduces the dense state exactly. Either
+    // alone is weak, since a broken path could report zero while losing weight,
+    // or lose nothing while miscounting. Together they tie the accounting to
+    // the outcome at the one point where both are known.
+    int exact_chi = 1;
+    for (int i = 0; i < n / 2; ++i) exact_chi *= d;  // 3^4 = 81
+
+    for (int cap : {2, 8, 32, 64, exact_chi}) {
+        bool corrupt = false;
+        const double f = gate_path_fidelity(n, d, ops, cap, &corrupt);
+        double discarded = 0.0, dust_bound = 0.0;
+        const int widest =
+            gate_path_max_bond(n, d, ops, cap, &discarded, &dust_bound);
+        std::cout << std::fixed << std::setprecision(12)
+                  << "[qudit-frontier] d=3 n=8 chi=" << cap
+                  << " fid=" << f << " widest bond=" << widest
+                  << " discarded=" << discarded
+                  << (corrupt ? "  <-- NON-FINITE" : "") << std::endl;
+
+        ASSERT_FALSE(corrupt)
+            << "chi=" << cap << ": truncation may lose fidelity but must "
+            << "NEVER produce garbage";
+        EXPECT_GE(f, 0.0) << "chi=" << cap;
+        EXPECT_LE(f, 1.0 + 1e-9)
+            << "chi=" << cap << ": overlap with the dense state exceeded unity";
+        EXPECT_GE(discarded, 0.0)
+            << "chi=" << cap << ": negative discarded weight";
+
+        if (cap >= exact_chi) {
+            // The pairing. A cap covering every Schmidt direction the state
+            // can carry has nothing to reject beyond the weight budget's dust,
+            // and a path that rejected only dust must reproduce the reference.
+            // Bounded rather than compared to zero: the weight budget is a
+            // fraction and remains in force at any cap, so a covering run may
+            // still shed dust. The bound is what that budget can account for,
+            // derived from the cutoff and the split count the run reports.
+            EXPECT_LE(discarded, dust_bound)
+                << "a cap of " << cap << " covers d^(n/2) = " << exact_chi
+                << ", so the only thing left to reject with is the weight "
+                << "budget, which cannot account for more than " << dust_bound
+                << "; it discarded " << discarded << " instead, which means "
+                << "the cap bound something it should not have";
+            EXPECT_NEAR(f, 1.0, 1e-9)
+                << "nothing was discarded and the state still moved, so the "
+                   "loss is in the contraction or the factorisation rather "
+                   "than in truncation";
+        } else {
+            // And below it the case must genuinely truncate, or the assertions
+            // above are describing a path that never engages.
+            EXPECT_GT(discarded, 0.0)
+                << "chi=" << cap << " discarded nothing, so this case is not "
+                << "beyond the exact regime and proves nothing about it";
+            EXPECT_EQ(widest, cap)
+                << "chi=" << cap << ": the widest bond came back at " << widest
+                << " rather than at the cap, so something other than the cap "
+                << "bounded the selection. That is the shape of a rank chosen "
+                << "from a comparison that failed rather than from the budget.";
+        }
+    }
+
+    // A regression guard, and ONLY that. It pins the deepest cap whose value is
+    // stable enough to pin: 0.3797 on clang and 0.3785 on gcc, agreeing to
+    // 0.33%, each reproducible over twenty runs. The floor sits at the
+    // geometric midpoint between that and a #91-class collapse, which retained
+    // a sixteenth, so there is a factor of four of room on each side.
+    //
+    // This does NOT establish that the value is right. Nothing here can. It
+    // catches a large regression away from what the library produces today, and
+    // an independent reference for a truncated result is recorded as an open
+    // coverage gap.
+    bool corrupt64 = false;
+    const double f64 = gate_path_fidelity(n, d, ops, 64, &corrupt64);
+    ASSERT_FALSE(corrupt64);
+    EXPECT_GT(f64, 0.09)
+        << "fidelity at chi=64 fell to " << f64
+        << ", four times below what both compilers produce and into the range "
+           "a rank collapse would give";
 }

@@ -391,8 +391,9 @@ void QuditMPS::normalize() {
     for (auto& v : T0.data) { v.real *= inv; v.imag *= inv; }
 }
 
-// norm_sq() is the measurement, as in the qubit MPS: this translation unit is
-// compiled under strict FP, so the contraction is already target-independent.
+// norm_sq() is the measurement, as in the qubit MPS, and for the same reason:
+// an MPS holds no flat amplitude array, so there is no sum to quarantine and the
+// chain contraction runs under the project-wide flags.
 bool QuditMPS::is_normalized(double atol) const {
     return std::abs(norm_sq() - 1.0) <= atol;
 }

@@ -498,9 +498,9 @@ TEST(DiagR1160MpsShor, FastMathSvdOnPoisonTheta) {
     ASSERT_FALSE(diag_r1160::matrix_bad(theta))
         << "poison theta reconstruction corrupt before any SVD";
     const auto rj =
-        diag_r1160::run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(theta);
+        diag_r1160::run_svd_report(theta, lindblad::SVDMethod::Jacobi);
     const auto rb =
-        diag_r1160::run_svd_report<Eigen::BDCSVD<Eigen::MatrixXcd>>(theta);
+        diag_r1160::run_svd_report(theta, lindblad::SVDMethod::BDC);
     print_svd_report("fast/jacobi/poison", rj);
     print_svd_report("fast/bdc/poison", rb);
     // No hard assertions: the values ARE the answer (see twin TU).
@@ -510,9 +510,9 @@ TEST(DiagR1160MpsShor, FastMathSvdOnR1112BugMatrix) {
     const auto M = diag_r1160::build_bdcsvd_bug_matrix();
     ASSERT_FALSE(diag_r1160::matrix_bad(M));
     const auto rb =
-        diag_r1160::run_svd_report<Eigen::BDCSVD<Eigen::MatrixXcd>>(M);
+        diag_r1160::run_svd_report(M, lindblad::SVDMethod::BDC);
     const auto rj =
-        diag_r1160::run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(M);
+        diag_r1160::run_svd_report(M, lindblad::SVDMethod::Jacobi);
     print_svd_report("fast/bdc/simon36", rb);
     print_svd_report("fast/jacobi/simon36", rj);
     // Expected from the R.1.11.2 note (recorded under fast-math): Jacobi
@@ -958,7 +958,7 @@ TEST(R1161MpsShor, PoisonThetaKeptSliceContract) {
     const auto theta = diag_r1160::build_poison_theta();
     ASSERT_FALSE(diag_r1160::matrix_bad(theta));
     const auto r =
-        diag_r1160::run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(theta);
+        diag_r1160::run_svd_report(theta, lindblad::SVDMethod::Jacobi);
     print_svd_report("r1161/jacobi/poison", r);
 
     const bool accepted = !r.kept_slice_bad && r.trunc_recon_err >= 0.0 &&
@@ -974,24 +974,38 @@ TEST(R1161MpsShor, PoisonThetaKeptSliceContract) {
     }
 }
 
-// Eigen-defect reproducer 2 as a standing assertion: JacobiSVD is the
-// correct reference on the R.1.11.2 Simon matrix (twelve-fold degenerate
-// spectrum). The BDCSVD leg stays PRINT-ONLY documentation — it is the
-// known-broken upstream path; if Eigen ever fixes it, the printout is how
-// we notice.
+// Both backends are asserted. The 36x36 Simon residual is the matrix whose
+// BDCSVD factorisation violated the Frobenius identity on Eigen 3.4.0, returning
+// a spurious singular value in place of a real one while every entry stayed
+// finite. The pinned Eigen returns the correct spectrum, so the leg that used to
+// be printed is now held to the same bar as the reference, and a pin that
+// reintroduces the defect fails here rather than being noticed in a printout.
+//
+// The Frobenius identity is what carries these assertions. A wrong spectrum that
+// is entirely finite has nothing to pattern-match on: only the norm catches it,
+// which is why the sum is compared against the matrix rather than the factors
+// being scanned.
 TEST(R1161MpsShor, Simon36JacobiReference) {
     const auto M = diag_r1160::build_bdcsvd_bug_matrix();
     ASSERT_FALSE(diag_r1160::matrix_bad(M));
     const auto rj =
-        diag_r1160::run_svd_report<Eigen::JacobiSVD<Eigen::MatrixXcd>>(M);
+        diag_r1160::run_svd_report(M, lindblad::SVDMethod::Jacobi);
     const auto rb =
-        diag_r1160::run_svd_report<Eigen::BDCSVD<Eigen::MatrixXcd>>(M);
+        diag_r1160::run_svd_report(M, lindblad::SVDMethod::BDC);
     print_svd_report("r1161/jacobi/simon36", rj);
-    print_svd_report("r1161/bdc/simon36", rb);  // documentation only
-    EXPECT_FALSE(rj.corrupt);
-    EXPECT_EQ(rj.rank, 12);
-    EXPECT_NEAR(rj.sum_sq, rj.frob_sq, 1e-10);
-    EXPECT_LT(rj.recon_err, 1e-10);
+    print_svd_report("r1161/bdc/simon36", rb);
+    for (const auto* leg : {&rj, &rb}) {
+        const bool jacobi = (leg == &rj);
+        const char* which = jacobi ? "jacobi" : "bdc";
+        EXPECT_FALSE(leg->corrupt) << which << ": factorisation corrupt";
+        EXPECT_EQ(leg->rank, 12) << which << ": retained rank";
+        EXPECT_NEAR(leg->sum_sq, leg->frob_sq, 1e-10)
+            << which << ": sum of sigma^2 is " << leg->sum_sq
+            << " against ||M||_F^2 " << leg->frob_sq
+            << ", so the spectrum is wrong rather than imprecise";
+        EXPECT_LT(leg->recon_err, 1e-10)
+            << which << ": U S V^H does not reconstruct M";
+    }
 }
 
 // svd_truncate's fail-loud contract: an MPS whose tensors already carry

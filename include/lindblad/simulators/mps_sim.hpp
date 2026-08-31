@@ -37,8 +37,8 @@ struct MPSTensor {
     }
 };
 
-// SVDMethod (Jacobi default, BDC opt-in-but-currently-broken) is declared in
-// types.hpp so the qubit and qudit MPS layers share one enum.
+// SVDMethod (BDC default, Jacobi selectable) is declared in types.hpp so the
+// qubit and qudit MPS layers share one enum.
 
 // =============================================================================
 // MPSState — Matrix Product State
@@ -55,9 +55,9 @@ public:
     // and on how the target rounded, so the same state could carry a different
     // bond dimension on a different CPU.
     double cutoff;
-    // SVD backend for truncation (default Jacobi; see SVDMethod). BDC is a
-    // faster opt-in that is not the default pending an upstream Eigen BDCSVD
-    // accuracy fix.
+    // SVD backend: BDC by default, faster as bond dimension grows. Jacobi is
+    // selectable and emits a one-time note that it is the slower algorithm.
+    // Shared enum lives in types.hpp.
     SVDMethod svd_method = SVDMethod::BDC;
     std::vector<MPSTensor> tensors;
 

@@ -127,18 +127,35 @@ set(LINDBLAD_TEST_SOURCES
     test_v11231_norm_sums.cpp
     test_v11231_tolerance_rules.cpp
     test_v11231_svd_ladder.cpp
+    test_v11241_eigen_backend.cpp
+    test_v11241_storage.cpp
+    test_v11241_unitary_repair.cpp
+    test_v11241_truncation.cpp
+    test_v11241_seam_rules.cpp
+    test_eigen_svd_pin.cpp
 )
 
-# Strict-FP twin of the R.1.16.0 diagnostic: Eigen is header-only, so this
-# TU's JacobiSVD/BDCSVD instantiations get IEEE semantics while the rest of
-# the suite keeps the project-wide -ffast-math. Mirrors the vendored-NLopt
-# precedent (see the nlopt target_compile_options in the top CMakeLists).
+# The R.1.16.0 diagnostic's strict leg. This flag governs the file's OWN
+# arithmetic: its report reading and its assertions evaluate under IEEE
+# semantics while its twin, test_diag_r1160_mps_shor.cpp, compiles the same
+# shared helpers under the project-wide -ffast-math.
+#
+# It does NOT hand Eigen strict semantics, and no per-file flag can. Eigen is
+# header-only, so its instantiations carry vague linkage: each naming TU emits
+# its own weak symbol and the linker keeps one per binary chosen by mangled
+# name, and compile flags are no part of that name. Every decomposition these
+# suites perform therefore goes through lindblad::detail::eigen_backend, which
+# is strict inside its own translation unit and is the tree's only emitter.
+# test_v11241_seam_rules.cpp fails if a second one appears.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     set_source_files_properties(test_diag_r1160_strictfp.cpp PROPERTIES
         COMPILE_OPTIONS "-fno-fast-math")
 
-    # The strict-FP leg of the non-finite sentinel suite. Same mechanism, same
-    # reason. r1201_fp_checks.hpp is header-only so this TU compiles the shared
+    # The strict-FP leg of the non-finite sentinel suite. This one IS a genuine
+    # two-leg experiment, because r1201_fp_checks.hpp contains no Eigen: the
+    # only code whose model varies is the project's own, and the header gives
+    # it internal linkage so each leg keeps its own copy.
+    # r1201_fp_checks.hpp is header-only so this TU compiles the shared
     # checks under IEEE semantics while its twin (test_r1201_strict_fp.cpp)
     # compiles the identical source under the project-wide flags. The pair is
     # the experiment: two legs that agree are what makes the helpers' claim

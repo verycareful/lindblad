@@ -33,6 +33,7 @@
 using namespace lindblad;
 using r1211::expect_accepts_valid;
 using r1211::expect_rejects_invalid;
+using r1211::expect_repairs_invalid;
 using r1211::expect_tolerance_is_honoured;
 using r1211::WarningProbe;
 
@@ -111,7 +112,7 @@ std::vector<Complex128> as_vector(const std::array<Complex128, 4>& m) {
 // =============================================================================
 
 TEST(R1211MpsGate1q, PolicyMatrix) {
-    expect_rejects_invalid("MPSState::apply_single_qubit_gate",
+    expect_repairs_invalid("MPSState::apply_single_qubit_gate",
                            [](ValidationOptions v) {
                                MPSState mps(4);
                                mps.apply_single_qubit_gate(bad_1q(), 2, v);
@@ -171,7 +172,7 @@ TEST(R1211MpsGate1q, IgnoreStillAppliesTheGate) {
 // =============================================================================
 
 TEST(R1211MpsGate2q, PolicyMatrix) {
-    expect_rejects_invalid("MPSState::apply_two_qubit_gate",
+    expect_repairs_invalid("MPSState::apply_two_qubit_gate",
                            [](ValidationOptions v) {
                                MPSState mps(4);
                                mps.apply_two_qubit_gate(bad_2q(), 0, 1, v);
