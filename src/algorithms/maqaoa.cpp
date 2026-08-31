@@ -106,6 +106,29 @@ static std::vector<int> cost_term_orbit_map(
     return result;
 }
 
+static std::vector<std::vector<int>> active_qubits_by_term(const SparsePauliOp& hamiltonian) {
+    const int nq = hamiltonian.n_qubits();
+    const int term_count = static_cast<int>(hamiltonian.terms.size());
+    std::vector<std::vector<int>> active_qubits(term_count);
+    for (int t = 0; t < term_count; ++t) {
+        const auto& term = hamiltonian.terms[t];
+        for (int q = 0; q < nq; ++q) {
+            if (term.pauli[q] != 'I') active_qubits[t].push_back(q);
+        }
+    }
+    return active_qubits;
+}
+
+static void validate_real_mixer_coeffs(const SparsePauliOp& mixer, const char* caller) {
+    for (const auto& term : mixer.terms) {
+        if (term.coeff.imag != 0.0) {
+            throw std::invalid_argument(
+                std::string("MAQAOA::") + caller +
+                ": custom mixer Hamiltonian must be Hermitian (real coefficients required)");
+        }
+    }
+}
+
 // Classical energy of a computational-basis bitstring under the diagonal
 // (I/Z-only) part of the Hamiltonian.
 // PRECONDITION: bitstring.size() == cost_hamiltonian.n_qubits(). Callers filter
@@ -166,6 +189,7 @@ static void evolve_into(
     int n_mixer_orbits,
     const std::vector<int>& orbit_assignments,
     const std::vector<std::vector<int>>& precomp_aq,  // precomputed per-term active qubits
+    const std::vector<std::vector<int>>& precomp_mixer_aq,
     const std::vector<double>& initial_thetas = {}    // QSP: empty = standard H init
 ) {
     const int nq          = cost.n_qubits();
@@ -269,11 +293,10 @@ static void evolve_into(
             continue;
         }
 
-        for (const auto& term : mixer.terms) {
-            std::vector<int> aq;
-            for (int q = 0; q < nq; ++q) {
-                if (term.pauli[q] != 'I') aq.push_back(q);
-            }
+        const int mixer_terms = static_cast<int>(mixer.terms.size());
+        for (int t = 0; t < mixer_terms; ++t) {
+            const auto& term = mixer.terms[t];
+            const auto& aq = precomp_mixer_aq[t];
             if (aq.empty()) continue;
 
             const int beta_idx = use_orbits ? orbit_assignments[aq[0]] : aq[0];
@@ -334,6 +357,7 @@ struct MAQAOACallbackData {
     bool best_val_valid;
     std::vector<double> initial_thetas;
     const std::vector<std::vector<int>>* active_qubits;
+    const std::vector<std::vector<int>>* mixer_active_qubits;
 };
 
 static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, void* data) {
@@ -365,6 +389,7 @@ static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, vo
                 cb->n_mixer_orbits,
                 cb->maqaoa->options.orbit_assignments,
                 *cb->active_qubits,
+                *cb->mixer_active_qubits,
                 cb->initial_thetas);
     const double value = cb->cost_hamiltonian->expectation_value(*cb->sv);
     const double v     = is_finite_strict(value) ? value : 1e12;
@@ -399,6 +424,7 @@ struct LayerCBData {
     bool                 best_val_valid;  // see MAQAOACallbackData above
     std::vector<double>  initial_thetas;
     const std::vector<std::vector<int>>* active_qubits;
+    const std::vector<std::vector<int>>* mixer_active_qubits;
 };
 
 static double layer_objective(unsigned n, const double* x, double* /*grad*/, void* raw) {
@@ -433,6 +459,7 @@ static double layer_objective(unsigned n, const double* x, double* /*grad*/, voi
                 *d->term_orbit_map, d->n_cost_params_per_layer,
                 d->n_mixer_orbits, *d->orbit_assignments,
                 *d->active_qubits,
+                *d->mixer_active_qubits,
                 d->initial_thetas);
     const double value = d->cost_hamiltonian->expectation_value(*d->sv);
     const double v     = is_finite_strict(value) ? value : 1e12;
@@ -499,6 +526,7 @@ MAQAOA::Result MAQAOA::optimize(
         throw std::invalid_argument(
             "MAQAOA::optimize: cost and mixer Hamiltonians must have the same number of qubits");
     }
+    validate_real_mixer_coeffs(mixer, "optimize");
 
     // Precompute orbit data once for the entire run (Change 6)
     const bool use_orbits = (!options.orbit_assignments.empty() &&
@@ -527,14 +555,8 @@ MAQAOA::Result MAQAOA::optimize(
 
     // Precompute active qubits per cost term once — eliminates ~1M hot-path allocations
     // across 10K optimizer evaluations x 100 terms (P-8).
-    const int cost_terms_total = static_cast<int>(cost_hamiltonian.terms.size());
-    std::vector<std::vector<int>> active_qubits_per_term(cost_terms_total);
-    for (int t = 0; t < cost_terms_total; ++t) {
-        const auto& term = cost_hamiltonian.terms[t];
-        for (int q = 0; q < nq; ++q) {
-            if (term.pauli[q] != 'I') active_qubits_per_term[t].push_back(q);
-        }
-    }
+    std::vector<std::vector<int>> active_qubits_per_term = active_qubits_by_term(cost_hamiltonian);
+    std::vector<std::vector<int>> active_qubits_per_mixer_term = active_qubits_by_term(mixer);
 
     // Single statevector allocation reused across all evaluations (Change 1)
     Statevector inner_sv(nq);
@@ -605,7 +627,8 @@ MAQAOA::Result MAQAOA::optimize(
                 0.0,     // best_val: meaningless until best_val_valid is set
                 false,   // best_val_valid
                 options.initial_thetas,
-                &active_qubits_per_term
+                &active_qubits_per_term,
+                &active_qubits_per_mixer_term
             };
 
             std::cout << "[MAQAOA] layer=" << layer
@@ -679,7 +702,8 @@ MAQAOA::Result MAQAOA::optimize(
             evolve_into(inner_sv, cost_hamiltonian, mixer, all_params, options.p,
                         term_orbit_map_cached, n_cost_params_per_layer,
                         n_mixer_orbits, options.orbit_assignments,
-                        active_qubits_per_term, options.initial_thetas);
+                        active_qubits_per_term, active_qubits_per_mixer_term,
+                        options.initial_thetas);
             result.optimal_value = cost_hamiltonian.expectation_value(inner_sv);
         }
         result.converged     = all_layers_converged && is_finite_strict(result.optimal_value);
@@ -730,7 +754,8 @@ MAQAOA::Result MAQAOA::optimize(
             0.0,     // best_val: meaningless until best_val_valid is set
             false,   // best_val_valid
             options.initial_thetas,
-            &active_qubits_per_term
+            &active_qubits_per_term,
+            &active_qubits_per_mixer_term
         };
         cb_data.params_buf.resize(n_params);
 
@@ -769,7 +794,8 @@ MAQAOA::Result MAQAOA::optimize(
             evolve_into(inner_sv, cost_hamiltonian, mixer, params, options.p,
                         term_orbit_map_cached, n_cost_params_per_layer,
                         n_mixer_orbits, options.orbit_assignments,
-                        active_qubits_per_term, options.initial_thetas);
+                        active_qubits_per_term, active_qubits_per_mixer_term,
+                        options.initial_thetas);
             result.counts = inner_sv.sample_counts(sampler.options.shots, sampler.options.seed);
         }
     }
@@ -814,6 +840,7 @@ QuantumCircuit MAQAOA::build_circuit(
         throw std::invalid_argument(
             "MAQAOA::build_circuit: cost and mixer Hamiltonians must have the same number of qubits");
     }
+    validate_real_mixer_coeffs(mixer_hamiltonian, "build_circuit");
     QuantumCircuit qc(nq);
 
     if (!options.initial_thetas.empty() &&

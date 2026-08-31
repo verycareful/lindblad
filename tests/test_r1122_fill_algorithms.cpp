@@ -331,6 +331,23 @@ TEST(R1122FillAlgo, MaqaoaSupportsCustomMixerHamiltonian) {
     EXPECT_FALSE(res.counts.empty());
 }
 
+TEST(R1122FillAlgo, MaqaoaRejectsNonHermitianCustomMixer) {
+    SparsePauliOp cost = ring_cost_3q();
+    SparsePauliOp non_hermitian_mixer(std::vector<PauliString>{
+        PauliString("XYI", Complex128(1.0, 0.2))});
+
+    MAQAOA m;
+    m.options.p = 1;
+    m.options.max_iterations = 3;
+    m.options.seed = 5;
+    EXPECT_THROW(m.optimize(cost, non_hermitian_mixer), std::invalid_argument);
+
+    EXPECT_THROW(
+        m.build_circuit(cost, non_hermitian_mixer, std::vector<double>(6, 0.0)),
+        std::invalid_argument
+    );
+}
+
 // =============================================================================
 // QAOA
 // =============================================================================
