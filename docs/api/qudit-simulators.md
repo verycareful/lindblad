@@ -239,7 +239,7 @@ parameters).
 | `d` | `int` | local dimension |
 | `max_bond_dim` | `int` | maximum retained singular values per bond |
 | `svd_cutoff` | `double` | max fraction of total weight truncation may discard |
-| `svd_method` | `SVDMethod` | SVD backend (R.1.13): default `Jacobi` (accurate). `BDC` is a faster opt-in but is CURRENTLY BROKEN (Eigen defect, R.1.11.2) and prints a loud runtime warning when selected. Declared in `lindblad/types.hpp`. |
+| `svd_method` | `SVDMethod` | SVD backend: default `BDC`, which is divide-and-conquer and pulls away from Jacobi as the block grows. `Jacobi` is selectable and emits a one-time note that it is the slower algorithm. Below a 16x16 block the two run identical code. Declared in `lindblad/types.hpp`. |
 | `tensors` | `std::vector<MPSSiteTensor>` | site tensors |
 
 ### Gate and oracle API

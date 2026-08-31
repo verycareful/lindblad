@@ -38,10 +38,29 @@ An enum class naming what to do when a physical property does not hold.
 normalization is divided by what it actually sums to, and the call continues
 with a correct object.
 
-For the properties that have no cheap canonical repair, unitarity and trace
-preservation, `Fix` throws `std::invalid_argument` naming the property it could
-not repair. Saying so is preferred to a `Fix` that quietly returns an unphysical
-result under a policy that promised to correct it.
+`Fix` repairs unitarity by unitary polar projection. The nearest unitary to a
+square matrix, in the Frobenius sense, is the unitary polar factor: with
+`M = W S V-dagger` its thin SVD, that factor is `W V-dagger`. Replacing the
+singular values with ones discards exactly the non-unitary part and keeps every
+direction, so a matrix that drifted through accumulated rounding is pulled back
+to the unitary closest to what the caller meant.
+
+The repair is verified rather than trusted. Its whole postcondition is that the
+output is unitary, and the same residual that rejected the input measures that,
+so the result is re-measured against the caller's `atol` and a projection
+landing outside it raises `std::invalid_argument` rather than returning. A
+projection that silently failed to converge would hand back an operand as
+unphysical as the one it replaced, under a policy that promised a correction.
+
+`QuantumCircuit::unitary` applies the repair to the matrix it stores, so the
+projection runs once when the instruction is built rather than once per shot,
+and every later use of that instruction sees the repaired operand. The caller's
+own matrix is not modified.
+
+For trace preservation, which has no cheap canonical repair, `Fix` throws
+`std::invalid_argument` naming the property it could not repair. Saying so is
+preferred to a `Fix` that quietly returns an unphysical result under a policy
+that promised to correct it.
 
 `Fix` also throws on the two states that cannot be repaired at all. A zero state
 offers no direction to normalize toward, and a non-finite one has a NaN norm, so

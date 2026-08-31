@@ -463,12 +463,7 @@ QuantumCircuit& QuantumCircuit::unitary(const std::vector<Complex128>& matrix,
                                          ValidationOptions validation) {
     for (int q : qubits) validate_qubit(q);
 
-    // A wrong-size matrix is a structural error, reported where the size is
-    // checked. Measuring unitarity on it would read past the operand, so the
-    // physical check only runs on an operand whose shape already holds.
     const std::size_t rows = std::size_t(1) << qubits.size();
-    if (matrix.size() == rows * rows)
-        detail::check_unitary(matrix, rows, validation, "unitary");
 
     Instruction inst;
     inst.type = Instruction::GateType::UNITARY;
@@ -476,6 +471,25 @@ QuantumCircuit& QuantumCircuit::unitary(const std::vector<Complex128>& matrix,
     inst.matrix = matrix;
     inst.label = label;
     inst.validation = validation;
+
+    // A wrong-size matrix is a structural error, reported where the size is
+    // checked. Measuring unitarity on it would read past the operand, so the
+    // physical check only runs on an operand whose shape already holds.
+    //
+    // Under Fix the repaired matrix is what gets stored, so the projection runs
+    // once here rather than per shot and every later use of this instruction
+    // sees the repaired operand. The copy is taken only on that path: a
+    // CowMatrix shares one buffer across every Instruction copied from it, so
+    // repairing in place would rewrite a matrix other instructions are reading.
+    // Assigning rebinds this instruction to a fresh buffer and leaves theirs
+    // alone.
+    if (matrix.size() == rows * rows &&
+        detail::unitary_needs_repair(matrix.data(), rows, validation,
+                                     "unitary")) {
+        std::vector<Complex128> repaired(matrix);
+        detail::repair_unitary(repaired.data(), rows, validation, "unitary");
+        inst.matrix = std::move(repaired);
+    }
     instructions.push_back(std::move(inst));
     return *this;
 }

@@ -58,7 +58,7 @@ DOMAIN_NOTES = {
            "method=density_matrix."),
     "mps": ("Layered scaling circuit; chi is the bond-dimension cap on both "
             "engines (Aer matrix_product_state_max_bond_dimension). Lindblad "
-            "uses Jacobi SVD (accuracy-first default since R.1.13)."),
+            "uses BDC SVD, its default."),
     "clifford": ("H/CX/S ladder circuits versus Aer method=stabilizer; sizes "
                  "beyond statevector reach."),
     "trans": ("Full pipeline on both engines: layout, routing, optimization, "

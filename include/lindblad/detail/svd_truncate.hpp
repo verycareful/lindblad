@@ -2,7 +2,11 @@
 
 #include "lindblad/types.hpp"
 
-#include <Eigen/Dense>
+// MatrixOrder is defined with the backend that consumes it. Neither header
+// names an Eigen type, so this interface does not oblige a caller to have Eigen
+// available to hold a factorisation.
+#include "lindblad/detail/eigen_backend.hpp"
+#include "lindblad/detail/dense_matrix.hpp"
 
 // =============================================================================
 // detail::svd_truncate_verified - a truncated SVD that trusts nothing
@@ -26,27 +30,16 @@
 // an exception: which rung produced it is reported through the return value so
 // a caller that wants to count rescues can, and ignored otherwise.
 //
-// DEFINED in src/svd_truncate.cpp, which is compiled -fno-fast-math. That flag
-// is load-bearing rather than cautious. Under -ffast-math the same Eigen input
-// yields damage that reaches the KEPT singular channels as finite-but-wrong
-// data, which no truncation-side check can see; under strict FP the damage is
-// confined to discardable null-space columns, which SELECT then handles. The
-// check and the flag guard different halves of the same defect, so this routine
-// needs both and lives in its own translation unit to keep the second one from
-// depending on who included it.
+// DEFINED in src/svd_truncate.cpp, under the project-wide flags. The two pieces
+// this ladder cannot afford to have optimised are quarantined where they live
+// rather than here: the factorisation itself in src/eigen_backend.cpp, whose
+// entry guard -ffast-math would otherwise delete, and the reconstruction
+// residual in src/svd_verify.cpp, which subtracts two nearly identical matrices
+// to decide accept or reject. Selection, budgeting and rescue routing are
+// ordinary arithmetic and are compiled as such.
 
 namespace lindblad {
 namespace detail {
-
-// -----------------------------------------------------------------------------
-// MatrixOrder - how the caller's block is laid out in memory
-// -----------------------------------------------------------------------------
-// Both orders are accepted so neither caller has to transpose or copy a block
-// before handing it over: the qubit layer builds row-major blocks, the qudit
-// layer holds column-major Eigen matrices, and the routine maps whichever it is
-// given in place.
-
-enum class MatrixOrder { RowMajor, ColMajor };
 
 // -----------------------------------------------------------------------------
 // SvdTruncation - the kept slice, plus what it cost to get it
@@ -56,14 +49,29 @@ enum class MatrixOrder { RowMajor, ColMajor };
 // tensor.
 
 struct SvdTruncation {
-    Eigen::MatrixXcd U;  // rows x rank
-    Eigen::VectorXd S;   // rank
-    Eigen::MatrixXcd V;  // cols x rank
+    DenseMatrix U;  // rows x rank, column-major
+    RealVector S;   // rank
+    DenseMatrix V;  // cols x rank, column-major
     int rank = 0;
 
-    // Weight (Σ sigma²) this split threw away, summed over every finite sigma
-    // not kept. A caller accumulates it into its own truncation-error total.
+    // Weight (Σ sigma²) this split CHOSE to throw away: directions the weight
+    // budget or the bond cap rejected. A caller accumulates it into its own
+    // truncation-error total.
     double discarded_weight = 0.0;
+
+    // Weight rejected by the Gram route's validity floor, reported separately
+    // because it is not truncation. Forming G = M†M squares the condition
+    // number, so a singular value that is exactly zero in the input comes back
+    // at ~sqrt(eps) and carries ~eps of weight that was never in the matrix.
+    // Folding that into `discarded_weight` would report a bond which discarded
+    // nothing as having lost something.
+    //
+    // Always zero on the primary route, which uses no floor. A nonzero value
+    // here therefore says two things at once: this split was rescued, and this
+    // much of its spectrum was too ill-conditioned for the rescue to trust.
+    // It is surfaced rather than dropped so a caller can see that the rescue
+    // route paid for its robustness, which is the whole cost of taking it.
+    double floor_rejected_weight = 0.0;
 
     // How far the accepted factorisation sat above a perfect one, as a fraction
     // of ‖M‖_F². A truncated SVD satisfies the Frobenius identity with

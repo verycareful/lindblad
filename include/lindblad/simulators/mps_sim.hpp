@@ -58,7 +58,7 @@ public:
     // SVD backend for truncation (default Jacobi; see SVDMethod). BDC is a
     // faster opt-in that is not the default pending an upstream Eigen BDCSVD
     // accuracy fix.
-    SVDMethod svd_method = SVDMethod::Jacobi;
+    SVDMethod svd_method = SVDMethod::BDC;
     std::vector<MPSTensor> tensors;
 
 public:

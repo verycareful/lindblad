@@ -5,7 +5,7 @@
 #include "lindblad/detail/svd_truncate.hpp"
 #include "lindblad/qudit/qudit_statevector.hpp"
 
-#include <Eigen/Dense>
+#include "lindblad/detail/dense_matrix.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -47,14 +47,16 @@ struct MPSSiteTensor {
     // Matricisation for SVD-style operations.
     //   as_left_matrix():  shape (d * chi_L, chi_R), row = sigma*chi_L + aL
     //   as_right_matrix(): shape (chi_L, d * chi_R), col = sigma*chi_R + aR
-    Eigen::MatrixXcd as_left_matrix() const;
-    Eigen::MatrixXcd as_right_matrix() const;
+    detail::DenseMatrix as_left_matrix() const;
+    detail::DenseMatrix as_right_matrix() const;
 
     // Inverse reshapes.
     //   from_left_matrix(M, d, chi_L):  M is (d*chi_L, chi_R)
     //   from_right_matrix(M, d, chi_R): M is (chi_L, d*chi_R)
-    static MPSSiteTensor from_left_matrix(const Eigen::MatrixXcd& M, int d, int chi_L);
-    static MPSSiteTensor from_right_matrix(const Eigen::MatrixXcd& M, int d, int chi_R);
+    static MPSSiteTensor from_left_matrix(const detail::DenseMatrix& M, int d,
+                                          int chi_L);
+    static MPSSiteTensor from_right_matrix(const detail::DenseMatrix& M, int d,
+                                           int chi_R);
 };
 
 class QuditMPS {
@@ -65,10 +67,10 @@ public:
     // Fraction of total weight (sum of sigma^2) truncation may discard. Not a
     // magnitude threshold: a bare singular value is never compared against it.
     double svd_cutoff;
-    // SVD backend: default accurate Jacobi. BDC is a faster opt-in that is
-    // CURRENTLY BROKEN (Eigen BDCSVD bug) and emits a loud
-    // runtime warning when selected. Shared enum lives in types.hpp.
-    SVDMethod svd_method = SVDMethod::Jacobi;
+    // SVD backend: BDC by default, faster as bond dimension grows. Jacobi is
+    // selectable and emits a one-time note that it is the slower algorithm.
+    // Shared enum lives in types.hpp.
+    SVDMethod svd_method = SVDMethod::BDC;
     std::vector<MPSSiteTensor> tensors;
 
     // Construct in state |0...0> with bond dim 1.
@@ -176,24 +178,24 @@ private:
     // shared verified factorisation over `M` and folds the outcome into the
     // counters above, so no site can accumulate them differently or skip them.
     // ctx names the call site in any exception message.
-    detail::SvdTruncation truncate_block(const Eigen::MatrixXcd& M,
+    detail::SvdTruncation truncate_block(const detail::DenseMatrix& M,
                                          const char* ctx);
 
     // Build the (d*chi_L) x (d*chi_R) "two-site tensor"
     //   Theta[sigma_q * chi_L + aL, sigma_{q+1} * chi_R + aR]
     //     = sum_{am} A_q[sigma_q, aL, am] * A_{q+1}[sigma_{q+1}, am, aR]
-    Eigen::MatrixXcd contract_two_sites(int q) const;
+    detail::DenseMatrix contract_two_sites(int q) const;
 
     // SVD-split Theta back into tensors[q] (left-isometry) and tensors[q+1]
     // (absorbing the singular values), truncating to max_bond_dim and svd_cutoff.
-    void split_two_sites(int q, const Eigen::MatrixXcd& Theta);
+    void split_two_sites(int q, const detail::DenseMatrix& Theta);
 
     // SWAP the physical indices of sites (q, q+1) — used to chain non-adjacent
     // gates into a sequence of adjacent operations.
     void apply_swap(int q);
 
     // Right environments for left-to-right contractions (unused convenience hook).
-    std::vector<Eigen::MatrixXcd> build_right_envs() const;
+    std::vector<detail::DenseMatrix> build_right_envs() const;
 };
 
 } // namespace lindblad

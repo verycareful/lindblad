@@ -6,8 +6,10 @@
 
 #include "lindblad/detail/svd_truncate.hpp"
 
+#include "lindblad/detail/eigen_backend.hpp"
+#include "lindblad/detail/svd_verify.hpp"
+
 #include <Eigen/Dense>
-#include <Eigen/SVD>
 
 #include <algorithm>
 #include <cmath>
@@ -58,8 +60,8 @@ constexpr double kBackwardErrorSlack = 64.0;
 // weight budget alone. The Gram route passes its own floor.
 template <typename MatT>
 bool attempt(const MatT& mat, int rows, int cols,
-             const Eigen::VectorXd& S_try, const Eigen::MatrixXcd& U_try,
-             const Eigen::MatrixXcd& V_try, double sigma_floor,
+             const RealVector& S_try, const DenseMatrix& U_try,
+             const DenseMatrix& V_try, double sigma_floor,
              int max_bond_dim, double cutoff, double m_fro_sq,
              SvdTruncation& out) {
     const int md = static_cast<int>(S_try.size());
@@ -125,28 +127,46 @@ bool attempt(const MatT& mat, int rows, int cols,
         k = 1;
     }
 
-    // Discarded weight = every finite sigma NOT kept (beyond-rank AND
-    // below-floor; non-finite entries are artifacts, not weight).
+    // Weight absent from the kept slice, in TWO buckets, because they mean
+    // different things and only one of them is truncation.
     //
-    // Sum the discarded buckets DIRECTLY. Do not compute this as
-    // `total - kept`: for a normalised state both are ~1.0 while the real
-    // difference is ~1e-30, so the subtraction cannot resolve it and returns
-    // multiples of eps instead, and the truncation error then reports ~1e-15 of
-    // phantom loss for a bond that discarded nothing. Adding up the small
-    // values keeps every term at its own scale.
-    double discarded = below_floor;
+    // `truncated` is weight this call chose to drop: directions the budget or
+    // the bond cap rejected. That is what a caller's truncation error is asking
+    // about.
+    //
+    // `below_floor` is weight the validity floor rejected as untrustworthy, and
+    // on the Gram route that is not loss, it is noise the route manufactured.
+    // Forming G = M†M squares the condition number, so an eigenvalue that is
+    // exactly zero in M comes back at the scale of eps, and its sqrt is ~1e-8.
+    // Three such values carry ~1e-16 of weight that was never in the matrix.
+    // Reporting it as truncation error describes a bond that discarded nothing
+    // as having lost something. The primary route passes sigma_floor = 0, so
+    // this bucket is empty there and the distinction costs it nothing.
+    //
+    // Both buckets are summed DIRECTLY rather than as `total - kept`: for a
+    // normalised state both of those are ~1.0 while the real difference is
+    // ~1e-30, so the subtraction cannot resolve it and returns multiples of eps
+    // instead. Adding up the small values keeps every term at its own scale.
+    double truncated = 0.0;
     for (std::size_t i = static_cast<std::size_t>(k); i < fs.size(); ++i)
-        discarded += fs[i].first * fs[i].first;
+        truncated += fs[i].first * fs[i].first;
 
-    // Gather, in descending sigma order.
-    Eigen::MatrixXcd U_k(rows, k);
-    Eigen::MatrixXcd V_k(cols, k);
-    Eigen::VectorXd S_k(k);
+    // Everything missing from the kept slice, which is what the reconstruction
+    // has to account for. The acceptance bound below compares against this, not
+    // against `truncated`: a direction rejected by the floor is just as absent
+    // from U_k S_k V_k† as one rejected by the budget.
+    const double discarded = below_floor + truncated;
+
+    // Gather, in descending sigma order. A source column is copied whole: both
+    // sides are column-major, so a column is contiguous in each.
+    DenseMatrix U_k(rows, k);
+    DenseMatrix V_k(cols, k);
+    RealVector S_k(k);
     for (int r = 0; r < k; ++r) {
         const int src = fs[static_cast<std::size_t>(r)].second;
         S_k(r) = fs[static_cast<std::size_t>(r)].first;
-        U_k.col(r) = U_try.col(src);
-        V_k.col(r) = V_try.col(src);
+        std::copy(U_try.col(src), U_try.col(src) + rows, U_k.col(r));
+        std::copy(V_try.col(src), V_try.col(src) + cols, V_k.col(r));
     }
 
     // VERIFY 1: kept slice bit-finite.
@@ -172,12 +192,14 @@ bool attempt(const MatT& mat, int rows, int cols,
     // allowance a COMPUTED factorisation gets. The standard backward-error
     // bound is ‖M - U S V†‖_F <= c*N*eps*‖M‖_F with N the larger dimension.
     //
-    // The reconstruction is materialised into the INPUT's storage order before
-    // subtracting. Eigen's coefficient-wise binary operations require both
-    // operands to agree on row- versus column-major, and the kept slice is
-    // built column-major while a caller's block may be either.
-    typename MatT::PlainObject recon = U_k * S_k.asDiagonal() * V_k.adjoint();
-    const double resid = (mat - recon).squaredNorm();
+    // The residual is computed in its own strict-FP translation unit: it
+    // subtracts two nearly identical matrices, and a value perturbed too small
+    // would admit exactly the factorisations this rung exists to reject.
+    const double resid = svd_reconstruction_residual_sq(
+        mat.data(), rows, cols,
+        static_cast<bool>(MatT::IsRowMajor) ? MatrixOrder::RowMajor
+                                            : MatrixOrder::ColMajor,
+        U_k.data(), S_k.data(), V_k.data(), k);
     if (!is_finite_strict(resid)) return false;
     const double bwd = kBackwardErrorSlack *
                        static_cast<double>(std::max(rows, cols)) *
@@ -199,7 +221,8 @@ bool attempt(const MatT& mat, int rows, int cols,
     out.S = std::move(S_k);
     out.V = std::move(V_k);
     out.rank = k;
-    out.discarded_weight = discarded;
+    out.discarded_weight = truncated;
+    out.floor_rejected_weight = below_floor;
     // Subtracting `discarded` leaves only the factorisation's own error.
     // Clamped because the two sides are computed differently and can cross by
     // an ulp when both are dust.
@@ -211,21 +234,17 @@ bool attempt(const MatT& mat, int rows, int cols,
 template <typename MapT>
 SvdTruncation run_ladder(const MapT& mat, int rows, int cols, int max_bond_dim,
                          double cutoff, SVDMethod method, const char* ctx) {
-    using PlainT = typename MapT::PlainObject;
-
-    Eigen::MatrixXcd U_eigen, V_eigen;
-    Eigen::VectorXd S_eigen;
-    if (method == SVDMethod::BDC) {
-        Eigen::BDCSVD<PlainT> svd(mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        S_eigen = svd.singularValues();
-        U_eigen = svd.matrixU();
-        V_eigen = svd.matrixV();
-    } else {
-        Eigen::JacobiSVD<PlainT> svd(mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        S_eigen = svd.singularValues();
-        U_eigen = svd.matrixU();
-        V_eigen = svd.matrixV();
-    }
+    // The input's storage order travels with the call rather than being
+    // normalised here, so a caller's block is mapped in place on both paths.
+    const MatrixOrder order = static_cast<bool>(MapT::IsRowMajor)
+                                  ? MatrixOrder::RowMajor
+                                  : MatrixOrder::ColMajor;
+    const int kdim = std::min(rows, cols);
+    DenseMatrix U_primary(rows, kdim), V_primary(cols, kdim);
+    RealVector S_primary(kdim);
+    const bool primary_ok =
+        svd_thin(mat.data(), rows, cols, order, method, U_primary.data(),
+                 S_primary.data(), V_primary.data());
 
     // Accumulated one entry at a time in memory order rather than through a
     // vectorised reduction, so the value does not depend on how the target
@@ -240,8 +259,12 @@ SvdTruncation run_ladder(const MapT& mat, int rows, int cols, int max_bond_dim,
             m_fro_sq += q[t].real() * q[t].real() + q[t].imag() * q[t].imag();
     }
 
+    // A backend that reported failure has left its outputs unspecified, so the
+    // verify rung is not given them to judge: the fallback is taken directly.
     SvdTruncation out;
-    if (attempt(mat, rows, cols, S_eigen, U_eigen, V_eigen, /*sigma_floor=*/0.0,
+    if (primary_ok &&
+        attempt(mat, rows, cols, S_primary, U_primary, V_primary,
+                /*sigma_floor=*/0.0,
                 max_bond_dim, cutoff, m_fro_sq, out)) {
         return out;
     }
@@ -254,34 +277,51 @@ SvdTruncation run_ladder(const MapT& mat, int rows, int cols, int max_bond_dim,
     const bool tall = rows >= cols;
     const Eigen::MatrixXcd G = tall ? Eigen::MatrixXcd(mat.adjoint() * mat)
                                     : Eigen::MatrixXcd(mat * mat.adjoint());
-    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(G);
-    if (es.info() != Eigen::Success) {
+    const int gd = tall ? cols : rows;
+    RealVector g_evals(gd);
+    DenseMatrix g_evecs(gd, gd);
+    if (!eigh(G.data(), gd, MatrixOrder::ColMajor, g_evals.data(),
+              g_evecs.data())) {
         throw std::runtime_error(
             std::string(ctx) +
             ": Gram-route eigendecomposition failed on a " +
             std::to_string(rows) + "x" + std::to_string(cols) + " matrix");
     }
-    const int gd = static_cast<int>(es.eigenvalues().size());
-    Eigen::VectorXd Sg(gd);
+    RealVector Sg(gd);
     for (int i = 0; i < gd; ++i) {
         // Eigenvalues ascend; emit sigmas descending.
-        Sg(i) = std::sqrt(std::max(0.0, es.eigenvalues()(gd - 1 - i)));
+        Sg(i) = std::sqrt(std::max(0.0, g_evals(gd - 1 - i)));
     }
     const double smax = (gd > 0) ? Sg(0) : 0.0;
     const double floor_g = kGramValidityFloorRel * smax;
 
-    Eigen::MatrixXcd Ug(rows, gd), Vg(cols, gd);
+    // Eigenvectors arrive ascending and are reversed into descending sigma
+    // order by copying whole columns; both sides are column-major, so a column
+    // is contiguous in each.
+    //
+    // The partner factor is a matrix-vector product. Columns left at zero are
+    // the ones below the validity floor, which SELECT never keeps, so they are
+    // never read: the zero is what makes that explicit rather than leaving
+    // uninitialised storage behind a rank the caller might raise.
+    using CVec = Eigen::Matrix<std::complex<double>, Eigen::Dynamic, 1>;
+    DenseMatrix Ug(rows, gd), Vg(cols, gd);
     if (tall) {
-        for (int i = 0; i < gd; ++i) Vg.col(i) = es.eigenvectors().col(gd - 1 - i);
+        for (int i = 0; i < gd; ++i)
+            std::copy(g_evecs.col(gd - 1 - i), g_evecs.col(gd - 1 - i) + gd,
+                      Vg.col(i));
         for (int i = 0; i < gd; ++i) {
-            if (Sg(i) > floor_g) Ug.col(i) = (mat * Vg.col(i)) / Sg(i);
-            else Ug.col(i).setZero();  // never selected: below the floor
+            if (!(Sg(i) > floor_g)) continue;
+            Eigen::Map<const CVec> v(Vg.col(i), cols);
+            Eigen::Map<CVec>(Ug.col(i), rows) = (mat * v) / Sg(i);
         }
     } else {
-        for (int i = 0; i < gd; ++i) Ug.col(i) = es.eigenvectors().col(gd - 1 - i);
+        for (int i = 0; i < gd; ++i)
+            std::copy(g_evecs.col(gd - 1 - i), g_evecs.col(gd - 1 - i) + gd,
+                      Ug.col(i));
         for (int i = 0; i < gd; ++i) {
-            if (Sg(i) > floor_g) Vg.col(i) = (mat.adjoint() * Ug.col(i)) / Sg(i);
-            else Vg.col(i).setZero();
+            if (!(Sg(i) > floor_g)) continue;
+            Eigen::Map<const CVec> u(Ug.col(i), rows);
+            Eigen::Map<CVec>(Vg.col(i), cols) = (mat.adjoint() * u) / Sg(i);
         }
     }
 

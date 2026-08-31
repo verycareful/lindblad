@@ -2,6 +2,7 @@
 
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
+#include "lindblad/detail/unitary_repair.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -229,6 +230,60 @@ inline void check_unitary(const Complex128* U, std::size_t rows,
 inline void check_unitary(const std::vector<Complex128>& U, std::size_t rows,
                           const ValidationOptions& v, const char* ctx) {
     check_unitary(U.data(), rows, v, ctx);
+}
+
+// The repairing form, split in two because the caller owns the storage.
+//
+// Unitarity is the one physical property here with a repair defined, so this is
+// the only check where Fix means something other than an error. It follows the
+// same shape as the normalization checks: this half measures and reports back
+// whether a repair is owed, and the caller performs it, because the operand may
+// live behind a type that decides for itself how it is written (a gate matrix
+// is shared copy-on-write, so a repair rebinds a fresh buffer rather than
+// mutating one that other instructions are reading).
+//
+// Splitting it this way also keeps the measurement free of an allocation on
+// every path that does NOT repair: Throw, Warn and Ignore never materialise a
+// mutable copy.
+//
+// Returns true under Fix and only under Fix, when the operand is outside
+// tolerance. Every other outcome is settled here exactly as it is for the
+// normalization properties.
+inline bool unitary_needs_repair(const Complex128* U, std::size_t rows,
+                                 const ValidationOptions& v, const char* ctx) {
+    if (v.policy == Validation::Ignore || rows == 0) return false;
+    return enforce_physical_repairable(unitarity_deviation(U, rows), v, ctx,
+                                       UNITARITY);
+}
+
+// Replaces U with its unitary polar factor and VERIFIES the result against the
+// same tolerance that rejected the input.
+//
+// The verification is the whole reason this repair is safe to offer. A
+// projection that silently failed to converge would hand back an operand as
+// unphysical as the one it replaced, under a policy that promised to correct
+// it, which is the exact failure mode Fix exists to avoid. Since the
+// postcondition is unitarity and unitarity_deviation measures precisely that,
+// the check costs one more residual and leaves nothing asserted on trust.
+inline void repair_unitary(Complex128* U, std::size_t rows,
+                           const ValidationOptions& v, const char* ctx) {
+    const double before = unitarity_deviation(U, rows);
+    if (!project_to_unitary(U, rows)) {
+        throw std::invalid_argument(
+            std::string(ctx) +
+            ": Validation::Fix could not repair unitarity, the polar "
+            "projection failed to factorise the operand (measured " +
+            format_residual(before) + ")");
+    }
+    const double after = unitarity_deviation(U, rows);
+    if (!(after <= v.atol)) {
+        throw std::invalid_argument(
+            std::string(ctx) +
+            ": Validation::Fix repaired unitarity but the result is still "
+            "outside tolerance (" + format_residual(before) + " before, " +
+            format_residual(after) + " after, atol " + format_residual(v.atol) +
+            ")");
+    }
 }
 
 // An empty operator list returns without measuring, because rejecting it

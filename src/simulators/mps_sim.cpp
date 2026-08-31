@@ -1,14 +1,13 @@
 // mps_sim.cpp — Matrix Product State simulator
-// SVD truncation defaults to Eigen JacobiSVD (accurate). BDCSVD is a faster
-// opt-in but is CURRENTLY BROKEN for complex/degenerate inputs (R.1.11.2:
-// on a 36x36 degenerate complex matrix it violates U·S·V† = M and Frobenius
-// norm preservation, under strict FP too — a genuine Eigen 3.4.0 defect);
-// selecting it emits a loud runtime warning.
-// JacobiSVD itself has a narrower Eigen 3.4.0 defect (R.1.16.0, issue #44):
-// on degenerate rank-deficient inputs it can emit NaN inside NULL-SPACE
-// singular vectors. svd_truncate below is hardened against it (the garbage
-// is discardable by construction; anything non-finite in the KEPT slice
-// throws). Reproducers for both defects: tests/diag_r1160_matrices.hpp.
+// SVD truncation defaults to BDC, which is divide-and-conquer and pulls away
+// from Jacobi as the block grows; Jacobi is selectable and notes once that it
+// is slower. Neither is trusted on its word: every factorisation goes through
+// the SELECT -> VERIFY -> FALLBACK -> THROW ladder in svd_truncate, which
+// rebuilds the block from the kept slice and compares it against the input, so
+// a factorisation that is finite but wrong is rejected rather than propagated.
+// That ladder exists because degenerate rank-deficient blocks have produced
+// NaN inside null-space singular vectors and, worse, finite-but-wrong kept
+// vectors carrying no marker at all. Reproducers: tests/diag_r1160_matrices.hpp.
 // Non-adjacent two-qubit gates are handled via SWAP chains (correct MPS-native approach).
 // Single-qubit marginals use efficient left/right boundary contraction — O(N chi^3).
 
@@ -18,10 +17,10 @@
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/detail/svd_truncate.hpp"
+#include "lindblad/detail/eigen_backend.hpp"
 #include "lindblad/gates.hpp"
 
 #include <Eigen/Dense>
-#include <Eigen/SVD>
 
 #include <algorithm>
 #include <cassert>
@@ -37,24 +36,26 @@
 
 namespace lindblad {
 
-// Emit a one-time, very visible warning when the (currently broken) BDCSVD
-// backend is selected. Eigen's BDCSVD produces inaccurate results for
-// complex/degenerate inputs; Jacobi is the accurate default.
+// Emit a one-time note when the Jacobi backend is selected. It is correct, and
+// it is the slower algorithm above Eigen's divide-and-conquer threshold:
+// measured through the truncation ladder the gap is 5x at 32x32 and 50x at
+// 128x128. A caller selecting it deliberately is entitled to, and is told the
+// cost once rather than on every split.
 //
 // The latch is per layer rather than per process: the qudit MPS carries its own
-// so that selecting BDC there is reported even when a qubit simulation in the
-// same process already warned. Two backends, two things a caller needs told.
-static void warn_bdc_broken_once() {
+// so that selecting Jacobi there is reported even when a qubit simulation in
+// the same process already noted it. Two backends, two things a caller needs
+// told.
+static void warn_jacobi_slower_once() {
     static bool warned = false;
     if (warned) return;
     warned = true;
     emit_warning(
-        "***************************************************************\n"
-        "  WARNING: SVDMethod::BDC (Eigen BDCSVD) is SELECTED but is\n"
-        "  CURRENTLY BROKEN for complex / degenerate inputs: MPS results may\n"
-        "  be SILENTLY WRONG.\n"
-        "  Use SVDMethod::Jacobi (the default) until the upstream fix lands.\n"
-        "***************************************************************");
+        "note: SVDMethod::Jacobi selected for the qubit MPS. BDC is the "
+        "default and is substantially faster as bond dimension grows "
+        "(measured 5x at 32x32, 50x at 128x128); both are accepted by the "
+        "truncation verify rung on the first attempt. Below a 16x16 block "
+        "the two run identical code, since BDCSVD delegates to Jacobi there.");
 }
 
 // =============================================================================
@@ -106,7 +107,7 @@ void MPSState::svd_truncate(
     int& new_rank
 ) {
     ++svd_calls;
-    if (svd_method == SVDMethod::BDC) warn_bdc_broken_once();
+    if (svd_method == SVDMethod::Jacobi) warn_jacobi_slower_once();
 
     const detail::SvdTruncation r = detail::svd_truncate_verified(
         M.data(), rows, cols, detail::MatrixOrder::RowMajor,
@@ -725,52 +726,36 @@ static MPSState mps_from_sv(const Statevector& sv, int n, int max_bond_dim, doub
         int half_cols = right_cols / 2;
         int rows = left_bond * 2;
 
-        // Reshape: M[(alpha*2 + p), c2] = block[alpha*right_cols + p*half_cols + c2]
-        // p ∈ {0,1} is the physical index; c2 ∈ [0,half_cols) indexes remaining sites.
-        Eigen::MatrixXcd M(rows, half_cols);
-        for (int alpha = 0; alpha < left_bond; ++alpha)
-            for (int p = 0; p < 2; ++p)
-                for (int c2 = 0; c2 < half_cols; ++c2)
-                    M(alpha * 2 + p, c2) = std::complex<double>(
-                        block[alpha * right_cols + p * half_cols + c2].real,
-                        block[alpha * right_cols + p * half_cols + c2].imag);
-
-        // JacobiSVD for accuracy: this is the reconstruction fallback, and the
-        // BDCSVD defect makes composite states unreliable.
-        Eigen::JacobiSVD<Eigen::MatrixXcd> svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        const auto& svals = svd.singularValues();
-        // Same discarded-weight rule as svd_truncate: `cutoff` is the fraction
-        // of total weight truncation may drop, not a magnitude threshold. The
-        // two construction paths have to agree, or a state's bond dimension
-        // would depend on which one built it.
-        const int nsv = (int)svals.size();
-        double total = 0.0;
-        for (int i = 0; i < nsv; ++i) total += svals(i) * svals(i);
-        const double budget = cutoff * total;
-
-        int k = nsv;
-        double discarded = 0.0;
-        while (k > 1) {
-            const double w = svals(k - 1) * svals(k - 1);
-            if (discarded + w > budget) break;
-            discarded += w;
-            --k;
-        }
-        k = std::min(k, max_bond_dim);
+        // The block IS the matrix this split needs, so it is handed over in
+        // place. right_cols == 2 * half_cols, so the reshape index
+        // alpha*right_cols + p*half_cols + c2 equals (alpha*2 + p)*half_cols + c2,
+        // which is row-major element (alpha*2 + p, c2) of a rows x half_cols
+        // matrix. p ∈ {0,1} is the physical index; c2 ∈ [0,half_cols) indexes
+        // the remaining sites.
+        //
+        // Through the shared ladder rather than a bare factorisation: this path
+        // selects a rank from singular values, and a rank chosen from values it
+        // has not verified is the defect the ladder exists to prevent. Jacobi
+        // for accuracy, since this is the reconstruction fallback and the BDCSVD
+        // defect makes composite states unreliable.
+        const detail::SvdTruncation split = detail::svd_truncate_verified(
+            block.data(), rows, half_cols, detail::MatrixOrder::RowMajor,
+            max_bond_dim, cutoff, SVDMethod::Jacobi, "mps_from_sv");
+        const int k = split.rank;
 
         result.tensors[site] = MPSTensor(left_bond, k);
         for (int alpha = 0; alpha < left_bond; ++alpha)
             for (int p = 0; p < 2; ++p)
                 for (int r = 0; r < k; ++r)
                     result.tensors[site](alpha, p, r) = {
-                        svd.matrixU()(alpha * 2 + p, r).real(),
-                        svd.matrixU()(alpha * 2 + p, r).imag()};
+                        split.U(alpha * 2 + p, r).real(),
+                        split.U(alpha * 2 + p, r).imag()};
 
         // New block = S * V†
         block.resize(k * half_cols);
         for (int r = 0; r < k; ++r)
             for (int c2 = 0; c2 < half_cols; ++c2) {
-                auto v = svals(r) * std::conj(svd.matrixV()(c2, r));
+                auto v = split.S(r) * std::conj(split.V(c2, r));
                 block[r * half_cols + c2] = {v.real(), v.imag()};
             }
 

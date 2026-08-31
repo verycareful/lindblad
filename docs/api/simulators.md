@@ -524,18 +524,26 @@ class MPSState {
   than on the dense classes because this measurement is the most expensive of
   any state type in the library
 
-**SVD backend (R.1.13, audit F-23)**: `svd_method` (declared in
-`lindblad/types.hpp`, shared with the qudit MPS) selects the truncation SVD.
-`SVDMethod::Jacobi` is the **default** — accurate, and it avoids the Eigen
-BDCSVD accuracy defect found in R.1.11.2 for complex/degenerate inputs.
-`SVDMethod::BDC` is a faster opt-in but is **CURRENTLY BROKEN**: selecting it
-prints a loud one-time runtime warning to `stderr` and may produce silently
-wrong results, so it should not be used until the upstream Eigen bug is fixed.
-The qubit-MPS default changed from BDC to Jacobi in R.1.13 (a breaking numeric
-shift in truncation values versus R.1.12).
+**SVD backend**: `svd_method` (declared in `lindblad/types.hpp`, shared with
+the qudit MPS) selects the truncation SVD. `SVDMethod::BDC` is the **default**.
+It is divide-and-conquer where Jacobi is `O(n^3)` per sweep, so the gap widens
+with the block: measured through the truncation ladder, BDC costs roughly a
+fifth of Jacobi at 32x32 and a fiftieth at 128x128, which is a two-site theta at
+bond dimension 64.
+
+`SVDMethod::Jacobi` remains selectable and emits a one-time note to the warning
+channel that it is the slower algorithm. Below Eigen's divide-and-conquer
+threshold the choice is nominal: BDCSVD delegates to the Jacobi kernel for
+blocks smaller than 16x16, so a theta at bond dimension 4 runs identical code
+either way.
+
+Both backends are held to the same verification described below, and both are
+accepted on the first attempt on decaying and exactly degenerate spectra alike.
+The two do not agree bit for bit, so a state truncated under one backend differs
+in its last digits from the same state truncated under the other.
 
 **Verified truncation (R.1.16.0)**: the SVD output is no longer trusted
-blindly. Eigen 3.4.0's SVDs were found to return corrupt factorisations on
+blindly. Eigen's SVDs were found to return corrupt factorisations on
 degenerate rank-deficient inputs (the class of two-site tensors Shor-style
 circuits produce), in failure shapes ranging from NaN singular vectors to a
 wrong-but-finite kept vector. Every truncation therefore now: selects the
@@ -564,12 +572,17 @@ their difference carries first-order rounding, and a purely squared bound would
 reject sound factorisations there. The cross term vanishes as the discarded
 weight does, so a bond that truncated nothing still faces the strict bound.
 
-`max_verify_residual_excess()` reports what the gate actually admitted. `truncation_error()` counts only
-finite discarded weight (including below-cutoff values) and is committed
-only after verification. The verification costs roughly one extra
-rank-slice matrix multiply per two-qubit gate (measured at 28–42% on the
-MPS benchmark domain), and `mps_sim.cpp` is compiled under strict IEEE
-floating-point (no fast-math) to keep the SVD input path well-behaved.
+`max_verify_residual_excess()` reports what the gate actually admitted.
+`truncation_error()` counts the weight truncation chose to drop, meaning the
+directions the weight budget or the bond cap rejected, and is committed only
+after verification. The verification costs roughly one extra rank-slice matrix
+multiply per two-qubit gate.
+
+The factorisation itself is performed in a translation unit compiled under
+strict IEEE floating-point, and so is the reconstruction residual that decides
+whether a factorisation is accepted. The residual subtracts two nearly identical
+matrices, and one computed too small would admit exactly the factorisations the
+check exists to reject.
 
 **Ladder observability**. Which route a bond split took is otherwise invisible
 to the caller, since a rescued split and a clean one both yield valid tensors.
@@ -588,11 +601,18 @@ Two counters on `MPSState` report it:
   rescued, and how much error the accepted route let through when it was not.
 
 A run with `gram_fallback_count() == 0` never distrusted its SVD backend. A
-nonzero count is not an error: it is the containment working, and the discarded
-weight the rescue's validity floor rejected is included in `truncation_error()`.
+nonzero count is not an error: it is the containment working.
+
+Weight the rescue's validity floor rejected is reported separately from
+`truncation_error()`, because it is not truncation. Forming the Gram matrix
+squares the condition number, so a singular value that is exactly zero in the
+input returns at the scale of the square root of machine epsilon and carries
+weight that was never in the matrix. Counting that as truncation error would
+report a bond which discarded nothing as having lost something.
+
 Both counters accumulate over the state's lifetime and are not reset by gate
-application. Reconstruction from a statevector does not run the ladder and does
-not advance either counter.
+application. Reconstruction from a statevector runs the ladder like any other
+split and advances both counters.
 
 **Complexity**:
 - **Space**: $O(n \cdot \chi^2)$ where $\chi$ = max bond dimension (typically 16–256)

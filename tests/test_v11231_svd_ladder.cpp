@@ -27,6 +27,7 @@
 #include "lindblad/types.hpp"
 
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
@@ -143,9 +144,20 @@ TEST(V11231SvdLadder, TheKeptSliceReconstructsTheBlockWhenNothingIsTruncated) {
     const auto t = truncate(m, 64, 1e-16);
     ASSERT_EQ(t.rank, 3);
 
-    const Eigen::MatrixXcd recon = t.U * t.S.asDiagonal() * t.V.adjoint();
-    ASSERT_EQ(static_cast<int>(recon.rows()), 3);
-    ASSERT_EQ(static_cast<int>(recon.cols()), 3);
+    // U diag(S) V-dagger, written out because SvdTruncation carries the
+    // library's own storage rather than a backend matrix type: the ladder's
+    // result must be readable without the caller having a linear algebra
+    // library available.
+    lindblad::detail::DenseMatrix recon(t.U.rows(), t.V.rows());
+    for (int r = 0; r < t.U.rows(); ++r)
+        for (int c = 0; c < t.V.rows(); ++c) {
+            std::complex<double> acc(0.0, 0.0);
+            for (int j = 0; j < t.rank; ++j)
+                acc += t.U(r, j) * t.S(j) * std::conj(t.V(c, j));
+            recon(r, c) = acc;
+        }
+    ASSERT_EQ(recon.rows(), 3);
+    ASSERT_EQ(recon.cols(), 3);
     for (int r = 0; r < 3; ++r)
         for (int c = 0; c < 3; ++c)
             EXPECT_NEAR(recon(r, c).real(), m[static_cast<std::size_t>(r)]

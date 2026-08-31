@@ -1,6 +1,6 @@
 // metrics.cpp — Quantum information metrics
 // All quantities computed with full Eigen3 eigendecomposition (no approximations).
-// - Von Neumann entropy: SelfAdjointEigenSolver on density matrix.
+// - Von Neumann entropy: self-adjoint eigendecomposition of the density matrix.
 // - Mixed-state fidelity: Uhlmann-Jozsa F = (Tr sqrt(sqrt(rho1)*rho2*sqrt(rho1)))^2.
 // - Concurrence: sqrt of square roots of eigenvalues of rho * rho_tilde.
 
@@ -8,13 +8,15 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
 
+#include "lindblad/detail/eigen_backend.hpp"
+
 #include <Eigen/Dense>
-#include <Eigen/Eigenvalues>
 
 #include <cmath>
 #include <algorithm>
 #include <numeric>
 #include <stdexcept>
+#include <string>
 
 namespace lindblad {
 namespace QuantumInfo {
@@ -46,9 +48,15 @@ static Eigen::MatrixXcd to_eigen(const Operator& op) {
 // Matrix square root of a positive semidefinite Hermitian matrix via eigendecomposition
 // sqrt(A) = V * diag(sqrt(eigenvalues)) * V†
 static Eigen::MatrixXcd matrix_sqrt(const Eigen::MatrixXcd& A) {
-    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(A);
-    const auto& vals = es.eigenvalues();
-    const auto& vecs = es.eigenvectors();
+    const int n = static_cast<int>(A.rows());
+    Eigen::VectorXd vals(n);
+    Eigen::MatrixXcd vecs(n, n);
+    if (!detail::eigh(A.data(), n, detail::MatrixOrder::ColMajor, vals.data(),
+                      vecs.data())) {
+        throw std::runtime_error(
+            "matrix_sqrt: eigendecomposition of a " + std::to_string(n) + "x" +
+            std::to_string(n) + " Hermitian matrix failed");
+    }
     Eigen::VectorXd sqrt_vals = vals.array().max(0.0).sqrt();
     return vecs * sqrt_vals.asDiagonal() * vecs.adjoint();
 }
@@ -118,8 +126,13 @@ double average_gate_fidelity(const Operator& channel, const Operator& target) {
 
 double entropy(const DensityMatrix& rho, double base) {
     auto M = to_eigen(rho);
-    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(M);
-    const auto& vals = es.eigenvalues();
+    const int n = static_cast<int>(M.rows());
+    Eigen::VectorXd vals(n);
+    if (!detail::eigh(M.data(), n, detail::MatrixOrder::ColMajor, vals.data(),
+                      /*evecs_out=*/nullptr)) {
+        throw std::runtime_error(
+            "entropy: eigendecomposition of the density matrix failed");
+    }
 
     double log_base = std::log(base);
     double result = 0.0;
@@ -172,8 +185,15 @@ double concurrence(const DensityMatrix& rho) {
     Eigen::MatrixXcd R = sqrt_rho * rho_tilde * sqrt_rho;
 
     // Eigenvalues of R (it should be positive semi-definite)
-    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXcd> es(R);
-    Eigen::VectorXd evals = es.eigenvalues().array().max(0.0);
+    const int rn = static_cast<int>(R.rows());
+    Eigen::VectorXd r_evals(rn);
+    if (!detail::eigh(R.data(), rn, detail::MatrixOrder::ColMajor,
+                      r_evals.data(), /*evecs_out=*/nullptr)) {
+        throw std::runtime_error(
+            "concurrence: eigendecomposition of sqrt(rho) rho~ sqrt(rho) "
+            "failed");
+    }
+    Eigen::VectorXd evals = r_evals.array().max(0.0);
 
     // Sort eigenvalues descending and take square roots
     std::vector<double> lambdas(evals.data(), evals.data() + evals.size());

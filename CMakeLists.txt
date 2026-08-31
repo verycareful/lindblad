@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.23.1 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.24.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "1.1.23.1")
+set(LINDBLAD_VERSION_LABEL "1.1.24.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -144,76 +144,76 @@ set(NLOPT_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)  # NLopt respects NLOPT_BUILD_SHARED; kept for other deps
 
 # Eigen3 — header-only, used for robust SVD and eigendecomposition
+# 5.0.0 is the only supported version. It is pinned for the accuracy of its
+# self-adjoint eigensolver on degenerate Hermitian input, which is what the Gram
+# rescue route factorises: the null-space tail there lands at 2.086188e-16
+# against 3.4.1's 1.059506e-08, the latter being sqrt of an eigenvalue at eps
+# and the signature of that route's squared condition number. It is also the
+# version on which BDCSVD is correct for degenerate complex input, which is what
+# makes BDC the MPS default (see SVDMethod in types.hpp).
 FetchContent_Declare(
     eigen
     GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-    GIT_TAG        3.4.0
+    GIT_TAG        5.0.0
     GIT_SHALLOW    TRUE
 )
 set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
 set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
-# Unless this is ON, Eigen 3.4.0 injects -std=c++03 into its own configure
-# checks (its CMakeLists.txt adds the flag, then probes for the standard math
-# library). MSVC's standard library headers cannot be parsed as C++03 — they
-# declare `noexcept` — so on a Windows Clang toolchain every Eigen probe that
-# includes <cmath> fails to COMPILE, and Eigen reports the misleading
-# "Can't link to the standard math library" and halts configuration. Turning
-# this ON only stops the stale flag being injected: Lindblad is C++23 and never
-# builds Eigen's own tests (BUILD_TESTING is forced OFF below).
-set(EIGEN_TEST_CXX11 ON CACHE BOOL "" FORCE)
-
 # Options declared before FetchContent_MakeAvailable so each fetch is conditional
 option(LINDBLAD_BUILD_TESTS      "Build test suite (ON when building Lindblad directly, OFF when consumed as a dependency)" ${PROJECT_IS_TOP_LEVEL})
 option(LINDBLAD_BUILD_BENCHMARKS "Build benchmarks (ON when building Lindblad directly, OFF when consumed as a dependency)" ${PROJECT_IS_TOP_LEVEL})
 option(LINDBLAD_BUILD_PYTHON     "Build Python bindings" OFF)
 option(LINDBLAD_BUILD_APPS       "Build user-facing CLI apps (lindblad_draw, ...)" ${PROJECT_IS_TOP_LEVEL})
 
-# Eigen 3.4.0 gates its own test registration on the standard BUILD_TESTING
-# variable (its option() defaults it ON); the EIGEN_BUILD_TESTING name below
-# is only honoured by newer Eigen. Without this, Eigen silently registers
-# ~915 ctest entries for test binaries that are never built. Lindblad's own
-# suite uses enable_testing() + LINDBLAD_BUILD_TESTS and never consults
-# BUILD_TESTING, so forcing it OFF affects dependencies only.
+# Belt and braces alongside EIGEN_BUILD_TESTING above: a dependency that gates
+# its own test registration on the standard BUILD_TESTING name would otherwise
+# register ctest entries for binaries that are never built. Lindblad's own suite
+# uses enable_testing() + LINDBLAD_BUILD_TESTS and never consults BUILD_TESTING,
+# so forcing it OFF affects dependencies only.
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(nlopt eigen)
 
-# Strict FP for every TU that instantiates an Eigen SVD (R.1.16.0, issue #44;
-# R.1.23.0, issue #91). Eigen is header-only, so each of these files
-# instantiates JacobiSVD into itself and inherits this directory's
-# -ffast-math; under that codegen, on degenerate rank-deficient MPS thetas
-# (13-qubit Shor IQFT), Eigen 3.4.0 returned internally inconsistent
-# factorizations whose damage reached the KEPT singular channels as
-# finite-but-wrong data — undetectable by any truncation-side check. Under
-# strict FP the same input yields an exact kept slice with garbage confined to
-# discardable null-space columns (proven by the DiagR1160StrictFP suite), which
-# a hardened selection then handles.
+# The three MPS TUs take the project-wide -ffast-math. Every factorisation they
+# reach is performed in eigen_backend.cpp and checked by the reconstruction
+# residual in svd_verify.cpp, both strict unconditionally below, so what these
+# files hold is contraction, environment and selection arithmetic.
 #
-# svd_truncate.cpp owns the factorisation for both MPS layers and is the
-# primary reason the flag exists. A truncation-side check cannot substitute for
-# it: under -ffast-math the corruption arrives finite and self-consistent, so
-# there is nothing for a check to see. The check and the flag guard different
-# halves, and the routine needs both. It sits in its own TU so the flag travels
-# with the code rather than with whichever file includes the header.
-#
-# The two layer TUs stay on the list as well. The evidence that the flag
-# changes their results was gathered at whole-TU granularity (a qudit bond
-# split returning a finite, self-consistent, wrong state under -ffast-math on
-# one compiler, correct under strict FP), and it has not been narrowed to the
-# factorisation alone. Both files also carry contraction and environment
-# arithmetic of the same near-cancellation shape. Narrowing the list is a
-# measurement nobody has made, not a cleanup.
-#
-# Same pattern as the NLopt -fno-fast-math quarantine below: numerical
-# ALGORITHMS need IEEE semantics; kernel arithmetic keeps fast-math. Later
-# flags override earlier ones, so these TUs keep -O3/-march.
+# The switches are DIAGNOSTIC ONLY: a strict build of one of these locates a
+# defect, it never ships around one. One per file, because a two-build bisect
+# names the file where a single list-wide switch cannot.
+option(LINDBLAD_STRICT_FP_SVD_TRUNCATE
+       "DIAGNOSTIC: build src/svd_truncate.cpp -fno-fast-math" OFF)
+option(LINDBLAD_STRICT_FP_MPS_SIM
+       "DIAGNOSTIC: build src/simulators/mps_sim.cpp -fno-fast-math" OFF)
+option(LINDBLAD_STRICT_FP_QUDIT_MPS
+       "DIAGNOSTIC: build src/qudit/qudit_mps.cpp -fno-fast-math" OFF)
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    # Unconditionally strict, and NOT under any of the options above. These two
+    # TUs are what a released configuration is measured AGAINST: eigen_backend.cpp
+    # is the single emitter that makes any FP flag reach Eigen at all, and
+    # svd_verify.cpp holds the reconstruction residual that decides whether a
+    # factorisation is accepted. Releasing either would remove the instrument
+    # rather than the thing being measured.
     set_source_files_properties(
-        src/svd_truncate.cpp
-        src/simulators/mps_sim.cpp
-        src/qudit/qudit_mps.cpp
+        src/eigen_backend.cpp
+        src/svd_verify.cpp
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math")
+
+    if(LINDBLAD_STRICT_FP_SVD_TRUNCATE)
+        set_source_files_properties(src/svd_truncate.cpp PROPERTIES
+            COMPILE_OPTIONS "-fno-fast-math")
+    endif()
+    if(LINDBLAD_STRICT_FP_MPS_SIM)
+        set_source_files_properties(src/simulators/mps_sim.cpp PROPERTIES
+            COMPILE_OPTIONS "-fno-fast-math")
+    endif()
+    if(LINDBLAD_STRICT_FP_QUDIT_MPS)
+        set_source_files_properties(src/qudit/qudit_mps.cpp PROPERTIES
+            COMPILE_OPTIONS "-fno-fast-math")
+    endif()
 
     # Strict FP for the Class C residuals, same reasoning one level down: these
     # are measurements rather than kernels. Each evaluates a near-cancellation
@@ -279,6 +279,9 @@ target_compile_definitions(lindblad_banner_obj PRIVATE
 # Core library
 # ==============================================================================
 add_library(lindblad_core STATIC
+    src/eigen_backend.cpp
+    src/svd_verify.cpp
+    src/unitary_repair.cpp
     src/hw_info.cpp
     src/validation.cpp
     src/validate_physical.cpp
@@ -354,10 +357,9 @@ target_include_directories(lindblad_core PUBLIC
 add_library(lindblad::core ALIAS lindblad_core)
 
 # Expose version label as a compile definition so version() never drifts from CMakeLists.txt
-# EIGEN_MPL2_ONLY restricts inclusion to MPL-2.0-only headers; Eigen's LGPL files are excluded
+
 target_compile_definitions(lindblad_core PUBLIC
     LINDBLAD_VERSION_LABEL="${LINDBLAD_VERSION_LABEL}"
-    EIGEN_MPL2_ONLY
 )
 
 # Link OpenMP

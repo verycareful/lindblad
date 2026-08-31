@@ -4,6 +4,160 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.24.0] - 2026-08-31
+
+Eigen moves behind a seam, and that turns out to be a correctness change rather
+than a tidying one.
+
+Eigen is header-only, so its template instantiations carry vague linkage: every
+translation unit that names a decomposition emits its own weak symbol, and the
+linker keeps exactly one per binary, chosen by mangled name. Compile flags are
+not part of that name. A per-file `-fno-fast-math` therefore governs which
+variant a file EMITS and never which variant survives the link, so the strict
+floating-point quarantine this project has carried on its SVD path was not
+delivering what its own comment claimed.
+
+Measured directly: the same frozen 8x8 matrix, the same Eigen, the same flag on
+the calling translation unit. A standalone strict build returns
+`1 1 1 1 0 0 0 0`. A standalone fast-math build returns one corrupted column of
+U. Inside the test binary, with the calling unit flagged strict, the answer is
+`1 1 nan 1 nan ...` summing to 3 against a Frobenius norm of 4: a third outcome
+matching neither pure build, which is what per-symbol merging produces.
+
+Routing every decomposition through one translation unit fixes it. That is now
+verifiable rather than asserted: `nm` over all 67 objects in `lindblad_core`
+reports a single emitter.
+
+### Added
+
+- **`detail::eigen_backend`**, the library's only Eigen decomposition site.
+  `svd_thin` and `eigh` take raw buffers and a storage order, and the header
+  names no Eigen type, so including it instantiates nothing. Compiled with
+  strict floating-point unconditionally, because `JacobiSVD` guards its own
+  entry with a finiteness check that `-ffast-math` folds to a constant and
+  deletes, which Clang reports at that exact line.
+
+- **`detail::svd_verify`**, holding the truncation ladder's reconstruction
+  residual. Separated so it can be strict while the ladder around it is not: it
+  subtracts two nearly identical matrices, and a residual computed too small
+  admits precisely the factorisations the check exists to reject. It is
+  deliberately not part of the Eigen backend, whose job is owning the
+  dependency rather than owning everything that wants the same compile flag.
+
+- **`detail::DenseMatrix` and `detail::RealVector`**, the library's own dense
+  storage. Owning, column-major, with `m(row, col)` access. Storage and not a
+  linear algebra library: no `operator*`, no `adjoint`, no `determinant`. Code
+  needing those maps the buffer at the site that needs it, which keeps the
+  choice of backend local instead of embedded in a type every caller holds.
+
+- **Unitary repair (#57).** `Validation::Fix` now repairs unitarity by unitary
+  polar projection: with `M = W S V-dagger` its thin SVD, the nearest unitary in
+  the Frobenius sense is `W V-dagger`. The repair is verified rather than
+  trusted, since its entire postcondition is that the output is unitary and the
+  same residual that rejected the input measures exactly that. A projection
+  landing outside the caller's tolerance raises rather than returning.
+  `QuantumCircuit::unitary` applies it to the matrix it stores, so the
+  projection runs once at construction rather than once per shot, and the
+  caller's own matrix is untouched.
+
+- **`SvdTruncation::floor_rejected_weight`**, so weight the Gram rescue's
+  validity floor discarded is visible rather than absorbed.
+
+### Changed
+
+- **No header under `include/` names an Eigen type.** `SvdTruncation` and the
+  qudit `MPSSiteTensor` accessors carry the library's own storage, so holding a
+  factorisation or a site tensor no longer obliges a caller to have Eigen
+  available. Element access is unchanged, which is why the conversion touched
+  four binding lines in the qudit layer and none at all in the qubit simulator.
+
+- **BDC is the MPS SVD default on both layers.** It is divide-and-conquer where
+  Jacobi is cubic per sweep, so the gap widens with the block: measured through
+  the truncation ladder, BDC costs about a fifth of Jacobi at 32x32 and a
+  fiftieth at 128x128, which is a two-site theta at bond dimension 64. Below
+  Eigen's divide-and-conquer threshold the choice is nominal, since BDCSVD
+  delegates to the Jacobi kernel for blocks under 16x16. Both are accepted by
+  the verify rung on the first attempt, on decaying and exactly degenerate
+  spectra alike. Jacobi remains selectable and now emits a one-time note that
+  it is the slower algorithm, replacing the warning that said it was the safe
+  one.
+
+- **Eigen is pinned to 5.0.0**, chosen on the accuracy of its self-adjoint
+  eigensolver rather than on throughput, which was indistinguishable between
+  candidates. On degenerate Hermitian input, which is what the Gram rescue
+  factorises, its null-space tail lands at `2.086188e-16` against 3.4.1's
+  `1.059506e-08`, the latter being the square root of an eigenvalue at machine
+  epsilon and the signature of that route's squared condition number. 5.0.0 also
+  removed the LGPL code the `EIGEN_MPL2_ONLY` macro existed to exclude, so that
+  definition is gone: it selected nothing and reading it as a licence assurance
+  would have been wrong.
+
+- **The MPS translation units take the project-wide floating-point flags.** The
+  quarantine they carried was addressing a symptom; with decompositions behind
+  the seam and every result checked by the reconstruction residual, what remains
+  in those files is contraction, environment and selection arithmetic. Three
+  per-file diagnostic switches remain for locating a defect, never for shipping
+  around one.
+
+### Fixed
+
+- **Truncation error counted weight that was never in the matrix.** Forming the
+  Gram matrix squares the condition number, so a singular value that is exactly
+  zero in the input returns at the scale of the square root of machine epsilon.
+  The validity floor correctly refused to keep those, and their weight was then
+  folded into the reported truncation error, so a bond that discarded nothing
+  reported having lost something. Reported weight now covers only what the
+  budget or the bond cap dropped.
+
+- **`mps_from_sv` selected a rank from singular values it had not verified
+  (#93).** A non-finite singular value made the running comparison false at
+  every step, so the loop ran to rank one and returned finite tensors carrying
+  no marker of what had happened. It now goes through the shared verified
+  truncation like every other split. The reshape it performed was also
+  unnecessary: the block is already the matrix the split needs.
+
+- **Three eigendecompositions in `quantum_info` never checked whether they
+  succeeded.** Fidelity, von Neumann entropy and concurrence read the solver's
+  output without consulting its status, computing on whatever it left behind on
+  failure. They now raise.
+
+### Results
+
+2549 tests across 233 suites, 2544 passed, 4 failed and 1 skipped, on Clang
+18.1.3 (31.3 s) and GCC 13.3.0 (23.3 s) under Ubuntu 24.04 at the documented
+native build. Both compilers produced the identical four failures, so nothing
+here is compiler- or flag-dependent. The gap between the two is #72, still
+observed.
+
+The four are tests pinning contracts this release changes, and they fail loudly
+rather than quietly. `R1131Mps.DefaultSvdMethodIsJacobi` asserts the previous
+MPS default. `R1131Mps.BdcSelectionEmitsBrokenWarning` and
+`R1131Qudit.MpsBdcSelectionWarns` search the warning text for a string no longer
+emitted, since the backend they warned about is now the default and the warning
+describes the other one. `R1211SvCircuitIngress.PolicyMatrixAtIngress` asserts
+that `Validation::Fix` refuses to repair unitarity, which it no longer does.
+Each is updated in the test release that follows, where its assertions can move
+together with the contract it describes.
+
+The single skip is `V11231NormalizationMargin.TheResidualAtLargeRegisterSizes`,
+which needs `LINDBLAD_BIG_MARGIN_SWEEP=1` and about 17.2 GB, and skips
+identically in the preceding release's captures.
+
+`docs/Benchmarks.md` is generated from a comparison run that predates the
+backend change, so its matrix-product-state figures describe Jacobi. They are
+regenerated when that comparison is next run.
+
+BREAKING CHANGE: the MPS SVD default changes from Jacobi to BDC on both the
+qubit and qudit layers, which shifts truncation values. A state truncated under
+one backend differs in its last digits from the same state truncated under the
+other; on the qudit truncation probe the fidelity against a dense reference
+moves from 0.375912208714 to 0.413741050310. Select `SVDMethod::Jacobi`
+explicitly to retain the previous numerics.
+
+BREAKING CHANGE: `state_fidelity`, `entropy` and `concurrence` now raise
+`std::runtime_error` when the underlying eigendecomposition fails, where they
+previously returned a value computed from unchecked solver output.
+
 ## [1.1.23.1] - 2026-08-29
 
 The test wave for the normalization repair and the shared truncation ladder
