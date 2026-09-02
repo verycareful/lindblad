@@ -4,6 +4,97 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.25.2] - 2026-09-02
+
+Closes the two contracts the previous release shipped red, and two smaller
+places where the tableau backend decided something quietly.
+
+Three of the four are the same defect wearing different clothes: the backend
+knew something the caller did not, and said nothing. `shots == 0` returned a
+state that did not describe the circuit. An explicit sampling route the circuit
+could not use was substituted without a word. A negative register width was
+accepted and turned into an enormous allocation. Each now either does the work
+it was asked for or says why it cannot.
+
+### Fixed
+
+- **`shots == 0` executes the circuit.** On any simulator it means one seeded
+  trajectory: classical conditions honoured, MEASURE outcomes drawn from the
+  seed and recorded into the returned state, and `counts` left empty. The
+  tableau backend did neither half. A circuit with reset, feedforward or
+  mid-circuit measurement was never executed at all, because its per-shot loop
+  ran zero times and the returned state was the freshly initialised one the
+  `Result` was constructed with. A terminal-measurement circuit ran its gates
+  but never drew its measurements, so the state came back uncollapsed where the
+  statevector backend returns a collapsed one. Both routes now run one
+  trajectory and record no counts. Since the only output this mode produces is
+  the returned state, every use of it on this backend previously gave a wrong
+  answer with nothing to indicate it.
+
+- **A negative register width is refused instead of allocated.** Neither
+  `StabilizerState` nor its column-major companion checked their width, and
+  every buffer length is derived from it, so a negative value arrived at each
+  as an enormous unsigned length. The check runs from the first entry of the
+  member initialiser list, which is the only place it can: by the constructor
+  body the buffers have already been sized. Zero remains a legal width.
+
+### Added
+
+- **`Sampling::Auto`, now the default.** The sampling option governs how
+  terminal measurements become shots, and a circuit with mid-circuit
+  measurement, feedforward or reset takes the per-shot route regardless. That
+  fallback is correct and unavoidable: the outcome slab is one affine subspace
+  read off one fixed tableau, and once a measurement collapses the state
+  mid-circuit each trajectory diverges, so there is no single subspace left to
+  read. What was missing is that the caller was never told. Selecting `Slab`
+  explicitly for such a circuit now emits a note saying the per-shot route was
+  used instead; counts are unaffected, which is why this is a note and not a
+  refusal.
+
+  The new enumerator is what makes that possible rather than merely desirable.
+  With only `Slab` and `PerShot`, an unset option is indistinguishable from a
+  chosen one, so any diagnostic would have fired for callers who never touched
+  it, and a refusal would have rejected every default-configured reset circuit.
+  `Auto` picks per circuit and stays silent, so the note reaches only a caller
+  who actually asked for something.
+
+### Changed
+
+- **The block elimination's note is deduplicated by the warning channel rather
+  than by the backend.** It carried its own once-per-process flag, which the
+  channel's flush could not reset, so the note was unobservable after the first
+  selection anywhere in a process and a test could only see it by controlling
+  which suite ran first. The flag is gone. The channel already delivers a
+  message once and reports the repeat count at the next flush, which is the
+  behaviour every other library warning has.
+
+### Tests
+
+- The two contract tests that shipped red now pass unchanged in intent:
+  `R1121Exec.ShotsZeroRunsOneTrajectoryCliffordAgainstStatevector`, and the
+  sampling diagnostic, which is renamed to
+  `ExplicitSlabOnTheGeneralPathEmitsANote` since the agreed remedy is a note.
+
+- `Auto` is pinned from three sides: it is the default, it is silent on every
+  circuit shape including the ones that cannot use a slab, and on a terminal
+  circuit it produces counts identical to an explicit `Slab` under the same
+  seed. `PerShot` on the general route is pinned silent too, since it asks for
+  something that route can deliver.
+
+- The note tests are rewritten against the channel's own behaviour rather than
+  around a helper that existed only to work around the removed flag: one
+  selection delivers one note, and four selections in one window deliver it
+  once plus a tally naming the other three.
+
+- The width guard is pinned on both types, for the rejection, for a message
+  naming the type and the offending value, and for zero and positive widths
+  still being accepted.
+
+### Results
+
+2771 tests across 252 suites, 2770 passed and one skipped, none failed (27.9 s
+on GCC 13.3.0, 37.9 s on Clang 18.1.3; WSL, `-march=native` on both).
+
 ## [1.1.25.1] - 2026-09-02
 
 The test wave for the Clifford rework. That release changed how the backend

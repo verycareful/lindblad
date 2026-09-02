@@ -46,12 +46,17 @@ using Elim = StabilizerState::Elimination;
 const Sampling kRoutes[] = {Sampling::Slab, Sampling::PerShot};
 
 // The general route is per-shot by nature and offers no slab, so a circuit that
-// takes it is exercised under PerShot alone. Asking for Slab there is the
-// subject of ExplicitSlabOnTheGeneralPathIsRefused.
-const Sampling kGeneralRoutes[] = {Sampling::PerShot};
+// takes it is exercised under the two options that ask for something it can
+// deliver. Asking for Slab there is the subject of
+// ExplicitSlabOnTheGeneralPathEmitsANote.
+const Sampling kGeneralRoutes[] = {Sampling::Auto, Sampling::PerShot};
 
 const char* route_name(Sampling s) {
-    return s == Sampling::Slab ? "Slab" : "PerShot";
+    switch (s) {
+        case Sampling::Auto: return "Auto";
+        case Sampling::Slab: return "Slab";
+        default:             return "PerShot";
+    }
 }
 
 Counts run_with(const QuantumCircuit& qc, Sampling route, int shots, uint64_t seed,
@@ -595,40 +600,92 @@ TEST(V11251CliffordSampling, TerminalCircuitsHonourTheSamplingOption) {
     }
 }
 
-// PIN, currently RED. A sampling route that cannot be honoured must say so.
+// A sampling route that cannot be honoured says so.
 //
-// Options::sampling documents itself as governing how TERMINAL measurements
-// become shots, and a circuit with mid-circuit measurement, feedforward or
-// reset takes the general route regardless. The reason is real: the slab is one
-// affine subspace read off one fixed tableau, and once a mid-circuit
-// measurement collapses the state each trajectory diverges, so there is no
-// single subspace left to read.
+// Options::sampling governs how TERMINAL measurements become shots, and a
+// circuit with mid-circuit measurement, feedforward or reset takes the general
+// route regardless. The reason is real: the slab is one affine subspace read
+// off one fixed tableau, and once a mid-circuit measurement collapses the state
+// each trajectory diverges, so there is no single subspace left to read.
 //
-// What is missing is the diagnostic. Today an explicit Slab request on such a
-// circuit is dropped in silence: the run succeeds, the counts are correct, and
-// the caller is never told that the route it asked for is not the route it got.
-// A caller choosing Slab for speed has no way to learn it did not get it.
-//
-// Closing this needs a third enumerator rather than a bare throw, because Slab
-// is the current DEFAULT and throwing on it as it stands would reject every
-// default-configured reset or feedforward circuit. The shape that works is an
-// Auto default that picks per circuit, leaving an EXPLICIT Slab to mean the
-// caller wants that route and to be refused when it is unavailable.
-TEST(V11251CliffordSampling, ExplicitSlabOnTheGeneralPathIsRefused) {
+// An EXPLICIT Slab request on such a circuit is therefore something the backend
+// cannot do, and it emits a note rather than substituting in silence. The run
+// still succeeds and the counts are still right, which is why this is a note
+// and not a refusal.
+TEST(V11251CliffordSampling, ExplicitSlabOnTheGeneralPathEmitsANote) {
     for (const PathCase& c : kPathCases) {
         if (c.terminal) continue;
         SCOPED_TRACE(c.name);
         const QuantumCircuit qc = c.build();
 
-        CliffordSimulator sim;
-        sim.options.sampling = Sampling::Slab;
-        EXPECT_THROW(sim.run(qc, 4096, kSeed), std::invalid_argument)
-            << "an explicit Slab request was dropped in silence on a circuit "
-               "that cannot take the slab route";
+        Counts counts;
+        const std::vector<std::string> notes = v11251::capture_warnings([&] {
+            CliffordSimulator sim;
+            sim.options.sampling = Sampling::Slab;
+            counts = sim.run(qc, 4096, kSeed).counts;
+        });
 
-        // PerShot is what the general route does by nature, so it is honoured
-        // and the answer is unchanged.
-        expect_uniform_over_32(run_with(qc, Sampling::PerShot, 4096, kSeed), 4096);
+        const std::vector<std::string> first = v11251::first_deliveries(notes);
+        ASSERT_EQ(first.size(), 1u)
+            << "an explicit Slab request on a general-path circuit must be "
+               "reported exactly once";
+        EXPECT_NE(first.front().find("note:"), std::string::npos) << first.front();
+        EXPECT_NE(first.front().find("Slab"), std::string::npos) << first.front();
+        EXPECT_NE(first.front().find("per-shot"), std::string::npos) << first.front();
+
+        // The answer is unaffected: the note reports a substitution, not a
+        // failure.
+        expect_uniform_over_32(counts, 4096);
+    }
+}
+
+// Auto asked for nothing, so it is told nothing. This is the half that makes
+// the note worth having: a caller who never touched the option is not warned
+// about a choice it did not make.
+TEST(V11251CliffordSampling, AutoIsSilentOnEveryPath) {
+    for (const PathCase& c : kPathCases) {
+        SCOPED_TRACE(c.name);
+        const QuantumCircuit qc = c.build();
+
+        Counts counts;
+        const std::vector<std::string> notes = v11251::capture_warnings([&] {
+            CliffordSimulator sim;   // default-constructed: Auto
+            counts = sim.run(qc, 4096, kSeed).counts;
+        });
+        EXPECT_TRUE(notes.empty())
+            << "the default option produced a diagnostic: " << notes.front();
+        expect_uniform_over_32(counts, 4096);
+    }
+}
+
+// PerShot is what the general route does by nature, so asking for it there is
+// a request that IS met, and carries no note either.
+TEST(V11251CliffordSampling, PerShotOnTheGeneralPathIsSilent) {
+    for (const PathCase& c : kPathCases) {
+        if (c.terminal) continue;
+        SCOPED_TRACE(c.name);
+        const QuantumCircuit qc = c.build();
+        const std::vector<std::string> notes = v11251::capture_warnings([&] {
+            (void)run_with(qc, Sampling::PerShot, 4096, kSeed);
+        });
+        EXPECT_TRUE(notes.empty()) << notes.front();
+    }
+}
+
+// Auto is the default, and on a terminal circuit it picks the slab. Same seed,
+// same counts as an explicit Slab; different from PerShot, which consumes the
+// stream differently.
+TEST(V11251CliffordSampling, AutoPicksTheSlabOnTerminalCircuits) {
+    CliffordSimulator fresh;
+    EXPECT_EQ(fresh.options.sampling, Sampling::Auto)
+        << "Auto must be the default, so an unset option is distinguishable "
+           "from a chosen one";
+
+    for (const Case& c : kCases) {
+        SCOPED_TRACE(c.name);
+        const QuantumCircuit qc = c.build();
+        EXPECT_EQ(run_with(qc, Sampling::Auto, 4096, kSeed),
+                  run_with(qc, Sampling::Slab, 4096, kSeed));
     }
 }
 

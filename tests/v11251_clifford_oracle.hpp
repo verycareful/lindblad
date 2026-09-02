@@ -50,34 +50,34 @@ using lindblad::Statevector;
 using lindblad::StatevectorSimulator;
 
 // =============================================================================
-// The one-time FourRussians note
+// Capturing what the library emits
 // =============================================================================
 
-// The library announces Elimination::FourRussians once per PROCESS, behind a
-// function-local static that flush_warnings() cannot reset. Which test sees it
-// would therefore depend on the order gtest happens to run them in, and any
-// suite that selected the block route first would consume it.
+// Runs fn with a handler installed and returns everything the warning channel
+// delivered.
 //
-// So every FourRussians selection in the 1.1.25.1 wave calls this first. Being
-// an inline function, its own static is shared across all the translation units
-// that include this header, so the first caller anywhere performs the first
-// selection under a capturing handler and every later caller reads what it
-// recorded.
-inline const std::vector<std::string>& four_russians_first_notes() {
-    static const std::vector<std::string> notes = [] {
-        std::vector<std::string> captured;
-        lindblad::set_warning_handler(
-            [&captured](const std::string& m) { captured.push_back(m); });
-        StabilizerState probe(4);
-        probe.apply_h(0);
-        probe.apply_cx(0, 1);
-        probe.apply_cx(1, 2);
-        (void)probe.outcome_slab(StabilizerState::Elimination::FourRussians);
-        lindblad::set_warning_handler(nullptr);
-        lindblad::flush_warnings();
-        return captured;
-    }();
-    return notes;
+// The channel is global, so the counts are flushed on the way IN, otherwise a
+// message another suite emitted and never flushed would arrive here as a repeat
+// line. Removing the handler on the way out flushes to the OUTGOING handler,
+// which is this one, so a message emitted several times inside fn appears twice:
+// the first delivery, and a trailing entry naming the repeat count.
+inline std::vector<std::string> capture_warnings(const std::function<void()>& fn) {
+    lindblad::flush_warnings();
+    std::vector<std::string> captured;
+    lindblad::set_warning_handler(
+        [&captured](const std::string& m) { captured.push_back(m); });
+    fn();
+    lindblad::set_warning_handler(nullptr);
+    return captured;
+}
+
+// The entries that are first deliveries rather than repeat tallies.
+inline std::vector<std::string> first_deliveries(const std::vector<std::string>& msgs) {
+    std::vector<std::string> out;
+    for (const std::string& m : msgs) {
+        if (m.find("[repeated ") == std::string::npos) out.push_back(m);
+    }
+    return out;
 }
 
 // =============================================================================

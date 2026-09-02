@@ -298,7 +298,6 @@ TEST(V11251CliffordRandom, RandomStatesSlabMatchesStatevectorExactly) {
 // they must agree bit for bit. Random pivot patterns are exactly what a block
 // method can get wrong while every structured case still passes.
 TEST(V11251CliffordRandom, BothEliminationsAgreeOnRandomStates) {
-    (void)v11251::four_russians_first_notes();
     for (int n : {2, 5, 8, 31, 32, 33, 63, 64, 65, 96, 127, 128, 129}) {
         std::mt19937_64 rng(kSeedElim + static_cast<uint64_t>(n));
         for (int i = 0; i < 12; ++i) {

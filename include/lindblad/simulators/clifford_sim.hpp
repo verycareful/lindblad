@@ -219,12 +219,20 @@ public:
         // checked against, and because it is what a caller pinning specific
         // seeded bitstrings depends on.
         //
-        // Circuits with mid-circuit measurement, feedforward or reset take the
-        // general path regardless: the subspace shape describes a terminal
-        // measurement of a fixed state, which is not what those circuits do.
-        enum class Sampling { Slab, PerShot };
+        // Auto is the default and picks per circuit: the slab wherever it
+        // applies, the per-shot route otherwise. It exists so an unset option
+        // is distinguishable from a chosen one. Circuits with mid-circuit
+        // measurement, feedforward or reset take the general path regardless of
+        // what is selected, because the subspace shape describes a terminal
+        // measurement of a FIXED state: once a measurement collapses the state
+        // mid-circuit, each trajectory diverges and there is no single subspace
+        // left to read. Selecting Slab explicitly for such a circuit is
+        // therefore a request that cannot be met, and it emits a note saying
+        // the per-shot route was taken instead rather than substituting in
+        // silence.
+        enum class Sampling { Auto, Slab, PerShot };
 
-        Sampling sampling = Sampling::Slab;
+        Sampling sampling = Sampling::Auto;
 
         // How the slab's elimination is reduced. See StabilizerState::Elimination:
         // plain is faster at ordinary sizes, the block route is the

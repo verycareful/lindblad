@@ -17,11 +17,10 @@
 // intermediate generators they produce do differ, which is why nothing here
 // compares those.
 //
-// The one-time note behind Elimination::FourRussians is guarded by a
-// function-local static in the library, which flush_warnings() cannot reset.
-// Every selection in this file therefore goes through
-// four_russians_first_notes(), which performs the first one under a capturing
-// handler, so which test gtest happens to run first cannot change an outcome.
+// The note behind Elimination::FourRussians is deduplicated by the warning
+// channel rather than by a flag inside the backend, so it is observable from a
+// clean channel in any order: a suite that selected the block route earlier
+// cannot consume it, and the repeat tally is the channel's own.
 
 #include <gtest/gtest.h>
 
@@ -44,21 +43,8 @@ namespace {
 using Slab = StabilizerState::OutcomeSlab;
 using Elim = StabilizerState::Elimination;
 
-// The first FourRussians selection made anywhere in the process, captured under
-// a handler that records what the library emits. Shared with every other suite
-// in this wave, so which test runs first cannot change an outcome here.
-using v11251::four_russians_first_notes;
-
-// Counts what the library emits while fn runs. The channel is returned to its
-// default on both sides so no other suite inherits the handler.
-std::vector<std::string> capture_warnings(const std::function<void()>& fn) {
-    std::vector<std::string> captured;
-    set_warning_handler([&captured](const std::string& m) { captured.push_back(m); });
-    fn();
-    set_warning_handler(nullptr);
-    flush_warnings();
-    return captured;
-}
+using v11251::capture_warnings;
+using v11251::first_deliveries;
 
 bool slab_bit(const std::vector<uint64_t>& v, int q) {
     return ((v[static_cast<size_t>(q / 64)] >> (q % 64)) & 1ULL) != 0;
@@ -365,7 +351,6 @@ TEST(V11251CliffordSlab, ZeroQubitStateHasAnEmptySlab) {
     EXPECT_TRUE(slab.basis.empty());
 
     // The block route has to reach the same conclusion on an empty register.
-    (void)four_russians_first_notes();
     const Slab block = st.outcome_slab(Elim::FourRussians);
     EXPECT_EQ(block.dim, 0);
     EXPECT_TRUE(block.offset.empty());
@@ -380,7 +365,6 @@ TEST(V11251CliffordSlab, ZeroQubitStateHasAnEmptySlab) {
 // exactly as it was. A caller that samples and then measures the same state
 // depends on this.
 TEST(V11251CliffordSlab, DoesNotModifyTheStateItReads) {
-    (void)four_russians_first_notes();
     for (const Case& c : kCases) {
         SCOPED_TRACE(c.name);
         QuantumCircuit qc(c.n);
@@ -419,7 +403,6 @@ TEST(V11251CliffordSlab, PlainIsTheDefaultElimination) {
 
     // The default argument of outcome_slab is the same choice, which is what
     // makes the no-argument call in the rest of this file a Plain call.
-    (void)four_russians_first_notes();
     for (const Case& c : kCases) {
         SCOPED_TRACE(c.name);
         QuantumCircuit qc(c.n);
@@ -434,7 +417,6 @@ TEST(V11251CliffordSlab, PlainIsTheDefaultElimination) {
 // bit for bit: same dim, same offset words, same basis vectors in the same
 // order. Anything weaker would pass while the canonical form drifted.
 TEST(V11251CliffordSlab, BothEliminationsProduceTheIdenticalCanonicalSlab) {
-    (void)four_russians_first_notes();
     for (const Case& c : kCases) {
         SCOPED_TRACE(c.name);
         QuantumCircuit qc(c.n);
@@ -454,7 +436,6 @@ TEST(V11251CliffordSlab, BothEliminationsProduceTheIdenticalCanonicalSlab) {
 // block. kBlock is 6, so a tableau needs well over 64 rows for the two routes
 // to take genuinely different paths.
 TEST(V11251CliffordSlab, EliminationsAgreeAtSizesPastTheBlockWidth) {
-    (void)four_russians_first_notes();
     for (int n : {7, 8, 31, 32, 33, 63, 64, 65, 96, 127, 128, 129}) {
         SCOPED_TRACE("n=" + std::to_string(n));
         StabilizerState st(n);
@@ -480,7 +461,6 @@ TEST(V11251CliffordSlab, EliminationsAgreeAtSizesPastTheBlockWidth) {
 // actually depends on and it holds even if the canonical form were ever
 // deliberately changed.
 TEST(V11251CliffordSlab, EliminationsProduceTheSameDistribution) {
-    (void)four_russians_first_notes();
     for (const Case& c : kCases) {
         SCOPED_TRACE(c.name);
         QuantumCircuit qc(c.n);
@@ -493,28 +473,44 @@ TEST(V11251CliffordSlab, EliminationsProduceTheSameDistribution) {
     }
 }
 
-// Selecting the block route emits exactly one note, and it says which method
-// was selected and that the default is the faster one at ordinary sizes.
-TEST(V11251CliffordSlab, FourRussiansEmitsExactlyOneNote) {
-    const std::vector<std::string>& notes = four_russians_first_notes();
-    ASSERT_EQ(notes.size(), 1u) << "the block route must announce itself once";
+// Selecting the block route announces itself, saying which method was selected
+// and that the default is the faster one at ordinary sizes.
+//
+// Deduplication belongs to the warning channel rather than to a flag inside the
+// backend, so this is observable from a clean channel in any order, and a suite
+// that selected the block route earlier cannot consume it.
+TEST(V11251CliffordSlab, FourRussiansAnnouncesItself) {
+    const std::vector<std::string> notes = capture_warnings([] {
+        StabilizerState st(6);
+        for (int q = 0; q < 6; ++q) st.apply_h(q);
+        (void)st.outcome_slab(Elim::FourRussians);
+    });
+    ASSERT_EQ(notes.size(), 1u) << "one selection, one note";
     const std::string& note = notes.front();
     EXPECT_NE(note.find("note:"), std::string::npos) << note;
     EXPECT_NE(note.find("FourRussians"), std::string::npos) << note;
     EXPECT_NE(note.find("Plain"), std::string::npos) << note;
 }
 
-// The note is once per process, not once per call: a caller selecting the block
-// route inside a loop is told once and not on every iteration.
-TEST(V11251CliffordSlab, TheNoteIsNotRepeatedOnLaterSelections) {
-    (void)four_russians_first_notes();
-    const std::vector<std::string> again = capture_warnings([] {
+// A caller selecting the block route in a loop is told once and given a tally,
+// not told on every iteration. That is the channel's repeat handling, which the
+// backend now relies on instead of suppressing the message itself.
+TEST(V11251CliffordSlab, RepeatedSelectionsAreCountedNotRepeated) {
+    const std::vector<std::string> notes = capture_warnings([] {
         StabilizerState st(6);
         for (int q = 0; q < 6; ++q) st.apply_h(q);
         for (int i = 0; i < 4; ++i) (void)st.outcome_slab(Elim::FourRussians);
     });
-    EXPECT_TRUE(again.empty())
-        << "the block route announced itself again after the first selection";
+
+    // One first delivery, whatever the repeat tally looks like.
+    const std::vector<std::string> first = first_deliveries(notes);
+    ASSERT_EQ(first.size(), 1u) << "the note must be delivered once, not four times";
+    EXPECT_NE(first.front().find("FourRussians"), std::string::npos);
+
+    // The other three are accounted for rather than dropped.
+    ASSERT_EQ(notes.size(), 2u);
+    EXPECT_NE(notes.back().find("[repeated 3 more times]"), std::string::npos)
+        << notes.back();
 }
 
 // The default route says nothing at all.

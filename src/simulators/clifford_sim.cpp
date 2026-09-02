@@ -81,8 +81,19 @@ inline void StabilizerState::pop_scratch() {
 
 // ----- constructor -----
 
+// Validates a register width and returns it, so the check can run from the
+// FIRST entry of a member initialiser list. Every other initialiser derives a
+// buffer size from the width, and a negative one reaches those as an enormous
+// unsigned length, so the check has to happen before any of them rather than in
+// the constructor body.
+static int checked_width(int n, const char* ctx) {
+    detail::check_require(n >= 0, ctx,
+                          "n_qubits must be >= 0, got " + std::to_string(n));
+    return n;
+}
+
 StabilizerState::StabilizerState(int n_qubits)
-    : n_qubits(n_qubits),
+    : n_qubits(checked_width(n_qubits, "StabilizerState")),
       wpr((2 * n_qubits + 63) / 64 + 1),  // + 1: padding for the spanning read
       num_rows(2 * n_qubits),
       tab(static_cast<size_t>(2 * n_qubits) * static_cast<size_t>(wpr), 0ULL),
@@ -552,12 +563,10 @@ int StabilizerState::expectation_pauli(const std::string& pauli) const {
 // ----- outcome slab -----
 
 // A caller who selects the block elimination is told what it costs at ordinary
-// sizes. The warning channel already delivers a given message once per process,
-// and the static guard keeps the string construction off the common path.
-static void warn_four_russians_slower_once() {
-    static bool warned = false;
-    if (warned) return;
-    warned = true;
+// sizes. Deduplication belongs to the warning channel, which delivers the first
+// occurrence of a message and counts the rest until the next flush, so this
+// says it every time and the channel decides what reaches the handler.
+static void warn_four_russians_slower() {
     emit_warning(
         "note: Elimination::FourRussians selected for the Clifford outcome "
         "slab. Plain elimination is the default and is faster at ordinary "
@@ -669,7 +678,7 @@ StabilizerState::OutcomeSlab StabilizerState::outcome_slab(Elimination method) c
     // two routes suit different sizes. See StabilizerState::Elimination.
     int pivot = 0;
     if (method == Elimination::FourRussians) {
-        warn_four_russians_slower_once();
+        warn_four_russians_slower();
 
         // Method of Four Russians: clear a block of kBlock pivot columns from every
         // remaining row with ONE multiplication each, against a precomputed table
@@ -920,7 +929,7 @@ inline void transpose64(uint64_t a[64]) {
 }  // namespace
 
 StabilizerState::ColumnTableau::ColumnTableau(int n_qubits)
-    : nq(n_qubits),
+    : nq(checked_width(n_qubits, "StabilizerState::ColumnTableau")),
       rows(2 * n_qubits),
       wpc((2 * n_qubits + 63) / 64),
       ncol(((2 * n_qubits + 63) / 64) * 64),
@@ -1317,7 +1326,22 @@ CliffordSimulator::Result CliffordSimulator::run(
             apply_gate(cols, inst);
         }
         StabilizerState base = cols.to_state();
-        if (options.sampling == Options::Sampling::Slab) {
+
+        // shots == 0 is ONE seeded trajectory, and the only thing it produces
+        // is the returned state, so the measurements have to be drawn into it.
+        // Terminal Z measurements commute, so the order they are drawn in does
+        // not matter. counts stays empty, which is the rest of the contract.
+        if (shots == 0) {
+            for (const auto& inst : circuit.instructions) {
+                if (inst.type != GT::MEASURE) continue;
+                (void)base.measure(inst.qubits[0], true, rng);
+            }
+            result.final_state = std::move(base);
+            return result;
+        }
+
+        // Auto picks the slab here, which is where it applies.
+        if (options.sampling != Options::Sampling::PerShot) {
             // Where each outcome is recorded, read once. Terminal Z
             // measurements commute, so their order does not affect the
             // distribution, only the qubit-to-clbit mapping.
@@ -1395,7 +1419,25 @@ CliffordSimulator::Result CliffordSimulator::run(
 
     // General path: mid-circuit measurement / feedforward / reset need a fresh
     // trajectory per shot.
-    for (int s = 0; s < shots; ++s) {
+
+    // The slab describes a terminal measurement of a fixed state, and this
+    // route has no fixed state to describe: each trajectory diverges at its
+    // first collapse. A caller who asked for it anyway gets the per-shot route
+    // and is told so, rather than being left to infer from a timing that the
+    // request was dropped. Auto asked for nothing and is not told anything.
+    if (options.sampling == Options::Sampling::Slab) {
+        emit_warning(
+            "note: Sampling::Slab requires terminal measurements, and this "
+            "circuit has mid-circuit measurement, feedforward or reset. The "
+            "outcome slab describes a terminal measurement of a fixed state, "
+            "which such a circuit does not have, so the per-shot route was used "
+            "instead. Counts are unaffected.");
+    }
+
+    // shots == 0 is ONE seeded trajectory whose outcome lives in the returned
+    // state, so the body runs once and records nothing.
+    const int trajectories = shots > 0 ? shots : 1;
+    for (int s = 0; s < trajectories; ++s) {
         StabilizerState state(circuit.n_qubits);
         std::vector<int> clreg(n_clbits, 0);
 
@@ -1418,7 +1460,7 @@ CliffordSimulator::Result CliffordSimulator::run(
             }
         }
 
-        record(clreg);
+        if (shots > 0) record(clreg);
         result.final_state = std::move(state);
     }
 

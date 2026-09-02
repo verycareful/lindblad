@@ -363,6 +363,52 @@ TEST(V11251CliffordFailLoud, SingleQubitRegisterAcceptsQubitZeroAndRejectsOne) {
 }
 
 // =============================================================================
+// Register width
+// =============================================================================
+
+// A negative width reaches every buffer size as an enormous unsigned length, so
+// it is rejected before any of them is computed rather than left to whatever
+// the allocator does with it. Zero is a legal width and stays constructible.
+TEST(V11251CliffordFailLoud, NegativeWidthIsRejected) {
+    // Braced rather than parenthesised: `StabilizerState(bad)` is a declaration
+    // of a variable named `bad`, not a temporary, and would not compile.
+    for (int bad : {-1, -2, -64, -1000}) {
+        SCOPED_TRACE("n=" + std::to_string(bad));
+        EXPECT_THROW(StabilizerState{bad}, std::invalid_argument);
+        EXPECT_THROW(StabilizerState::ColumnTableau{bad}, std::invalid_argument);
+    }
+}
+
+TEST(V11251CliffordFailLoud, NegativeWidthMessageNamesTheTypeAndTheValue) {
+    try {
+        StabilizerState st(-7);
+        ADD_FAILURE() << "a negative width was accepted";
+    } catch (const std::invalid_argument& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("StabilizerState"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("n_qubits must be >= 0"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("-7"), std::string::npos) << msg;
+    }
+    try {
+        StabilizerState::ColumnTableau c(-7);
+        ADD_FAILURE() << "a negative width was accepted";
+    } catch (const std::invalid_argument& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("StabilizerState::ColumnTableau"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("n_qubits must be >= 0"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("-7"), std::string::npos) << msg;
+    }
+}
+
+TEST(V11251CliffordFailLoud, ZeroAndPositiveWidthsAreAccepted) {
+    for (int n : {0, 1, 2, 64, 65}) {
+        SCOPED_TRACE("n=" + std::to_string(n));
+        EXPECT_NO_THROW(StabilizerState{n});
+        EXPECT_NO_THROW(StabilizerState::ColumnTableau{n});
+    }
+}
+
+// =============================================================================
 // expectation_pauli - the one method whose argument is a string
 // =============================================================================
 

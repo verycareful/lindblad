@@ -490,20 +490,26 @@ there rather than being skipped.
 
 ```cpp
 CliffordSimulator sim;
-sim.options.sampling = CliffordSimulator::Options::Sampling::Slab;
+sim.options.sampling = CliffordSimulator::Options::Sampling::Auto;
 sim.options.elimination = StabilizerState::Elimination::Plain;
 ```
 
-`sampling` chooses how terminal measurements become shots. `Slab`, the default,
-reads the outcome distribution's affine subspace off the tableau once and draws
-each shot as a subset-sum of its free directions. `PerShot` replays a
-measurement pass over a copy of the tableau for every shot.
+`sampling` chooses how terminal measurements become shots. `Slab` reads the
+outcome distribution's affine subspace off the tableau once and draws each shot
+as a subset-sum of its free directions. `PerShot` replays a measurement pass
+over a copy of the tableau for every shot. `Auto`, the default, picks the slab
+wherever it applies and the per-shot route otherwise.
 
 Both sample the same distribution. They consume the random stream differently,
 so a given seed produces different individual bitstrings under each; counts
-agree in distribution, not shot for shot. Circuits with mid-circuit measurement,
-feedforward or reset take the per-shot route regardless, because the subspace
-describes a terminal measurement of a fixed state.
+agree in distribution, not shot for shot.
+
+Circuits with mid-circuit measurement, feedforward or reset take the per-shot
+route regardless of what is selected, because the subspace describes a terminal
+measurement of a fixed state: once a measurement collapses the state
+mid-circuit, each trajectory diverges and there is no single subspace left to
+read. Selecting `Slab` explicitly for such a circuit emits a note saying the
+per-shot route was used instead. `Auto` asked for nothing and stays silent.
 
 `elimination` chooses how that subspace is extracted. `Plain`, the default,
 multiplies a row into another only where the pivot bit is set. `FourRussians`
@@ -511,24 +517,6 @@ clears a block of pivot columns from each row with one multiplication against a
 table of subset products; it is asymptotically better and slower at ordinary
 sizes, since the table costs $2^k$ multiplications regardless of how many rows
 remain to amortise it over. Selecting it emits a one-time note.
-
-### Current Limitations
-
-Two behaviours differ from the other backends and are asserted by tests that
-fail deliberately, so the gap stays visible until it is closed.
-
-`run(circuit, shots = 0)` does not return a usable `final_state` here. On a
-circuit with reset, feedforward or mid-circuit measurement the circuit is not
-executed and the returned state is a freshly initialised register; on a
-terminal-measurement circuit the gates run but the measurements are never
-drawn, so the state comes back uncollapsed. Counts are empty in both cases,
-which is correct. Use `shots = 1` and read `final_state` if you need one
-trajectory from this backend.
-
-An explicit `sampling` choice that the circuit cannot use is discarded without
-a diagnostic. Selecting `Slab` for a circuit that takes the per-shot route
-gives correct counts by the per-shot route, and nothing reports the
-substitution.
 
 ### Outcome Distribution
 
