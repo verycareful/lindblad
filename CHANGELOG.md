@@ -4,6 +4,154 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.25.1] - 2026-09-02
+
+The test wave for the Clifford rework. That release changed how the backend
+stores its tableau, applies its gates, tracks its phases and draws its shots,
+and every one of those changes was validated by a suite written for the code
+that came before them. The suite was a real oracle, since it compares tableau
+counts against the statevector simulator, but it was never written to exercise
+the surfaces the rework introduced and it touches almost none of their edges.
+
+So the goal here was not to re-derive the physics. It was to pin the boundaries
+the rework created: word and block boundaries, empty and full dimensions, and
+the selectable routes agreeing with each other.
+
+Most of the comparisons carry no sampling tolerance at all. A stabilizer state's
+outcome distribution is uniform over a coset of a linear subspace, so the
+backend's own outcome slab yields that distribution exactly, and the gate suites
+compare it against exact statevector probabilities rather than against sampled
+counts. Where two states have to be compared, all 4^n Pauli expectations are
+enumerated wherever n allows it. Since rho is the average of every Pauli
+weighted by its expectation, agreement on all of them is equality of the states
+rather than evidence for it.
+
+Two contract tests ship red on purpose, both documented below.
+
+### Tests
+
+- **The five gates the rework added, and the two it reimplemented.** SX, SXDG,
+  CY, ISWAP and ECR against the statevector, alone, on a prepared state, and
+  mixed into longer circuits, each compared over the full Pauli basis. Operand
+  order is pinned in both directions where it matters: ECR is asserted not to be
+  symmetric, CY to distinguish control from target, and ISWAP to be symmetric,
+  which is a property of the gate rather than of the four-step sweep that
+  implements it and so is asserted instead of assumed. CZ and SWAP changed
+  implementation in the same rework and are re-pinned alongside them.
+
+- **Rotations at Clifford angles.** RX, RY, RZ and P are now accepted at
+  multiples of pi/2, so the grid is walked: the four quarter turns, the angles
+  that fold to zero, several that are not quarter turns, angles beyond one turn
+  and negative ones reducing to the right arm, and the named equivalences.
+  The invariant with the most reach is that acceptance and dispatch cannot
+  drift: a grid in sixteenths of a turn is walked through both, asserting that
+  every angle is either accepted and executable or rejected by both. The two
+  share one classifier precisely so that cannot happen, and nothing else in the
+  tree would notice if it did.
+
+- **The word and block boundaries.** The row layout carries a padding word so a
+  64-bit read spanning the two planes stays in bounds, and the bit transpose
+  works in 64x64 blocks driven by twice the qubit count. The corpus the rework
+  was measured on lands on almost none of the sizes where either is
+  interesting, so the two layouts are compared at 1, 2, 7, 8, 31, 32, 33, 63,
+  64, 65, 95, 96, 127, 128, 129 and 160: freshly constructed, after each gate
+  alone, after scripts touching every gate at every index either packing can
+  land on, and step by step so a failure names the gate that caused it.
+
+- **The outcome slab.** Its support equals the statevector's support exactly,
+  its offset and every subset-sum of its basis are outcomes the state can
+  actually produce, its distribution is uniform, and its free dimension is zero
+  on a determined state, n on an unconstrained one, and one on a GHZ state. The
+  zero-qubit register is included, and the method is shown to leave the state it
+  reads untouched.
+
+- **The two eliminations, compared bit for bit rather than in distribution.**
+  Both reduce to a row echelon form that is reduced, with pivot columns
+  ascending and one basis vector per free coordinate, and a reduced echelon form
+  is unique for a given row space. The returned slab is therefore canonical and
+  the two methods must agree exactly, not merely describe the same distribution.
+  The one-time note the block route emits is captured through a single lazy
+  helper shared by every suite that selects it, so which test observes it does
+  not depend on the order the tests run in.
+
+- **Both sampling routes, as each other's oracle and against exact
+  probabilities.** Ten circuit shapes including partial measurement, permuted
+  classical bits, and registers both narrower and wider than the qubit count. A
+  counts key outside the exact support fails with no tolerance whatsoever, and
+  frequencies are held to six binomial standard deviations. Determinism is
+  pinned per route, and so is the deliberate divergence between them: the two
+  consume the random stream differently, so a given seed produces different
+  bitstrings under each, which is intended behaviour and is now recorded as such
+  rather than left to be discovered.
+
+- **The paths the rework did not touch.** Mid-circuit measurement followed by
+  further gates, feedforward, and reset all still take the general per-shot
+  route, and the tableau backend now sits in the same execution-semantics
+  matrix as the statevector, density-matrix and MPS backends, which it was
+  absent from.
+
+- **The fail-loud surface of everything the rework added.** Every new gate on
+  both tableau layouts, for out-of-range operands on either side, repeated
+  operands, and the ordering between those two checks. Messages are asserted to
+  name the method, the offending index and the valid range, since a bare
+  assertion that something throws also passes when it throws for the wrong
+  reason. A rejected call is shown to leave the state untouched.
+
+- **Randomised property testing, over the whole backend rather than the
+  reworked parts.** Circuits are drawn from the entire dispatch under fixed
+  seeds and held to the exact statevector, the second tableau layout, the
+  outcome slab, both sampling routes and the general route. Beyond that it
+  covers each gate's algebraic order against its matrix, a random sequence
+  followed by its inverse returning to the initial state exactly, measurement
+  repeatability and marginals, the documented rule that measurement consumes
+  the generator only when the outcome is random, and Pauli expectations at
+  widths where enumerating the full basis is out of reach.
+
+  It earned its place immediately by contradicting two hand-written
+  expectations that had looked obviously true. One of them is a trap worth
+  naming: a gate's order is a property of its matrix, but on a particular state
+  a non-identity gate can act trivially, since X fixes every X-eigenstate and
+  SWAP fixes anything symmetric in its operands. The universal and the
+  existential have to be quantified separately, and the suite now does.
+
+### Fixed
+
+- The contract test the previous release shipped red used CY as its example of
+  a gate that is Clifford but absent from the tableau dispatch. CY is now
+  dispatched, so the example no longer belongs to the category. It moves to
+  `RZZ` at pi/2, which is Clifford, is still not dispatched, and is now pinned
+  from both directions: the classifier rejects it and a direct run throws.
+
+### Known red
+
+Two tests assert documented contracts the Clifford backend does not currently
+meet. Both are red deliberately, so the gap is visible in every run rather than
+recorded somewhere and forgotten.
+
+- **`shots == 0` does not run a trajectory.** On any simulator it means one
+  seeded trajectory, with conditions honoured and measurements drawn into the
+  returned state while counts stay empty. The statevector, density-matrix and
+  MPS backends implement it. On the tableau backend a circuit with reset or
+  feedforward is never executed at all and the returned state is a fresh
+  all-zero register, while a terminal-measurement circuit runs its gates but
+  never draws its measurements. Counts are correct in both cases; the returned
+  state is not.
+
+- **An unusable sampling route is discarded in silence.** The sampling option
+  governs terminal measurements, and a circuit with mid-circuit measurement,
+  feedforward or reset takes the general route regardless. That fallback is
+  correct and has a real reason: the slab is one affine subspace read off one
+  fixed tableau, and once a measurement collapses the state mid-circuit each
+  trajectory diverges, so there is no single subspace left to read. What is
+  missing is the diagnostic. The counts are right and the caller is never told
+  that the route it asked for was not the route it got.
+
+### Results
+
+2765 tests across 252 suites, 2762 passed, two intentionally red as described
+above and one skipped (26.5 s on GCC 13.3.0, 34.6 s on Clang 18.1.3; WSL,
+`-march=native` on both).
+
 ## [1.1.25.0] - 2026-09-02
 
 The Clifford backend was losing to Qiskit Aer's stabilizer method at the sizes

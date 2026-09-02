@@ -512,6 +512,24 @@ table of subset products; it is asymptotically better and slower at ordinary
 sizes, since the table costs $2^k$ multiplications regardless of how many rows
 remain to amortise it over. Selecting it emits a one-time note.
 
+### Current Limitations
+
+Two behaviours differ from the other backends and are asserted by tests that
+fail deliberately, so the gap stays visible until it is closed.
+
+`run(circuit, shots = 0)` does not return a usable `final_state` here. On a
+circuit with reset, feedforward or mid-circuit measurement the circuit is not
+executed and the returned state is a freshly initialised register; on a
+terminal-measurement circuit the gates run but the measurements are never
+drawn, so the state comes back uncollapsed. Counts are empty in both cases,
+which is correct. Use `shots = 1` and read `final_state` if you need one
+trajectory from this backend.
+
+An explicit `sampling` choice that the circuit cannot use is discarded without
+a diagnostic. Selecting `Slab` for a circuit that takes the per-shot route
+gives correct counts by the per-shot route, and nothing reports the
+substitution.
+
 ### Outcome Distribution
 
 A stabilizer state's computational-basis outcomes are uniform over a coset of a

@@ -1,10 +1,17 @@
 // R.1.12.1 total-coverage suite, Batch 2: execution semantics across the
-// statevector, density-matrix and MPS backends. Plan section "Batch 2".
+// statevector, density-matrix, MPS and Clifford backends. Plan section
+// "Batch 2".
 //
 // Exercises terminal measurement, partial measurement into permuted clbits,
 // feedforward (deterministic), shots in {0, 1, 1024}, cross-backend agreement
 // on deterministic circuits, and the eval_expectation contract (happy path +
 // throw on measure/conditional circuits). Test-only release content.
+//
+// Every scenario in the strategy matrix is a Clifford circuit, so the tableau
+// backend is held to the same execution contract as the other three. That
+// includes the shots == 0 contract, which is a frozen convention for ANY
+// simulator: one seeded trajectory, conditions honoured, MEASURE outcomes drawn
+// and recorded into the returned state, and counts left empty.
 
 #include <gtest/gtest.h>
 
@@ -14,6 +21,7 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/simulators/mps_sim.hpp"
+#include "lindblad/simulators/clifford_sim.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -41,6 +49,14 @@ std::unordered_map<std::string, int> mps_counts(const QuantumCircuit& qc,
                                                 int shots, uint64_t seed) {
     MPSSimulator s;
     return s.run(qc, 64, shots, seed).counts;
+}
+// Every scenario in the strategy matrix is built from H, X, CX, MEASURE, RESET
+// and a conditioned X, so the tableau backend can run all of them and belongs
+// in the same comparison as the other three.
+std::unordered_map<std::string, int> cliff_counts(const QuantumCircuit& qc,
+                                                  int shots, uint64_t seed) {
+    CliffordSimulator s;
+    return s.run(qc, shots, seed).counts;
 }
 
 }  // namespace
@@ -219,10 +235,12 @@ TEST(R1121Exec, StrategyMatrixManyShotsAllBackendsMatchAnalytic) {
         const Counts cs = sv_counts(qc, shots, 12345);
         const Counts cd = dm_counts(qc, shots, 12345);
         const Counts cm = mps_counts(qc, shots, 12345);
+        const Counts cc = cliff_counts(qc, shots, 12345);
         // Each backend agrees with the analytic distribution (hence each other).
         EXPECT_LT(tv_distance(cs, sc.analytic), 0.06) << "SV";
         EXPECT_LT(tv_distance(cd, sc.analytic), 0.06) << "DM";
         EXPECT_LT(tv_distance(cm, sc.analytic), 0.06) << "MPS";
+        EXPECT_LT(tv_distance(cc, sc.analytic), 0.06) << "Clifford";
         // Key widths are uniform within a scenario across backends.
         if (!cs.empty() && !cm.empty())
             EXPECT_EQ(cs.begin()->first.size(), cm.begin()->first.size());
@@ -233,7 +251,7 @@ TEST(R1121Exec, StrategyMatrixSingleShotKeyInSupport) {
     for (const auto& sc : kScenarios) {
         auto qc = sc.build();
         SCOPED_TRACE(sc.name);
-        for (auto fn : {sv_counts, dm_counts, mps_counts}) {
+        for (auto fn : {sv_counts, dm_counts, mps_counts, cliff_counts}) {
             const Counts c = fn(qc, 1, 777);
             ASSERT_EQ(c.size(), 1u);
             const std::string& key = c.begin()->first;
@@ -253,7 +271,76 @@ TEST(R1121Exec, StrategyMatrixShotsZeroLeavesCountsEmpty) {
         EXPECT_TRUE(sv_counts(qc, 0, 1).empty()) << "SV";
         EXPECT_TRUE(dm_counts(qc, 0, 1).empty()) << "DM";
         EXPECT_TRUE(mps_counts(qc, 0, 1).empty()) << "MPS";
+        EXPECT_TRUE(cliff_counts(qc, 0, 1).empty()) << "Clifford";
     }
+}
+
+// The other half of the shots == 0 contract, and the half counts cannot show:
+// the trajectory actually RUNS. The register is left holding the state the
+// circuit produced, with conditions honoured and measurements drawn from the
+// seed, which is what a caller asking for zero shots is asking for.
+//
+// Both scenarios below are chosen so a backend that skipped the work is
+// distinguishable from one that did it. In s_ff_det the trajectory ends in
+// |11>, which no unexecuted circuit can produce, and in s_bell the trajectory
+// ends in a collapsed basis state, where an unmeasured Bell pair has no
+// single-qubit Z expectation at all.
+TEST(R1121Exec, ShotsZeroRunsOneTrajectoryCliffordAgainstStatevector) {
+    // Feedforward, which forces a per-shot route on every backend. x(0) then a
+    // conditioned X on q1 leaves |11>, so amplitude index 3 carries all the
+    // probability.
+    {
+        auto qc = s_ff_det();
+        StatevectorSimulator sv;
+        const auto r = sv.run(qc, 0, 4);
+        EXPECT_NEAR(r.final_state.probability(3), 1.0, 1e-9) << "SV";
+
+        CliffordSimulator cs;
+        const auto rc = cs.run(qc, 0, 4);
+        EXPECT_EQ(rc.final_state.expectation_pauli("ZI"), -1)
+            << "Clifford shots==0 left qubit 0 unset: the trajectory did not run";
+        EXPECT_EQ(rc.final_state.expectation_pauli("IZ"), -1)
+            << "Clifford shots==0 left qubit 1 unset: the conditioned X did not fire";
+    }
+
+    // Terminal measurement. One seeded trajectory collapses the pair, so each
+    // qubit has a definite Z. An uncollapsed Bell state reports 0 for both.
+    {
+        auto qc = s_bell();
+        StatevectorSimulator sv;
+        const auto r = sv.run(qc, 0, 4);
+        const double p0 = r.final_state.probability(0);
+        const double p3 = r.final_state.probability(3);
+        EXPECT_NEAR(std::max(p0, p3), 1.0, 1e-9) << "SV collapses at shots==0";
+
+        CliffordSimulator cs;
+        const auto rc = cs.run(qc, 0, 4);
+        EXPECT_NE(rc.final_state.expectation_pauli("ZI"), 0)
+            << "Clifford shots==0 returned an uncollapsed state: the terminal "
+               "measurement was not drawn";
+        EXPECT_EQ(rc.final_state.expectation_pauli("ZI"),
+                  rc.final_state.expectation_pauli("IZ"))
+            << "a collapsed Bell pair agrees on both qubits";
+    }
+}
+
+// The trajectory is reproducible: the same seed twice gives the same state.
+TEST(R1121Exec, ShotsZeroCliffordTrajectoryIsSeedDeterministic) {
+    auto qc = s_ff_stoch();
+    CliffordSimulator sim;
+    const auto a = sim.run(qc, 0, 555);
+    const auto b = sim.run(qc, 0, 555);
+    ASSERT_EQ(a.final_state.n_qubits, b.final_state.n_qubits);
+    for (const char* p : {"ZI", "IZ", "ZZ", "XX", "YY"}) {
+        EXPECT_EQ(a.final_state.expectation_pauli(p),
+                  b.final_state.expectation_pauli(p))
+            << "Pauli " << p;
+    }
+    // Feedforward collapses to a basis state, so both qubits are determined and
+    // they agree.
+    EXPECT_NE(a.final_state.expectation_pauli("ZI"), 0);
+    EXPECT_EQ(a.final_state.expectation_pauli("ZI"),
+              a.final_state.expectation_pauli("IZ"));
 }
 
 TEST(R1121Exec, ShotsZeroTrajectoryIsSeedDeterministic) {

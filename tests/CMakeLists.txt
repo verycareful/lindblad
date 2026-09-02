@@ -134,6 +134,12 @@ set(LINDBLAD_TEST_SOURCES
     test_v11241_seam_rules.cpp
     test_eigen_svd_pin.cpp
     test_v11242_repair_reach.cpp
+    test_v11251_clifford_gates.cpp
+    test_v11251_clifford_transpose.cpp
+    test_v11251_clifford_slab.cpp
+    test_v11251_clifford_sampling.cpp
+    test_v11251_clifford_failloud.cpp
+    test_v11251_clifford_random.cpp
 )
 
 # The R.1.16.0 diagnostic's strict leg. This flag governs the file's OWN

@@ -17,6 +17,7 @@
 
 #include "lindblad/simulators/clifford_sim.hpp"
 #include "lindblad/circuit.hpp"
+#include "lindblad/constants.hpp"
 
 #include <functional>
 #include <random>
@@ -128,11 +129,13 @@ TEST(R1191CliffordValidation, RunUnsupportedGateThrows) {
 }
 
 TEST(R1191CliffordValidation, RunUnsupportedCliffordGateThrows) {
-    // CY is genuinely Clifford but the tableau does not yet decompose it
-    // (tracked for a later release); until then a direct run() must throw
-    // rather than silently drop it.
+    // RZZ at π/2 is genuinely Clifford (it equals cx(a,b) · s(b) · cx(a,b)) but
+    // the tableau dispatch carries no case for it, so a direct run() must throw
+    // rather than silently drop the gate. is_clifford() rejects it as well,
+    // which is what keeps the AUTO route from ever reaching this throw.
     QuantumCircuit qc(2);
-    qc.cy(0, 1);
+    qc.rzz(PI_2, 0, 1);
+    EXPECT_FALSE(CliffordSimulator::is_clifford(qc));
     CliffordSimulator sim;
     EXPECT_THROW(sim.run(qc, /*shots=*/16), std::invalid_argument);
 }
