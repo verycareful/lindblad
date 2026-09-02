@@ -375,7 +375,11 @@ $$\langle P \rangle = 2^{-n} \text{Tr}(P_0 \rho) \quad \text{where} \quad P_0 \t
 
 ## CliffordSimulator
 
-Efficient exact simulation of Clifford circuits (gates from $\{H, S, CNOT, X, Y, Z\}$) using stabilizer tableau representation.
+Efficient exact simulation of Clifford circuits using stabilizer tableau representation.
+
+The supported gate set is $\{H, S, S^\dagger, \sqrt{X}, \sqrt{X}^\dagger, X, Y, Z, CX, CY, CZ, SWAP, iSWAP, ECR\}$, together with $P$, $RX$, $RY$ and $RZ$ at multiples of $\pi/2$, which are the angles at which those rotations are Clifford.
+
+Global phase is not represented in the stabilizer formalism, so the backend reproduces each gate up to phase. That is exact for measurement outcomes and Pauli expectations, which is everything this backend reports.
 
 ### State Representation: StabilizerState
 
@@ -463,18 +467,63 @@ feedforward, or reset use the general per-shot trajectory path.
 - Ideal for stabilizer codes and error correction benchmarks
 
 **Limitations**:
-- Only supports Clifford gate set (H, S, CNOT, X, Y, Z, T/T† forbidden)
-- No support for parameterized gates (RX, RY, etc.)
-- Non-Clifford gates cause error or fallback
+- Only the Clifford gate set above; $T$ and $T^\dagger$ are outside it
+- Parameterized rotations are accepted only at multiples of $\pi/2$
+- A gate outside the set throws rather than being applied approximately
 
 **Is-Clifford Check**:
+
+`CliffordSimulator::is_clifford` reports whether a circuit can take the tableau
+path. The automatic backend selection calls it, so a circuit that fails the
+check runs on another simulator rather than failing.
+
 ```cpp
-bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
-    for (const auto& inst : circuit.instructions) {
-        if (!is_clifford_gate(inst.type)) return false;
-    }
-    return true;
-}
+QuantumCircuit qc(2);
+qc.h(0).sx(1).ecr(0, 1).rz(PI_2, 0);
+bool ok = CliffordSimulator::is_clifford(qc);   // true
+```
+
+A direct call to `run()` bypasses that check, and an unsupported gate throws
+there rather than being skipped.
+
+### Options
+
+```cpp
+CliffordSimulator sim;
+sim.options.sampling = CliffordSimulator::Options::Sampling::Slab;
+sim.options.elimination = StabilizerState::Elimination::Plain;
+```
+
+`sampling` chooses how terminal measurements become shots. `Slab`, the default,
+reads the outcome distribution's affine subspace off the tableau once and draws
+each shot as a subset-sum of its free directions. `PerShot` replays a
+measurement pass over a copy of the tableau for every shot.
+
+Both sample the same distribution. They consume the random stream differently,
+so a given seed produces different individual bitstrings under each; counts
+agree in distribution, not shot for shot. Circuits with mid-circuit measurement,
+feedforward or reset take the per-shot route regardless, because the subspace
+describes a terminal measurement of a fixed state.
+
+`elimination` chooses how that subspace is extracted. `Plain`, the default,
+multiplies a row into another only where the pivot bit is set. `FourRussians`
+clears a block of pivot columns from each row with one multiplication against a
+table of subset products; it is asymptotically better and slower at ordinary
+sizes, since the table costs $2^k$ multiplications regardless of how many rows
+remain to amortise it over. Selecting it emits a one-time note.
+
+### Outcome Distribution
+
+A stabilizer state's computational-basis outcomes are uniform over a coset of a
+linear subspace of $\mathbb{F}_2^n$. `StabilizerState::outcome_slab()` returns
+that shape: one point of the coset in `offset`, and the directions along it in
+`basis`. Every outcome is `offset` combined with some subset of `basis`, each
+equally likely.
+
+```cpp
+StabilizerState state = result.final_state;
+auto slab = state.outcome_slab();
+// slab.dim free directions, so the support has 2^slab.dim outcomes
 ```
 
 ## MPSSimulator

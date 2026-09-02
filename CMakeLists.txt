@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.24.2 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.25.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "1.1.24.2")
+set(LINDBLAD_VERSION_LABEL "1.1.25.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,71 +10,18 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ==============================================================================
 # Compiler flags
 # ==============================================================================
-option(LINDBLAD_MARCH_NATIVE "Compile with -march=native (non-distributable, max perf)" OFF)
+option(LINDBLAD_MARCH_NATIVE "Compile with -march=native (non-distributable, max perf)" ON)
 
 # Coverage instrumentation for gcovr/lcov reports (test infrastructure; the
 # measurement workflow is documented in docs/BuildAndTest.md). OFF for normal
 # builds: it overrides optimisation with -O0 so line attribution is exact.
 option(LINDBLAD_BUILD_COVERAGE "Compile with --coverage for gcovr/lcov reports" OFF)
 
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    add_compile_options(
-        -O3
-        -fopenmp
-        -funroll-loops
-        -ffast-math
-        # -ffast-math bundles -ffinite-math-only, under which clang marks
-        # floating-point parameters and return values nofpclass(nan inf). A NaN
-        # crossing any function boundary is then poison, and every non-finite
-        # guard in the tree reads it back as finite. This must follow
-        # -ffast-math to override that one member of the bundle.
-        -fno-finite-math-only
-        -Wall
-        -Wextra
-        -Wpedantic
-    )
-    # -march is an x86 option. A non-x86 target (Apple Silicon, and any arm64
-    # host generally) rejects BOTH spellings outright — clang reports
-    # "unsupported argument 'x86-64-v3' to option '-march='" and the build stops
-    # — so the flag is probed rather than assumed. On a target that does not
-    # take it, the baseline is simply the compiler's default, which is correct:
-    # -march only ever widened the instruction set, it was never load-bearing.
-    include(CheckCXXCompilerFlag)
-    if(LINDBLAD_MARCH_NATIVE)
-        check_cxx_compiler_flag("-march=native" LINDBLAD_HAS_MARCH_NATIVE)
-        if(LINDBLAD_HAS_MARCH_NATIVE)
-            add_compile_options(-march=native)
-        else()
-            message(STATUS "lindblad: -march=native unsupported here; using compiler default")
-        endif()
-    else()
-        # AVX2 + FMA baseline (Intel Haswell+ / AMD Zen2+, covers >95% of hardware since 2014)
-        check_cxx_compiler_flag("-march=x86-64-v3" LINDBLAD_HAS_MARCH_X86_64_V3)
-        if(LINDBLAD_HAS_MARCH_X86_64_V3)
-            add_compile_options(-march=x86-64-v3)
-        else()
-            message(STATUS "lindblad: -march=x86-64-v3 unsupported here (non-x86 target); using compiler default")
-        endif()
-    endif()
-    add_link_options(-fopenmp)
-    if(LINDBLAD_BUILD_COVERAGE)
-        add_compile_options(--coverage -O0 -g)
-        add_link_options(--coverage)
-        message(STATUS "lindblad: coverage instrumentation enabled (--coverage -O0 -g)")
-    endif()
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    add_compile_options(
-        /O2
-        /arch:AVX2
-        /openmp
-        /fp:fast
-        /W4
-    )
-    if(LINDBLAD_BUILD_COVERAGE)
-        message(WARNING
-            "LINDBLAD_BUILD_COVERAGE is only supported with GCC/Clang; ignored for MSVC")
-    endif()
-endif()
+# Optimisation, warnings and instruction-set policy, one branch per compiler.
+# LINDBLAD_MARCH_NATIVE and LINDBLAD_BUILD_COVERAGE above are read there.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(LindbladCompilerFlags)
+lindblad_apply_compiler_flags()
 
 # ==============================================================================
 # FetchContent dependencies

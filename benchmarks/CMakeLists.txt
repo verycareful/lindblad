@@ -1,7 +1,7 @@
 # Benchmarks CMakeLists.txt
 #
 # Two families:
-#   - internal micro-benchmarks (bench_gates .. bench_scaling)
+#   - internal micro-benchmarks (everything not named bench_compare_*)
 #   - the Lindblad vs Qiskit/Aer comparison suite (bench_compare_*), which
 #     loads the shared QASM2 corpus from compare/circuits/ (path baked in via
 #     LINDBLAD_BENCH_QASM_DIR). The Qiskit half lives in compare/aer_bench.py;
@@ -15,6 +15,7 @@ set(LINDBLAD_BENCH_SOURCES
     bench_qudit_dm.cpp
     bench_scaling.cpp
     bench_validation_cost.cpp
+    bench_clifford.cpp
     bench_compare_sv.cpp
     bench_compare_dm.cpp
     bench_compare_mps.cpp

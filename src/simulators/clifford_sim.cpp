@@ -3,9 +3,12 @@
 #include "lindblad/detail/validate.hpp"
 
 #include <optional>
+#include <algorithm>
+#include <bit>
 #include <cmath>
 #include <random>
 #include <stdexcept>
+#include <utility>
 
 namespace lindblad {
 
@@ -27,6 +30,21 @@ inline void StabilizerState::set_xz(int row, int col, bool v) {
 
 inline void StabilizerState::flip_xz(int row, int col) {
     tab[row * wpr + col / 64] ^= (1ULL << (col % 64));
+}
+
+// 64 bits of a row starting at an arbitrary bit offset, spanning the word
+// boundary when the offset is not a multiple of 64. The X plane occupies bits
+// [0, N) and the Z plane [N, 2N), so the Z plane generally starts mid-word and
+// only a spanning read lines the planes up qubit for qubit. The row's trailing
+// padding word is what makes the second access in bounds at every offset the
+// callers use.
+inline uint64_t StabilizerState::bits64(int row, int bitoff) const {
+    const uint64_t* r = &tab[static_cast<size_t>(row) * static_cast<size_t>(wpr)];
+    const int w = bitoff >> 6;
+    const int s = bitoff & 63;
+    uint64_t v = r[w] >> s;
+    if (s) v |= r[w + 1] << (64 - s);  // a shift by 64 would be undefined
+    return v;
 }
 
 // Word-level XOR of the X/Z bits of row src into row dest.
@@ -65,7 +83,7 @@ inline void StabilizerState::pop_scratch() {
 
 StabilizerState::StabilizerState(int n_qubits)
     : n_qubits(n_qubits),
-      wpr((2 * n_qubits + 63) / 64),
+      wpr((2 * n_qubits + 63) / 64 + 1),  // + 1: padding for the spanning read
       num_rows(2 * n_qubits),
       tab(static_cast<size_t>(2 * n_qubits) * static_cast<size_t>(wpr), 0ULL),
       ph(2 * n_qubits, 0)
@@ -85,38 +103,56 @@ StabilizerState::StabilizerState(int n_qubits)
 
 // ----- rowmult -----
 // dest = dest * src in the Pauli group.
-// Phase per Aaronson-Gottesman 2004, Table 1: g(xd,zd, xs,zs).
-// dest is the LEFT factor; outer condition dispatches on (xd,zd).
-// After phase update, word-level XOR merges X/Z bits in O(N/64) steps.
+//
+// The X/Z merge is an XOR of the packed rows. The phase is the accumulated
+// power of i from multiplying the two Paulis qubit by qubit, per
+// Aaronson-Gottesman 2004 Table 1, with dest as the LEFT factor. Each qubit
+// contributes -1, 0 or +1, so the sum is the count of +1 qubits minus the count
+// of -1 qubits, and each of those two sets is a boolean function of the four
+// bit planes:
+//
+//   a = x_dest   b = z_dest   c = x_src   d = z_src
+//   +1 when  (a & ~b & c & d) | (~a & b & c & ~d) | (a & b & ~c & d)
+//   -1 when  (a & ~b & ~c & d) | (~a & b & c & d) | (a & b & c & ~d)
+//
+// Both are evaluated 64 qubits at a time and counted with popcount, so the
+// phase costs O(N/64) word operations rather than O(N) branches. Reading the
+// planes needs bits64 because the Z plane starts at bit N, which is generally
+// not a word boundary.
 void StabilizerState::rowmult(int dest, int src) {
     const int N = n_qubits;
-    int phase_count = 0;
-    for (int j = 0; j < N; ++j) {
-        const bool xs = get_xz(src,  j);
-        const bool zs = get_xz(src,  N + j);
-        const bool xd = get_xz(dest, j);
-        const bool zd = get_xz(dest, N + j);
+    const int chunks = (N + 63) / 64;
 
-        if (!xd && !zd) {
-            // dest=I: no phase contribution
-        } else if (xd && !zd) {
-            // dest=X
-            if      ( xs &&  zs) phase_count++;  // X*Y = +iZ
-            else if (!xs &&  zs) phase_count--;  // X*Z = -iY
-        } else if (!xd && zd) {
-            // dest=Z
-            if      ( xs && !zs) phase_count++;  // Z*X = +iY
-            else if ( xs &&  zs) phase_count--;  // Z*Y = -iX
-        } else {
-            // dest=Y
-            if      ( xs && !zs) phase_count--;  // Y*X = -iZ
-            else if (!xs &&  zs) phase_count++;  // Y*Z = +iX
-        }
+    int n_pos = 0;
+    int n_neg = 0;
+    for (int w = 0; w < chunks; ++w) {
+        const int bit = 64 * w;
+        const int valid = (N - bit) >= 64 ? 64 : (N - bit);
+        const uint64_t mask =
+            (valid == 64) ? ~0ULL : ((1ULL << valid) - 1ULL);
+
+        const uint64_t a = bits64(dest, bit);
+        const uint64_t b = bits64(dest, N + bit);
+        const uint64_t c = bits64(src,  bit);
+        const uint64_t d = bits64(src,  N + bit);
+
+        const uint64_t plus  = (a & ~b &  c &  d)
+                             | (~a &  b &  c & ~d)
+                             | (a &  b & ~c &  d);
+        const uint64_t minus = (a & ~b & ~c &  d)
+                             | (~a &  b &  c &  d)
+                             | (a &  b &  c & ~d);
+
+        // Masking here rather than on each plane: the qubits past N in the last
+        // chunk read whatever the neighbouring plane or the padding holds, and
+        // only the count has to exclude them.
+        n_pos += std::popcount(plus  & mask);
+        n_neg += std::popcount(minus & mask);
     }
 
     const int cur = ph[dest] ? 2 : 0;
     const int sp  = ph[src]  ? 2 : 0;
-    const int np  = ((cur + sp + phase_count) % 4 + 4) % 4;
+    const int np  = ((cur + sp + n_pos - n_neg) % 4 + 4) % 4;
     ph[dest] = (np == 2) ? 1 : 0;
 
     xor_row(dest, src);
@@ -197,6 +233,162 @@ void StabilizerState::apply_z(int qubit) {
         if (get_xz(i, qubit)) ph[i] ^= 1;
     }
 }
+
+// ----- composed gates, one sweep each -----
+
+// Row-local forms of the tableau primitives above. Each takes one row's bits
+// for the qubits it acts on, plus that row's phase, by reference, so a sequence
+// composes entirely in registers. The bodies are the updates apply_h, apply_s,
+// apply_sdg, apply_x and apply_cx perform, with the packed-bit access hoisted
+// out into the caller's sweep: the sweep is the cost, so a composed gate pays
+// for one rather than one per primitive.
+namespace {
+
+inline void row_h(unsigned& x, unsigned& z, uint8_t& r) {
+    r ^= static_cast<uint8_t>(x & z);
+    const unsigned t = x;
+    x = z;
+    z = t;
+}
+
+inline void row_s(unsigned& x, unsigned& z, uint8_t& r) {
+    r ^= static_cast<uint8_t>(x & z);
+    z ^= x;
+}
+
+inline void row_sdg(unsigned& x, unsigned& z, uint8_t& r) {
+    if (x) {
+        z ^= 1u;
+        r ^= static_cast<uint8_t>(z);
+    }
+}
+
+inline void row_x(unsigned& /*x*/, unsigned& z, uint8_t& r) {
+    r ^= static_cast<uint8_t>(z);
+}
+
+inline void row_cx(unsigned& xc, unsigned& zc, unsigned& xt, unsigned& zt, uint8_t& r) {
+    r ^= static_cast<uint8_t>(xc & zt & (xt ^ zc ^ 1u));
+    xt ^= xc;
+    zc ^= zt;
+}
+
+}  // namespace
+
+// SX = h . s . h collapses to a closed form: the two Hadamards cancel out of
+// the bit map, leaving x ^= z, and the three sign terms reduce to z & ~x.
+// Action: X -> X, Z -> -Y, Y -> Z.
+void StabilizerState::apply_sx(int qubit) {
+    detail::check_qubit(qubit, n_qubits, "StabilizerState::apply_sx");
+    const int N = n_qubits;
+    for (int i = 0; i < 2 * N; ++i) {
+        const bool x = get_xz(i, qubit);
+        const bool z = get_xz(i, N + qubit);
+        if (z && !x) ph[i] ^= 1;
+        set_xz(i, qubit, x != z);
+    }
+}
+
+// SXDG = h . sdg . h, same bit map as SX with the sign term x & z.
+// Action: X -> X, Z -> Y, Y -> -Z.
+void StabilizerState::apply_sxdg(int qubit) {
+    detail::check_qubit(qubit, n_qubits, "StabilizerState::apply_sxdg");
+    const int N = n_qubits;
+    for (int i = 0; i < 2 * N; ++i) {
+        const bool x = get_xz(i, qubit);
+        const bool z = get_xz(i, N + qubit);
+        if (x && z) ph[i] ^= 1;
+        set_xz(i, qubit, x != z);
+    }
+}
+
+// Loads both qubits' bits and the phase for row i, runs BODY on the locals
+// xa/za/xb/zb/r, and stores back. The two-qubit compositions differ only in
+// BODY, and writing the load and store once keeps them from drifting apart.
+#define LINDBLAD_TABLEAU_SWEEP2(qa, qb, BODY)                        \
+    do {                                                             \
+        const int N_ = n_qubits;                                     \
+        for (int i = 0; i < 2 * N_; ++i) {                           \
+            unsigned xa = get_xz(i, (qa)), za = get_xz(i, N_ + (qa));\
+            unsigned xb = get_xz(i, (qb)), zb = get_xz(i, N_ + (qb));\
+            uint8_t r = ph[i];                                       \
+            BODY                                                     \
+            set_xz(i, (qa), xa != 0u);                               \
+            set_xz(i, N_ + (qa), za != 0u);                          \
+            set_xz(i, (qb), xb != 0u);                               \
+            set_xz(i, N_ + (qb), zb != 0u);                          \
+            ph[i] = r;                                               \
+        }                                                            \
+    } while (0)
+
+// CZ = h(a) . cx(b,a) . h(a). Symmetric in its operands, as the gate is.
+void StabilizerState::apply_cz(int q1, int q2) {
+    detail::check_qubit(q1, n_qubits, "StabilizerState::apply_cz");
+    detail::check_qubit(q2, n_qubits, "StabilizerState::apply_cz");
+    detail::check_distinct2(q1, q2, "StabilizerState::apply_cz");
+    LINDBLAD_TABLEAU_SWEEP2(q1, q2,
+        row_h(xa, za, r);
+        row_cx(xb, zb, xa, za, r);
+        row_h(xa, za, r);
+    );
+}
+
+// SWAP = cx(a,b) . cx(b,a) . cx(a,b).
+void StabilizerState::apply_swap(int q1, int q2) {
+    detail::check_qubit(q1, n_qubits, "StabilizerState::apply_swap");
+    detail::check_qubit(q2, n_qubits, "StabilizerState::apply_swap");
+    detail::check_distinct2(q1, q2, "StabilizerState::apply_swap");
+    LINDBLAD_TABLEAU_SWEEP2(q1, q2,
+        row_cx(xa, za, xb, zb, r);
+        row_cx(xb, zb, xa, za, r);
+        row_cx(xa, za, xb, zb, r);
+    );
+}
+
+// CY = sdg(target) . cx(ctrl,target) . s(target).
+void StabilizerState::apply_cy(int control, int target) {
+    detail::check_qubit(control, n_qubits, "StabilizerState::apply_cy");
+    detail::check_qubit(target, n_qubits, "StabilizerState::apply_cy");
+    detail::check_distinct2(control, target, "StabilizerState::apply_cy");
+    LINDBLAD_TABLEAU_SWEEP2(control, target,
+        row_sdg(xb, zb, r);
+        row_cx(xa, za, xb, zb, r);
+        row_s(xb, zb, r);
+    );
+}
+
+// ISWAP = cx(a,b) . s(b) . cx(b,a) . cx(a,b).
+void StabilizerState::apply_iswap(int q1, int q2) {
+    detail::check_qubit(q1, n_qubits, "StabilizerState::apply_iswap");
+    detail::check_qubit(q2, n_qubits, "StabilizerState::apply_iswap");
+    detail::check_distinct2(q1, q2, "StabilizerState::apply_iswap");
+    LINDBLAD_TABLEAU_SWEEP2(q1, q2,
+        row_cx(xa, za, xb, zb, r);
+        row_s(xb, zb, r);
+        row_cx(xb, zb, xa, za, r);
+        row_cx(xa, za, xb, zb, r);
+    );
+}
+
+// ECR = h(b) . s(a) . s(b) . h(b) . cx(a,b) . x(a).
+// The transpiler's ECR identity routes through RZX(±π/4), whose middle rotation
+// is a T gate, so that sequence cannot run on a tableau even though the product
+// is Clifford. This one is built from tableau primitives throughout.
+void StabilizerState::apply_ecr(int q1, int q2) {
+    detail::check_qubit(q1, n_qubits, "StabilizerState::apply_ecr");
+    detail::check_qubit(q2, n_qubits, "StabilizerState::apply_ecr");
+    detail::check_distinct2(q1, q2, "StabilizerState::apply_ecr");
+    LINDBLAD_TABLEAU_SWEEP2(q1, q2,
+        row_h(xb, zb, r);
+        row_s(xa, za, r);
+        row_s(xb, zb, r);
+        row_h(xb, zb, r);
+        row_cx(xa, za, xb, zb, r);
+        row_x(xa, za, r);
+    );
+}
+
+#undef LINDBLAD_TABLEAU_SWEEP2
 
 // ----- measurement -----
 
@@ -357,13 +549,599 @@ int StabilizerState::expectation_pauli(const std::string& pauli) const {
     return (target_phase == 0) ? +1 : (target_phase == 2) ? -1 : 0;
 }
 
+// ----- outcome slab -----
+
+// A caller who selects the block elimination is told what it costs at ordinary
+// sizes. The warning channel already delivers a given message once per process,
+// and the static guard keeps the string construction off the common path.
+static void warn_four_russians_slower_once() {
+    static bool warned = false;
+    if (warned) return;
+    warned = true;
+    emit_warning(
+        "note: Elimination::FourRussians selected for the Clifford outcome "
+        "slab. Plain elimination is the default and is faster at ordinary "
+        "sizes (measured 0.91x to 0.98x across n = 20 to 160), because it "
+        "multiplies only where a pivot bit is set while the block table costs "
+        "2^k multiplications regardless. The block route needs n well above "
+        "2^k to repay that table; both produce the same outcome distribution.");
+}
+
+// dest *= src in the Pauli group, for the elimination's plane-aligned rows.
+// Same phase rule as rowmult, but here the X and Z planes are separately word
+// aligned, so the four reads are direct loads and no bits past N are ever set,
+// which is why no masking is needed before the popcounts.
+namespace {
+
+inline void erow_mult(uint64_t* dx, uint64_t* dz, uint8_t& dr,
+                      const uint64_t* sx, const uint64_t* sz, uint8_t sr,
+                      int xw) {
+    int n_pos = 0;
+    int n_neg = 0;
+    for (int w = 0; w < xw; ++w) {
+        const uint64_t a = dx[w], b = dz[w], c = sx[w], d = sz[w];
+        const uint64_t plus  = (a & ~b &  c &  d)
+                             | (~a &  b &  c & ~d)
+                             | (a &  b & ~c &  d);
+        const uint64_t minus = (a & ~b & ~c &  d)
+                             | (~a &  b &  c &  d)
+                             | (a &  b &  c & ~d);
+        n_pos += std::popcount(plus);
+        n_neg += std::popcount(minus);
+    }
+    const int np = ((2 * dr + 2 * sr + n_pos - n_neg) % 4 + 4) % 4;
+    dr = static_cast<uint8_t>(np == 2 ? 1 : 0);
+    for (int w = 0; w < xw; ++w) {
+        dx[w] ^= sx[w];
+        dz[w] ^= sz[w];
+    }
+}
+
+}  // namespace
+
+// Extracts the shape of the computational-basis outcome distribution.
+//
+// A stabilizer group element with an empty X part is ±Z^v, and it acts on a
+// basis state |y> as (-1)^(v·y). Such an element therefore does not randomise
+// anything: it CONSTRAINS the outcome to v·y = b, where b is its sign bit.
+// Elements with a non-empty X part impose no constraint at all. So the support
+// is the solution set of a linear system, an affine subspace, and the
+// amplitudes across it are equal in magnitude, which makes the distribution
+// uniform over it.
+//
+// Finding the Z-only subgroup is a forward elimination on the X part of the
+// stabilizer block: after it, every row below the last pivot has an empty X
+// part, and those rows generate exactly that subgroup. The constraint system
+// they give is then reduced to echelon form, which yields one particular
+// solution and one free direction per non-pivot coordinate.
+StabilizerState::OutcomeSlab StabilizerState::outcome_slab(Elimination method) const {
+    const int N = n_qubits;
+    const int W = words_per_vector();
+
+    OutcomeSlab slab;
+    slab.n_qubits = N;
+    slab.offset.assign(static_cast<size_t>(W), 0ULL);
+    if (N == 0) return slab;
+
+    // The generators are copied out into a local buffer with the X and Z
+    // planes SEPARATELY word aligned. In the tableau the Z plane starts at bit
+    // N, so lining the planes up per qubit needs a spanning read; here they
+    // line up by construction, and the elimination is the one place that cost
+    // would be paid over and over.
+    const int xw = W;  // both are ceil(N / 64)
+    const int stride = 2 * xw;
+    std::vector<uint64_t> buf(static_cast<size_t>(N) * static_cast<size_t>(stride), 0ULL);
+    std::vector<uint8_t> phs(static_cast<size_t>(N), 0);
+
+    auto rx = [&](int r) { return &buf[static_cast<size_t>(r) * static_cast<size_t>(stride)]; };
+    auto rz = [&](int r) { return rx(r) + xw; };
+    auto bit_at = [](const uint64_t* v, int i) {
+        return ((v[static_cast<size_t>(i / 64)] >> (i % 64)) & 1ULL) != 0;
+    };
+
+    // Copied a word at a time rather than a qubit at a time: bit by bit this
+    // would be 2*N*N reads for data that is 2*xw words per row. The mask drops
+    // what each read picks up past qubit N, which is the neighbouring plane for
+    // the X half and the row padding for the Z half.
+    std::vector<uint64_t> tail_mask(static_cast<size_t>(xw), ~0ULL);
+    for (int w = 0; w < xw; ++w) {
+        const int valid = (N - 64 * w) >= 64 ? 64 : (N - 64 * w);
+        if (valid < 64) {
+            tail_mask[static_cast<size_t>(w)] = (1ULL << valid) - 1ULL;
+        }
+    }
+    for (int r = 0; r < N; ++r) {
+        for (int w = 0; w < xw; ++w) {
+            const uint64_t m = tail_mask[static_cast<size_t>(w)];
+            rx(r)[w] = bits64(N + r, 64 * w) & m;
+            rz(r)[w] = bits64(N + r, N + 64 * w) & m;
+        }
+        phs[static_cast<size_t>(r)] = ph[static_cast<size_t>(N + r)];
+    }
+
+    auto swap_erows = [&](int i, int j) {
+        if (i == j) return;
+        for (int w = 0; w < stride; ++w) std::swap(rx(i)[w], rx(j)[w]);
+        std::swap(phs[static_cast<size_t>(i)], phs[static_cast<size_t>(j)]);
+    };
+
+    // How the elimination is carried out is the caller's choice, because the
+    // two routes suit different sizes. See StabilizerState::Elimination.
+    int pivot = 0;
+    if (method == Elimination::FourRussians) {
+        warn_four_russians_slower_once();
+
+        // Method of Four Russians: clear a block of kBlock pivot columns from every
+        // remaining row with ONE multiplication each, against a precomputed table
+        // of the products of every subset of the block's pivots. The table costs
+        // 2^kBlock multiplications and saves up to kBlock per remaining row, so it
+        // pays whenever the rows below outnumber the table, which is the usual case
+        // at these sizes.
+        constexpr int kBlock = 6;
+        std::vector<uint64_t> table(static_cast<size_t>(1 << kBlock) * static_cast<size_t>(stride), 0ULL);
+        std::vector<uint8_t> tphs(static_cast<size_t>(1 << kBlock), 0);
+
+        int col = 0;
+        std::vector<int> block_cols;
+        while (col < N && pivot < N) {
+            const int block_start = pivot;
+            block_cols.clear();
+
+            while (col < N && static_cast<int>(block_cols.size()) < kBlock && pivot < N) {
+                // A row promoted from below can still carry bits in the block's
+                // earlier columns, and clearing those can also clear the column it
+                // was picked for. So each candidate is reduced against the pivots
+                // already chosen BEFORE it is tested. Candidates passed over stay
+                // reduced, which is progress: their mask below comes out zero.
+                int found = -1;
+                for (int i = pivot; i < N; ++i) {
+                    for (size_t j = 0; j < block_cols.size(); ++j) {
+                        const int c2 = block_cols[j];
+                        if (bit_at(rx(i), c2)) {
+                            const int pr = block_start + static_cast<int>(j);
+                            erow_mult(rx(i), rz(i), phs[static_cast<size_t>(i)],
+                                      rx(pr), rz(pr), phs[static_cast<size_t>(pr)], xw);
+                        }
+                    }
+                    if (bit_at(rx(i), col)) { found = i; break; }
+                }
+                if (found < 0) { ++col; continue; }
+                swap_erows(found, pivot);
+                block_cols.push_back(col);
+                ++pivot;
+                ++col;
+            }
+
+            const int k = static_cast<int>(block_cols.size());
+            if (k == 0) continue;
+
+            // The mask below is read from a row once and selects a single table
+            // entry, which is only sound when each block pivot is the only one
+            // carrying its own column. Chosen pivots are upper triangular on the
+            // block columns, so back-substitute to clear the rest.
+            for (int j = k - 1; j >= 0; --j) {
+                for (int i = 0; i < j; ++i) {
+                    if (bit_at(rx(block_start + i), block_cols[static_cast<size_t>(j)])) {
+                        erow_mult(rx(block_start + i), rz(block_start + i),
+                                  phs[static_cast<size_t>(block_start + i)],
+                                  rx(block_start + j), rz(block_start + j),
+                                  phs[static_cast<size_t>(block_start + j)], xw);
+                    }
+                }
+            }
+
+            const size_t entries = static_cast<size_t>(1) << k;
+            std::fill(table.begin(), table.begin() + static_cast<long>(entries * static_cast<size_t>(stride)), 0ULL);
+            std::fill(tphs.begin(), tphs.begin() + static_cast<long>(entries), 0);
+            for (size_t mask = 1; mask < entries; ++mask) {
+                const int j = std::countr_zero(static_cast<unsigned>(mask));
+                const size_t prev = mask ^ (static_cast<size_t>(1) << j);
+                uint64_t* tx = &table[mask * static_cast<size_t>(stride)];
+                const uint64_t* px = &table[prev * static_cast<size_t>(stride)];
+                std::copy(px, px + stride, tx);
+                tphs[mask] = tphs[prev];
+                const int pr = block_start + j;
+                erow_mult(tx, tx + xw, tphs[mask],
+                          rx(pr), rz(pr), phs[static_cast<size_t>(pr)], xw);
+            }
+
+            for (int i = pivot; i < N; ++i) {
+                size_t mask = 0;
+                for (int j = 0; j < k; ++j) {
+                    if (bit_at(rx(i), block_cols[static_cast<size_t>(j)])) {
+                        mask |= static_cast<size_t>(1) << j;
+                    }
+                }
+                if (mask) {
+                    uint64_t* tx = &table[mask * static_cast<size_t>(stride)];
+                    erow_mult(rx(i), rz(i), phs[static_cast<size_t>(i)],
+                              tx, tx + xw, tphs[mask], xw);
+                }
+            }
+        }
+    } else {
+        // Forward elimination on the X part, multiplying only where the bit is
+        // actually set. Every row below the last pivot then has an empty X
+        // part, and those rows generate the Z-only subgroup.
+        for (int col = 0; col < N && pivot < N; ++col) {
+            int p = -1;
+            for (int i = pivot; i < N; ++i) {
+                if (bit_at(rx(i), col)) { p = i; break; }
+            }
+            if (p < 0) continue;
+            swap_erows(p, pivot);
+            for (int i = pivot + 1; i < N; ++i) {
+                if (bit_at(rx(i), col)) {
+                    erow_mult(rx(i), rz(i), phs[static_cast<size_t>(i)],
+                              rx(pivot), rz(pivot),
+                              phs[static_cast<size_t>(pivot)], xw);
+                }
+            }
+            ++pivot;
+        }
+    }
+
+
+    // Rows past the last pivot have an empty X part: the Z-only subgroup. Their
+    // Z parts pack identically to an outcome vector, so they are the constraint
+    // rows directly.
+    const int n_con = N - pivot;
+    std::vector<std::vector<uint64_t>> V(
+        static_cast<size_t>(n_con), std::vector<uint64_t>(static_cast<size_t>(W), 0ULL));
+    std::vector<uint8_t> rhs(static_cast<size_t>(n_con), 0);
+    for (int i = 0; i < n_con; ++i) {
+        const int row = pivot + i;
+        std::copy(rz(row), rz(row) + xw, V[static_cast<size_t>(i)].begin());
+        rhs[static_cast<size_t>(i)] = phs[static_cast<size_t>(row)];
+    }
+
+    std::vector<int> pivot_col;
+    int rank = 0;
+    for (int col = 0; col < N && rank < n_con; ++col) {
+        const size_t cw = static_cast<size_t>(col / 64);
+        const uint64_t cb = 1ULL << (col % 64);
+        int p = -1;
+        for (int i = rank; i < n_con; ++i) {
+            if (V[static_cast<size_t>(i)][cw] & cb) { p = i; break; }
+        }
+        if (p < 0) continue;
+        std::swap(V[static_cast<size_t>(rank)], V[static_cast<size_t>(p)]);
+        std::swap(rhs[static_cast<size_t>(rank)], rhs[static_cast<size_t>(p)]);
+        for (int i = 0; i < n_con; ++i) {
+            if (i == rank) continue;
+            if (V[static_cast<size_t>(i)][cw] & cb) {
+                for (int w = 0; w < W; ++w) {
+                    V[static_cast<size_t>(i)][static_cast<size_t>(w)] ^=
+                        V[static_cast<size_t>(rank)][static_cast<size_t>(w)];
+                }
+                rhs[static_cast<size_t>(i)] ^= rhs[static_cast<size_t>(rank)];
+            }
+        }
+        pivot_col.push_back(col);
+        ++rank;
+    }
+
+    // Rows past the rank are all-zero on the left. A non-zero right-hand side
+    // there would mean 0 = 1, which no state can satisfy, so it is a defect in
+    // the tableau rather than an input a caller can produce.
+    for (int i = rank; i < n_con; ++i) {
+        if (rhs[static_cast<size_t>(i)]) {
+            throw std::logic_error(
+                "StabilizerState::outcome_slab: stabilizer constraints are "
+                "inconsistent; no computational-basis outcome satisfies them");
+        }
+    }
+
+    // Particular solution: free coordinates zero, each pivot coordinate taking
+    // its own row's right-hand side.
+    for (size_t i = 0; i < pivot_col.size(); ++i) {
+        if (rhs[i]) {
+            const int c = pivot_col[i];
+            slab.offset[static_cast<size_t>(c / 64)] |= 1ULL << (c % 64);
+        }
+    }
+
+    // One free direction per non-pivot coordinate: set that coordinate, then
+    // set each pivot coordinate the reduced system couples to it.
+    std::vector<bool> is_pivot(static_cast<size_t>(N), false);
+    for (int c : pivot_col) is_pivot[static_cast<size_t>(c)] = true;
+    for (int f = 0; f < N; ++f) {
+        if (is_pivot[static_cast<size_t>(f)]) continue;
+        std::vector<uint64_t> v(static_cast<size_t>(W), 0ULL);
+        v[static_cast<size_t>(f / 64)] |= 1ULL << (f % 64);
+        const size_t fw = static_cast<size_t>(f / 64);
+        const uint64_t fb = 1ULL << (f % 64);
+        for (size_t i = 0; i < pivot_col.size(); ++i) {
+            if (V[i][fw] & fb) {
+                const int c = pivot_col[i];
+                v[static_cast<size_t>(c / 64)] |= 1ULL << (c % 64);
+            }
+        }
+        slab.basis.push_back(std::move(v));
+    }
+    slab.dim = static_cast<int>(slab.basis.size());
+    return slab;
+}
+
+// =============================================================================
+// StabilizerState::ColumnTableau — bit-sliced gate pass
+// =============================================================================
+
+// Word-wide forms of the tableau primitives. Each lane of a word is one row, so
+// a single update applies the rule to 64 rows at once, phases included.
+namespace {
+
+inline void w_h(uint64_t& x, uint64_t& z, uint64_t& r) {
+    r ^= x & z;
+    const uint64_t t = x;
+    x = z;
+    z = t;
+}
+
+inline void w_s(uint64_t& x, uint64_t& z, uint64_t& r) {
+    r ^= x & z;
+    z ^= x;
+}
+
+// The row form flips z where x is set and folds the NEW z into the sign, which
+// as a word expression reads the OLD z through a complement.
+inline void w_sdg(uint64_t& x, uint64_t& z, uint64_t& r) {
+    r ^= x & ~z;
+    z ^= x;
+}
+
+inline void w_x(uint64_t& /*x*/, uint64_t& z, uint64_t& r) {
+    r ^= z;
+}
+
+inline void w_cx(uint64_t& xc, uint64_t& zc, uint64_t& xt, uint64_t& zt, uint64_t& r) {
+    r ^= xc & zt & ~(xt ^ zc);
+    xt ^= xc;
+    zc ^= zt;
+}
+
+// In-place transpose of a 64x64 bit matrix held one row per word, by recursive
+// interleaving of off-diagonal blocks: 1152 word operations where a bit-by-bit
+// transpose would take 4096.
+inline void transpose64(uint64_t a[64]) {
+    int j = 32;
+    uint64_t m = 0x00000000FFFFFFFFULL;
+    while (j) {
+        for (int k = 0; k < 64; k = (k + j + 1) & ~j) {
+            const uint64_t t = ((a[k] >> j) ^ a[k + j]) & m;
+            a[k]     ^= t << j;
+            a[k + j] ^= t;
+        }
+        j >>= 1;
+        m ^= (m << j);
+    }
+}
+
+}  // namespace
+
+StabilizerState::ColumnTableau::ColumnTableau(int n_qubits)
+    : nq(n_qubits),
+      rows(2 * n_qubits),
+      wpc((2 * n_qubits + 63) / 64),
+      ncol(((2 * n_qubits + 63) / 64) * 64),
+      planes(static_cast<size_t>(ncol) * static_cast<size_t>(wpc), 0ULL),
+      phase(static_cast<size_t>(wpc), 0ULL)
+{
+    // Same initial state as StabilizerState: destabilizer i is X_i, stabilizer
+    // i is Z_i, so column c carries a single set bit at row c.
+    for (int i = 0; i < nq; ++i) {
+        col(i)[i / 64] |= 1ULL << (i % 64);
+        col(nq + i)[(nq + i) / 64] |= 1ULL << ((nq + i) % 64);
+    }
+}
+
+// Runs BODY once per word of the qubit's two columns, with the row-packed
+// phases alongside. Every single-qubit gate is this loop and a different BODY.
+// The pointers carry __restrict__ because they never overlap: a qubit's X and Z
+// columns are distinct, the two-operand form is guarded by check_distinct2 so
+// all four columns differ, and the phases are a separate allocation. Every
+// column does live in one buffer, so without the qualifier a compiler must
+// assume a store through one could alias a load through another. Measured
+// neutral here, within run-to-run noise at n = 20 through 160.
+#define LINDBLAD_COLUMN_SWEEP1(q, BODY)                                 \
+    do {                                                                \
+        uint64_t* __restrict__ xp = col(q);                             \
+        uint64_t* __restrict__ zp = col(nq + (q));                      \
+        uint64_t* __restrict__ pp = phase.data();                       \
+        for (int w = 0; w < wpc; ++w) {                                 \
+            uint64_t x = xp[w], z = zp[w];                              \
+            uint64_t r = pp[w];                                         \
+            BODY                                                        \
+            xp[w] = x;                                                  \
+            zp[w] = z;                                                  \
+            pp[w] = r;                                                  \
+        }                                                               \
+    } while (0)
+
+#define LINDBLAD_COLUMN_SWEEP2(qa, qb, BODY)                            \
+    do {                                                                \
+        uint64_t* __restrict__ xap = col(qa);                           \
+        uint64_t* __restrict__ zap = col(nq + (qa));                    \
+        uint64_t* __restrict__ xbp = col(qb);                           \
+        uint64_t* __restrict__ zbp = col(nq + (qb));                    \
+        uint64_t* __restrict__ pp  = phase.data();                      \
+        for (int w = 0; w < wpc; ++w) {                                 \
+            uint64_t xa = xap[w], za = zap[w];                          \
+            uint64_t xb = xbp[w], zb = zbp[w];                          \
+            uint64_t r = pp[w];                                         \
+            BODY                                                        \
+            xap[w] = xa;                                                \
+            zap[w] = za;                                                \
+            xbp[w] = xb;                                                \
+            zbp[w] = zb;                                                \
+            pp[w] = r;                                                  \
+        }                                                               \
+    } while (0)
+
+void StabilizerState::ColumnTableau::apply_h(int qubit) {
+    detail::check_qubit(qubit, nq, "StabilizerState::ColumnTableau::apply_h");
+    LINDBLAD_COLUMN_SWEEP1(qubit, w_h(x, z, r););
+}
+
+void StabilizerState::ColumnTableau::apply_s(int qubit) {
+    detail::check_qubit(qubit, nq, "StabilizerState::ColumnTableau::apply_s");
+    LINDBLAD_COLUMN_SWEEP1(qubit, w_s(x, z, r););
+}
+
+void StabilizerState::ColumnTableau::apply_sdg(int qubit) {
+    detail::check_qubit(qubit, nq, "StabilizerState::ColumnTableau::apply_sdg");
+    LINDBLAD_COLUMN_SWEEP1(qubit, w_sdg(x, z, r););
+}
+
+void StabilizerState::ColumnTableau::apply_x(int qubit) {
+    detail::check_qubit(qubit, nq, "StabilizerState::ColumnTableau::apply_x");
+    LINDBLAD_COLUMN_SWEEP1(qubit, r ^= z;);
+}
+
+void StabilizerState::ColumnTableau::apply_y(int qubit) {
+    detail::check_qubit(qubit, nq, "StabilizerState::ColumnTableau::apply_y");
+    LINDBLAD_COLUMN_SWEEP1(qubit, r ^= x ^ z;);
+}
+
+void StabilizerState::ColumnTableau::apply_z(int qubit) {
+    detail::check_qubit(qubit, nq, "StabilizerState::ColumnTableau::apply_z");
+    LINDBLAD_COLUMN_SWEEP1(qubit, r ^= x;);
+}
+
+void StabilizerState::ColumnTableau::apply_sx(int qubit) {
+    detail::check_qubit(qubit, nq, "StabilizerState::ColumnTableau::apply_sx");
+    LINDBLAD_COLUMN_SWEEP1(qubit, r ^= z & ~x; x ^= z;);
+}
+
+void StabilizerState::ColumnTableau::apply_sxdg(int qubit) {
+    detail::check_qubit(qubit, nq, "StabilizerState::ColumnTableau::apply_sxdg");
+    LINDBLAD_COLUMN_SWEEP1(qubit, r ^= x & z; x ^= z;);
+}
+
+void StabilizerState::ColumnTableau::apply_cx(int control, int target) {
+    detail::check_qubit(control, nq, "StabilizerState::ColumnTableau::apply_cx");
+    detail::check_qubit(target, nq, "StabilizerState::ColumnTableau::apply_cx");
+    detail::check_distinct2(control, target, "StabilizerState::ColumnTableau::apply_cx");
+    LINDBLAD_COLUMN_SWEEP2(control, target, w_cx(xa, za, xb, zb, r););
+}
+
+void StabilizerState::ColumnTableau::apply_cz(int q1, int q2) {
+    detail::check_qubit(q1, nq, "StabilizerState::ColumnTableau::apply_cz");
+    detail::check_qubit(q2, nq, "StabilizerState::ColumnTableau::apply_cz");
+    detail::check_distinct2(q1, q2, "StabilizerState::ColumnTableau::apply_cz");
+    LINDBLAD_COLUMN_SWEEP2(q1, q2,
+        w_h(xa, za, r);
+        w_cx(xb, zb, xa, za, r);
+        w_h(xa, za, r);
+    );
+}
+
+void StabilizerState::ColumnTableau::apply_swap(int q1, int q2) {
+    detail::check_qubit(q1, nq, "StabilizerState::ColumnTableau::apply_swap");
+    detail::check_qubit(q2, nq, "StabilizerState::ColumnTableau::apply_swap");
+    detail::check_distinct2(q1, q2, "StabilizerState::ColumnTableau::apply_swap");
+    LINDBLAD_COLUMN_SWEEP2(q1, q2,
+        w_cx(xa, za, xb, zb, r);
+        w_cx(xb, zb, xa, za, r);
+        w_cx(xa, za, xb, zb, r);
+    );
+}
+
+void StabilizerState::ColumnTableau::apply_cy(int control, int target) {
+    detail::check_qubit(control, nq, "StabilizerState::ColumnTableau::apply_cy");
+    detail::check_qubit(target, nq, "StabilizerState::ColumnTableau::apply_cy");
+    detail::check_distinct2(control, target, "StabilizerState::ColumnTableau::apply_cy");
+    LINDBLAD_COLUMN_SWEEP2(control, target,
+        w_sdg(xb, zb, r);
+        w_cx(xa, za, xb, zb, r);
+        w_s(xb, zb, r);
+    );
+}
+
+void StabilizerState::ColumnTableau::apply_iswap(int q1, int q2) {
+    detail::check_qubit(q1, nq, "StabilizerState::ColumnTableau::apply_iswap");
+    detail::check_qubit(q2, nq, "StabilizerState::ColumnTableau::apply_iswap");
+    detail::check_distinct2(q1, q2, "StabilizerState::ColumnTableau::apply_iswap");
+    LINDBLAD_COLUMN_SWEEP2(q1, q2,
+        w_cx(xa, za, xb, zb, r);
+        w_s(xb, zb, r);
+        w_cx(xb, zb, xa, za, r);
+        w_cx(xa, za, xb, zb, r);
+    );
+}
+
+void StabilizerState::ColumnTableau::apply_ecr(int q1, int q2) {
+    detail::check_qubit(q1, nq, "StabilizerState::ColumnTableau::apply_ecr");
+    detail::check_qubit(q2, nq, "StabilizerState::ColumnTableau::apply_ecr");
+    detail::check_distinct2(q1, q2, "StabilizerState::ColumnTableau::apply_ecr");
+    LINDBLAD_COLUMN_SWEEP2(q1, q2,
+        w_h(xb, zb, r);
+        w_s(xa, za, r);
+        w_s(xb, zb, r);
+        w_h(xb, zb, r);
+        w_cx(xa, za, xb, zb, r);
+        w_x(xa, za, r);
+    );
+}
+
+#undef LINDBLAD_COLUMN_SWEEP1
+#undef LINDBLAD_COLUMN_SWEEP2
+
+// Converts to the row-major representation everything downstream reads.
+// Columns are gathered 64 at a time against 64 rows, transposed as a block, and
+// written out as whole words of a row. Columns past 2N exist only to make the
+// gather a full block and are zero throughout, so the bits they contribute past
+// the end of a row are zero as well.
+StabilizerState StabilizerState::ColumnTableau::to_state() const {
+    StabilizerState st(nq);
+    const int col_blocks = (2 * nq + 63) / 64;
+
+    uint64_t block[64];
+    for (int rb = 0; rb < wpc; ++rb) {
+        for (int cb = 0; cb < col_blocks; ++cb) {
+            for (int t = 0; t < 64; ++t) {
+                block[t] = col(64 * cb + t)[rb];
+            }
+            transpose64(block);
+            for (int s = 0; s < 64; ++s) {
+                const int row = 64 * rb + s;
+                if (row >= rows) break;
+                st.tab[static_cast<size_t>(row) * static_cast<size_t>(st.wpr) +
+                       static_cast<size_t>(cb)] = block[s];
+            }
+        }
+    }
+
+    for (int i = 0; i < rows; ++i) {
+        st.ph[static_cast<size_t>(i)] = static_cast<uint8_t>(
+            (phase[static_cast<size_t>(i / 64)] >> (i % 64)) & 1ULL);
+    }
+    return st;
+}
+
 // =============================================================================
 // CliffordSimulator
 // =============================================================================
 
+// Classifies an angle as a quarter turn: k in {0,1,2,3} for k*(π/2), or -1 when
+// the angle is not a multiple of π/2 and the gate is therefore not Clifford.
+// Folding a ≈ 2π to 0 catches fmod boundary values such as an input of -1e-12.
+//
+// is_clifford() and run() both classify through this one function, so the set
+// of angles the backend ACCEPTS cannot drift from the set it can EXECUTE. A
+// circuit that passes the gate is guaranteed to have a case waiting for it.
+static int clifford_quarter_turn(double angle) {
+    double a = std::fmod(angle, TWO_PI);
+    if (a < 0) a += TWO_PI;
+    if (std::abs(a - TWO_PI) < 1e-9) return 0;
+    for (int k = 0; k < 4; ++k) {
+        if (std::abs(a - static_cast<double>(k) * PI_2) < 1e-9) return k;
+    }
+    return -1;
+}
+
 bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
     using GT = Instruction::GateType;
-    const double pi = PI;
     for (const auto& inst : circuit.instructions) {
         switch (inst.type) {
             case GT::H: case GT::X: case GT::Y: case GT::Z:
@@ -371,21 +1149,17 @@ bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
             case GT::CX: case GT::CZ: case GT::SWAP:
             case GT::MEASURE: case GT::RESET: case GT::BARRIER:
                 break;
-            case GT::P: {
-                // Accept P only if the angle maps to a Clifford gate.
-                // The a ~ 2*pi case covers fmod boundary values (e.g. an
-                // input of -1e-12) and mirrors the acceptance list in run().
-                if (inst.params.empty()) return false;
-                double a = std::fmod(inst.params[0], 2.0 * pi);
-                if (a < 0) a += 2.0 * pi;
-                if (!(std::abs(a) < 1e-9 ||
-                      std::abs(a - pi / 2.0) < 1e-9 ||
-                      std::abs(a - pi)        < 1e-9 ||
-                      std::abs(a - 3.0 * pi / 2.0) < 1e-9 ||
-                      std::abs(a - 2.0 * pi) < 1e-9))
-                    return false;
+            // Genuine Clifford gates whose tableau action composes from the
+            // primitives StabilizerState exposes. Rejecting them would push a
+            // circuit onto the statevector or MPS path with no diagnostic.
+            case GT::SX: case GT::SXDG:
+            case GT::CY: case GT::ISWAP: case GT::ECR:
                 break;
-            }
+            // Rotations land in the Clifford group only at multiples of π/2.
+            case GT::P: case GT::RX: case GT::RY: case GT::RZ:
+                if (inst.params.empty()) return false;
+                if (clifford_quarter_turn(inst.params[0]) < 0) return false;
+                break;
             default:
                 return false;
         }
@@ -433,13 +1207,35 @@ CliffordSimulator::Result CliffordSimulator::run(
 
 
     const int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
-    const double pi = PI;
 
     std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
 
+    // Angles reaching here have normally passed is_clifford(), which classifies
+    // through the same function. A DIRECT run() on a circuit that never went
+    // through that gate can still arrive carrying any angle, so one that is not
+    // a quarter turn is rejected rather than rounded to the nearest one.
+    auto quarter_turn_or_throw = [](const Instruction& in) {
+        if (in.params.empty()) {
+            throw std::runtime_error(
+                "CliffordSimulator: " + in.gate_name() + " carries no angle parameter");
+        }
+        const int k = clifford_quarter_turn(in.params[0]);
+        if (k < 0) {
+            throw std::runtime_error(
+                "CliffordSimulator: " + in.gate_name() + "(" +
+                std::to_string(in.params[0]) +
+                ") is not Clifford. Only multiples of π/2 are supported.");
+        }
+        return k;
+    };
+
     // Apply one non-measurement Clifford gate to `state` (MEASURE/RESET/BARRIER
     // handled by the callers). Shared by both execution paths.
-    auto apply_gate = [&](StabilizerState& state, const Instruction& inst) {
+    // Generic over the tableau layout: the bit-sliced ColumnTableau and the
+    // row-major StabilizerState expose the same gate names, and the terminal
+    // path runs its gate pass on the former while the general path, which
+    // interleaves measurement, stays on the latter.
+    auto apply_gate = [&](auto& state, const Instruction& inst) {
         switch (inst.type) {
             case GT::H: state.apply_h(inst.qubits[0]); break;
             case GT::S: state.apply_s(inst.qubits[0]); break;
@@ -447,35 +1243,48 @@ CliffordSimulator::Result CliffordSimulator::run(
             case GT::X: state.apply_x(inst.qubits[0]); break;
             case GT::Y: state.apply_y(inst.qubits[0]); break;
             case GT::Z: state.apply_z(inst.qubits[0]); break;
-            case GT::P: {
-                double a = std::fmod(inst.params[0], 2.0 * pi);
-                if (a < 0) a += 2.0 * pi;
-                if (std::abs(a) < 1e-9 || std::abs(a - 2.0 * pi) < 1e-9) {
-                    // P(0) = identity
-                } else if (std::abs(a - pi / 2.0) < 1e-9) {
-                    state.apply_s(inst.qubits[0]);
-                } else if (std::abs(a - pi) < 1e-9) {
-                    state.apply_z(inst.qubits[0]);
-                } else if (std::abs(a - 3.0 * pi / 2.0) < 1e-9) {
-                    state.apply_sdg(inst.qubits[0]);
-                } else {
-                    throw std::runtime_error(
-                        "CliffordSimulator: P(" + std::to_string(inst.params[0]) +
-                        ") is not Clifford. Only P(0), P(π/2), P(π), P(3π/2) are supported.");
+            case GT::SX:   state.apply_sx(inst.qubits[0]); break;
+            case GT::SXDG: state.apply_sxdg(inst.qubits[0]); break;
+            // P and RZ share a dispatch: rz(π/2) equals s and rz(3π/2) equals
+            // sdg up to a global phase, which the stabilizer formalism does not
+            // represent, so the two gates act identically on a tableau.
+            case GT::P:
+            case GT::RZ: {
+                switch (quarter_turn_or_throw(inst)) {
+                    case 0:  break;                                   // identity
+                    case 1:  state.apply_s(inst.qubits[0]);   break;
+                    case 2:  state.apply_z(inst.qubits[0]);   break;
+                    default: state.apply_sdg(inst.qubits[0]); break;
                 }
                 break;
             }
-            case GT::CX: state.apply_cx(inst.qubits[0], inst.qubits[1]); break;
-            case GT::CZ:  // CZ = H(t) · CX · H(t)
-                state.apply_h(inst.qubits[1]);
-                state.apply_cx(inst.qubits[0], inst.qubits[1]);
-                state.apply_h(inst.qubits[1]);
+            case GT::RX: {
+                switch (quarter_turn_or_throw(inst)) {
+                    case 0:  break;
+                    case 1:  state.apply_sx(inst.qubits[0]);   break;
+                    case 2:  state.apply_x(inst.qubits[0]);    break;
+                    default: state.apply_sxdg(inst.qubits[0]); break;
+                }
                 break;
-            case GT::SWAP:  // SWAP = CX(a,b)·CX(b,a)·CX(a,b)
-                state.apply_cx(inst.qubits[0], inst.qubits[1]);
-                state.apply_cx(inst.qubits[1], inst.qubits[0]);
-                state.apply_cx(inst.qubits[0], inst.qubits[1]);
+            }
+            case GT::RY: {
+                // ry(π/2) = h . x and ry(3π/2) = h . z, in circuit order.
+                switch (quarter_turn_or_throw(inst)) {
+                    case 0:  break;
+                    case 1:  state.apply_h(inst.qubits[0]);
+                             state.apply_x(inst.qubits[0]); break;
+                    case 2:  state.apply_y(inst.qubits[0]); break;
+                    default: state.apply_h(inst.qubits[0]);
+                             state.apply_z(inst.qubits[0]); break;
+                }
                 break;
+            }
+            case GT::CX:    state.apply_cx(inst.qubits[0], inst.qubits[1]); break;
+            case GT::CY:    state.apply_cy(inst.qubits[0], inst.qubits[1]); break;
+            case GT::CZ:    state.apply_cz(inst.qubits[0], inst.qubits[1]); break;
+            case GT::SWAP:  state.apply_swap(inst.qubits[0], inst.qubits[1]); break;
+            case GT::ISWAP: state.apply_iswap(inst.qubits[0], inst.qubits[1]); break;
+            case GT::ECR:   state.apply_ecr(inst.qubits[0], inst.qubits[1]); break;
             default:
                 // Fail loud instead of silently no-op'ing. Reachable only by a
                 // DIRECT run() on a non-Clifford circuit; the AUTO dispatch is
@@ -494,25 +1303,92 @@ CliffordSimulator::Result CliffordSimulator::run(
     };
 
     if (clifford_measures_are_terminal(circuit)) {
-        // Deterministic gate pass ONCE; each shot samples measurements from a
-        // copy of the resulting stabilizer state.
-        StabilizerState base(circuit.n_qubits);
+        // The gate pass is deterministic and runs ONCE. Only the sampling that
+        // follows it differs from shot to shot, and how it does so is what
+        // Options::sampling selects.
+        //
+        // Gates run bit-sliced, where each one is a few word operations over
+        // the columns it touches rather than a strided visit to every row. The
+        // single transpose afterwards buys back the row-major layout that
+        // measurement, the outcome slab and the returned state all read.
+        StabilizerState::ColumnTableau cols(circuit.n_qubits);
         for (const auto& inst : circuit.instructions) {
             if (inst.type == GT::MEASURE || inst.type == GT::BARRIER) continue;
-            apply_gate(base, inst);
+            apply_gate(cols, inst);
         }
-        for (int s = 0; s < shots; ++s) {
-            StabilizerState state = base;
-            std::vector<int> clreg(n_clbits, 0);
+        StabilizerState base = cols.to_state();
+        if (options.sampling == Options::Sampling::Slab) {
+            // Where each outcome is recorded, read once. Terminal Z
+            // measurements commute, so their order does not affect the
+            // distribution, only the qubit-to-clbit mapping.
+            std::vector<std::pair<int, int>> measured;  // (qubit, clbit)
             for (const auto& inst : circuit.instructions) {
                 if (inst.type != GT::MEASURE) continue;
-                int q = inst.qubits[0];
-                int clbit = inst.clbits.empty() ? q : inst.clbits[0];
-                int outcome = state.measure(q, true, rng);
-                if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
+                const int q = inst.qubits[0];
+                measured.emplace_back(q, inst.clbits.empty() ? q : inst.clbits[0]);
             }
-            record(clreg);
+
+            const int W = base.words_per_vector();
+
+            // Extracting the slab is an elimination over the whole tableau. A
+            // circuit with no measurements has nothing to draw from it, so it
+            // must not pay for one: every shot there records the same empty
+            // register. The zero-dimensional stand-in keeps the vector sizes
+            // the sampling loop expects.
+            StabilizerState::OutcomeSlab slab;
+            if (measured.empty()) {
+                slab.n_qubits = circuit.n_qubits;
+                slab.offset.assign(static_cast<size_t>(W), 0ULL);
+            } else {
+                slab = base.outcome_slab(options.elimination);
+            }
+            std::vector<uint64_t> y(static_cast<size_t>(W), 0ULL);
+            std::vector<int> clreg(static_cast<size_t>(n_clbits), 0);
+
+            // The generator yields 64 bits at a time and they are spent one
+            // free direction at a time, so a shot costs one draw per 64
+            // dimensions rather than one draw per dimension.
+            uint64_t pool = 0;
+            int pool_left = 0;
+
+            for (int s = 0; s < shots; ++s) {
+                y = slab.offset;
+                for (int d = 0; d < slab.dim; ++d) {
+                    if (pool_left == 0) { pool = rng(); pool_left = 64; }
+                    const bool take = (pool & 1ULL) != 0;
+                    pool >>= 1;
+                    --pool_left;
+                    if (take) {
+                        const std::vector<uint64_t>& v = slab.basis[static_cast<size_t>(d)];
+                        for (int w = 0; w < W; ++w) {
+                            y[static_cast<size_t>(w)] ^= v[static_cast<size_t>(w)];
+                        }
+                    }
+                }
+                std::fill(clreg.begin(), clreg.end(), 0);
+                for (const auto& qc : measured) {
+                    const int q = qc.first, clbit = qc.second;
+                    if (clbit < 0 || clbit >= n_clbits) continue;
+                    clreg[static_cast<size_t>(clbit)] = static_cast<int>(
+                        (y[static_cast<size_t>(q / 64)] >> (q % 64)) & 1ULL);
+                }
+                record(clreg);
+            }
+        } else {
+            for (int s = 0; s < shots; ++s) {
+                StabilizerState state = base;
+                std::vector<int> clreg(n_clbits, 0);
+                for (const auto& inst : circuit.instructions) {
+                    if (inst.type != GT::MEASURE) continue;
+                    int q = inst.qubits[0];
+                    int clbit = inst.clbits.empty() ? q : inst.clbits[0];
+                    int outcome = state.measure(q, true, rng);
+                    if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
+                }
+                record(clreg);
+            }
         }
+
         result.final_state = std::move(base);
         return result;
     }

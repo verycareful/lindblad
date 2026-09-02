@@ -4,6 +4,130 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.25.0] - 2026-09-02
+
+The Clifford backend was losing to Qiskit Aer's stabilizer method at the sizes
+the backend exists for: 0.99x at 80 qubits and 0.45x at 160. It now leads at
+every size in the corpus by between 264x and 329x, and the same 160-qubit
+workload runs 643x faster than the figure this project last published.
+
+None of that came from micro-optimisation. Three things were wrong at the level
+of what the code was doing:
+
+Sampling replayed a full measurement pass over a copy of the tableau for every
+shot. A stabilizer state's computational-basis distribution is uniform over a
+coset of a linear subspace, never anything more complicated, so the shape can be
+read off once and a shot becomes a draw of a few bits and a subset-sum.
+
+Phase bookkeeping walked every qubit through a branch ladder. The per-qubit
+contribution is a boolean function of four bit planes, so the whole sum is two
+population counts over words.
+
+Gates touched one bit in each of 2N rows, which is 2N strided accesses to do
+work that is two columns wide. Applying them to a transposed copy makes a gate a
+handful of word operations, with one blocked bit transpose to convert back for
+the stages that read rows.
+
+The release also closes a correctness gap that had nothing to do with speed:
+five genuine Clifford gates were rejected by the backend and silently fell back
+to a slower simulator. That is #66, which this release closes.
+
+### Added
+
+- **`SX`, `SXDG`, `CY`, `ISWAP` and `ECR` run on the tableau backend** (#66).
+  All five are Clifford and were previously declined by `is_clifford()`, so a
+  circuit using them left the fast path with no diagnostic. `RX`, `RY` and `RZ`
+  at multiples of pi/2 are accepted on the same basis, alongside the `P` angles
+  already supported. One classifier now decides which angles are accepted and
+  which are executed, so the two cannot disagree.
+- **`StabilizerState::OutcomeSlab` and `outcome_slab()`**, exposing the affine
+  subspace a stabilizer state's measurement outcomes are drawn from: one point
+  of the coset plus the directions along it.
+- **`CliffordSimulator::Options`**, with `sampling` selecting between the
+  subspace draw and the previous per-shot measurement replay, and `elimination`
+  selecting how the subspace is extracted. Both alternatives sample the same
+  distribution; they consume the random stream differently, so a given seed
+  produces different individual bitstrings under each.
+- **`StabilizerState::ColumnTableau`**, a bit-sliced companion holding the
+  tableau transposed for the gate pass, with a blocked 64x64 bit transpose back
+  to the row-major representation every other stage reads.
+- **A Method of Four Russians elimination**, selectable and off by default. It
+  clears a block of pivot columns from each row with one multiplication against
+  a precomputed table of subset products. Measured 0.91x to 0.98x from 20 to 160
+  qubits, because the table costs 2^k multiplications no matter how few rows
+  remain to amortise it over, so it needs a tableau well beyond these sizes to
+  pay. Selecting it emits a one-time note saying so.
+- **`bench_clifford`**, timing the gate pass with and without sampling. The
+  cross-engine suite reports one number per circuit and cannot say which half it
+  belongs to, and the two halves have different orders in the qubit count, so a
+  single number cannot be attributed to either.
+- **`cmake/LindbladCompilerFlags.cmake`**, holding the optimisation, warning and
+  instruction-set policy that was inline in the top-level build file.
+
+### Changed
+
+- **`LINDBLAD_MARCH_NATIVE` now defaults to `ON`.** It is what the README build
+  line, the CI workflow and every published benchmark already used, so the
+  previous default described a configuration nobody built. The portable
+  `x86-64-v3` baseline stays selectable and remains valuable as a second
+  configuration to test against: a residual that differs between the two is a
+  defect in the arithmetic, and it was two configurations disagreeing that
+  exposed one.
+- **`rowmult` computes its phase with population counts** over boolean
+  combinations of the four bit planes rather than a per-qubit branch ladder,
+  turning `O(N)` branches into `O(N/64)` word operations. Results are unchanged
+  by construction.
+- **`CZ` and `SWAP` are single-sweep tableau operations.** Both were composed
+  from primitives at the point of use, traversing the tableau once per
+  primitive, where the traversal is the cost.
+- **Terminal measurements sample from the outcome subspace by default.** The
+  previous per-shot route remains available through `Options::sampling`.
+
+### Fixed
+
+- **`LINDBLAD_MARCH_NATIVE` was silently ignored under MSVC.** The option was
+  read only in the GCC and Clang branch, so setting it on MSVC did nothing and
+  said nothing. It now selects `/arch:AVX512`, reporting at configure time that
+  this is a fixed target rather than the host's own, since MSVC has no
+  equivalent of `-march=native`. This matches how `LINDBLAD_BUILD_COVERAGE`
+  already reports being unavailable there.
+
+### Performance
+
+Clifford ladder circuits with terminal measurement, 256 shots, median of five
+repetitions, WSL and Clang at `-march=native`, against the figures in
+`docs/Benchmarks.md` on the same host:
+
+```text
+workload                    published (ms)      now (ms)     speedup
+clifford__ladder__n20                1.121        0.0343       32.7x
+clifford__ladder__n40                5.723        0.0548      104.4x
+clifford__ladder__n80               32.421        0.1169      277.3x
+clifford__ladder__n160             204.797        0.3184      643.2x
+```
+
+Against the Qiskit Aer stabilizer timings from the same published run, the
+backend goes from 8.08x, 3.15x, 0.99x and 0.45x to 264x, 329x, 274x and 288x.
+`docs/Benchmarks.md` still reports the earlier run and will be regenerated when
+the cross-engine comparison is next executed in full.
+
+### Known issues
+
+`R1191CliffordValidation.RunUnsupportedCliffordGateThrows` fails in this
+release. It pins that a gate which is Clifford but absent from the tableau
+dispatch throws rather than being silently dropped, and it uses `CY` as its
+example. `CY` is now dispatched, so the example no longer belongs to the
+category the test is about. The invariant is untouched and still holds:
+`RXX`, `RYY`, `RZZ` and `RZX` at multiples of pi/2 are Clifford, are not
+dispatched, and do throw. The test's example is corrected in the following
+test release.
+
+### Results
+
+2646 tests across 246 suites, 2644 passed, one intentionally red as described
+above and one skipped (23.6 s on GCC 13.3.0, 29.9 s on Clang 18.1.3; WSL,
+`-march=native` on both).
+
 ## [1.1.24.2] - 2026-08-31
 
 The release that closes the 1.1.24 line. The previous one shipped twenty-four
