@@ -4,6 +4,159 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.26.1] - 2026-09-03
+
+The test wave for the observation harness. The previous release added roughly
+2500 lines across a new public interface and shipped none of them under test:
+the suite was green, but not one of its 2771 tests constructed a `RunPlan`, so
+that run proved no regression and said nothing about whether observation worked.
+
+Two decisions shaped this suite. The first is that a reading is checked against
+an independent route wherever one exists, because a reading that only agrees
+with itself is evidence of nothing. Entropy is the sharpest case: one quantity
+computed four ways, so every MPS value is compared against a statevector twin on
+the same circuit, and the tableau is compared against the statevector on
+stabilizer circuits. The second is that whole sequences are compared rather than
+single readings. An anchor that fires the right number of times in the wrong
+order is a different defect and an equally silent one.
+
+Ten tests ship red on purpose, and each names a defect rather than a
+disagreement about what should happen. They are described under Known red below.
+
+### Tests
+
+- **Anchors, and what they hand over.** Every anchor kind against a hand-checked
+  expectation, including a layering worked out by hand on a circuit where the
+  greedy walk clears its whole occupancy set on collision, so any other
+  plausible layering gives a different answer. Instructions the backend SKIPS
+  are pinned separately: a barrier, and a conditioned gate whose condition
+  cannot hold, both still fire, which is the property most easily lost without
+  noticing. The context coordinates, the anchor name spellings, the calling
+  thread, and both endpoints on a circuit with no instructions.
+
+- **Measurement anchors on both routes.** Where measurement is deferred to a
+  sampling pass, the gate loop skips MEASURE and the anchors around it hand over
+  an UNCOLLAPSED state; on a per-shot trajectory they hand over a collapsed one.
+  Both are asserted rather than left to be discovered, since the behaviour is
+  defensible and is not what the anchor names suggest.
+
+- **An anchor that cannot fire, under every response.** An index past the end, a
+  label no instruction carries, and a label a transpiler pass removed along with
+  its instruction, each under Throw, Warn and Ignore, because the response knob
+  governs an observation the backend cannot produce and not a plan that does not
+  match its circuit. Also pinned: what the failure names, that nothing was
+  observed before it, that no note reaches the warning channel, and that a
+  failed run carries no observations.
+
+- **How a failed run reports itself, per backend.** The statevector and density
+  matrix simulators carry an error channel on their `Result` and report through
+  it; the MPS and Clifford simulators have no such field and throw. Both are
+  asserted against the backend that uses them.
+
+- **The knobs, crossed rather than sampled.** `Conversion` against `Response` in
+  full, against a route that does not exist and a route that does, so the
+  refusal caused by a fact about the representations is told apart from the one
+  caused by a policy. The guard boundary is exact and inclusive: at three qubits
+  a density matrix costs eight times its statevector, so a multiple of eight
+  passes and anything below it does not. `Cost::Unlimited` never refuses on size,
+  still refuses on impossibility, and reports what it allowed. No test needs the
+  memory it claims is over budget.
+
+- **Gate fusion against anchors.** Under `Suppress` the firing sequence is
+  exactly the instructions the caller wrote; under `Keep` it is shorter, because
+  blocks are what execute, and a label fusion absorbed fails the run rather than
+  never firing. The control case shows the same label resolving under `Suppress`.
+
+- **Where the run starts.** The default on all four backends, `basis(5)` on three
+  qubits reading as `101` everywhere, every supplied form into every backend, and
+  the asymmetry that matters: an initial state that cannot be produced fails
+  under Warn and Ignore too, because observations are omissible and a starting
+  state is not.
+
+- **The bundle.** Both key schemes, including that an observer which fired
+  repeatedly writes no plain label at all, so a caller reading one cannot mistake
+  a single firing for the run. Sorted `labels()`, every typed accessor against a
+  missing label and a wrong payload kind, and the bundle surviving a move and a
+  copy.
+
+- **The observer catalogue, and one written outside it.** Each built-in against
+  an independent evaluation where one exists. A `HeaviestOutcomeObserver` defined
+  in the test file, using only public surface, is attached, read, and writes into
+  the bundle: the claim that the built-ins have no privileged access is otherwise
+  untested however many of them are covered.
+
+- **Entropy, by four routes.** Analytic values on the tableau (a product state is
+  zero, a Bell pair one bit, GHZ one bit at any single-qubit cut, two Bell pairs
+  cut across both exactly two), integral results agreeing across every Renyi
+  order, and the MPS route compared against the statevector at prefix, suffix,
+  single-qubit and non-contiguous cuts. That comparison is what pins the
+  environment Gram ordering, which returns a plausible wrong number of the same
+  order of magnitude if reversed. The states are built by gates, so no tensor is
+  canonical, and the amplitude split is uneven so the entropy is not an integer:
+  one bit is a value a wrong ordering can also produce.
+
+- **`StabilizerState::to_statevector`.** Compared as AMPLITUDES up to a global
+  phase against the statevector backend, not as a distribution, because the
+  factors of i a Y-stabilized generator contributes are invisible to a
+  probabilities check. Y-stabilized qubits alone and entangled, the tableau
+  unchanged by being read twice, a register too wide refused rather than
+  attempted, and the amplitudes agreeing with what sampling draws.
+
+- **Watching does not change the run.** Purity at every firing rather than at the
+  end, since one reading cannot separate a state that was never harmed from one
+  harmed and renormalised; the norm and the trace likewise. A noisy run mixes
+  identically watched and unwatched. Conversions leave the state they read
+  untouched. Captured states are snapshots and not handles: firings that agree on
+  probabilities and differ in phase are read back after the run has ended, which
+  no invariant check would catch. Counts agree watched and unwatched on all four
+  backends, the watched row-major Clifford gate pass agrees with the unwatched
+  bit-sliced one, and firing counts follow the execution strategy.
+
+### Known red
+
+Ten tests fail deliberately, so each gap is visible in every run rather than
+recorded somewhere a reader has to go looking. All are library defects with a
+fix intended for the next patch, not disagreements about intended behaviour.
+
+- **Eight in `V11261PreflightContract`.** The harness resolves ANCHORS before any
+  state is touched, on the stated grounds that a failure found later costs the
+  run and arrives as an ambiguous half-result. Nothing else in a plan gets that
+  treatment. An out-of-range amplitude index and a malformed entropy region are
+  found on the first firing; a duplicate bundle label only after the entire
+  simulation has been paid for. Each is decidable from the plan and the register
+  width before a gate runs. The eighth case is the worst: a duplicate label
+  surfaces from `end_run` after the observers ahead of it have already written,
+  so the result carries a failure flag beside a partly populated bundle, and a
+  caller who checks the flag and a caller who reads the bundle are told different
+  things. Each test attaches a witness observer to `every_instruction`, so what
+  is red is WHEN the verdict was reached and not whether the run failed. Three
+  further tests in the same file are green and must stay green: they pin that a
+  conversion refusal is still absorbed by Warn and Ignore, which is the boundary
+  the fix must not cross.
+
+- **`ASuppliedStatevectorIsConvertedForTheDensityMatrixBackend`.** Seeding a
+  density matrix run from a pure state fails at the default options on every
+  register of any size. The guard measures the conversion against the SUPPLIED
+  statevector rather than against the destination, so it compares 4^n with 2^n
+  and refuses a ratio that is always above the default multiple. The allocation
+  it refuses is not an extra cost, since the backend allocates 4^n regardless:
+  that is its state. The response knob was deliberately exempted from the initial
+  state, on the grounds that there is no such thing as omitting the state a run
+  starts from; the cost knob gates it anyway.
+
+- **`AnMpsTruncatesASuppliedStateItCannotHold`.** A supplied state factorised
+  past the bond cap is truncated, correctly, and then reports
+  `truncation_error()` of exactly zero. The discarded weight is computed and
+  returned by the truncation ladder each split goes through, and the
+  reconstruction never accumulates it. A caller using that figure to decide
+  whether their cap was adequate is told it was.
+
+### Results
+
+2945 tests across 262 suites, 2934 passed, one skipped and ten intentionally red
+as described above (25.9 s on g++-13, 36.5 s on clang++; WSL, `-march=native` on
+both). #72 still observed.
+
 ## [1.1.26.0] - 2026-09-03
 
 A simulation can now be watched while it runs, and started from a state of the
