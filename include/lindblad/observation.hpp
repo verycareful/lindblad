@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <string>
@@ -179,9 +180,57 @@ struct ObservationContext {
 //
 // An observer must not attach observers or mutate the plan from inside a call.
 
+// -----------------------------------------------------------------------------
+// PreflightContext - what an observer is told before the run starts
+// -----------------------------------------------------------------------------
+// Everything decidable about a plan without running it: which representation
+// the backend will hold, how wide the register is, and the policy in force.
+// There is deliberately no state here, because the point is that none exists
+// yet.
+
+struct PreflightContext {
+    StateForm form;       // what this backend holds natively
+    int n_qubits;         // the register the circuit runs on
+    const RunPlan& plan;  // the policy in force
+};
+
 class Observer {
 public:
     virtual ~Observer() = default;
+
+    // Called once per observer, before any state is touched, so that a plan
+    // that cannot work is refused before the run rather than on the first
+    // firing. Anchors are resolved the same way and for the same reason: a
+    // failure found later has cost the run and arrives as a half-result.
+    //
+    // The two kinds of answer are not interchangeable.
+    //
+    // A caller MISTAKE throws: an amplitude index outside the register, or a
+    // region that is not a cut. Those are wrong wherever they are noticed, no
+    // policy softens them, and noticing early costs the caller nothing.
+    //
+    // An observation this backend cannot produce is different. That is exactly
+    // what Response::Warn and Response::Ignore exist to omit, so it is
+    // delivered through the response knob and reported by returning false.
+    // False means this observer can never produce anything on this run, so the
+    // runner drops it rather than invoking it at every anchor it was attached
+    // to. Under Throw the refusal has already been raised and nothing returns.
+    //
+    // Whatever is decided here STAYS checked at firing time as well. Two things
+    // cannot be known in advance and the firing-time checks are their only
+    // guard: the cost of reading an MPS, whose footprint grows with the bond
+    // dimension as the run proceeds, and anything a caller's own observer does
+    // with the state it is handed.
+    //
+    // The default answers true. An observer with nothing to decide early keeps
+    // its firing-time checks and is not required to have any of this.
+    virtual bool preflight(const PreflightContext& ctx);
+
+    // The bundle key this observer writes under, empty when it writes none.
+    // Declared here rather than on BundleWriter so the runner can see two
+    // observers claiming one label before the run instead of discovering it
+    // after every shot has been paid for.
+    virtual const std::string& label() const;
 
     // Called once before the first shot. Sized buffers belong here rather than
     // in the first observe() call, which would otherwise pay for the check on
@@ -389,7 +438,27 @@ struct RunPlan {
         enum class Fusion { Suppress, Keep };
 
         Conversion conversion = Conversion::Convert;
+
+        // What an OBSERVATION may allocate to look at the state.
         Cost cost = Cost::Guarded;
+
+        // What SEEDING the run may allocate, which is a different question and
+        // so is a different field. One enumerator cannot carry both, because
+        // the two have opposite right answers: an observation that costs more
+        // than the simulation should be asked for explicitly, while the state a
+        // run starts from is the simulation and there is nothing to ask about.
+        //
+        // Unguarded by default because the write-side cost is not hidden from
+        // anyone. It follows from the source form, the destination form and the
+        // qubit count, and the caller chose all three: they built the state,
+        // picked the backend and wrote the circuit. A guard there can only
+        // refuse a run the caller has already fully specified.
+        //
+        // Guarded remains sayable for the one allocation that IS a surprise:
+        // seeding an MPS run from a compact state materialises a full 2^n dense
+        // array inside a backend chosen to avoid exactly that.
+        Cost initial_cost = Cost::Unlimited;
+
         Response response = Response::Throw;
         Fusion fusion = Fusion::Suppress;
 
@@ -422,6 +491,25 @@ namespace detail {
 // caller can `return refuse_observation(...)` and read as declining.
 bool refuse_observation(const RunPlan::Options& options, const std::string& message);
 
+// Whether a route from `from` to `to` exists at all: the answer
+// StateView::convertible_to gives, without needing a state to ask it of. This
+// is what makes the question decidable at the pre-flight.
+bool conversion_exists(StateForm from, StateForm to);
+
+// The footprint a backend holding `form` occupies at `n_qubits`, where that is
+// a function of the register alone. An MPS is not, since its size follows the
+// bond dimension and so follows how far the run has got: it reports 0, and a
+// caller reading 0 asks the live state instead.
+std::size_t form_bytes(StateForm form, int n_qubits);
+
+// Judge, before the run, whether `target` can be produced on this backend, by
+// the same rules produce_state applies during it. Returns false having already
+// delivered the refusal through the response knob. The cost comparison is made
+// only where form_bytes can answer, so an MPS is left entirely to the
+// firing-time guard.
+bool preflight_conversion(const PreflightContext& ctx, StateForm target,
+                          const std::string& what);
+
 // Produce `target` from what the view holds, judged by the knobs. Returns null
 // when the observation is to be omitted, and throws under Response::Throw.
 // `what` names the requester so the message says whose request was refused.
@@ -434,6 +522,29 @@ std::shared_ptr<const void> produce_state(const StateView& view, StateForm targe
 // observation is to be omitted, having already delivered the refusal.
 bool charge_allocation(const StateView& view, std::size_t bytes,
                        const RunPlan::Options& options, const std::string& what);
+
+// Produce the state a run starts from. The same routes produce_state uses, and
+// the same conversion knob, with three differences that all follow from a
+// starting state not being an observation:
+//
+//   - it answers to Options::initial_cost rather than Options::cost;
+//   - under Guarded it is judged against what the RUN will hold, passed as
+//     `run_state_bytes`, rather than against what the caller handed in, since
+//     the destination is allocated either way. The MPS backend passes the
+//     supplied state's own footprint instead, because a chain's size is not
+//     known until the factorisation has run and the dense intermediate is the
+//     thing worth catching there;
+//   - it never reports a cost through the warning channel, because seeding is
+//     ordinary work rather than a guard someone waived.
+//
+// Returns null when no route exists or Conversion::Never declined it, which the
+// caller turns into a throw: a run has to start somewhere, so the response knob
+// does not soften this any more than it softens a broken anchor. An allocation
+// over the guard throws here, since that cause needs a message of its own.
+std::shared_ptr<const void> produce_initial_state(const StateView& supplied,
+                                                  StateForm target,
+                                                  const RunPlan::Options& options,
+                                                  std::size_t run_state_bytes);
 
 // Seed a backend's state from the plan. The default plan initialises to
 // |0...0>, which is what a caller who passed no plan gets, so a backend calls
@@ -478,9 +589,16 @@ private:
 
 class ObservationRunner {
 public:
-    // Resolves the plan against this circuit. An anchor that cannot fire is a
-    // failed run raised here, not a silent absence of data later.
-    ObservationRunner(const RunPlan& plan, const QuantumCircuit& circuit);
+    // Resolves the plan against this circuit and against the backend that will
+    // run it. An anchor that cannot fire is a failed run raised here, not a
+    // silent absence of data later, and so is every other fault in the plan
+    // that can be decided without a state: `form` is what makes the second half
+    // of that possible.
+    //
+    // An observer the pre-flight rules out is DROPPED rather than carried, so
+    // it costs nothing per anchor for the rest of the run.
+    ObservationRunner(const RunPlan& plan, const QuantumCircuit& circuit,
+                      StateForm form);
 
     // False when nothing is attached, which is the check that keeps an
     // unobserved run free of every per-instruction test below.
@@ -502,11 +620,27 @@ public:
     void before_instruction(int index, const Instruction& inst, const StateView& state);
     void after_instruction(int index, const Instruction& inst, const StateView& state);
 
+    // Hold an observer's exception until somewhere it can be raised from.
+    //
+    // FiringGuard fires from a destructor, so an exception leaving it would end
+    // the process rather than the run: a destructor is noexcept, and no caller
+    // gets the chance to decide otherwise. An observer that throws is a bug in
+    // that observer and has to fail the run loudly, which means the throw is
+    // caught there and raised again at the next point that is allowed to raise,
+    // being the following instruction, the end of the circuit, or the end of the
+    // run. At most one further instruction executes in between.
+    void capture_failure(std::exception_ptr failure);
+
 private:
     using Group = std::vector<const ObservationPlan::Attachment*>;
 
     void compute_layer_boundaries(const QuantumCircuit& circuit);
     void fire(const Group& group, const StateView& state, int instruction_index);
+
+    // Raise an observer failure caught in a destructor, if one is waiting.
+    void rethrow_if_failed();
+
+    std::exception_ptr failure_;
 
     const RunPlan& plan_;
     bool active_ = false;

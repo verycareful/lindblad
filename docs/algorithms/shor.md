@@ -83,7 +83,7 @@ The modular exponentiation oracle is implemented as `Instruction::GateType::PERM
 |---|---|---|
 | `STATEVECTOR` | ✓ | Default. Exact statevector simulation; PERMUTATION applied natively as an O(dim) gather. |
 | `DENSITY_MATRIX` | ✓ | Full mixed-state; useful for studying noise effects on factoring. PERMUTATION applied as a native row/column relabel. |
-| `MPS` | ✓ | PERMUTATION uses the bounded statevector fallback (`to_statevector` → apply → `mps_from_sv`, capped at `MPS_SV_MAX_QUBITS`), as the dense UNITARY did before R.1.13. |
+| `MPS` | ✓ | PERMUTATION uses the bounded statevector fallback (`to_statevector` → apply → `rebuild_from_statevector`, capped at `MPS_SV_MAX_QUBITS`), as the dense UNITARY did before R.1.13. |
 | `CLIFFORD` | ✗ | **Not supported.** The modular exponentiation map is an arbitrary permutation — it cannot be decomposed into the Clifford gate set {H, S, CX, X, Y, Z}. This is a fundamental mathematical constraint, not an implementation limitation. |
 
 The `QFT::build_inverse_circuit` is used for the IQFT stage of the evaluation register.

@@ -74,15 +74,38 @@ long way from its cause.
 class Observer {
 public:
     virtual ~Observer() = default;
+    virtual bool preflight(const PreflightContext& ctx);   // before the run
+    virtual const std::string& label() const;              // empty when unlabelled
     virtual void begin_run(int n_qubits, int n_shots);
     virtual void observe(const ObservationContext& ctx) = 0;
     virtual void end_run();
+};
+
+struct PreflightContext {
+    StateForm      form;      // what this backend holds natively
+    int            n_qubits;  // the register the circuit runs on
+    const RunPlan& plan;      // the policy in force
 };
 ```
 
 The built-in observers are ordinary implementations of this interface with no
 privileged access. An observer you write sits beside them rather than beneath
 them.
+
+`preflight` is called once per observer, before any state exists, so that a plan
+which cannot work is refused before the run rather than on the first firing. It
+is called once even when the observer is attached to several anchors.
+
+Return `false` to say this observer can never produce anything on this run,
+having delivered the refusal through `response`; the runner then drops it, so it
+costs nothing per anchor afterwards. Throw instead when the caller made a
+mistake, such as naming an amplitude outside the register: no policy softens
+that, and reporting it early costs them nothing. The default returns `true`, so
+an observer with nothing to decide early need not implement it.
+
+`label` is the bundle key this observer writes under. Declaring it on the base
+lets the runner see two observers claiming one label before the run instead of
+after every shot has been paid for.
 
 ```cpp
 struct ObservationContext {
@@ -102,18 +125,37 @@ so an observer keeping any of it must copy it.
 
 ## `RunPlan::Options`
 
-Four independent knobs. They are separate rather than fused into one enum
-because fusing them makes policies unsayable: an enumerator meaning "convert,
-and throw when conversion is impossible" cannot also express "convert, and warn
-when conversion is impossible".
+Independent knobs. They are separate rather than fused into one enum because
+fusing them makes policies unsayable: an enumerator meaning "convert, and throw
+when conversion is impossible" cannot also express "convert, and warn when
+conversion is impossible".
 
 | Field | Values | Default | Governs |
 |---|---|---|---|
 | `conversion` | `Convert`, `Never` | `Convert` | whether the library may translate into a representation the backend does not hold |
-| `cost` | `Guarded`, `Unlimited` | `Guarded` | whether an expensive observation must be asked for explicitly |
+| `cost` | `Guarded`, `Unlimited` | `Guarded` | what an OBSERVATION may allocate to look at the state |
+| `initial_cost` | `Guarded`, `Unlimited` | `Unlimited` | what SEEDING the run may allocate |
 | `response` | `Throw`, `Warn`, `Ignore` | `Throw` | what a refusal looks like, whatever caused it |
 | `fusion` | `Suppress`, `Keep` | `Suppress` | whether a watched run keeps gate fusion |
 | `guard_multiple` | `double` | `1.0` | how much `Guarded` allows, as a multiple of the live state |
+
+### Why reading and seeding have separate cost knobs
+
+They are different questions with opposite right answers, so one enumerator
+cannot carry both.
+
+An observation costing more than the simulation should be asked for explicitly,
+which is why `cost` is guarded by default. The state a run starts from IS the
+simulation: the caller already chose the source, the backend and the register,
+so the cost follows from decisions they made and there is nothing hidden to
+guard. `initial_cost` is therefore unguarded by default.
+
+It stays sayable for the one write-side allocation that does surprise. Seeding an
+MPS run from a compact state materialises a full `2^n` dense array inside a
+backend chosen to avoid exactly that, and `initial_cost = Cost::Guarded` refuses
+it. Under `Guarded` the write side is measured against what the RUN will hold
+rather than against what was handed in, so a conversion producing exactly the
+state the backend was going to allocate always passes.
 
 ### How a refusal happens
 
@@ -331,22 +373,81 @@ overwrites another.
 
 ## Exceptions and preconditions
 
-- An anchor that does not resolve throws `std::invalid_argument`, whatever
+### How a failure reaches you
+
+Which channel a failure arrives on is a property of the BACKEND, not of the
+failure, and the two are not interchangeable.
+
+`StatevectorSimulator` and `DensityMatrixSimulator` carry an error channel on
+their `Result` and report through it: `run()` returns normally with
+`success == false` and `error_message` describing what went wrong. A
+`try`/`catch` around those calls will not fire.
+
+`MPSSimulator` and `CliffordSimulator` have no such field on their `Result`, so
+they throw instead.
+
+```cpp
+StatevectorSimulator sv;
+auto result = sv.run(circuit, shots, seed, plan);
+if (!result.success) {
+    std::cerr << result.error_message << "\n";   // the anchor that did not resolve
+}
+
+MPSSimulator mps;
+try {
+    auto result = mps.run(circuit, 64, shots, seed, plan);
+} catch (const std::invalid_argument& e) {
+    std::cerr << e.what() << "\n";               // the same failure, thrown
+}
+```
+
+Everything below happens INSIDE `run()`, so each one reaches you through
+whichever of those two channels your backend uses:
+
+- An anchor that does not resolve fails the run, whatever `response` says.
+- Two observers writing under one label fail the run, before it starts: one of
+  them would be unreachable in the bundle, and which one would depend on how
+  often each happened to fire.
+- A supplied initial state that cannot be produced fails the run, whatever
   `response` says.
-- `Anchor::after_label` rejects an empty label, and `Anchor::where` rejects an
-  empty predicate.
-- A supplied initial state that cannot be produced throws, whatever `response`
-  says.
-- Reading a bundle label that is absent, or holds a different kind than the
-  accessor asks for, throws `std::invalid_argument`.
-- Writing a label the bundle already holds throws: two observations under one
-  name leave one unreachable and the caller cannot tell which.
+- An amplitude index outside the register, or an `EntropyObserver` region that
+  names a qubit twice, names a qubit outside the register, or names every qubit,
+  fails the run. These are decided before any state is touched.
 - `StateView`'s typed accessors throw when the backend holds a different
   representation. They never convert, so reading through one always costs a
   pointer dereference and a conversion is always explicit.
-- `EntropyObserver` rejects a region naming a qubit twice, a qubit outside the
-  register, or every qubit in it, since a cut needs a side to be entangled with.
-- Reading a firing index at or beyond `count()` throws.
+
+These happen outside `run()` and throw `std::invalid_argument` directly on every
+backend:
+
+- `Anchor::after_instruction` rejects a negative index, `Anchor::after_label`
+  rejects an empty label, and `Anchor::where` rejects an empty predicate.
+- `ObservationPlan::observe` rejects a null observer, and `CallbackObserver`
+  rejects a null callback.
+- `EntropyObserver` rejects an empty region and a non-positive Renyi order at
+  construction.
+- Reading a bundle label that is absent, or that holds a different kind than the
+  accessor asks for.
+- Reading a firing index at or beyond `count()`.
+
+### What is decided before the run
+
+Every fault above that can be decided from the plan and the register alone is
+decided before any state is touched, rather than when the observer first fires.
+A fault found on the first firing has already cost the circuit, and one found at
+the end has cost every shot.
+
+Two things cannot be decided in advance, and keep their firing-time checks:
+
+- The cost of reading an MPS. Its footprint follows the bond dimension, so it
+  grows as the run proceeds, and the same request can be refused at one anchor
+  and allowed at a later one.
+- Anything an observer you wrote does with the state it is handed.
+
+A refusal that `Response::Warn` or `Response::Ignore` would absorb is still
+absorbed when it is decided early. Deciding sooner changes WHEN the verdict is
+reached, never what it is; an observer ruled out this way is then dropped, so it
+costs nothing per anchor for the rest of the run.
 
 Observers are invoked from the thread that called `run()`, in shot order and
 then instruction order, and never concurrently by that run, so an

@@ -706,11 +706,22 @@ Statevector MPSState::to_statevector() const {
 }
 
 // =============================================================================
-// mps_from_sv — reconstruct MPS from a statevector via sequential SVD
-// Used as a fallback when a gate cannot be applied natively in MPS form.
+// MPSState::rebuild_from_statevector — reconstruct the chain by sequential SVD
+// Used as a fallback when a gate cannot be applied natively in MPS form, and to
+// seed a run from a supplied dense state.
 // =============================================================================
 
-static MPSState mps_from_sv(const Statevector& sv, int n, int max_bond_dim, double cutoff) {
+void MPSState::rebuild_from_statevector(const Statevector& sv) {
+    const int n = n_qubits;
+    if (sv.n_qubits != n) {
+        throw std::invalid_argument(
+            "MPSState::rebuild_from_statevector: the amplitudes cover " +
+            std::to_string(sv.n_qubits) + " qubits, this chain " +
+            std::to_string(n));
+    }
+
+    // Built beside this state rather than into it, so a throw part way through
+    // the sweep leaves the chain as it was rather than half rewritten.
     MPSState result(n, max_bond_dim, cutoff);
     size_t dim = 1ULL << n;
 
@@ -745,8 +756,20 @@ static MPSState mps_from_sv(const Statevector& sv, int n, int max_bond_dim, doub
         // defect makes composite states unreliable.
         const detail::SvdTruncation split = detail::svd_truncate_verified(
             block.data(), rows, half_cols, detail::MatrixOrder::RowMajor,
-            max_bond_dim, cutoff, SVDMethod::Jacobi, "mps_from_sv");
+            max_bond_dim, cutoff, SVDMethod::Jacobi,
+            "MPSState::rebuild_from_statevector");
         const int k = split.rank;
+
+        // The same four figures MPSState::svd_truncate records, because they
+        // describe the STATE rather than the route that produced it. A split
+        // this sweep performed is one this chain paid for, and a caller reading
+        // truncation_error() to judge whether their bond cap was adequate is
+        // asking about the chain and not about which function built it.
+        ++svd_calls;
+        if (split.used_gram_fallback) ++gram_fallbacks;
+        total_truncation_error += split.discarded_weight;
+        max_verify_resid_excess =
+            std::max(max_verify_resid_excess, split.residual_excess);
 
         result.tensors[site] = MPSTensor(left_bond, k);
         for (int alpha = 0; alpha < left_bond; ++alpha)
@@ -773,7 +796,9 @@ static MPSState mps_from_sv(const Statevector& sv, int n, int max_bond_dim, doub
         for (int p = 0; p < 2; ++p)
             result.tensors[n - 1](alpha, p, 0) = block[alpha * 2 + p];
 
-    return result;
+    // Only the tensors move across. The counters above were accumulated into
+    // this object as the sweep ran, and taking result's would reset them.
+    tensors = std::move(result.tensors);
 }
 
 // =============================================================================
@@ -1037,7 +1062,7 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
     // Multi-controlled X reduces to X/CX/CCX for <= 2 controls (native MPS
     // path). Wider MCX and the MCP/PERMUTATION structured ops have no compact
     // MPS form, so they take the same bounded statevector fallback as a 3+ qubit
-    // UNITARY (to_statevector -> apply -> mps_from_sv). This keeps e.g. Shor's
+    // UNITARY (to_statevector -> apply -> rebuild). This keeps e.g. Shor's
     // PERMUTATION oracle runnable on the MPS backend, as its dense UNITARY was.
     if (inst.type == GT::MCX && inst.qubits.size() <= 3) {
         Instruction sub = inst;
@@ -1065,7 +1090,7 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
         } else {
             gates::apply_permutation(sv, inst.qubits, inst.permutation);
         }
-        mps = mps_from_sv(sv, mps.n_qubits, mps.max_bond_dim, mps.cutoff);
+        mps.rebuild_from_statevector(sv);
         return;
     }
 
@@ -1132,7 +1157,7 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
         }
         auto sv = mps.to_statevector();
         gates::apply_unitary(sv, inst.qubits, inst.matrix, {Validation::Ignore});
-        mps = mps_from_sv(sv, mps.n_qubits, mps.max_bond_dim, mps.cutoff);
+        mps.rebuild_from_statevector(sv);
         return;
     }
 
@@ -1216,7 +1241,7 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
                 auto sv = mps.to_statevector();
                 gates::apply_unitary(sv, inst.qubits, inst.matrix,
                                      {Validation::Ignore});
-                mps = mps_from_sv(sv, mps.n_qubits, mps.max_bond_dim, mps.cutoff);
+                mps.rebuild_from_statevector(sv);
                 break;
             }
             default:
@@ -1453,7 +1478,7 @@ MPSSimulator::Result MPSSimulator::run(
     // One trajectory: honours classical conditions, records MEASURE outcomes.
     // Anchors resolve against the circuit before any state is touched, so an
     // anchor that cannot fire stops the run here.
-    detail::ObservationRunner runner(plan, circuit);
+    detail::ObservationRunner runner(plan, circuit, StateForm::MPS);
     runner.set_bundle(&result.observations);
     detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
 
@@ -1606,7 +1631,7 @@ MPSSimulator::Result MPSSimulator::run(
 // apply_initial_state - MPS
 // =============================================================================
 // Defined here rather than beside the other three, because the statevector to
-// MPS route is mps_from_sv above, which is local to this translation unit.
+// MPS route is the sequential-SVD rebuild above, which is a member of MPSState.
 
 namespace detail {
 
@@ -1660,9 +1685,15 @@ void apply_initial_state(const RunPlan& plan, MPSState& mps) {
     // this run's, so a state needing more than it holds is TRUNCATED here
     // rather than refused: that is what running it at this cap means, and the
     // discarded weight is what truncation_error reports.
-    auto produced = produce_state(
-        StateView(initial.form(), initial.state(), n), StateForm::Statevector,
-        plan.options, "InitialState");
+    // Measured against the SUPPLIED state rather than against the chain, which
+    // is the one destination whose footprint is not known before the
+    // factorisation runs. It is also the one worth measuring: a compact state
+    // expanding into a full 2^n dense array is the surprise this backend exists
+    // to avoid, while a caller who already holds those amplitudes has paid for
+    // them once and is only handing them over.
+    const StateView supplied(initial.form(), initial.state(), n);
+    auto produced = produce_initial_state(supplied, StateForm::Statevector,
+                                          plan.options, supplied.state_bytes());
     if (!produced) {
         throw std::invalid_argument(
             "InitialState: a " + std::string(to_string(initial.form())) +
@@ -1677,7 +1708,11 @@ void apply_initial_state(const RunPlan& plan, MPSState& mps) {
             std::to_string(sv.n_qubits) + " qubits, the circuit " +
             std::to_string(n));
     }
-    mps = mps_from_sv(sv, n, mps.max_bond_dim, mps.cutoff);
+    // A fresh chain, so truncation_error() on the result reports what seeding
+    // cost and nothing else. rebuild_from_statevector accumulates by design,
+    // which is right mid-run and wrong for the state a run starts from.
+    mps = MPSState(n, mps.max_bond_dim, mps.cutoff);
+    mps.rebuild_from_statevector(sv);
 }
 
 }  // namespace detail

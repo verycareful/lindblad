@@ -78,6 +78,14 @@ void BundleWriter::end_run() {
 // StateObserver
 // =============================================================================
 
+bool StateObserver::preflight(const PreflightContext& ctx) {
+    // The native form is whatever the backend holds, so it is decided here as
+    // well: the guard still measures a copy, and a caller who set a multiple
+    // below one has said even that is too much.
+    const StateForm wanted = native_ ? ctx.form : form_;
+    return detail::preflight_conversion(ctx, wanted, "StateObserver");
+}
+
 void StateObserver::observe(const ObservationContext& ctx) {
     const StateForm wanted = native_ ? ctx.state.form() : form_;
 
@@ -124,6 +132,14 @@ const MPSState& StateObserver::mps(std::size_t k) const {
 // =============================================================================
 // ProbabilityObserver
 // =============================================================================
+
+bool ProbabilityObserver::preflight(const PreflightContext& ctx) {
+    // Reads through the dense amplitudes on any backend that does not hold
+    // them, so whether they can be produced at all is knowable now.
+    if (ctx.form == StateForm::DensityMatrix) return true;
+    return detail::preflight_conversion(ctx, StateForm::Statevector,
+                                        "ProbabilityObserver");
+}
 
 void ProbabilityObserver::observe(const ObservationContext& ctx) {
     std::vector<double> probabilities;
@@ -175,6 +191,29 @@ std::vector<double> ProbabilityObserver::average() const {
 // =============================================================================
 // AmplitudeObserver
 // =============================================================================
+
+bool AmplitudeObserver::preflight(const PreflightContext& ctx) {
+    // The indices were fixed when this observer was constructed and the
+    // register when the circuit was written, so an index naming no amplitude is
+    // wrong before anything runs. A caller mistake, so it throws whatever the
+    // response knob says: there is no reading under which asking for amplitude
+    // 64 of a sixteen-amplitude state is a request to be quietly omitted.
+    const std::size_t dim = (ctx.n_qubits >= 0 && ctx.n_qubits < 63)
+                                ? (std::size_t{1} << ctx.n_qubits)
+                                : 0;
+    if (dim != 0) {
+        for (const std::size_t index : indices_) {
+            if (index >= dim) {
+                throw std::invalid_argument(
+                    "AmplitudeObserver: index " + std::to_string(index) +
+                    " is outside a " + std::to_string(dim) +
+                    " amplitude state");
+            }
+        }
+    }
+    return detail::preflight_conversion(ctx, StateForm::Statevector,
+                                        "AmplitudeObserver");
+}
 
 void AmplitudeObserver::observe(const ObservationContext& ctx) {
     std::vector<Complex128> picked;
@@ -323,6 +362,15 @@ const std::vector<int>& ClassicalRegisterObserver::clbits(std::size_t k) const {
 // BondDimensionObserver / TruncationObserver
 // =============================================================================
 
+bool BondDimensionObserver::preflight(const PreflightContext& ctx) {
+    if (ctx.form == StateForm::MPS) return true;
+    return detail::refuse_observation(
+        ctx.plan.options,
+        std::string("BondDimensionObserver asks for bond dimensions from a "
+                    "backend holding a ") + to_string(ctx.form) +
+        ", which has no bonds to report.");
+}
+
 void BondDimensionObserver::observe(const ObservationContext& ctx) {
     if (ctx.state.form() != StateForm::MPS) {
         detail::refuse_observation(
@@ -345,6 +393,15 @@ void BondDimensionObserver::observe(const ObservationContext& ctx) {
 const std::vector<int>& BondDimensionObserver::bond_dimensions(std::size_t k) const {
     check_index(k, values_.size(), "BondDimensionObserver");
     return values_[k];
+}
+
+bool TruncationObserver::preflight(const PreflightContext& ctx) {
+    if (ctx.form == StateForm::MPS) return true;
+    return detail::refuse_observation(
+        ctx.plan.options,
+        std::string("TruncationObserver asks for discarded weight from a "
+                    "backend holding a ") + to_string(ctx.form) +
+        ", which discards nothing.");
 }
 
 void TruncationObserver::observe(const ObservationContext& ctx) {
@@ -727,6 +784,26 @@ EntropyObserver::EntropyObserver(std::vector<int> region, double renyi_order,
         throw std::invalid_argument(
             "EntropyObserver: the Renyi order must be positive");
     }
+}
+
+bool EntropyObserver::preflight(const PreflightContext& ctx) {
+    // A region is judged against the register, and both are fixed before the
+    // run. complement_of raises on a repeated qubit or one outside the
+    // register; a cut naming every qubit has no other side to be entangled
+    // with. All three are caller mistakes and throw regardless of the response
+    // knob.
+    //
+    // Nothing about the ROUTE is decided here. Which one this observer takes
+    // depends on the cut: a prefix or suffix of an MPS reads the bond spectrum
+    // and never densifies, while any other cut falls back to the amplitudes.
+    // Refusing the dense route now would refuse cuts that never need it.
+    const std::vector<int> rest = complement_of(region_, ctx.n_qubits);
+    if (rest.empty()) {
+        throw std::invalid_argument(
+            "EntropyObserver: the cut names every qubit, so there is no other "
+            "side for the state to be entangled with");
+    }
+    return true;
 }
 
 void EntropyObserver::observe(const ObservationContext& ctx) {

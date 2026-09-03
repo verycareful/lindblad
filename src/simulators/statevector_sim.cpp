@@ -606,7 +606,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // plan that does not match its circuit is a mistake in the caller's
         // code, not a capability the backend lacks, so no response knob softens
         // it.
-        detail::ObservationRunner runner(plan, *exec);
+        detail::ObservationRunner runner(plan, *exec, StateForm::Statevector);
         runner.set_bundle(&result.observations);
 
         // Execution strategy (docs/api/simulators.md, Execution semantics):
@@ -751,6 +751,12 @@ StatevectorSimulator::Result StatevectorSimulator::run(
     } catch (const std::exception& e) {
         result.success = false;
         result.error_message = e.what();
+        // Observers write into the bundle as end_run walks them, so a failure
+        // partway through that walk leaves entries from the ones ahead of it. A
+        // caller checking the flag would be told the run failed while a caller
+        // reading the bundle found real observations in it, and one of the two
+        // would be acting on a run that did not happen.
+        result.observations = ObservationBundle();
     }
 
     return result;

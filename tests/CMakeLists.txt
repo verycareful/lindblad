@@ -150,6 +150,10 @@ set(LINDBLAD_TEST_SOURCES
     test_v11261_entropy.cpp
     test_v11261_stabilizer_dense.cpp
     test_v11261_purity.cpp
+    test_v11262_preflight.cpp
+    test_v11262_initial_cost.cpp
+    test_v11262_mps_truncation.cpp
+    test_v11262_noise_width.cpp
 )
 
 # The R.1.16.0 diagnostic's strict leg. This flag governs the file's OWN

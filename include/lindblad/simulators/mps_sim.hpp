@@ -142,6 +142,23 @@ public:
     // Convert to exact statevector (expensive, for small N only)
     Statevector to_statevector() const;
 
+    // The inverse of to_statevector: replace this chain with the factorisation
+    // of `sv`, by sequential SVD, keeping this state's qubit count, bond cap and
+    // cutoff. Every dense fallback takes this route, a gate with no compact MPS
+    // form being applied to the amplitudes and the chain rebuilt from them.
+    //
+    // The bond cap still applies, so a state needing more bonds than it holds is
+    // TRUNCATED rather than refused: that is what running at this cap means.
+    //
+    // The counters ACCUMULATE rather than reset. truncation_error() describes
+    // everything this state has discarded, not merely what the last split
+    // discarded, so a chain rebuilt part way through a run still carries what
+    // the gates before it cost. Rebuilding into a fresh MPSState is how a caller
+    // asks for a clean total.
+    //
+    // Throws when `sv` does not cover the same number of qubits as this state.
+    void rebuild_from_statevector(const Statevector& sv);
+
 private:
     double total_truncation_error = 0.0;
     std::size_t gram_fallbacks = 0;

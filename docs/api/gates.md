@@ -395,7 +395,7 @@ matrix with a $2^{n_t}$-entry index map.
 Backend support: native in the statevector and density-matrix backends. The MPS
 backend reduces `MCX` with `<= 2` controls to X/CX/CCX natively; wider MCX and
 MCP/PERMUTATION take the bounded statevector fallback (`to_statevector` ->
-apply -> `mps_from_sv`, same as a 3+ qubit UNITARY, capped at
+apply -> `rebuild_from_statevector`, same as a 3+ qubit UNITARY, capped at
 `MPS_SV_MAX_QUBITS`). Peripheral tooling: QASM 3 export emits `ctrl(k) @`
 forms and lowers `PERMUTATION` to gates; QASM 2 export throws unless
 `QasmExportOptions::decompose_unrepresentable` is set; JSON round-trips all

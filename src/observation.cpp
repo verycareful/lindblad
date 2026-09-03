@@ -125,21 +125,11 @@ std::size_t StateView::state_bytes() const {
 }
 
 bool StateView::convertible_to(StateForm target) const {
-    if (target == form_) return true;
-    switch (form_) {
-        case StateForm::Statevector:
-            return target == StateForm::DensityMatrix;
-        case StateForm::Stabilizer:
-        case StateForm::MPS:
-            return target == StateForm::Statevector ||
-                   target == StateForm::DensityMatrix;
-        case StateForm::DensityMatrix:
-            // A mixed state has no statevector, and deciding purity costs a
-            // full eigendecomposition to answer "sometimes". Neither a tableau
-            // nor an MPS can be recovered from dense data either.
-            return false;
-    }
-    return false;
+    // One table, asked here of a live state and at the pre-flight of a form
+    // alone. A mixed state has no statevector, and deciding purity costs a full
+    // eigendecomposition to answer "sometimes"; neither a tableau nor an MPS
+    // can be recovered from dense data either.
+    return detail::conversion_exists(form_, target);
 }
 
 std::size_t StateView::conversion_bytes(StateForm target) const {
@@ -156,6 +146,13 @@ std::size_t StateView::conversion_bytes(StateForm target) const {
 // =============================================================================
 // Observer
 // =============================================================================
+
+bool Observer::preflight(const PreflightContext&) { return true; }
+
+const std::string& Observer::label() const {
+    static const std::string none;
+    return none;
+}
 
 void Observer::begin_run(int, int) {}
 void Observer::end_run() {}
@@ -535,6 +532,141 @@ std::shared_ptr<const void> produce_state(const StateView& view, StateForm targe
     return nullptr;
 }
 
+bool conversion_exists(StateForm from, StateForm to) {
+    if (from == to) return true;
+    switch (from) {
+        case StateForm::Statevector:
+            return to == StateForm::DensityMatrix;
+        case StateForm::Stabilizer:
+        case StateForm::MPS:
+            return to == StateForm::Statevector || to == StateForm::DensityMatrix;
+        case StateForm::DensityMatrix:
+            return false;
+    }
+    return false;
+}
+
+std::size_t form_bytes(StateForm form, int n_qubits) {
+    switch (form) {
+        case StateForm::Statevector:   return dense_bytes(n_qubits, false);
+        case StateForm::DensityMatrix: return dense_bytes(n_qubits, true);
+        case StateForm::Stabilizer: {
+            const std::size_t rows = 2u * static_cast<std::size_t>(n_qubits);
+            const std::size_t words = (rows + 63u) / 64u + 1u;
+            return rows * words * sizeof(std::uint64_t) + rows;
+        }
+        case StateForm::MPS:
+            // Not a function of the register: the tensors grow as the state
+            // entangles, so the only honest answer before the run is none.
+            return 0;
+    }
+    return 0;
+}
+
+bool preflight_conversion(const PreflightContext& ctx, StateForm target,
+                          const std::string& what) {
+    const RunPlan::Options& options = ctx.plan.options;
+    const StateForm held = ctx.form;
+
+    if (target != held) {
+        if (!conversion_exists(held, target)) {
+            return refuse_observation(
+                options, what + " asks for a " + to_string(target) +
+                " from a backend holding a " + to_string(held) +
+                ", and no conversion between those exists at all.");
+        }
+        if (options.conversion == Conversion::Never) {
+            return refuse_observation(
+                options, what + " asks for a " + to_string(target) +
+                " from a backend holding a " + to_string(held) +
+                ", and Conversion::Never is selected.");
+        }
+    }
+
+    if (options.cost == Cost::Guarded) {
+        const std::size_t live = form_bytes(held, ctx.n_qubits);
+        // Zero means the footprint moves with the run, which is the MPS. Its
+        // verdict genuinely differs early and late, so there is nothing to
+        // decide here and the firing-time guard keeps it.
+        if (live != 0) {
+            const std::size_t wanted =
+                (target == held) ? live
+                                 : form_bytes(target, ctx.n_qubits);
+            const double budget =
+                static_cast<double>(live) * options.guard_multiple;
+            if (static_cast<double>(wanted) > budget) {
+                return refuse_observation(
+                    options, what + " would allocate " + std::to_string(wanted) +
+                    " bytes against a live state of " + std::to_string(live) +
+                    " bytes, which is over the guard. Cost::Unlimited allows it.");
+            }
+        }
+    }
+
+    return true;
+}
+
+std::shared_ptr<const void> produce_initial_state(const StateView& supplied,
+                                                  StateForm target,
+                                                  const RunPlan::Options& options,
+                                                  std::size_t run_state_bytes) {
+    const StateForm held = supplied.form();
+
+    if (target != held) {
+        if (!supplied.convertible_to(target)) return nullptr;
+        if (options.conversion == Conversion::Never) return nullptr;
+    }
+
+    if (options.initial_cost == Cost::Guarded) {
+        const std::size_t wanted = supplied.conversion_bytes(target);
+        const double budget =
+            static_cast<double>(run_state_bytes) * options.guard_multiple;
+        if (static_cast<double>(wanted) > budget) {
+            throw std::invalid_argument(
+                "InitialState: seeding this run would allocate " +
+                std::to_string(wanted) + " bytes against a run state of " +
+                std::to_string(run_state_bytes) +
+                " bytes, which is over the guard. Options::initial_cost is "
+                "Cost::Guarded; Cost::Unlimited is the default and allows it.");
+        }
+    }
+
+    // Deliberately no cost note on the warning channel. produce_state emits one
+    // under Unlimited because a caller who waived the guard asked to be told
+    // what it would have caught. Nobody waives anything here: Unlimited is the
+    // default for the write side, and a note on every seeded run would report
+    // ordinary work as though it were an exception someone made.
+    switch (target) {
+        case StateForm::Statevector: {
+            if (held == StateForm::Statevector) {
+                return std::make_shared<const Statevector>(supplied.statevector().clone());
+            }
+            if (held == StateForm::Stabilizer) {
+                return std::make_shared<const Statevector>(supplied.stabilizer().to_statevector());
+            }
+            return std::make_shared<const Statevector>(supplied.mps().to_statevector());
+        }
+        case StateForm::DensityMatrix: {
+            if (held == StateForm::DensityMatrix) {
+                return std::make_shared<const DensityMatrix>(supplied.density_matrix());
+            }
+            if (held == StateForm::Statevector) {
+                return std::make_shared<const DensityMatrix>(
+                    DensityMatrix::from_statevector(supplied.statevector()));
+            }
+            const Statevector dense = (held == StateForm::Stabilizer)
+                                          ? supplied.stabilizer().to_statevector()
+                                          : supplied.mps().to_statevector();
+            return std::make_shared<const DensityMatrix>(DensityMatrix::from_statevector(dense));
+        }
+        case StateForm::Stabilizer:
+            return std::make_shared<const StabilizerState>(supplied.stabilizer());
+        case StateForm::MPS:
+            return std::make_shared<const MPSState>(supplied.mps());
+    }
+    return nullptr;
+}
+
 bool charge_allocation(const StateView& view, std::size_t bytes,
                        const RunPlan::Options& options, const std::string& what) {
     if (options.cost != Cost::Guarded) return true;
@@ -569,8 +701,11 @@ void apply_initial_state(const RunPlan& plan, Statevector& sv) {
     }
 
     const StateView view(initial.form(), initial.state(), sv.n_qubits);
-    auto produced = produce_state(view, StateForm::Statevector, plan.options,
-                                  "InitialState");
+    // The run holds a statevector, so that is what a guarded seed is measured
+    // against: the amplitudes are allocated whether or not the caller supplied
+    // any, and a conversion that produces exactly them costs nothing extra.
+    auto produced = produce_initial_state(view, StateForm::Statevector, plan.options,
+                                          sv.dimension() * 2 * sizeof(double));
     if (!produced) {
         // Warn and Ignore omit an observation, but there is no such thing as
         // omitting the state a run starts from: the alternative to the supplied
@@ -614,8 +749,10 @@ void apply_initial_state(const RunPlan& plan, DensityMatrix& dm) {
     }
 
     const StateView view(initial.form(), initial.state(), dm.n_qubits);
-    auto produced = produce_state(view, StateForm::DensityMatrix, plan.options,
-                                  "InitialState");
+    // 4^n either way: that is what this backend IS, so producing it from a pure
+    // state is the run's own footprint rather than an addition to it.
+    auto produced = produce_initial_state(view, StateForm::DensityMatrix, plan.options,
+                                          dm.data.size() * sizeof(Complex128));
     if (!produced) {
         throw std::invalid_argument(
             "InitialState: a " + std::string(to_string(initial.form())) +
@@ -687,12 +824,22 @@ FiringGuard::FiringGuard(ObservationRunner* runner, int index,
 FiringGuard::~FiringGuard() {
     if (runner_ == nullptr) return;
     if (std::uncaught_exceptions() != uncaught_) return;
-    runner_->after_instruction(index_, *inst_, *state_);
+
+    // An observer that throws is a bug in that observer and has to fail the
+    // run. It must not end the PROCESS, which is what an exception leaving a
+    // destructor does, so it is held here and raised again at the next point
+    // that is allowed to raise one.
+    try {
+        runner_->after_instruction(index_, *inst_, *state_);
+    } catch (...) {
+        runner_->capture_failure(std::current_exception());
+    }
 }
 
 // ----- ObservationRunner -----
 
-ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& circuit)
+ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& circuit,
+                                     StateForm form)
     : plan_(plan) {
     const int count = static_cast<int>(circuit.instructions.size());
 
@@ -755,7 +902,81 @@ ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& 
 
     if (!layer_.empty()) compute_layer_boundaries(circuit);
 
-    active_ = !plan.observations.empty();
+    // Anchors are resolved first, above, because an anchor that names nothing is
+    // a broken plan whatever the observers attached to it are, and its message
+    // is the one a caller needs.
+    //
+    // Everything else the plan can get wrong is decided here, for the reason
+    // the anchors are: a fault found on the first firing has already cost the
+    // circuit, and one found at end_run has cost every shot.
+    //
+    // Once per OBSERVER rather than once per attachment. An observer on three
+    // anchors is one observer with one label, and asking it three times would
+    // both repeat its work and make it collide with itself.
+    std::vector<Observer*> checked;
+    std::vector<Observer*> dropped;
+    std::unordered_map<std::string, Observer*> claimed;
+    const PreflightContext ctx{form, circuit.n_qubits, plan};
+
+    for (const auto& attachment : plan.observations.attachments()) {
+        Observer* observer = attachment.observer.get();
+        if (std::find(checked.begin(), checked.end(), observer) != checked.end()) {
+            continue;
+        }
+        checked.push_back(observer);
+
+        // A label is claimed by exactly one observer. Two claiming it leaves one
+        // of them unreachable, and which one depends on how often each happened
+        // to fire, so it is refused rather than resolved.
+        const std::string& label = observer->label();
+        if (!label.empty()) {
+            const auto [it, inserted] = claimed.emplace(label, observer);
+            if (!inserted) {
+                throw std::invalid_argument(
+                    "ObservationPlan: two observers write under the label '" +
+                    label + "'. One of them would be unreachable in the bundle, "
+                    "and which one depends on how many times each fired.");
+            }
+        }
+
+        if (!observer->preflight(ctx)) dropped.push_back(observer);
+    }
+
+    if (!dropped.empty()) {
+        const auto is_dropped = [&dropped](const ObservationPlan::Attachment* a) {
+            return std::find(dropped.begin(), dropped.end(), a->observer.get()) !=
+                   dropped.end();
+        };
+        const auto prune = [&is_dropped](Group& group) {
+            group.erase(std::remove_if(group.begin(), group.end(), is_dropped),
+                        group.end());
+        };
+        prune(start_);
+        prune(end_);
+        prune(every_);
+        prune(layer_);
+        prune(before_measure_);
+        prune(after_measure_);
+        prune(predicate_);
+        // Keyed groups lose their key as well as their contents, so an emptied
+        // one does not keep the run looking watched.
+        for (auto it = indexed_.begin(); it != indexed_.end();) {
+            prune(it->second);
+            it = it->second.empty() ? indexed_.erase(it) : std::next(it);
+        }
+        for (auto it = labelled_.begin(); it != labelled_.end();) {
+            prune(it->second);
+            it = it->second.empty() ? labelled_.erase(it) : std::next(it);
+        }
+    }
+
+    // What survived, rather than what was attached: a run whose every observer
+    // was ruled out does no per-instruction work at all, which is the whole
+    // point of deciding early.
+    active_ = !start_.empty() || !end_.empty() || !every_.empty() ||
+              !layer_.empty() || !before_measure_.empty() ||
+              !after_measure_.empty() || !predicate_.empty() ||
+              !indexed_.empty() || !labelled_.empty();
 }
 
 // Greedy ASAP layering over qubit occupancy: an instruction opens a new layer
@@ -797,6 +1018,9 @@ void ObservationRunner::begin_run(int n_qubits, int n_shots) {
 }
 
 void ObservationRunner::end_run() {
+    // The last chance: a failure on the final instruction of the final shot has
+    // no following instruction and no at_end to carry it out.
+    rethrow_if_failed();
     for (const auto& attachment : plan_.observations.attachments()) {
         attachment.observer->end_run();
     }
@@ -830,12 +1054,28 @@ void ObservationRunner::at_start(const StateView& state) {
 }
 
 void ObservationRunner::at_end(const StateView& state, int last_index) {
+    rethrow_if_failed();
     if (end_.empty()) return;
     fire(end_, state, last_index);
 }
 
+void ObservationRunner::capture_failure(std::exception_ptr failure) {
+    // The first one wins. A later observer failing while the run is already
+    // doomed says nothing the first did not.
+    if (!failure_) failure_ = failure;
+}
+
+void ObservationRunner::rethrow_if_failed() {
+    if (!failure_) return;
+    const std::exception_ptr failure = failure_;
+    failure_ = nullptr;
+    std::rethrow_exception(failure);
+}
+
 void ObservationRunner::before_instruction(int index, const Instruction& inst,
                                            const StateView& state) {
+    // The first point after a firing guard where throwing is safe.
+    rethrow_if_failed();
     if (before_measure_.empty()) return;
     if (inst.type != Instruction::GateType::MEASURE) return;
     fire(before_measure_, state, index);

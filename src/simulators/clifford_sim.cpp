@@ -1495,7 +1495,7 @@ CliffordSimulator::Result CliffordSimulator::run(
 
     // Anchors resolve against the circuit before any state is touched, so an
     // anchor that cannot fire stops the run here.
-    detail::ObservationRunner runner(plan, circuit);
+    detail::ObservationRunner runner(plan, circuit, StateForm::Stabilizer);
     runner.set_bundle(&result.observations);
     detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
     const bool harnessed = !plan.empty();

@@ -169,6 +169,9 @@ struct Result {
 - **final_state**: Complete quantum state after circuit execution
 - **counts**: Measurement outcome histogram; keys are bitstrings (e.g., "01"), values are occurrence counts
 - **expectation_values**: Reserved for future use (currently not populated by simulator)
+- **success**: `false` when the run failed. `StatevectorSimulator` and `DensityMatrixSimulator` report failures through this field rather than by throwing, so a caller checks it; `MPSSimulator` and `CliffordSimulator` have no such field and throw instead
+- **error_message**: what went wrong, when `success` is `false`; empty otherwise
+- **observations**: whatever the run's labelled observers collected, empty unless the `RunPlan` attached observers carrying labels. A failed run leaves it empty rather than partly written
 
 ### Workflow
 
@@ -695,6 +698,28 @@ Two counters on `MPSState` report it:
 A run with `gram_fallback_count() == 0` never distrusted its SVD backend. A
 nonzero count is not an error: it is the containment working.
 
+All four figures cover every split the chain has taken, including those from
+`rebuild_from_statevector` below. They describe the state rather than the route
+that produced it, so a chain rebuilt part way through a run still carries what
+the gates before the rebuild cost.
+
+**Rebuilding a chain from dense amplitudes**.
+
+```cpp
+void MPSState::rebuild_from_statevector(const Statevector& sv);
+```
+
+The inverse of `to_statevector()`: replaces the chain with the factorisation of
+`sv` by sequential SVD, one truncated split per bond, keeping this state's qubit
+count, bond cap and cutoff. It is the route every dense fallback takes, and the
+route a supplied initial state is factorised through.
+
+The bond cap still applies, so a state needing more bonds than the cap holds is
+truncated rather than refused: that is what running at this cap means, and the
+discarded weight is added to `truncation_error()`. Throws
+`std::invalid_argument` when `sv` does not cover the same number of qubits as the
+chain.
+
 Weight the rescue's validity floor rejected is reported separately from
 `truncation_error()`, because it is not truncation. Forming the Gram matrix
 squares the condition number, so a singular value that is exactly zero in the
@@ -762,7 +787,11 @@ thrown away. The qudit layer's `svd_cutoff` means the same thing.
   bridge `apply_unitary`'s LSB-at-first-arg convention with
   `apply_two_qubit_gate`'s MSB-at-first-arg convention.
 - **3+ qubit UNITARY**: falls back to the statevector path —
-  `to_statevector()` → `gates::apply_unitary` → `mps_from_sv`. The fallback
+  `to_statevector()` → `gates::apply_unitary` → `rebuild_from_statevector`. The
+  rebuild is a sequential SVD, one truncated split per bond, and the weight each
+  split discards is added to `truncation_error()` rather than replacing it, so
+  the figure covers everything the chain has lost rather than only the last
+  thing that lost it. The fallback
   is bounded by `MPS_SV_MAX_QUBITS` (= 25); beyond that the simulator throws
   with a clear error naming the offending UNITARY and qubit count, rather
   than the generic "Too many qubits for full statevector conversion" surfaced

@@ -27,6 +27,19 @@ void NoiseModel::add_quantum_error(
     const std::vector<int>& qubits,
     bool after_gate
 ) {
+    // Naming the qubits fixes the width here, so the mismatch is caught at the
+    // line that is wrong rather than at the run. An empty list means "whichever
+    // qubits the gate acts on", whose width is not known until an instruction
+    // is in hand, so that case is checked where the channel is resolved.
+    if (!qubits.empty() &&
+        error.n_qubits != static_cast<int>(qubits.size())) {
+        throw std::invalid_argument(
+            "NoiseModel::add_quantum_error: the channel acts on " +
+            std::to_string(error.n_qubits) + " qubit(s) but is attached to " +
+            std::to_string(qubits.size()) + " on gate '" + gate_name +
+            "'. A channel and the qubits it is applied to have to agree.");
+    }
+
     GateError ge;
     ge.channel = error;
     ge.qubits = qubits;

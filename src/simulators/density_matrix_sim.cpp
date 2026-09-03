@@ -953,6 +953,31 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                             const std::vector<int>& eq =
                                 ge.qubits.empty() ? inst.qubits : ge.qubits;
                             const int ek = static_cast<int>(eq.size());
+
+                            // The superoperator build below reads each operator
+                            // as a sub_dim x sub_dim block chosen by ek, not by
+                            // the channel. Handed a channel of the wrong width
+                            // it reads past the operators it was given and
+                            // produces a density matrix that is entirely NaN,
+                            // with a run that reports success. The operator size
+                            // is the authority here rather than the channel's
+                            // own n_qubits, since a hand-built channel can
+                            // disagree with itself.
+                            const std::size_t expected =
+                                (std::size_t{1} << ek) * (std::size_t{1} << ek);
+                            for (const auto& K : ge.channel.operators) {
+                                if (K.size() != expected) {
+                                    throw std::invalid_argument(
+                                        "NoiseModel: the channel attached to '" +
+                                        inst.gate_name() + "' acts on " +
+                                        std::to_string(ge.channel.n_qubits) +
+                                        " qubit(s), but it is being applied to " +
+                                        std::to_string(ek) +
+                                        ". A channel and the gate it is attached "
+                                        "to have to cover the same qubits.");
+                                }
+                            }
+
                             ResolvedError re;
                             re.superop = dm_channel_superop(
                                 ge.channel.operators, ek,
@@ -998,7 +1023,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
 
         // Anchors resolve against the circuit before any state is touched, so
         // an anchor that cannot fire stops the run here.
-        detail::ObservationRunner runner(plan, circuit);
+        detail::ObservationRunner runner(plan, circuit, StateForm::DensityMatrix);
         runner.set_bundle(&result.observations);
         detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
 
@@ -1209,6 +1234,9 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
     } catch (const std::exception& e) {
         result.success = false;
         result.error_message = e.what();
+        // A failed run hands back nothing: see the note in the statevector
+        // backend's catch. A partly written bundle reads as a complete answer.
+        result.observations = ObservationBundle();
     }
 
     return result;

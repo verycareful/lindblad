@@ -4,6 +4,143 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.26.2] - 2026-09-04
+
+The six defects the observation test wave found, and the ten tests that were
+shipped red for them are now green.
+
+Two of these were not what they first looked like. The cost guard was refusing
+the density matrix backend's most obvious use, and the reason turned out to be
+that it applied to three write-side routes rather than one. And an observer that
+throws was ending the PROCESS rather than the run, which surfaced only while
+writing a test for something else.
+
+### Fixed
+
+- **The whole plan is now validated before the run, not during it.** Anchors
+  were resolved before any state was touched, on the stated grounds that a
+  failure found later costs the run and arrives as an ambiguous half-result.
+  Nothing else in a plan got that treatment: an amplitude index outside the
+  register and a malformed entropy region were found on the observer's first
+  firing, and two observers claiming one bundle label only at the end of the
+  run, after every shot had been paid for.
+
+  `Observer` gained a `preflight` hook, called once per observer before any
+  state exists, and `label()` moved onto the base so the runner can see a
+  collision before it happens rather than after. An observer the pre-flight
+  rules out is dropped rather than carried, so it costs nothing per anchor for
+  the rest of the run.
+
+  Two things still cannot be decided in advance and keep their firing-time
+  checks: the cost of reading an MPS, whose footprint follows the bond dimension
+  and so grows as the run proceeds, and whatever an observer you wrote does with
+  the state it is handed. A refusal that `Response::Warn` or `Ignore` would have
+  absorbed is still absorbed. Deciding sooner changes when a verdict is reached,
+  never what it is.
+
+- **A failed run hands back no observations.** Observers write into the bundle as
+  the run ends, so a failure partway through that walk left entries from the ones
+  ahead of it. The result then carried `success == false` beside real
+  observations, and a caller checking the flag and a caller reading the bundle
+  were told different things.
+
+- **An observer that throws now fails the run instead of ending the process.**
+  Three of the four backends fire their per-instruction anchors from a
+  destructor, which is how an instruction the backend SKIPS still fires its
+  anchors. A destructor is noexcept, so an observer throwing from `observe`
+  reached `std::terminate`: no message, no failed result, nothing a caller could
+  catch. The exception is now held and raised again at the next point that is
+  allowed to raise one, so at most one further instruction executes.
+
+- **Seeding a run no longer answers to the guard that governs observations.**
+  `InitialState` conversions were measured against the state the caller handed
+  in rather than against the run, comparing a destination with a source. That
+  refused three routes at every register size: a density matrix run seeded from
+  a statevector, and a statevector run seeded from either a tableau or a chain.
+  The refused allocation was never an addition, since the destination is what
+  the backend holds either way.
+
+  `Options::initial_cost` now governs the write side and is unguarded by
+  default, because the cost there follows entirely from choices the caller has
+  already made: they built the state, picked the backend and wrote the circuit.
+  It stays sayable for the one write-side allocation that does surprise, seeding
+  an MPS run from a compact state materialising a full `2^n` dense array inside
+  a backend chosen to avoid exactly that. `Conversion::Never` still refuses, and
+  an initial state that cannot be produced still fails under every response,
+  since there is no such thing as omitting the state a run starts from.
+
+- **A truncated chain says so.** Rebuilding an MPS from dense amplitudes is a
+  sequential SVD, and every split reports the weight it discarded. The
+  reconstruction discarded all of them, so a chain factorised past its bond cap
+  came back silently approximate with `truncation_error()` reading zero. It also
+  REPLACED the state it was rebuilding, resetting the counters along with it,
+  which is the worse half: that happens mid-run, on every gate with no compact
+  MPS form, so a chain that had already lost weight to earlier gates reported
+  none of it.
+
+  The reconstruction is now `MPSState::rebuild_from_statevector`, which rebuilds
+  in place and accumulates all four SVD counters. The figure describes
+  everything the chain has lost rather than only the last thing that lost it.
+
+- **A noise channel whose width does not match its gate is refused.** A
+  one-qubit `depolarizing` attached to `cx` was accepted, and the density matrix
+  backend then read each Kraus operator as a block sized by the GATE. It read
+  past the operators it was given and produced a state whose every entry was
+  NaN, from a run that reported success. Naming the qubits is checked at
+  attachment, where the mistake is; an unqualified attachment is checked against
+  the instruction it meets, since the width of a gate is not knowable from its
+  name alone.
+
+### Changed
+
+- `docs/api/observation.md` now says which channel each failure arrives on. The
+  statevector and density matrix backends carry an error channel on their
+  `Result` and report through it, so a `try`/`catch` around those calls does not
+  fire; the MPS and Clifford backends have no such field and throw. The page
+  previously stated that everything threw, which was true on half the backends
+  and sent a caller on the other half to write a handler that could never run.
+  `docs/api/simulators.md` now describes `success`, `error_message` and
+  `observations` in its `Result` fields.
+
+### Tests
+
+- **The pre-flight hook, which is public surface.** An observer written outside
+  the library implements it, is consulted once per observer rather than once per
+  anchor (an observer on three anchors is one observer with one label), and is
+  dropped rather than merely silenced when it declines, which is the only place
+  the saving actually shows. Three tests pin the boundary the change must not
+  cross: `Warn` and `Ignore` still absorb what they absorbed, and the MPS guard
+  still reaches different verdicts at each end of the same run.
+
+- **A throwing observer, on all four backends,** including the case where it
+  throws on the last instruction and there is no following one to carry the
+  failure out.
+
+- **Every supplied state into every backend at the DEFAULT options.** The suite
+  that found the guard defect reached most of the write side only under
+  `Cost::Unlimited`, which is exactly what let it hide: relaxing the knob
+  relaxed the thing under test.
+
+- **Truncation as a value rather than a presence.** A Bell pair has two equal
+  Schmidt coefficients, so keeping one discards exactly half the weight, and the
+  expected figure is derived from the amplitude rather than read off a run.
+  Accumulation across rebuilds and across bonds is pinned separately, as is a
+  chain that fits reporting exactly zero.
+
+- **Channel widths in both directions,** at attachment and at the run, with the
+  ideal path and every arity checked to confirm the new refusal does not reject
+  the ordinary case.
+
+### Results
+
+3000 tests across 266 suites, 2999 passed and one skipped, none failed (26.7 s
+on g++-13, 34.3 s on clang++; WSL, `-march=native` on both). #72 still observed.
+
+The suite reaches three thousand tests with this release, and does so with
+nothing red: the ten pinned by the previous one were the last outstanding, and
+each went green by its defect being fixed rather than by its assertion being
+softened.
+
 ## [1.1.26.1] - 2026-09-03
 
 The test wave for the observation harness. The previous release added roughly

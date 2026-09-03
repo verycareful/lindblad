@@ -51,7 +51,7 @@ class BundleWriter : public Observer {
 public:
     explicit BundleWriter(std::string label = {}) : label_(std::move(label)) {}
 
-    const std::string& label() const { return label_; }
+    const std::string& label() const override { return label_; }
     bool labelled() const { return !label_.empty(); }
 
     // How many times this observer fired, and where each firing happened. Every
@@ -95,6 +95,7 @@ public:
     StateObserver(StateForm form, std::string label = {})
         : BundleWriter(std::move(label)), native_(false), form_(form) {}
 
+    bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
 
     StateForm form(std::size_t k = 0) const;
@@ -121,6 +122,7 @@ public:
     explicit ProbabilityObserver(std::string label = {})
         : BundleWriter(std::move(label)) {}
 
+    bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
 
     const std::vector<double>& probabilities(std::size_t k = 0) const;
@@ -143,6 +145,7 @@ public:
     explicit AmplitudeObserver(std::vector<std::size_t> indices, std::string label = {})
         : BundleWriter(std::move(label)), indices_(std::move(indices)) {}
 
+    bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
 
     const std::vector<std::size_t>& indices() const { return indices_; }
@@ -229,6 +232,7 @@ public:
     explicit BondDimensionObserver(std::string label = {})
         : BundleWriter(std::move(label)) {}
 
+    bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
 
     const std::vector<int>& bond_dimensions(std::size_t k = 0) const;
@@ -242,6 +246,7 @@ public:
     explicit TruncationObserver(std::string label = {})
         : BundleWriter(std::move(label)) {}
 
+    bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
 
     const std::vector<double>& values() const { return values_; }
@@ -276,6 +281,7 @@ public:
     explicit EntropyObserver(std::vector<int> region, double renyi_order = 1.0,
                              std::string label = {});
 
+    bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
 
     const std::vector<double>& values() const { return values_; }
