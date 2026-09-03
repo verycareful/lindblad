@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lindblad/observation.hpp"
 #include "lindblad/types.hpp"
 
 #include <cstdint>
@@ -12,6 +13,7 @@ namespace lindblad {
 
 class QuantumCircuit;
 class DensityMatrix;
+class Statevector;
 
 // =============================================================================
 // StabilizerState — Tableau representation for Clifford circuits
@@ -120,6 +122,35 @@ public:
 
     // Expectation of Pauli string (+1, -1, or 0)
     int expectation_pauli(const std::string& pauli) const;
+
+    // Entanglement entropy across a cut, in bits, without leaving the tableau.
+    //
+    // For a stabilizer state the entropy of a region A is
+    // rank_GF2(M_A) - |A|, where M_A is the n stabilizer generators restricted
+    // to the X and Z columns of A. It is O(n * |A|^2) bit operations and always
+    // lands on an integer, because a stabilizer state's reduced state is
+    // maximally mixed on its support: the spectrum is flat, so every Renyi
+    // order agrees with the von Neumann value.
+    //
+    // region = the qubits on one side of the cut, in any order, no repeats.
+    // The answer is symmetric under swapping the two sides.
+    double entanglement_entropy_bits(const std::vector<int>& region) const;
+
+    // The same state written out as 2^n dense amplitudes.
+    //
+    // Costs 2^n complex entries against a tableau's O(n^2) bits, which is why
+    // no evolution path calls it: it is the route by which a caller who wants
+    // amplitudes from a Clifford run gets them, and the size question belongs
+    // to that caller.
+    //
+    // Method: the stabilizer projector prod_s (I + g_s)/2 applied to one basis
+    // state known to have nonzero overlap, which outcome_slab().offset
+    // supplies, then normalised. Each g_s acting on a basis state |b> gives
+    // (-1)^ph * i^popcount(x&z) * (-1)^(z.b) |b xor x>, the i factors being the
+    // ones Y = iXZ carries in this tableau's convention. Intermediate terms are
+    // held sparsely, so the working set is the state's own support (2^k for a
+    // k-dimensional outcome slab) rather than 2^n.
+    Statevector to_statevector() const;
 
     // =========================================================================
     // ColumnTableau - bit-sliced companion for the gate pass
@@ -250,13 +281,25 @@ public:
         StabilizerState final_state;
         std::unordered_map<std::string, int> counts;
 
+        // Whatever the run's labelled observers collected. Empty unless the
+        // RunPlan attached observers carrying labels.
+        ObservationBundle observations;
+
         Result(int n) : final_state(n) {}
         Result(Result&&) = default;
         Result& operator=(Result&&) = default;
     };
 
+    // plan = the harness: where the run starts and what is watched while it
+    // runs. An empty plan starts at |0...0> and watches nothing.
+    //
+    // A plan carrying observers, or a supplied initial state, runs the gate
+    // pass on the row-major tableau rather than the bit-sliced one. The
+    // bit-sliced layout is faster but is not a StabilizerState, so there is
+    // nothing for an observer to read at an anchor. Sampling is unaffected: the
+    // outcome slab still runs, so only the gate pass gives up its speed.
     Result run(const QuantumCircuit& circuit, int shots = 1024,
-               uint64_t seed = 0);
+               uint64_t seed = 0, const RunPlan& plan = {});
 };
 
 } // namespace lindblad

@@ -4,6 +4,116 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.26.0] - 2026-09-03
+
+A simulation can now be watched while it runs, and started from a state of the
+caller's choosing, without either of those becoming part of the circuit.
+
+The premise of #59 was Qiskit Aer's save instruction family, which puts save
+points inside the circuit as instructions. This library does not, and the reason
+is not stylistic. A `QuantumCircuit` here models quantum mechanics, and neither
+of these is physics: a run is identical whether or not anyone looks at it, and
+nothing in nature overwrites a state with one handed to it. Both are properties
+of how a simulation is being run rather than of what is being simulated, so both
+live in a `RunPlan` that the simulator takes alongside the circuit. The circuit
+stays a pure description of the computation, and the same circuit runs watched
+or unwatched without being rebuilt.
+
+### Added
+
+- **The run harness.** Every simulator's `run()` accepts a `RunPlan` carrying
+  three things: where the run starts (`InitialState`), what is watched while it
+  runs (`ObservationPlan`), and the policy for anything the backend cannot hand
+  over (`RunPlan::Options`). There is no default observation set: an empty plan
+  starts at the all-zero state and watches nothing.
+
+- **Anchors name a point in the run without the circuit carrying anything.**
+  `at_start`, `at_end`, `after_instruction`, `after_label`, `every_instruction`
+  (a gate-by-gate trace), `every_layer`, before and after each measurement, and
+  an arbitrary predicate. They are resolved against the circuit before any state
+  is touched, and one that cannot fire, such as an index past the end or a label
+  no instruction carries, fails the run and names itself. That failure is
+  deliberate and no policy softens it: an anchor that silently never fires is
+  indistinguishable from one that fired and found nothing.
+
+- **Observers, which own what they collect.** `StateObserver`,
+  `ProbabilityObserver`, `AmplitudeObserver`, `ExpectationObserver`,
+  `PurityObserver`, `EntropyObserver`, `ClassicalRegisterObserver`,
+  `BondDimensionObserver`, `TruncationObserver` and `CallbackObserver` are
+  ordinary implementations of a public `Observer` interface with no privileged
+  access, so one written by a caller is a first-class citizen rather than an
+  escape hatch. Every firing records the shot, instruction and anchor it came
+  from, since an observer attached to several anchors otherwise produces a
+  sequence whose entries cannot be told apart.
+
+- **A label-keyed `ObservationBundle` on every `Result`,** written to by any
+  observer given a label. It is the shape that survives being copied, stored or
+  carried across a language boundary, which a C++ observer object does not. An
+  observer that fired once writes under its plain label; one that fired
+  repeatedly writes each firing under `label@<instruction>#<shot>`, so nothing
+  overwrites anything.
+
+- **Four independent policy knobs.** `Conversion` decides whether a
+  representation the backend does not hold may be produced, `Cost` whether an
+  expensive one must be asked for explicitly, `Response` what a refusal looks
+  like, and `Fusion` whether a watched run keeps gate fusion. They are separate
+  rather than fused because fusing them makes policies unsayable: one
+  enumerator cannot mean both "convert, and throw when conversion is impossible"
+  and "convert, and warn when it is". Three causes of refusal (no route exists,
+  conversion declined, over the guard) are all delivered by the one knob that
+  decides what refusal means.
+
+  The guard needs no tuned constant: it refuses an allocation exceeding a
+  multiple of the live state's own footprint, so it scales with the problem and
+  the machine on its own. Under `Cost::Unlimited` size never refuses, and only
+  genuine impossibility does.
+
+- **`StabilizerState::to_statevector()`.** The tableau had no route to dense
+  amplitudes. This applies the stabilizer projector to a support point taken
+  from the outcome slab, holding intermediate terms sparsely so the working set
+  is the state's own support rather than 2^n.
+
+- **`StabilizerState::entanglement_entropy_bits()`.** The entropy of a region is
+  the GF(2) rank of the generators restricted to it, minus the region size. It
+  is word-packed, forward elimination only, costs O(n * |A|^2) bit operations,
+  touches no amplitude, and lands on an integer, because a stabilizer state's
+  reduced state is maximally mixed on its support.
+
+- **Entropy across a cut on all four backends,** by four different routes: the
+  GF(2) rank on Clifford, the spectrum of the two environment Gram matrices on
+  MPS (which does not assume a canonical form, because gate application here
+  does not maintain one), and a reduced matrix plus an eigensolve on the
+  statevector and density matrix. The statevector route reduces the smaller side
+  of the cut, which is free by symmetry. On the density matrix the figure is the
+  entropy of the reduced state rather than an entanglement entropy, since a
+  mixed global state mixes classical correlation with entanglement, and the
+  observer reports which of the two it handed back rather than leaving it to be
+  inferred.
+
+- `docs/api/observation.md`, covering the harness, the anchors, the knobs, the
+  observer catalogue, and what is impossible in each direction.
+
+### Changed
+
+- All four simulators take a trailing `RunPlan` that defaults to empty, and
+  every `Result` gained an `observations` bundle. Existing calls are unaffected
+  and an unwatched run does no additional work.
+
+- **A watched statevector run suppresses gate fusion.** Fusion rewrites
+  instructions into blocks, which renumbers the positions and drops the labels
+  anchors are named by. `Fusion::Keep` asks for it anyway, and anchors then
+  resolve against the fused circuit, because that is what executes.
+
+- **A watched Clifford run performs its gate pass on the row-major tableau**
+  rather than the bit-sliced one, which is not a state an observer can be handed
+  and has nowhere to seed a supplied initial state. Outcome-slab sampling is
+  untouched, so only the gate pass gives up its speed.
+
+### Results
+
+2771 tests across 252 suites, 2770 passed and one skipped, none failed (27.0 s
+on g++-13, 35.8 s on clang++; WSL, `-march=native` on both). #72 still observed.
+
 ## [1.1.25.2] - 2026-09-02
 
 Closes the two contracts the previous release shipped red, and two smaller

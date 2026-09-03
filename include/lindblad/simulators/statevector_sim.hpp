@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lindblad/circuit.hpp"
+#include "lindblad/observation.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/types.hpp"
 
@@ -48,6 +49,10 @@ public:
         bool success = true;
         std::string error_message;
 
+        // Whatever the run's labelled observers collected. Empty unless the
+        // RunPlan attached observers carrying labels.
+        ObservationBundle observations;
+
         Result() : final_state(1) {}
         Result(Result&&) = default;
         Result& operator=(Result&&) = default;
@@ -58,10 +63,16 @@ public:
     StatevectorSimulator() = default;
     explicit StatevectorSimulator(const Options& opts) : options(opts) {}
 
+    // plan = the harness: where the run starts and what is watched while it
+    // runs. Default constructed it starts at |0...0> and watches nothing, which
+    // is the zero-overhead path. A plan carrying anchors suppresses gate
+    // fusion, since an anchor names a position in the circuit the caller
+    // handed over and fusion rewrites those positions away.
     Result run(
         const QuantumCircuit& circuit,
         int shots = 0,                              // 0 = no measurement sampling
-        uint64_t seed = 0
+        uint64_t seed = 0,
+        const RunPlan& plan = {}
     );
 
     void simulate_circuit(

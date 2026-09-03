@@ -81,6 +81,43 @@ environment-contracted outcome marginal (valid for non-canonical tensors);
 sampled MPS bitstrings use the project key convention (qubit 0 rightmost) at
 every register width.
 
+### The run harness
+
+Every `run()` takes a trailing `const RunPlan&` that defaults to empty. It
+carries the state the run starts from and the observers watching it while it
+runs, neither of which belongs in a circuit: a circuit describes physics, and
+watching a simulation or substituting its state is not physics. An empty plan
+starts at the all-zero state and watches nothing, so a caller who passes no plan
+is unaffected.
+
+```cpp
+StatevectorSimulator::Result   run(circuit, shots, seed, plan);
+DensityMatrixSimulator::Result run(circuit, noise_model, shots, seed, plan);
+CliffordSimulator::Result      run(circuit, shots, seed, plan);
+MPSSimulator::Result           run(circuit, max_bond_dim, shots, seed, plan);
+```
+
+Each `Result` carries an `observations` bundle holding whatever the run's
+labelled observers collected, empty unless observers with labels were attached.
+
+Two backends change execution strategy while a plan is watching, and both do so
+to keep anchors meaning what they said:
+
+- The statevector simulator suppresses gate fusion, since fusion rewrites
+  instructions into blocks and renumbers the positions anchors name.
+  `RunPlan::Options::Fusion::Keep` asks for fusion anyway, and anchors then bind
+  to the fused circuit.
+- The Clifford simulator runs its gate pass on the row-major tableau rather than
+  the bit-sliced one, which is not a state an observer can be handed. Slab
+  sampling is unaffected, so only the gate pass gives up its speed.
+
+On strategies where one evolution serves every shot, observers fire once,
+because that evolution describes all of them. On per-shot trajectory paths they
+fire once per shot.
+
+See [Observation and the run harness](observation.md) for anchors, the observer
+catalogue, the conversion and cost policy, and the initial state.
+
 ## StatevectorSimulator
 
 Exact simulation of pure quantum states using the aligned Statevector representation.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lindblad/observation.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/validation.hpp"
 #include "lindblad/types.hpp"
@@ -124,13 +125,20 @@ public:
         double simulation_time_seconds = 0.0;
         bool success = true;
         std::string error_message;
+
+        // Whatever the run's labelled observers collected. Empty unless the
+        // RunPlan attached observers carrying labels.
+        ObservationBundle observations;
     };
 
+    // plan = the harness: where the run starts and what is watched while it
+    // runs. An empty plan starts at |0><0| and watches nothing.
     Result run(
         const QuantumCircuit& circuit,
         const NoiseModel& noise_model,
         int shots = 1024,
-        uint64_t seed = 0
+        uint64_t seed = 0,
+        const RunPlan& plan = {}
     );
 };
 

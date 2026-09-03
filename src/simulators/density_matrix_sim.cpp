@@ -818,7 +818,8 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
     const QuantumCircuit& circuit_in,
     const NoiseModel& noise_model,
     int shots,
-    uint64_t seed
+    uint64_t seed,
+    const RunPlan& plan
 ) {
     ScopedWarningFlush flush_on_exit;
     Result result;
@@ -995,6 +996,12 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                                              dm.dim);
         };
 
+        // Anchors resolve against the circuit before any state is touched, so
+        // an anchor that cannot fire stops the run here.
+        detail::ObservationRunner runner(plan, circuit);
+        runner.set_bundle(&result.observations);
+        detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
+
         if (needs_per_shot) {
             // Per-shot trajectory path (feedforward and/or mid-circuit
             // measurement). Each shot: fresh DM, iterate instructions with
@@ -1010,14 +1017,22 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             // 4^N matrix each time. After the loop `dm` holds the last shot's
             // (collapsed) state, which becomes final_state.
             DensityMatrix dm(circuit.n_qubits);
+            const StateView view(StateForm::DensityMatrix, &dm, circuit.n_qubits);
+            runner.begin_run(circuit.n_qubits, n_shots);
 
             for (int shot = 0; shot < n_shots; ++shot) {
-                if (shot > 0) dm.initialize();
+                detail::apply_initial_state(plan, dm);
                 clreg.assign(n_clbits, 0);
+                runner.begin_shot(shot, clreg);
+                if (watcher) watcher->at_start(view);
 
                 for (size_t ii = 0; ii < n_inst; ++ii) {
                     const auto& inst = circuit.instructions[ii];
                     using GT = Instruction::GateType;
+                    if (watcher) {
+                        watcher->before_instruction(static_cast<int>(ii), inst, view);
+                    }
+                    detail::FiringGuard fire(watcher, static_cast<int>(ii), inst, view);
                     if (inst.type == GT::BARRIER) continue;
 
                     // Classical condition check
@@ -1078,6 +1093,10 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                     apply_inst(dm, ii);
                 }
 
+                if (watcher) {
+                    watcher->at_end(view, static_cast<int>(n_inst) - 1);
+                }
+
                 // Record shot result
                 if (shots > 0) {
                     std::string bits(n_clbits, '0');
@@ -1094,14 +1113,28 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
         } else {
             // Standard single-pass mode: gates applied once, MEASURE deferred.
             DensityMatrix dm(circuit.n_qubits);
+            detail::apply_initial_state(plan, dm);
+
+            // Nothing before the deferred measurements is stochastic, so this
+            // one evolution describes every shot and the observers fire once.
+            const StateView view(StateForm::DensityMatrix, &dm, circuit.n_qubits);
+            const std::vector<int> no_clreg;
+            runner.begin_run(circuit.n_qubits, 1);
+            runner.begin_shot(0, no_clreg);
+            if (watcher) watcher->at_start(view);
 
             for (size_t ii = 0; ii < n_inst; ++ii) {
                 const auto& inst = circuit.instructions[ii];
                 using GT = Instruction::GateType;
+                if (watcher) {
+                    watcher->before_instruction(static_cast<int>(ii), inst, view);
+                }
+                detail::FiringGuard fire(watcher, static_cast<int>(ii), inst, view);
                 if (inst.type == GT::BARRIER) continue;
                 if (inst.type == GT::MEASURE) continue;  // deferred to sampling below
                 apply_inst(dm, ii);
             }
+            if (watcher) watcher->at_end(view, static_cast<int>(n_inst) - 1);
 
             // Sample measurements from the diagonal of the density matrix.
             // Keys follow the qubit -> clbit mapping of the (terminal)
@@ -1163,6 +1196,10 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
 
             result.final_state = std::move(dm);
         }
+
+        // Flushes every labelled observer into result.observations, before the
+        // timer stops: collecting what was observed is part of the work.
+        runner.end_run();
 
         auto t_end = std::chrono::high_resolution_clock::now();
         result.simulation_time_seconds =

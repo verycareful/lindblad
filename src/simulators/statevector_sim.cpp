@@ -193,27 +193,48 @@ static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng) {
 
 // Execute one trajectory: classical conditions are honoured against `clreg`,
 // MEASURE collapses the state and records its outcome into `clreg`.
+// runner = the run's observation harness, or null when nothing is watching.
+// An instruction that is skipped (a barrier, or a conditioned gate whose
+// condition does not hold) still fires its anchors: the anchor names a point
+// the run reached, and a caller watching every instruction wants to see the
+// state at that point whether or not it changed.
 static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
                               const QuantumCircuit& circuit,
                               std::vector<int>& clreg, int n_clbits,
-                              std::mt19937_64& rng) {
+                              std::mt19937_64& rng,
+                              detail::ObservationRunner* runner = nullptr) {
     using GT = Instruction::GateType;
+
+    const StateView view(StateForm::Statevector, &sv, sv.n_qubits);
+    if (runner) runner->at_start(view);
+
+    int index = -1;
     for (const auto& inst : circuit.instructions) {
-        if (inst.type == GT::BARRIER) continue;
-        if (inst.condition_clbit >= 0) {
+        ++index;
+        if (runner) runner->before_instruction(index, inst, view);
+
+        bool skip = inst.type == GT::BARRIER;
+        if (!skip && inst.condition_clbit >= 0) {
             const int cv = (inst.condition_clbit < n_clbits)
                            ? clreg[inst.condition_clbit] : 0;
-            if (cv != inst.condition_value) continue;
+            if (cv != inst.condition_value) skip = true;
         }
-        if (inst.type == GT::MEASURE) {
-            const int qubit = inst.qubits[0];
-            const int clbit = inst.clbits.empty() ? -1 : inst.clbits[0];
-            const int outcome = sv_collapse_qubit(sv, qubit, rng);
-            if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
-            continue;
+
+        if (!skip) {
+            if (inst.type == GT::MEASURE) {
+                const int qubit = inst.qubits[0];
+                const int clbit = inst.clbits.empty() ? -1 : inst.clbits[0];
+                const int outcome = sv_collapse_qubit(sv, qubit, rng);
+                if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
+            } else {
+                sim.apply_instruction(sv, inst, {Validation::Ignore});
+            }
         }
-        sim.apply_instruction(sv, inst, {Validation::Ignore});
+
+        if (runner) runner->after_instruction(index, inst, view);
     }
+
+    if (runner) runner->at_end(view, index);
 }
 
 // True when no instruction (other than BARRIER) acts on a qubit after that
@@ -488,7 +509,8 @@ QuantumCircuit sv_fuse_circuit(StatevectorSimulator& sim,
 StatevectorSimulator::Result StatevectorSimulator::run(
     const QuantumCircuit& circuit_in,
     int shots,
-    uint64_t seed
+    uint64_t seed,
+    const RunPlan& plan
 ) {
     ScopedWarningFlush flush_on_exit;
     Result result;
@@ -525,9 +547,10 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         thread_local std::unique_ptr<Statevector> sv_work;
         if (!sv_work || sv_work->n_qubits != circuit.n_qubits) {
             sv_work = std::make_unique<Statevector>(circuit.n_qubits);
-        } else {
-            sv_work->initialize();
         }
+        // Writes |0...0> for the default plan, so a reused buffer is cleared on
+        // the same call that seeds a supplied initial state.
+        detail::apply_initial_state(plan, *sv_work);
         // Derive a per-thread seed so parallel batches (e.g. Estimator::run_batch)
         // produce statistically independent RNG streams rather than every thread
         // reseeding to the same Mersenne Twister state. The single-threaded path
@@ -559,7 +582,14 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // construction, so the classification is identical.
         QuantumCircuit fused_storage;
         const QuantumCircuit* exec = &circuit;
-        if (options.fusion_enable) {
+        // An observed run suppresses fusion by default, so that anchors keep
+        // naming the instructions the caller wrote. Options::Fusion::Keep opts
+        // back in and accepts that anchors then bind to the fused circuit.
+        const bool observed = !plan.observations.empty();
+        const bool fuse = options.fusion_enable &&
+                          (!observed ||
+                           plan.options.fusion == RunPlan::Options::Fusion::Keep);
+        if (fuse) {
             const int fusion_min = options.fusion_threshold > 0
                 ? options.fusion_threshold
                 : sv_fusion_auto_threshold();
@@ -569,6 +599,15 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                 exec = &fused_storage;
             }
         }
+
+        // Anchors resolve against the circuit that actually executes, which is
+        // the fused one when fusion survived the check above. This is where an
+        // anchor that cannot fire stops the run, before any state is touched: a
+        // plan that does not match its circuit is a mistake in the caller's
+        // code, not a capability the backend lacks, so no response knob softens
+        // it.
+        detail::ObservationRunner runner(plan, *exec);
+        runner.set_bundle(&result.observations);
 
         // Execution strategy (docs/api/simulators.md, Execution semantics):
         //   1. Terminal-only measurements (no feedforward, nothing acting on
@@ -594,12 +633,14 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             // shot so each MEASURE collapses the state independently.
             result.counts.clear();
             std::vector<int> clreg(n_clbits, 0);
+            runner.begin_run(circuit.n_qubits, shots);
 
             for (int shot = 0; shot < shots; ++shot) {
-                sv_work->initialize();
+                detail::apply_initial_state(plan, *sv_work);
                 clreg.assign(n_clbits, 0);
+                runner.begin_shot(shot, clreg);
                 sv_run_trajectory(*this, *sv_work, *exec, clreg, n_clbits,
-                                  sv_sim_rng);
+                                  sv_sim_rng, runner.active() ? &runner : nullptr);
 
                 // Build bitstring: clbit 0 is LSB (rightmost), highest clbit is MSB.
                 std::string bits(n_clbits, '0');
@@ -612,11 +653,27 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             // Terminal-measurement fast path: a single evolution with MEASURE
             // skipped (the pre-measurement state is deterministic), then
             // multinomial sampling keyed by the qubit -> clbit mapping.
+            // One evolution serves every shot here, because nothing before the
+            // terminal measurements is stochastic, so the observers fire once
+            // and that single firing describes all of them.
+            const std::vector<int> no_clreg;
+            const StateView view(StateForm::Statevector, sv_work.get(),
+                                 sv_work->n_qubits);
+            runner.begin_run(circuit.n_qubits, 1);
+            runner.begin_shot(0, no_clreg);
+            if (runner.active()) runner.at_start(view);
+
+            int index = -1;
             for (const auto& inst : exec->instructions) {
-                if (inst.type == Instruction::GateType::MEASURE ||
-                    inst.type == Instruction::GateType::BARRIER) continue;
-                apply_instruction(*sv_work, inst, {Validation::Ignore});
+                ++index;
+                if (runner.active()) runner.before_instruction(index, inst, view);
+                if (inst.type != Instruction::GateType::MEASURE &&
+                    inst.type != Instruction::GateType::BARRIER) {
+                    apply_instruction(*sv_work, inst, {Validation::Ignore});
+                }
+                if (runner.active()) runner.after_instruction(index, inst, view);
             }
+            if (runner.active()) runner.at_end(view, index);
 
             std::vector<std::pair<int, int>> meas;  // (qubit, clbit)
             for (const auto& inst : exec->instructions)
@@ -660,12 +717,19 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             // Single seeded trajectory (shots == 0 semantics; also the plain
             // forward pass for measurement-free circuits with shots > 0).
             std::vector<int> clreg(n_clbits, 0);
+            runner.begin_run(circuit.n_qubits, 1);
+            runner.begin_shot(0, clreg);
             sv_run_trajectory(*this, *sv_work, *exec, clreg, n_clbits,
-                              sv_sim_rng);
+                              sv_sim_rng, runner.active() ? &runner : nullptr);
             if (shots > 0) {
                 result.counts = sv_work->sample_counts(shots, seed);
             }
         }
+
+        // Flushes every labelled observer into result.observations. Runs before
+        // the timer stops, since collecting what was observed is part of the
+        // work the run was asked to do.
+        runner.end_run();
 
         auto t_end = std::chrono::high_resolution_clock::now();
         result.simulation_time_seconds =

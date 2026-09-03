@@ -1,5 +1,6 @@
 #include "lindblad/simulators/clifford_sim.hpp"
 #include "lindblad/circuit.hpp"
+#include "lindblad/statevector.hpp"
 #include "lindblad/detail/validate.hpp"
 
 #include <optional>
@@ -558,6 +559,186 @@ int StabilizerState::expectation_pauli(const std::string& pauli) const {
     }
 
     return (target_phase == 0) ? +1 : (target_phase == 2) ? -1 : 0;
+}
+
+// ----- entanglement_entropy_bits -----
+
+double StabilizerState::entanglement_entropy_bits(const std::vector<int>& region) const {
+    const int N = n_qubits;
+
+    std::vector<bool> in_region(static_cast<std::size_t>(N), false);
+    for (const int q : region) {
+        if (q < 0 || q >= N) {
+            throw std::invalid_argument(
+                "StabilizerState::entanglement_entropy_bits: qubit " +
+                std::to_string(q) + " is outside a " + std::to_string(N) +
+                " qubit register");
+        }
+        if (in_region[static_cast<std::size_t>(q)]) {
+            throw std::invalid_argument(
+                "StabilizerState::entanglement_entropy_bits: qubit " +
+                std::to_string(q) + " is named twice; a cut has each qubit on "
+                "one side of it");
+        }
+        in_region[static_cast<std::size_t>(q)] = true;
+    }
+    if (region.empty() || static_cast<int>(region.size()) == N) return 0.0;
+
+    // Rows are the N stabilizer generators restricted to the region's X and Z
+    // columns, two bits per region qubit. The entropy is the GF(2) rank of that
+    // matrix minus the region size.
+    //
+    // Word-packed like the rest of this file: the elimination's inner step is a
+    // word XOR over the remaining columns rather than a bit at a time, which is
+    // the whole reason the tableau is stored this way.
+    //
+    // No phases and no Pauli products appear here, so this is not the tableau
+    // elimination outcome_slab runs and cannot call it: that one multiplies
+    // rows in the Pauli group, carrying the Z plane and the sign along, and a
+    // rank needs none of that.
+    const int width = 2 * static_cast<int>(region.size());
+    const int wpr = (width + 63) / 64;
+
+    std::vector<std::uint64_t> rows(static_cast<std::size_t>(N) *
+                                        static_cast<std::size_t>(wpr), 0ULL);
+    auto row = [&](int r) { return rows.data() + static_cast<std::size_t>(r) * wpr; };
+    auto bit_at = [&](const std::uint64_t* v, int c) {
+        return ((v[c / 64] >> (c % 64)) & 1ULL) != 0;
+    };
+
+    for (int s = 0; s < N; ++s) {
+        std::uint64_t* dst = row(s);
+        for (std::size_t slot = 0; slot < region.size(); ++slot) {
+            const int q = region[slot];
+            const int cx = 2 * static_cast<int>(slot);
+            const int cz = cx + 1;
+            if (get_xz(N + s, q))     dst[cx / 64] |= 1ULL << (cx % 64);
+            if (get_xz(N + s, N + q)) dst[cz / 64] |= 1ULL << (cz % 64);
+        }
+    }
+
+    // Forward elimination only. A rank counts pivots, so rows ABOVE a pivot
+    // never need clearing and the back substitution a reduced echelon form
+    // would do is pure cost here.
+    int rank = 0;
+    for (int col = 0; col < width && rank < N; ++col) {
+        int pivot = -1;
+        for (int r = rank; r < N; ++r) {
+            if (bit_at(row(r), col)) { pivot = r; break; }
+        }
+        if (pivot < 0) continue;
+
+        if (pivot != rank) {
+            for (int w = col / 64; w < wpr; ++w) {
+                std::swap(row(rank)[w], row(pivot)[w]);
+            }
+        }
+
+        const std::uint64_t* pivot_row = row(rank);
+        for (int r = rank + 1; r < N; ++r) {
+            std::uint64_t* target = row(r);
+            if (!bit_at(target, col)) continue;
+            // Columns before this one are already zero in both rows, so the
+            // XOR starts at the pivot's own word.
+            for (int w = col / 64; w < wpr; ++w) target[w] ^= pivot_row[w];
+        }
+        ++rank;
+    }
+
+    return static_cast<double>(rank) - static_cast<double>(region.size());
+}
+
+// ----- to_statevector -----
+
+// i^k for k in [0, 4), the only complex constants the projector produces.
+static inline Complex128 i_power(int k) {
+    switch (k & 3) {
+        case 0:  return {1.0, 0.0};
+        case 1:  return {0.0, 1.0};
+        case 2:  return {-1.0, 0.0};
+        default: return {0.0, -1.0};
+    }
+}
+
+Statevector StabilizerState::to_statevector() const {
+    const int N = n_qubits;
+
+    // 2^N must be addressable before anything else is worth attempting. The
+    // tableau is happy at thousands of qubits; the dense form it is being asked
+    // for is not, and a caller learns that here rather than from an allocator.
+    if (N < 0 || N > 62) {
+        throw std::invalid_argument(
+            "StabilizerState::to_statevector: 2^n amplitudes are not "
+            "representable for n = " + std::to_string(N));
+    }
+    const std::size_t dim = std::size_t{1} << N;
+
+    // One basis state with nonzero overlap. The slab's offset is a point of the
+    // outcome coset, so it is in the support by construction, which is exactly
+    // the condition the projector needs to return something nonzero.
+    const OutcomeSlab slab = outcome_slab();
+    std::uint64_t start = slab.offset.empty() ? 0ULL : slab.offset[0];
+    if (N < 64) start &= (1ULL << N) - 1ULL;
+
+    std::unordered_map<std::uint64_t, Complex128> psi;
+    psi.emplace(start, Complex128{1.0, 0.0});
+
+    // psi <- (I + g_s) psi / 2 for each stabilizer generator. The product over
+    // all N of them is the projector onto the code space, which is
+    // one-dimensional, so what survives is the state itself up to scale.
+    for (int s = N; s < 2 * N; ++s) {
+        std::unordered_map<std::uint64_t, Complex128> next = psi;  // the I term
+
+        for (const auto& [index, amp] : psi) {
+            std::uint64_t out = index;
+            int i_pow = ph[s] ? 2 : 0;  // the row's sign, as i^2 = -1
+
+            for (int q = 0; q < N; ++q) {
+                const bool xq = get_xz(s, q);
+                const bool zq = get_xz(s, N + q);
+
+                // Y = iXZ, so a qubit carrying both bits contributes one i.
+                if (xq && zq) ++i_pow;
+                // Z reads the ORIGINAL index: it acts before X flips anything.
+                if (zq && ((index >> q) & 1ULL)) i_pow += 2;
+                if (xq) out ^= (1ULL << q);
+            }
+
+            next[out] += amp * i_power(i_pow);
+        }
+
+        // Amplitudes here are exact sums of powers of i scaled by powers of
+        // one half, so a cancelled term is exactly zero and can be dropped
+        // rather than left to grow the map for the remaining generators.
+        psi.clear();
+        for (const auto& [index, amp] : next) {
+            const Complex128 halved = amp * 0.5;
+            if (halved.real != 0.0 || halved.imag != 0.0) psi.emplace(index, halved);
+        }
+    }
+
+    double norm_squared = 0.0;
+    for (const auto& [index, amp] : psi) {
+        norm_squared += amp.real * amp.real + amp.imag * amp.imag;
+    }
+    if (!(norm_squared > 0.0) || !is_finite_strict(norm_squared)) {
+        throw std::runtime_error(
+            "StabilizerState::to_statevector: the stabilizer projector "
+            "produced no state, which means the tableau's generators are not "
+            "independent");
+    }
+    const double inv_norm = 1.0 / std::sqrt(norm_squared);
+
+    std::vector<double> real_parts(dim, 0.0);
+    std::vector<double> imag_parts(dim, 0.0);
+    for (const auto& [index, amp] : psi) {
+        real_parts[index] = amp.real * inv_norm;
+        imag_parts[index] = amp.imag * inv_norm;
+    }
+
+    Statevector sv(N);
+    sv.set_amplitudes(real_parts.data(), imag_parts.data(), dim);
+    return sv;
 }
 
 // ----- outcome slab -----
@@ -1197,7 +1378,8 @@ static bool clifford_measures_are_terminal(const QuantumCircuit& circuit) {
 }
 
 CliffordSimulator::Result CliffordSimulator::run(
-    const QuantumCircuit& circuit_in, int shots, uint64_t seed
+    const QuantumCircuit& circuit_in, int shots, uint64_t seed,
+    const RunPlan& plan
 ) {
     using GT = Instruction::GateType;
     ScopedWarningFlush flush_on_exit;
@@ -1311,6 +1493,13 @@ CliffordSimulator::Result CliffordSimulator::run(
         result.counts[bitstring]++;
     };
 
+    // Anchors resolve against the circuit before any state is touched, so an
+    // anchor that cannot fire stops the run here.
+    detail::ObservationRunner runner(plan, circuit);
+    runner.set_bundle(&result.observations);
+    detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
+    const bool harnessed = !plan.empty();
+
     if (clifford_measures_are_terminal(circuit)) {
         // The gate pass is deterministic and runs ONCE. Only the sampling that
         // follows it differs from shot to shot, and how it does so is what
@@ -1320,12 +1509,39 @@ CliffordSimulator::Result CliffordSimulator::run(
         // the columns it touches rather than a strided visit to every row. The
         // single transpose afterwards buys back the row-major layout that
         // measurement, the outcome slab and the returned state all read.
-        StabilizerState::ColumnTableau cols(circuit.n_qubits);
-        for (const auto& inst : circuit.instructions) {
-            if (inst.type == GT::MEASURE || inst.type == GT::BARRIER) continue;
-            apply_gate(cols, inst);
+        StabilizerState base(circuit.n_qubits);
+        if (harnessed) {
+            // Row-major, because the bit-sliced layout is not a state an
+            // observer can be handed and a supplied initial state has no
+            // column form to be seeded into. One deterministic pass serves
+            // every shot, so the observers fire once, which is what describes
+            // all of them.
+            detail::apply_initial_state(plan, base);
+            const StateView view(StateForm::Stabilizer, &base, circuit.n_qubits);
+            // Named, not a temporary: begin_shot keeps a pointer to it for the
+            // whole shot so observers read the register as it stands.
+            const std::vector<int> no_clreg;
+            runner.begin_run(circuit.n_qubits, 1);
+            runner.begin_shot(0, no_clreg);
+            if (watcher) watcher->at_start(view);
+
+            int index = -1;
+            for (const auto& inst : circuit.instructions) {
+                ++index;
+                if (watcher) watcher->before_instruction(index, inst, view);
+                detail::FiringGuard fire(watcher, index, inst, view);
+                if (inst.type == GT::MEASURE || inst.type == GT::BARRIER) continue;
+                apply_gate(base, inst);
+            }
+            if (watcher) watcher->at_end(view, index);
+        } else {
+            StabilizerState::ColumnTableau cols(circuit.n_qubits);
+            for (const auto& inst : circuit.instructions) {
+                if (inst.type == GT::MEASURE || inst.type == GT::BARRIER) continue;
+                apply_gate(cols, inst);
+            }
+            base = cols.to_state();
         }
-        StabilizerState base = cols.to_state();
 
         // shots == 0 is ONE seeded trajectory, and the only thing it produces
         // is the returned state, so the measurements have to be drawn into it.
@@ -1336,6 +1552,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                 if (inst.type != GT::MEASURE) continue;
                 (void)base.measure(inst.qubits[0], true, rng);
             }
+            runner.end_run();
             result.final_state = std::move(base);
             return result;
         }
@@ -1413,6 +1630,7 @@ CliffordSimulator::Result CliffordSimulator::run(
             }
         }
 
+        runner.end_run();
         result.final_state = std::move(base);
         return result;
     }
@@ -1437,11 +1655,21 @@ CliffordSimulator::Result CliffordSimulator::run(
     // shots == 0 is ONE seeded trajectory whose outcome lives in the returned
     // state, so the body runs once and records nothing.
     const int trajectories = shots > 0 ? shots : 1;
+    runner.begin_run(circuit.n_qubits, trajectories);
     for (int s = 0; s < trajectories; ++s) {
         StabilizerState state(circuit.n_qubits);
+        detail::apply_initial_state(plan, state);
         std::vector<int> clreg(n_clbits, 0);
 
+        const StateView view(StateForm::Stabilizer, &state, circuit.n_qubits);
+        runner.begin_shot(s, clreg);
+        if (watcher) watcher->at_start(view);
+
+        int index = -1;
         for (const auto& inst : circuit.instructions) {
+            ++index;
+            if (watcher) watcher->before_instruction(index, inst, view);
+            detail::FiringGuard fire(watcher, index, inst, view);
             if (inst.condition_clbit >= 0) {
                 int cv = (inst.condition_clbit < n_clbits)
                          ? clreg[inst.condition_clbit] : 0;
@@ -1460,10 +1688,13 @@ CliffordSimulator::Result CliffordSimulator::run(
             }
         }
 
+        if (watcher) watcher->at_end(view, index);
+
         if (shots > 0) record(clreg);
         result.final_state = std::move(state);
     }
 
+    runner.end_run();
     return result;
 }
 

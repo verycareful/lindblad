@@ -1377,7 +1377,7 @@ static std::string mps_sample(
 
 MPSSimulator::Result MPSSimulator::run(
     const QuantumCircuit& circuit_in, int max_bond_dim,
-    int shots, uint64_t seed
+    int shots, uint64_t seed, const RunPlan& plan
 ) {
     ScopedWarningFlush flush_on_exit;
     // Checked here as well as in the MPSState constructor so the message names
@@ -1451,9 +1451,22 @@ MPSSimulator::Result MPSSimulator::run(
     };
 
     // One trajectory: honours classical conditions, records MEASURE outcomes.
+    // Anchors resolve against the circuit before any state is touched, so an
+    // anchor that cannot fire stops the run here.
+    detail::ObservationRunner runner(plan, circuit);
+    runner.set_bundle(&result.observations);
+    detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
+
     auto run_trajectory = [&](MPSState& state, std::vector<int>& clreg) {
+        const StateView view(StateForm::MPS, &state, circuit.n_qubits);
+        if (watcher) watcher->at_start(view);
+
+        int index = -1;
         for (const auto& inst : circuit.instructions) {
             using GT = Instruction::GateType;
+            ++index;
+            if (watcher) watcher->before_instruction(index, inst, view);
+            detail::FiringGuard fire(watcher, index, inst, view);
             if (inst.type == GT::BARRIER) continue;
             if (inst.condition_clbit >= 0) {
                 int cv = (inst.condition_clbit < n_clbits)
@@ -1469,6 +1482,8 @@ MPSSimulator::Result MPSSimulator::run(
             }
             mps_apply_instruction(state, inst, rng);
         }
+
+        if (watcher) watcher->at_end(view, index);
     };
 
     std::vector<int> clreg(n_clbits, 0);
@@ -1478,9 +1493,12 @@ MPSSimulator::Result MPSSimulator::run(
         // re-simulate for every shot so that each MEASURE collapses the state
         // independently (required for mid-circuit measurement / feedforward).
         result.counts.clear();
+        runner.begin_run(circuit.n_qubits, shots);
         for (int shot = 0; shot < shots; ++shot) {
             result.final_state = MPSState(circuit.n_qubits, max_bond_dim);
+            detail::apply_initial_state(plan, result.final_state);
             clreg.assign(n_clbits, 0);
+            runner.begin_shot(shot, clreg);
             run_trajectory(result.final_state, clreg);
 
             // Build bitstring: clbit 0 is LSB (rightmost), highest clbit is MSB.
@@ -1491,16 +1509,28 @@ MPSSimulator::Result MPSSimulator::run(
             result.counts[bits]++;
         }
     } else {
+        detail::apply_initial_state(plan, result.final_state);
+        runner.begin_run(circuit.n_qubits, 1);
+        runner.begin_shot(0, clreg);
+
         if (shots == 0) {
             // Single seeded trajectory (collapses measures, honours
             // conditions); final_state is one reproducible trajectory.
             run_trajectory(result.final_state, clreg);
         } else {
             // Terminal-only measurements (or none): one forward pass with
-            // MEASURE skipped; outcomes are sampled from the final state.
-            // Conditions can only reference initial-zero clbits here.
+            // MEASURE skipped; outcomes are sampled from the final state. That
+            // one evolution describes every shot, so the observers fire once.
+            const StateView view(StateForm::MPS, &result.final_state,
+                                 circuit.n_qubits);
+            if (watcher) watcher->at_start(view);
+
+            int index = -1;
             for (const auto& inst : circuit.instructions) {
                 using GT = Instruction::GateType;
+                ++index;
+                if (watcher) watcher->before_instruction(index, inst, view);
+                detail::FiringGuard fire(watcher, index, inst, view);
                 if (inst.type == GT::BARRIER || inst.type == GT::MEASURE) continue;
                 if (inst.condition_clbit >= 0) {
                     int cv = (inst.condition_clbit < n_clbits)
@@ -1509,6 +1539,7 @@ MPSSimulator::Result MPSSimulator::run(
                 }
                 mps_apply_instruction(result.final_state, inst, rng);
             }
+            if (watcher) watcher->at_end(view, index);
         }
 
         if (shots > 0) {
@@ -1560,11 +1591,95 @@ MPSSimulator::Result MPSSimulator::run(
         }
     }
 
+    // Flushes every labelled observer into result.observations, before the
+    // timer stops: collecting what was observed is part of the work.
+    runner.end_run();
+
     auto t_end = std::chrono::high_resolution_clock::now();
     result.simulation_time_seconds =
         std::chrono::duration<double>(t_end - t_start).count();
 
     return result;
 }
+
+// =============================================================================
+// apply_initial_state - MPS
+// =============================================================================
+// Defined here rather than beside the other three, because the statevector to
+// MPS route is mps_from_sv above, which is local to this translation unit.
+
+namespace detail {
+
+void apply_initial_state(const RunPlan& plan, MPSState& mps) {
+    const InitialState& initial = plan.initial;
+    const int n = mps.n_qubits;
+
+    if (initial.is_default()) {
+        mps = MPSState(n, mps.max_bond_dim, mps.cutoff);
+        return;
+    }
+
+    if (initial.is_basis()) {
+        const std::uint64_t index = initial.basis_index();
+        if (n < 64 && index >= (std::uint64_t{1} << n)) {
+            throw std::invalid_argument(
+                "InitialState::basis(" + std::to_string(index) +
+                ") is outside a " + std::to_string(n) + " qubit register");
+        }
+        mps = MPSState(n, mps.max_bond_dim, mps.cutoff);
+        // A product state costs nothing in bond dimension, so this is an X on
+        // each set digit rather than a dense build and a factorisation.
+        //
+        // Ignore, because this matrix is the library's own: it is exactly
+        // unitary by construction, and a check here would judge our constant
+        // against a caller's tolerance while overriding the policy they chose.
+        const std::array<Complex128, 4> pauli_x = {
+            Complex128(0.0, 0.0), Complex128(1.0, 0.0),
+            Complex128(1.0, 0.0), Complex128(0.0, 0.0)};
+        for (int q = 0; q < n && q < 64; ++q) {
+            if ((index >> q) & 1ULL) {
+                mps.apply_single_qubit_gate(pauli_x, q, {Validation::Ignore});
+            }
+        }
+        return;
+    }
+
+    if (initial.form() == StateForm::MPS) {
+        const auto& source = *static_cast<const MPSState*>(initial.state());
+        if (source.n_qubits != n) {
+            throw std::invalid_argument(
+                "InitialState: the supplied state covers " +
+                std::to_string(source.n_qubits) + " qubits, the circuit " +
+                std::to_string(n));
+        }
+        mps = source;
+        return;
+    }
+
+    // Everything else arrives as amplitudes and is factorised. The bond cap is
+    // this run's, so a state needing more than it holds is TRUNCATED here
+    // rather than refused: that is what running it at this cap means, and the
+    // discarded weight is what truncation_error reports.
+    auto produced = produce_state(
+        StateView(initial.form(), initial.state(), n), StateForm::Statevector,
+        plan.options, "InitialState");
+    if (!produced) {
+        throw std::invalid_argument(
+            "InitialState: a " + std::string(to_string(initial.form())) +
+            " cannot be turned into the amplitudes this backend factorises "
+            "into an MPS, and a run has to start somewhere.");
+    }
+
+    const Statevector& sv = *static_cast<const Statevector*>(produced.get());
+    if (sv.n_qubits != n) {
+        throw std::invalid_argument(
+            "InitialState: the supplied state covers " +
+            std::to_string(sv.n_qubits) + " qubits, the circuit " +
+            std::to_string(n));
+    }
+    mps = mps_from_sv(sv, n, mps.max_bond_dim, mps.cutoff);
+}
+
+}  // namespace detail
 
 } // namespace lindblad

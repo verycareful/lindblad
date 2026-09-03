@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lindblad/observation.hpp"
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
 
@@ -177,13 +178,19 @@ public:
         std::unordered_map<std::string, int> counts;
         double simulation_time_seconds = 0.0;
 
+        // Whatever the run's labelled observers collected. Empty unless the
+        // RunPlan attached observers carrying labels.
+        ObservationBundle observations;
+
         Result(int n) : final_state(n) {}
         Result(Result&&) = default;
         Result& operator=(Result&&) = default;
     };
 
+    // plan = the harness: where the run starts and what is watched while it
+    // runs. An empty plan starts at |0...0> and watches nothing.
     Result run(const QuantumCircuit& circuit, int max_bond_dim = 64,
-               int shots = 1024, uint64_t seed = 0);
+               int shots = 1024, uint64_t seed = 0, const RunPlan& plan = {});
 };
 
 } // namespace lindblad
