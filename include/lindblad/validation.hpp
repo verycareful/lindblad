@@ -24,14 +24,47 @@
 namespace lindblad {
 
 // -----------------------------------------------------------------------------
-// Validation - what to do when a physical property does not hold
+// The two knobs
 // -----------------------------------------------------------------------------
+// A caller-supplied operator that fails its check raises two separate
+// questions: may the library try to make it hold, and what happens if it still
+// does not. They are separate enums because fusing them is what makes a policy
+// unsayable. One enumerator meaning "repair, and throw when the operand is
+// still invalid" cannot also mean "repair, and warn"; a caller wanting the
+// second has no way to ask for it.
+//
+// Split, the six reachable policies are the product of the two:
+//
+//                    Validation::Throw   Validation::Warn   Validation::Ignore
+//   Repair::None     reject              report, proceed    proceed
+//   Repair::Attempt  repair, else reject repair, else warn  repair, else proceed
+//
+// Repair::None with Validation::Ignore is the one combination that measures
+// nothing: with nothing to repair and nothing to report, the residual would be
+// computed only to be discarded, so the check entry points return before
+// taking it. Every other combination needs the number.
 
+// What happens when the property does not hold and the operand was not, or
+// could not be, made to hold it.
 enum class Validation {
     Throw,   // reject the call with std::invalid_argument
     Warn,    // report through the warning handler, then proceed
-    Fix,     // repair and continue where a repair is defined, otherwise throw
-    Ignore   // skip the check entirely; the only policy that costs nothing
+    Ignore   // proceed silently
+};
+
+// Whether the library may rewrite the operand before judging it. An enum
+// rather than a bool because a property can have more than one repair: the
+// unitary polar projection is one choice among several, and naming a specific
+// one later must not require changing the type.
+enum class Repair {
+    None,     // judge the operand exactly as it was handed over
+    Attempt   // apply the repair defined for the property first
+
+    // Asking for a repair a property does not define is an error under every
+    // response, because it is a mistake in the calling code rather than a
+    // property of the operand, and the response knob governs operands. Only
+    // unitarity and the two normalizations define one; trace preservation
+    // does not.
 };
 
 // -----------------------------------------------------------------------------
@@ -53,6 +86,12 @@ struct ValidationOptions {
     // which holds unitarity to around 1e-13, and tight enough to reject
     // anything that drifted for a reason.
     double atol = DEFAULT_PHYSICAL_ATOL;
+
+    // Last, and the position is load-bearing. ValidationOptions is written
+    // positionally as `{policy, atol}` at more than eighty call sites across
+    // the library, its tests and its docs; a knob ahead of atol would bind a
+    // tolerance to the wrong field at every one of them.
+    Repair repair = Repair::None;
 };
 
 // The fusion pre-pass copies an Instruction per fused block, and an

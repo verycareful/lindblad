@@ -123,11 +123,14 @@ bool QuditDensityMatrix::is_normalized(double atol) const {
 }
 
 void QuditDensityMatrix::check_normalized(ValidationOptions validation) {
-    // Returns before measuring under Ignore: reading the diagonal is O(dim).
-    if (validation.policy == Validation::Ignore) return;
-    if (detail::check_trace_normalized(
-            detail::density_trace_real(rho.data(), dim), validation,
-            "QuditDensityMatrix::check_normalized")) {
+    // Returns before measuring when nothing would consume the residual:
+    // reading the diagonal is O(dim).
+    if (detail::measurement_unused(validation)) return;
+    const char* ctx = "QuditDensityMatrix::check_normalized";
+    const double tr = detail::density_trace_real(rho.data(), dim);
+    if (detail::check_trace_normalized(tr, validation, ctx) &&
+        detail::normalization_repairable(tr, validation, ctx,
+                                         detail::DENSITY_NORMALIZATION)) {
         normalize();
     }
 }

@@ -1,4 +1,4 @@
-// unitary_repair.cpp - the unitary polar projection behind Validation::Fix
+// unitary_repair.cpp - the unitary polar projection behind Repair::Attempt
 //
 // Contract and the reason the projection is the right repair:
 // include/lindblad/detail/unitary_repair.hpp.

@@ -217,7 +217,7 @@ void QuantumCircuit::validate_operands() const {
 void QuantumCircuit::validate_physical() const {
     for (const auto& inst : instructions) {
         if (inst.type != Instruction::GateType::UNITARY) continue;
-        if (inst.validation.policy == Validation::Ignore) continue;
+        if (detail::measurement_unused(inst.validation)) continue;
 
         const std::vector<Complex128>& m = inst.matrix;
         const std::size_t rows = std::size_t(1) << inst.qubits.size();
@@ -230,25 +230,39 @@ void QuantumCircuit::validate_physical() const {
 
 std::optional<QuantumCircuit> QuantumCircuit::validated_physical() const {
     // Nothing is copied until a repair is actually owed. `unitary_needs_repair`
-    // returns false for an operand already inside tolerance and for every policy
-    // but Fix, so a circuit that needs no repair walks the instruction list,
-    // measures what validate_physical() would have measured, and allocates
-    // nothing.
+    // returns false for an operand already inside tolerance and for
+    // Repair::None, so a circuit that needs no repair walks the instruction
+    // list, measures what validate_physical() would have measured, and
+    // allocates nothing.
     std::optional<QuantumCircuit> repaired;
 
     for (std::size_t i = 0; i < instructions.size(); ++i) {
         const Instruction& inst = instructions[i];
         if (inst.type != Instruction::GateType::UNITARY) continue;
-        if (inst.validation.policy == Validation::Ignore) continue;
+        if (detail::measurement_unused(inst.validation)) continue;
 
         const std::vector<Complex128>& m = inst.matrix;
         const std::size_t rows = std::size_t(1) << inst.qubits.size();
         if (m.size() != rows * rows) continue;
 
         // Throws under Throw and reports under Warn, exactly as the const form
-        // does; returns true only under Fix on an operand outside tolerance.
+        // does; returns true only under Repair::Attempt on an operand outside
+        // tolerance.
         if (!detail::unitary_needs_repair(m.data(), rows, inst.validation,
                                           inst.gate_name().c_str())) {
+            continue;
+        }
+
+        // Into a fresh buffer, and only assigned once the projection has
+        // converged. An Instruction's matrix is copy-on-write and the circuit
+        // copy below shares every buffer with this circuit, so writing through
+        // it would rewrite the caller's matrix, which is the one thing this
+        // form exists to avoid. A repair that could not converge has already
+        // delivered the caller's response, and this instruction keeps the
+        // operand it was given.
+        std::vector<Complex128> fixed(m);
+        if (!detail::repair_unitary(fixed.data(), rows, inst.validation,
+                                    inst.gate_name().c_str())) {
             continue;
         }
 
@@ -259,14 +273,6 @@ std::optional<QuantumCircuit> QuantumCircuit::validated_physical() const {
         detail::warn_unitary_repaired_once();
 
         if (!repaired) repaired = *this;
-
-        // Into a fresh buffer, then assigned. An Instruction's matrix is
-        // copy-on-write and the copy above shares every buffer with this
-        // circuit, so writing through it would rewrite the caller's matrix,
-        // which is the one thing this form exists to avoid.
-        std::vector<Complex128> fixed(m);
-        detail::repair_unitary(fixed.data(), rows, inst.validation,
-                               inst.gate_name().c_str());
         repaired->instructions[i].matrix = std::move(fixed);
     }
 
@@ -531,18 +537,22 @@ QuantumCircuit& QuantumCircuit::unitary(const std::vector<Complex128>& matrix,
     // unitarity on a wrong-sized operand reads past its end.
     detail::check_size(matrix.size(), rows * rows, "unitary", "matrix");
 
-    // Under Fix the repaired matrix is what gets stored, so the projection runs
-    // once here rather than per shot and every later use of this instruction
-    // sees the repaired operand. The copy is taken only on that path: a
-    // CowMatrix shares one buffer across every Instruction copied from it, so
-    // repairing in place would rewrite a matrix other instructions are reading.
-    // Assigning rebinds this instruction to a fresh buffer and leaves theirs
-    // alone.
+    // Under Repair::Attempt the repaired matrix is what gets stored, so the
+    // projection runs once here rather than per shot and every later use of
+    // this instruction sees the repaired operand. The copy is taken only on
+    // that path: a CowMatrix shares one buffer across every Instruction copied
+    // from it, so repairing in place would rewrite a matrix other instructions
+    // are reading. Assigning rebinds this instruction to a fresh buffer and
+    // leaves theirs alone; a projection that could not converge has delivered
+    // the caller's response and leaves the instruction on the operand it was
+    // given.
     if (detail::unitary_needs_repair(matrix.data(), rows, validation,
                                      "unitary")) {
         std::vector<Complex128> repaired(matrix);
-        detail::repair_unitary(repaired.data(), rows, validation, "unitary");
-        inst.matrix = std::move(repaired);
+        if (detail::repair_unitary(repaired.data(), rows, validation,
+                                   "unitary")) {
+            inst.matrix = std::move(repaired);
+        }
     }
     instructions.push_back(std::move(inst));
     return *this;
@@ -1937,27 +1947,49 @@ namespace {
 
 constexpr ValidationOptions kDefaultValidation{};
 
-// The policy is written as a name rather than as the enumerator's integer, so
-// a stored circuit cannot change meaning if the enumeration is ever reordered.
+// Both knobs are written as names rather than as the enumerators' integers, so
+// a stored circuit cannot change meaning if either enumeration is ever
+// reordered.
 const char* validation_policy_to_str(Validation p) {
     switch (p) {
         case Validation::Throw:  return "throw";
         case Validation::Warn:   return "warn";
-        case Validation::Fix:    return "fix";
         case Validation::Ignore: return "ignore";
     }
     return "throw";
 }
 
-Validation validation_policy_from_str(const std::string& name) {
-    if (name == "throw")  return Validation::Throw;
-    if (name == "warn")   return Validation::Warn;
-    if (name == "fix")    return Validation::Fix;
-    if (name == "ignore") return Validation::Ignore;
+const char* validation_repair_to_str(Repair r) {
+    switch (r) {
+        case Repair::None:    return "none";
+        case Repair::Attempt: return "attempt";
+    }
+    return "none";
+}
+
+// Sets both knobs, because one stored name can carry both: "fix" names the
+// fused policy repair-then-throw, and a circuit stored under it keeps that
+// meaning on the way back in. Writing always emits the two separately.
+void validation_policy_from_str(const std::string& name, ValidationOptions& v) {
+    if (name == "throw")  { v.policy = Validation::Throw;  return; }
+    if (name == "warn")   { v.policy = Validation::Warn;   return; }
+    if (name == "ignore") { v.policy = Validation::Ignore; return; }
+    if (name == "fix") {
+        v.policy = Validation::Throw;
+        v.repair = Repair::Attempt;
+        return;
+    }
     // Guessing here would pick a policy the file did not ask for, and the
     // wrong guess towards Ignore turns a rejected operand into a wrong answer.
     throw std::runtime_error(
         "QuantumCircuit::from_json: unknown validation policy '" + name + "'");
+}
+
+void validation_repair_from_str(const std::string& name, ValidationOptions& v) {
+    if (name == "none")    { v.repair = Repair::None;    return; }
+    if (name == "attempt") { v.repair = Repair::Attempt; return; }
+    throw std::runtime_error(
+        "QuantumCircuit::from_json: unknown validation repair '" + name + "'");
 }
 
 } // namespace
@@ -2071,10 +2103,14 @@ std::string QuantumCircuit::to_json() const {
         // that fails to survive a round trip produces a loud rejection rather
         // than a silent opt-out.
         if (inst.validation.policy != kDefaultValidation.policy ||
-            inst.validation.atol != kDefaultValidation.atol) {
+            inst.validation.atol != kDefaultValidation.atol ||
+            inst.validation.repair != kDefaultValidation.repair) {
             o << ",\"validation\":{\"policy\":"
               << json_escape(validation_policy_to_str(inst.validation.policy))
-              << ",\"atol\":" << inst.validation.atol << "}";
+              << ",\"atol\":" << inst.validation.atol
+              << ",\"repair\":"
+              << json_escape(validation_repair_to_str(inst.validation.repair))
+              << "}";
         }
 
         // Conditioning
@@ -2284,8 +2320,11 @@ QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
                             const std::string vkey = r.read_string();
                             r.expect(':');
                             if (vkey == "policy") {
-                                inst.validation.policy =
-                                    validation_policy_from_str(r.read_string());
+                                validation_policy_from_str(r.read_string(),
+                                                           inst.validation);
+                            } else if (vkey == "repair") {
+                                validation_repair_from_str(r.read_string(),
+                                                           inst.validation);
                             } else if (vkey == "atol") {
                                 inst.validation.atol = r.read_number();
                             } else {

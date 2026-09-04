@@ -152,6 +152,32 @@ public:
         //   More expressive but O(N^2) params (230/layer at N=20); use for ablation.
         bool term_indexed_gammas = false;
 
+        // Which beta drives which term of a CUSTOM mixer Hamiltonian.
+        //
+        // The paper ansatz gives one beta per QUBIT, and a custom mixer has
+        // TERMS. Terms are not qubits, and the two coincide only for the
+        // per-qubit X mixer MA-QAOA was defined on, so the mapping has to be
+        // stated rather than inferred from a case where the question does not
+        // arise.
+        //
+        // Read only when a non-empty mixer_hamiltonian is passed. The default
+        // mixer is the per-qubit RX and its betas are per qubit, or per orbit
+        // under orbit_assignments, whatever this says.
+        enum class MixerBetaDispatch {
+            // The beta of the term's lowest active qubit, or that qubit's orbit
+            // under orbit sharing. Mirrors the gamma default, and reduces
+            // exactly to the paper ansatz for the canonical per-qubit X mixer,
+            // so it is the default here.
+            LowestActiveQubit,
+            // One beta per mixer term per layer, mirroring term_indexed_gammas.
+            // The most expressive, and the largest parameter count.
+            TermIndexed,
+            // One beta for the whole mixer per layer, standard QAOA style.
+            Shared
+        };
+        MixerBetaDispatch mixer_beta_dispatch =
+            MixerBetaDispatch::LowestActiveQubit;
+
         // PI-MA-QAOA: per-orbit mixer weight vector (e.g. augmented cost per MW). (Might be published as a separate algorithm in future if it performs well.)
         // size must equal n_mixer_orbits (n_qubits in standard mode, n_orbits in
         // orbit mode). When non-empty, beta_i = beta_base * (mixer_weights[i] / w_max)
@@ -195,14 +221,25 @@ public:
 
     MAQAOA() = default;
 
-    // The mixer is the fixed per-qubit transverse-field RX of MA-QAOA
-    // (Herrman et al. 2022): U_B(beta_l) = prod_i RX(2*beta_l_i). Customise
-    // it through the beta machinery (options.mixer_weights for PI-MA-QAOA
-    // scaling, options.orbit_assignments for power-orbit sharing). Passing a
-    // non-empty mixer_hamiltonian THROWS std::invalid_argument, here and in
-    // build_circuit: silent ignoring is not acceptable, and first-class
-    // custom-mixer support is planned but not yet designed (see the project
-    // TODO / tracking issue).
+    // An empty mixer_hamiltonian gives the fixed per-qubit transverse-field RX
+    // of MA-QAOA (Herrman et al. 2022): U_B(beta_l) = prod_i RX(2*beta_l_i),
+    // customised through the beta machinery (options.mixer_weights for
+    // PI-MA-QAOA scaling, options.orbit_assignments for power-orbit sharing).
+    //
+    // A non-empty one is applied as the ORDERED PRODUCT of per-term rotations
+    // exp(-i*beta*c_k*P_k): exact when the mixer terms commute, a first-order
+    // Trotter step otherwise. Multi-qubit terms take the basis-change and
+    // CX-chain recipe rather than being factorised into independent per-qubit
+    // rotations, since RX(x)RY(y) is a different ansatz from exp(-i*beta*XY)
+    // and the difference is the whole point of the entangling mixers this
+    // supports. options.mixer_beta_dispatch decides which beta drives which
+    // term.
+    //
+    // A mixer term whose width differs from the cost Hamiltonian's, or whose
+    // coefficient has a non-zero imaginary part, is rejected with
+    // std::invalid_argument here, in build_circuit and in num_parameters
+    // alike: a mixer that is not Hermitian has no unitary exp(-i*beta*B), and
+    // taking the real part would silently apply something else.
     Result optimize(
         const SparsePauliOp& cost_hamiltonian,
         const SparsePauliOp& mixer_hamiltonian = {}
@@ -214,7 +251,12 @@ public:
         const std::vector<double>& params
     ) const;
 
-    int num_parameters(const SparsePauliOp& cost_hamiltonian) const;
+    // The parameter count follows the mixer, so the value passed here must be
+    // the one optimize() and build_circuit() are given. A custom mixer counts
+    // only the betas some term dispatches to; an empty one counts one beta per
+    // qubit, or per orbit, exactly as it always has.
+    int num_parameters(const SparsePauliOp& cost_hamiltonian,
+                       const SparsePauliOp& mixer_hamiltonian = {}) const;
 };
 
 // =============================================================================

@@ -58,9 +58,10 @@ public:
     // handed over is a claim, while a state the library evolved drifts by its
     // own rounding and would fail a check that nothing is wrong with.
     //
-    // The default is Throw, matching every other physical-validity property.
-    // Fix renormalizes the amplitudes that were given; Ignore restores the
-    // unchecked behaviour at the cost of one branch. The policy is judged
+    // The default is Throw with no repair, matching every other
+    // physical-validity property. Repair::Attempt renormalizes the amplitudes
+    // that were given; Ignore with no repair restores the unchecked behaviour
+    // at the cost of one branch. The policy is judged
     // against the CALLER'S buffer before anything is written, so a rejected
     // hand-over leaves this object exactly as it was.
     void set_amplitudes(const double* real, const double* imag, size_t count,
@@ -94,11 +95,13 @@ public:
     // repair and it does not throw, and a non-finite state answers false.
     bool is_normalized(double atol = DEFAULT_PHYSICAL_ATOL) const;
 
-    // Judge this state's normalization under a validation policy. Fix
-    // renormalizes in place; Warn reports it and leaves the state as it is;
-    // Throw raises; Ignore measures nothing, so opting out costs one branch
-    // rather than a sweep of the amplitudes. Fix on a state with no norm to
-    // divide out throws rather than returning it unrepaired.
+    // Judge this state's normalization under a validation policy.
+    // Repair::Attempt renormalizes in place; without it Warn reports and
+    // leaves the state as it is, Throw raises, and Ignore measures nothing, so
+    // opting out costs one branch rather than a sweep of the amplitudes. A
+    // state with no norm to divide out cannot be rescaled at all, so the
+    // response decides that case too rather than the repair request forcing a
+    // throw.
     void check_normalized(ValidationOptions validation = {});
 
     // Number of qubits

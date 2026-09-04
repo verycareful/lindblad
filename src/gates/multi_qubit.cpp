@@ -204,8 +204,8 @@ void apply_unitary(
         );
     }
 
-    // Under Fix the repair lands in `fixed` and `matrix` binds to it; under
-    // every other policy `matrix` is the caller's operand and nothing is
+    // Under Repair::Attempt the repair lands in `fixed` and `matrix` binds to
+    // it; under Repair::None `matrix` is the caller's operand and nothing is
     // copied. The caller's own matrix is never modified either way.
     std::vector<Complex128> fixed;
     const std::vector<Complex128>& matrix = detail::check_unitary_fixing(

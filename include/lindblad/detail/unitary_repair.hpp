@@ -5,7 +5,7 @@
 #include <cstddef>
 
 // =============================================================================
-// detail::project_to_unitary - the repair behind Validation::Fix for unitarity
+// detail::project_to_unitary - the repair behind Repair::Attempt for unitarity
 // =============================================================================
 // The nearest unitary to a square matrix M, in the Frobenius sense, is the
 // unitary polar factor: with M = W Σ V† its thin SVD, that factor is W V†.
@@ -20,8 +20,8 @@
 // trusting the routine.
 //
 // A matrix far from unitary is repaired just as willingly as one that drifted:
-// the projection is defined for any M, and Fix is a caller asking for the
-// nearest unitary, not for a diagnosis. The measured residual before repair is
+// the projection is defined for any M, and Repair::Attempt is a caller asking
+// for the nearest unitary, not for a diagnosis. The measured residual before repair is
 // what tells a caller how far it was, and Warn reports exactly that without
 // repairing.
 

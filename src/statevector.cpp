@@ -107,19 +107,24 @@ void Statevector::initialize_basis(size_t k) {
 
 // Both overloads judge the policy against the CALLER'S buffer before writing
 // anything, so a hand-over this refuses leaves the object holding whatever it
-// held before rather than the amplitudes just rejected. Under Fix the copy
-// happens first and normalize() runs on the result, which is the same state
-// either way and avoids scaling the caller's memory.
+// held before rather than the amplitudes just rejected. That includes a repair
+// that cannot run: a buffer with no norm to divide out is settled before the
+// copy, so the response arrives with the object still intact. Under
+// Repair::Attempt on a buffer that CAN be rescaled the copy happens first and
+// normalize() runs on the result, which is the same state either way and
+// avoids scaling the caller's memory.
 void Statevector::set_amplitudes(const double* real, const double* imag,
                                  size_t count, ValidationOptions validation) {
     if (count != dim) {
         throw std::invalid_argument("Amplitude count must match dimension");
     }
     bool repair = false;
-    if (validation.policy != Validation::Ignore) {
-        repair = detail::check_normalized(
-            detail::state_norm_sq(real, imag, count), validation,
-            "Statevector::set_amplitudes");
+    if (!detail::measurement_unused(validation)) {
+        const char* ctx = "Statevector::set_amplitudes";
+        const double ns = detail::state_norm_sq(real, imag, count);
+        repair = detail::check_normalized(ns, validation, ctx) &&
+                 detail::normalization_repairable(ns, validation, ctx,
+                                                  detail::STATE_NORMALIZATION);
     }
     std::memcpy(real_parts, real, dim * sizeof(double));
     std::memcpy(imag_parts, imag, dim * sizeof(double));
@@ -132,10 +137,13 @@ void Statevector::set_amplitudes(const std::vector<Complex128>& amplitudes,
         throw std::invalid_argument("Amplitude count must match dimension");
     }
     bool repair = false;
-    if (validation.policy != Validation::Ignore) {
-        repair = detail::check_normalized(
-            detail::state_norm_sq(amplitudes.data(), amplitudes.size()),
-            validation, "Statevector::set_amplitudes");
+    if (!detail::measurement_unused(validation)) {
+        const char* ctx = "Statevector::set_amplitudes";
+        const double ns =
+            detail::state_norm_sq(amplitudes.data(), amplitudes.size());
+        repair = detail::check_normalized(ns, validation, ctx) &&
+                 detail::normalization_repairable(ns, validation, ctx,
+                                                  detail::STATE_NORMALIZATION);
     }
     for (size_t i = 0; i < dim; ++i) {
         real_parts[i] = amplitudes[i].real;
@@ -235,12 +243,15 @@ bool Statevector::is_normalized(double atol) const {
 }
 
 void Statevector::check_normalized(ValidationOptions validation) {
-    // Returns before measuring under Ignore. The sum is a full 2^n sweep, and
-    // opting out of a check is meant to cost a branch rather than a pass.
-    if (validation.policy == Validation::Ignore) return;
-    if (detail::check_normalized(
-            detail::state_norm_sq(real_parts, imag_parts, dim), validation,
-            "Statevector::check_normalized")) {
+    // Returns before measuring when nothing would consume the residual. The
+    // sum is a full 2^n sweep, and opting out of a check is meant to cost a
+    // branch rather than a pass.
+    if (detail::measurement_unused(validation)) return;
+    const char* ctx = "Statevector::check_normalized";
+    const double ns = detail::state_norm_sq(real_parts, imag_parts, dim);
+    if (detail::check_normalized(ns, validation, ctx) &&
+        detail::normalization_repairable(ns, validation, ctx,
+                                         detail::STATE_NORMALIZATION)) {
         normalize();
     }
 }

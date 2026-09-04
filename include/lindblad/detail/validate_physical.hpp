@@ -45,7 +45,7 @@ namespace detail {
 // -----------------------------------------------------------------------------
 // subject names the failure, residual names the measured quantity so a caller
 // can see what the number refers to, and noun names the property in the
-// message Fix produces where no repair exists.
+// message a repair request produces where no repair exists.
 //
 // `residual` carries the COMPLETE expression, brackets and any maximum
 // included, because not every property reduces over something. A matrix
@@ -105,7 +105,7 @@ inline std::string physical_message(const char* ctx, const PhysicalProperty& p,
 [[noreturn]] inline void throw_no_repair(const char* ctx,
                                          const PhysicalProperty& p) {
     throw std::invalid_argument(std::string(ctx) +
-                                ": Validation::Fix has no repair defined for " +
+                                ": Repair::Attempt has no repair defined for " +
                                 p.noun);
 }
 
@@ -113,56 +113,98 @@ inline std::string physical_message(const char* ctx, const PhysicalProperty& p,
 // Policy dispatch
 // -----------------------------------------------------------------------------
 
-// Applies the caller's policy to a measured residual. Ignore never arrives
-// here: the check entry points return before measuring anything.
+// Whether the residual would be measured only to be discarded. Ignore with no
+// repair asked for is the one combination where nothing consumes the number,
+// so the check entry points return before taking it and opting out costs one
+// predictable branch. Every other combination needs it: a repair has to know
+// whether one is owed, and Warn has to report what it saw.
+inline bool measurement_unused(const ValidationOptions& v) {
+    return v.policy == Validation::Ignore && v.repair == Repair::None;
+}
+
+// Applies the caller's policy to a measured residual, for the properties that
+// define no repair. Ignore arrives here only alongside Repair::Attempt, since
+// the entry points return before measuring in the other case.
 inline void enforce_physical(double deviation, const ValidationOptions& v,
                              const char* ctx, const PhysicalProperty& p) {
     if (deviation <= v.atol) return;  // a NaN deviation falls through to fail
+
+    // Asking for a repair this property does not define is an error whatever
+    // the response says, because the response governs an operand that is still
+    // invalid and this is a mistake in the calling code. A repair that quietly
+    // did nothing would be worse: it returns an unphysical operand under a
+    // request to correct it.
+    if (v.repair == Repair::Attempt) throw_no_repair(ctx, p);
 
     switch (v.policy) {
         case Validation::Warn:
             emit_warning(physical_message(ctx, p, deviation, v.atol));
             return;
-        case Validation::Fix:
-            // Repair is defined per property. Where none is, saying so is the
-            // only honest option: a Fix that quietly did nothing would return
-            // an unphysical result under a policy that promised to correct it.
-            throw_no_repair(ctx, p);
-        case Validation::Throw:
         case Validation::Ignore:
+            return;
+        case Validation::Throw:
             break;
     }
     throw_not_physical(ctx, p, deviation, v.atol);
 }
 
-// The same dispatch for a property that HAS a repair, which the three above do
-// not. It cannot perform the repair itself: it sees a residual, not the object,
-// and the repair belongs to whatever owns the data. So it reports back instead.
+// The same dispatch for a property that HAS a repair. It cannot perform the
+// repair itself: it sees a residual, not the object, and the repair belongs to
+// whatever owns the data. So it reports back instead.
 //
-// Returns true when the caller must repair, which happens under Fix and only
-// under Fix. Every other outcome is settled here:
-//   - within tolerance: false, and the four policies are indistinguishable
+// Returns true when the caller must repair, which happens under Repair::Attempt
+// and only under it, whatever the response says. The response knob does not
+// decide whether to try, only what to do with an operand that is still invalid
+// after trying, so it is consulted here only when nothing will be tried:
+//   - within tolerance: false, and all six policies are indistinguishable
 //   - Warn: reported, then false. Warn describes, it does not repair, so the
 //     caller proceeds with the object still violating the property.
 //   - Throw: does not return.
-//   - Ignore: never arrives, the entry points return before measuring.
+//   - Ignore: false, having reported nothing. Reached only under
+//     Repair::Attempt, and that returns above.
 inline bool enforce_physical_repairable(double deviation,
                                         const ValidationOptions& v,
                                         const char* ctx,
                                         const PhysicalProperty& p) {
     if (deviation <= v.atol) return false;  // a NaN deviation falls through
+    if (v.repair == Repair::Attempt) return true;
 
     switch (v.policy) {
         case Validation::Warn:
             emit_warning(physical_message(ctx, p, deviation, v.atol));
             return false;
-        case Validation::Fix:
-            return true;
-        case Validation::Throw:
         case Validation::Ignore:
+            return false;
+        case Validation::Throw:
             break;
     }
     throw_not_physical(ctx, p, deviation, v.atol);
+}
+
+// Applies the response knob to an operand a repair was asked for, attempted on,
+// and could not correct. This is the case the split exists to make sayable: the
+// caller asked for a repair and also said what should happen when one is not
+// enough, and those are different answers for a batch run and for an advisory
+// check.
+//
+// `why` names what the repair did, because "still not unitary" alone cannot
+// distinguish a projection that failed to factorise from one that ran and
+// landed outside tolerance, and those want different responses from a caller.
+inline void respond_unrepaired(const ValidationOptions& v, const char* ctx,
+                               const PhysicalProperty& p,
+                               const std::string& why) {
+    const std::string msg =
+        std::string(ctx) + ": could not repair " + p.noun + ", " + why;
+    switch (v.policy) {
+        case Validation::Warn:
+            emit_warning(msg);
+            return;
+        case Validation::Ignore:
+            return;
+        case Validation::Throw:
+            break;
+    }
+    throw std::invalid_argument(msg);
 }
 
 // -----------------------------------------------------------------------------
@@ -220,12 +262,12 @@ double density_trace_real(const Complex128* rho, std::size_t dim);
 // -----------------------------------------------------------------------------
 // Check entry points
 // -----------------------------------------------------------------------------
-// Each returns before measuring anything under Validation::Ignore, so opting
-// out costs one predictable branch and nothing else.
+// Each returns before measuring anything when the residual would go unused, so
+// opting out costs one predictable branch and nothing else.
 
 inline void check_unitary(const Complex128* U, std::size_t rows,
                           const ValidationOptions& v, const char* ctx) {
-    if (v.policy == Validation::Ignore || rows == 0) return;
+    if (measurement_unused(v) || rows == 0) return;
     enforce_physical(unitarity_deviation(U, rows), v, ctx, UNITARITY);
 }
 
@@ -236,24 +278,24 @@ inline void check_unitary(const std::vector<Complex128>& U, std::size_t rows,
 
 // The repairing form, split in two because the caller owns the storage.
 //
-// Unitarity is the one physical property here with a repair defined, so this is
-// the only check where Fix means something other than an error. It follows the
-// same shape as the normalization checks: this half measures and reports back
-// whether a repair is owed, and the caller performs it, because the operand may
-// live behind a type that decides for itself how it is written (a gate matrix
-// is shared copy-on-write, so a repair rebinds a fresh buffer rather than
-// mutating one that other instructions are reading).
+// Unitarity is one of the three properties here with a repair defined, the
+// other two being the normalizations. It follows the same shape as they do:
+// this half measures and reports back whether a repair is owed, and the caller
+// performs it, because the operand may live behind a type that decides for
+// itself how it is written (a gate matrix is shared copy-on-write, so a repair
+// rebinds a fresh buffer rather than mutating one that other instructions are
+// reading).
 //
 // Splitting it this way also keeps the measurement free of an allocation on
-// every path that does NOT repair: Throw, Warn and Ignore never materialise a
-// mutable copy.
+// every path that does NOT repair: Repair::None never materialises a mutable
+// copy under any response.
 //
-// Returns true under Fix and only under Fix, when the operand is outside
-// tolerance. Every other outcome is settled here exactly as it is for the
-// normalization properties.
+// Returns true under Repair::Attempt and only under it, when the operand is
+// outside tolerance. Every other outcome is settled here exactly as it is for
+// the normalization properties.
 inline bool unitary_needs_repair(const Complex128* U, std::size_t rows,
                                  const ValidationOptions& v, const char* ctx) {
-    if (v.policy == Validation::Ignore || rows == 0) return false;
+    if (measurement_unused(v) || rows == 0) return false;
     return enforce_physical_repairable(unitarity_deviation(U, rows), v, ctx,
                                        UNITARITY);
 }
@@ -263,29 +305,34 @@ inline bool unitary_needs_repair(const Complex128* U, std::size_t rows,
 //
 // The verification is the whole reason this repair is safe to offer. A
 // projection that silently failed to converge would hand back an operand as
-// unphysical as the one it replaced, under a policy that promised to correct
-// it, which is the exact failure mode Fix exists to avoid. Since the
+// unphysical as the one it replaced, under a request to correct it, which is
+// the exact failure mode Repair::Attempt exists to avoid. Since the
 // postcondition is unitarity and unitarity_deviation measures precisely that,
 // the check costs one more residual and leaves nothing asserted on trust.
-inline void repair_unitary(Complex128* U, std::size_t rows,
+//
+// Returns true when U now satisfies unitarity. On false the response has
+// already been delivered and U holds whatever the projection left behind, so
+// the caller must fall back to the operand it copied from rather than install
+// this buffer.
+inline bool repair_unitary(Complex128* U, std::size_t rows,
                            const ValidationOptions& v, const char* ctx) {
     const double before = unitarity_deviation(U, rows);
     if (!project_to_unitary(U, rows)) {
-        throw std::invalid_argument(
-            std::string(ctx) +
-            ": Validation::Fix could not repair unitarity, the polar "
-            "projection failed to factorise the operand (measured " +
-            format_residual(before) + ")");
+        respond_unrepaired(v, ctx, UNITARITY,
+                           "the polar projection failed to factorise the "
+                           "operand (measured " + format_residual(before) + ")");
+        return false;
     }
     const double after = unitarity_deviation(U, rows);
     if (!(after <= v.atol)) {
-        throw std::invalid_argument(
-            std::string(ctx) +
-            ": Validation::Fix repaired unitarity but the result is still "
-            "outside tolerance (" + format_residual(before) + " before, " +
-            format_residual(after) + " after, atol " + format_residual(v.atol) +
-            ")");
+        respond_unrepaired(v, ctx, UNITARITY,
+                           "the projection ran but its result is still outside "
+                           "tolerance (" + format_residual(before) +
+                           " before, " + format_residual(after) +
+                           " after, atol " + format_residual(v.atol) + ")");
+        return false;
     }
+    return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -311,7 +358,7 @@ inline void repair_unitary(Complex128* U, std::size_t rows,
 // would defeat that and could not be reset at all.
 inline void warn_unitary_repaired_once() {
     emit_warning(
-        "note: Validation::Fix repaired a matrix that was not unitary. The "
+        "note: Repair::Attempt repaired a matrix that was not unitary. The "
         "repair applies to this call and the matrix you passed is unchanged, so "
         "a loop over it, or a circuit run more than once, pays one projection "
         "every time. QuantumCircuit::unitary repairs the matrix it stores when "
@@ -319,23 +366,29 @@ inline void warn_unitary_repaired_once() {
         "avoids the repeat entirely.");
 }
 
-// Measures unitarity and, under Fix on an operand outside tolerance, repairs a
-// COPY into `storage` and returns a reference to it. Every other policy behaves
-// exactly as check_unitary does and returns the caller's operand untouched.
+// Measures unitarity and, under Repair::Attempt on an operand outside
+// tolerance, repairs a COPY into `storage` and returns a reference to it.
+// Repair::None behaves exactly as check_unitary does and returns the caller's
+// operand untouched.
+//
+// A repair that does not converge returns the caller's operand as well, after
+// respond_unrepaired has delivered the response the caller asked for. That is
+// what makes Warn and Ignore usable alongside a repair: the call proceeds with
+// the operand it was given rather than with a half-projected buffer.
 //
 // Storage is passed in rather than returned so the common path allocates
-// nothing: an operand already inside tolerance, and any policy that is not Fix,
-// never materialises a copy. That matters because these entry points are the
-// per-gate kernels.
+// nothing: an operand already inside tolerance, and Repair::None under every
+// response, never materialises a copy. That matters because these entry points
+// are the per-gate kernels.
 inline const Complex128* check_unitary_fixing(const Complex128* U,
                                               std::size_t rows,
                                               const ValidationOptions& v,
                                               const char* ctx,
                                               std::vector<Complex128>& storage) {
     if (!unitary_needs_repair(U, rows, v, ctx)) return U;
-    warn_unitary_repaired_once();
     storage.assign(U, U + rows * rows);
-    repair_unitary(storage.data(), rows, v, ctx);
+    if (!repair_unitary(storage.data(), rows, v, ctx)) return U;
+    warn_unitary_repaired_once();
     return storage.data();
 }
 
@@ -344,9 +397,9 @@ inline const std::vector<Complex128>& check_unitary_fixing(
     const ValidationOptions& v, const char* ctx,
     std::vector<Complex128>& storage) {
     if (!unitary_needs_repair(U.data(), rows, v, ctx)) return U;
-    warn_unitary_repaired_once();
     storage = U;
-    repair_unitary(storage.data(), rows, v, ctx);
+    if (!repair_unitary(storage.data(), rows, v, ctx)) return U;
+    warn_unitary_repaired_once();
     return storage;
 }
 
@@ -357,9 +410,9 @@ inline const std::array<Complex128, N>& check_unitary_fixing(
     const ValidationOptions& v, const char* ctx,
     std::array<Complex128, N>& storage) {
     if (!unitary_needs_repair(U.data(), rows, v, ctx)) return U;
-    warn_unitary_repaired_once();
     storage = U;
-    repair_unitary(storage.data(), rows, v, ctx);
+    if (!repair_unitary(storage.data(), rows, v, ctx)) return U;
+    warn_unitary_repaired_once();
     return storage;
 }
 
@@ -371,14 +424,14 @@ inline const std::array<Complex128, N>& check_unitary_fixing(
 inline void check_kraus_tp(const std::vector<std::vector<Complex128>>& ops,
                            std::size_t dim, const ValidationOptions& v,
                            const char* ctx) {
-    if (v.policy == Validation::Ignore || dim == 0 || ops.empty()) return;
+    if (measurement_unused(v) || dim == 0 || ops.empty()) return;
     enforce_physical(kraus_tp_deviation(ops, dim), v, ctx,
                      KRAUS_TRACE_PRESERVING);
 }
 
 inline void check_superop_tp(const std::vector<Complex128>& S, std::size_t dim,
                              const ValidationOptions& v, const char* ctx) {
-    if (v.policy == Validation::Ignore || dim == 0) return;
+    if (measurement_unused(v) || dim == 0) return;
     enforce_physical(superop_tp_deviation(S.data(), dim), v, ctx,
                      SUPEROP_TRACE_PRESERVING);
 }
@@ -390,23 +443,41 @@ inline void check_superop_tp(const std::vector<Complex128>& S, std::size_t dim,
 // repair rescales the object and only the object's owner can do that. `norm_sq`
 // is ⟨ψ|ψ⟩ and `trace` is Re Tr(ρ), both measured through the quarantined sums
 // above, or through a layer's own contraction where the state is not a flat
-// array. Ignore returns before anything is judged.
+// array. Ignore with no repair asked for returns before anything is judged.
 //
 // A non-finite measurement yields a non-finite deviation, which fails the
 // tolerance comparison and is therefore reported rather than passed over.
 
 inline bool check_normalized(double norm_sq, const ValidationOptions& v,
                              const char* ctx) {
-    if (v.policy == Validation::Ignore) return false;
+    if (measurement_unused(v)) return false;
     return enforce_physical_repairable(std::abs(norm_sq - 1.0), v, ctx,
                                        STATE_NORMALIZATION);
 }
 
 inline bool check_trace_normalized(double trace, const ValidationOptions& v,
                                    const char* ctx) {
-    if (v.policy == Validation::Ignore) return false;
+    if (measurement_unused(v)) return false;
     return enforce_physical_repairable(std::abs(trace - 1.0), v, ctx,
                                        DENSITY_NORMALIZATION);
+}
+
+// The rescale these two properties define as their repair is impossible for
+// exactly one input: an object with no norm to divide out, zero or non-finite.
+// Routing that through the response knob is what lets a long run report one
+// degenerate state and carry on rather than ending on it.
+//
+// `measure` is the same number that was judged, ⟨ψ|ψ⟩ or Re Tr(ρ), so the
+// caller passes what it already has. Returns true when the rescale can be
+// performed; on false the response has been delivered and the object must be
+// left exactly as it is.
+inline bool normalization_repairable(double measure, const ValidationOptions& v,
+                                     const char* ctx,
+                                     const PhysicalProperty& p) {
+    if (measure > 0.0 && std::isfinite(measure)) return true;
+    respond_unrepaired(v, ctx, p, "there is no norm to divide out (measured " +
+                                      format_residual(measure) + ")");
+    return false;
 }
 
 } // namespace detail

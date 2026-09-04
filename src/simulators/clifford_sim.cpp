@@ -1388,9 +1388,9 @@ CliffordSimulator::Result CliffordSimulator::run(
     // Pre-flight: reject any out-of-range operand index up front (this backend
     // surfaces errors by throwing).
     circuit_in.validate_operands();
-    // Under Fix a repaired copy is executed and the caller's circuit is left
-    // exactly as it was handed over; every other policy binds straight to it and
-    // nothing is copied.
+    // Under Repair::Attempt a repaired copy is executed and the caller's
+    // circuit is left exactly as it was handed over; Repair::None binds
+    // straight to it and nothing is copied.
     std::optional<QuantumCircuit> repaired_storage =
         circuit_in.validated_physical();
     const QuantumCircuit& circuit =

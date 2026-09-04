@@ -399,11 +399,14 @@ bool QuditMPS::is_normalized(double atol) const {
 }
 
 void QuditMPS::check_normalized(ValidationOptions validation) {
-    // Returns before measuring under Ignore: the measurement is a transfer
-    // matrix contraction down the whole chain.
-    if (validation.policy == Validation::Ignore) return;
-    if (detail::check_normalized(norm_sq(), validation,
-                                 "QuditMPS::check_normalized")) {
+    // Returns before measuring when nothing would consume the residual: the
+    // measurement is a transfer matrix contraction down the whole chain.
+    if (detail::measurement_unused(validation)) return;
+    const char* ctx = "QuditMPS::check_normalized";
+    const double ns = norm_sq();
+    if (detail::check_normalized(ns, validation, ctx) &&
+        detail::normalization_repairable(ns, validation, ctx,
+                                         detail::STATE_NORMALIZATION)) {
         normalize();
     }
 }

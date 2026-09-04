@@ -270,9 +270,9 @@ void StatevectorSimulator::simulate_circuit(
     // A public entry that does not pass through run(), so it owns the physical
     // pre-flight itself. The trajectory below then applies under Ignore, the
     // same division run() uses.
-    // Under Fix a repaired copy is executed and the caller's circuit is left
-    // exactly as it was handed over; every other policy binds straight to it and
-    // nothing is copied.
+    // Under Repair::Attempt a repaired copy is executed and the caller's
+    // circuit is left exactly as it was handed over; Repair::None binds
+    // straight to it and nothing is copied.
     std::optional<QuantumCircuit> repaired_storage =
         circuit_in.validated_physical();
     const QuantumCircuit& circuit =
@@ -522,10 +522,10 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // Pre-flight: reject any out-of-range operand index up front so the
         // failure surfaces through Result rather than reaching a kernel.
         circuit_in.validate_operands();
-        // Under Fix a repaired copy is executed and the caller's circuit is
-        // left exactly as it was handed over; every other policy binds straight
-        // to it and nothing is copied. Same shape as the fused-circuit swap
-        // below, and it runs first so fusion consumes repaired matrices.
+        // Under Repair::Attempt a repaired copy is executed and the caller's
+        // circuit is left exactly as it was handed over; Repair::None binds
+        // straight to it and nothing is copied. Same shape as the fused-circuit
+        // swap below, and it runs first so fusion consumes repaired matrices.
         std::optional<QuantumCircuit> repaired_storage =
             circuit_in.validated_physical();
         const QuantumCircuit& circuit =

@@ -547,16 +547,17 @@ public:
     // own ValidationOptions. This is the one place every matrix in a circuit
     // is seen exactly once, whatever route it arrived by, and it runs before
     // gate fusion so a matrix is checked while it is still the caller's rather
-    // than after it has been multiplied into a block. Instructions carrying
-    // Validation::Ignore, and matrices whose size does not match their operand
-    // count (a structural error, reported where sizes are checked), are
-    // skipped. Throws std::invalid_argument under Validation::Throw.
+    // than after it has been multiplied into a block. Instructions that would
+    // consume no residual (Validation::Ignore with Repair::None), and matrices
+    // whose size does not match their operand count (a structural error,
+    // reported where sizes are checked), are skipped. Throws std::invalid_argument under Validation::Throw.
     void validate_physical() const;
 
     // The repairing form of the pre-flight, for a backend that is about to
-    // execute. Behaves exactly as validate_physical() on every policy but Fix:
-    // Throw rejects, Warn reports, Ignore is skipped. Under Fix it performs the
-    // repair the policy asks for.
+    // execute. Behaves exactly as validate_physical() under Repair::None:
+    // Throw rejects, Warn reports, Ignore is skipped. Under Repair::Attempt it
+    // performs the repair, and a repair that cannot converge falls back to the
+    // response the same three enumerators name.
     //
     // It returns a repaired COPY rather than mutating, and only when a repair
     // actually ran, so:

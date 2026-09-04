@@ -84,12 +84,15 @@ bool DensityMatrix::is_normalized(double atol) const {
 }
 
 void DensityMatrix::check_normalized(ValidationOptions validation) {
-    // Returns before measuring under Ignore: reading the diagonal is O(dim),
-    // and opting out of a check should cost a branch rather than a pass.
-    if (validation.policy == Validation::Ignore) return;
-    if (detail::check_trace_normalized(
-            detail::density_trace_real(data.data(), dim), validation,
-            "DensityMatrix::check_normalized")) {
+    // Returns before measuring when nothing would consume the residual:
+    // reading the diagonal is O(dim), and opting out of a check should cost a
+    // branch rather than a pass.
+    if (detail::measurement_unused(validation)) return;
+    const char* ctx = "DensityMatrix::check_normalized";
+    const double tr = detail::density_trace_real(data.data(), dim);
+    if (detail::check_trace_normalized(tr, validation, ctx) &&
+        detail::normalization_repairable(tr, validation, ctx,
+                                         detail::DENSITY_NORMALIZATION)) {
         normalize();
     }
 }
@@ -830,9 +833,9 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
         // Pre-flight: reject any out-of-range operand index up front so the
         // failure surfaces through Result rather than reaching a kernel.
         circuit_in.validate_operands();
-        // Under Fix a repaired copy is executed and the caller's circuit is
-        // left exactly as it was handed over; every other policy binds straight
-        // to it and nothing is copied.
+        // Under Repair::Attempt a repaired copy is executed and the caller's
+        // circuit is left exactly as it was handed over; Repair::None binds
+        // straight to it and nothing is copied.
         std::optional<QuantumCircuit> repaired_storage =
             circuit_in.validated_physical();
         const QuantumCircuit& circuit =

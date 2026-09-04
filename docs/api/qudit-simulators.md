@@ -139,7 +139,7 @@ explicit QuditDensityMatrix(const QuditStatevector& sv);  // ρ = |ψ⟩⟨ψ|
 | `trace()` | Returns Tr(ρ) |
 | `purity()` | Returns Tr(ρ²) ∈ (0, 1] |
 | `is_normalized(atol)` | Predicate: is Tr(ρ) within `atol` of 1? Does not repair or throw |
-| `check_normalized(validation)` | Apply a validation policy; `Fix` renormalizes in place |
+| `check_normalized(validation)` | Apply a validation policy; `Repair::Attempt` renormalizes in place |
 
 `normalize()` refuses rather than returning quietly. The two cases it rejects,
 a zero trace and a non-finite one, are exactly those where dividing by the trace
@@ -285,10 +285,10 @@ throws when there is no norm to divide out rather than returning the state
 unchanged.
 
 `is_normalized` answers without repairing or throwing. `check_normalized`
-applies a policy, with `Fix` renormalizing in place. Under `Ignore` neither the
-contraction nor anything else runs, which matters more here than on the dense
-classes because the measurement is the most expensive of any state type in the
-library.
+applies a policy, with `Repair::Attempt` renormalizing in place. Under `Ignore`
+with `Repair::None` neither the contraction nor anything else runs, which
+matters more here than on the dense classes because the measurement is the most
+expensive of any state type in the library.
 
 `measure` (R.1.13, audit F-5): precomputes the right environments once
 (`build_right_envs`, $O(n \cdot \chi^3)$) and samples left-to-right read-only,

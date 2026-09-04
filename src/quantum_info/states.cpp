@@ -17,9 +17,9 @@ Operator Operator::from_circuit(const QuantumCircuit& circuit_in) {
     // Judge the circuit's supplied matrices once, here, rather than once per
     // basis column below: the columns re-apply the same instructions 2^n times
     // and the verdict cannot differ between them.
-    // Under Fix a repaired copy is executed and the caller's circuit is left
-    // exactly as it was handed over; every other policy binds straight to it and
-    // nothing is copied.
+    // Under Repair::Attempt a repaired copy is executed and the caller's
+    // circuit is left exactly as it was handed over; Repair::None binds
+    // straight to it and nothing is copied.
     std::optional<QuantumCircuit> repaired_storage =
         circuit_in.validated_physical();
     const QuantumCircuit& circuit =

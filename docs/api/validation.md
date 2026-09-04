@@ -27,18 +27,46 @@ translation units have it in scope without naming the file.
 
 ## Validation
 
-An enum class naming what to do when a physical property does not hold.
+An enum class naming what happens when a physical property does not hold and
+the operand was not, or could not be, made to hold it.
 
 - `Throw`: reject the call with `std::invalid_argument`. The default.
 - `Warn`: report through the warning handler, then proceed.
-- `Fix`: repair and continue where a repair is defined, otherwise throw.
-- `Ignore`: skip the check entirely. The only policy that costs nothing.
+- `Ignore`: proceed silently.
 
-`Fix` repairs normalization: a state or density matrix handed over out of
-normalization is divided by what it actually sums to, and the call continues
-with a correct object.
+## Repair
 
-`Fix` repairs unitarity by unitary polar projection. The nearest unitary to a
+An enum class naming whether the library may rewrite the operand before judging
+it.
+
+- `None`: judge the operand exactly as it was handed over. The default.
+- `Attempt`: apply the repair defined for the property first.
+
+The two are separate because they answer separate questions, and one enumerator
+carrying both leaves policies unsayable. An enumerator meaning "repair, and
+throw when the operand is still invalid" cannot also mean "repair, and warn",
+which is what a long batch run wants when one operand out of thousands cannot be
+corrected.
+
+Split, six policies are reachable:
+
+| | `Throw` | `Warn` | `Ignore` |
+|---|---|---|---|
+| `Repair::None` | reject | report, proceed | proceed |
+| `Repair::Attempt` | repair, else reject | repair, else report and proceed | repair, else proceed |
+
+An enum rather than a `bool` on the repair side because a property can have more
+than one repair: the unitary polar projection is one choice among several, and
+naming a specific one later must not change the type.
+
+## What a repair does
+
+`Repair::Attempt` repairs normalization: a state or density matrix handed over
+out of normalization is divided by what it actually sums to, and the call
+continues with a correct object.
+
+`Repair::Attempt` repairs unitarity by unitary polar projection. The nearest
+unitary to a
 square matrix, in the Frobenius sense, is the unitary polar factor: with
 `M = W S V-dagger` its thin SVD, that factor is `W V-dagger`. Replacing the
 singular values with ones discards exactly the non-unitary part and keeps every
@@ -47,10 +75,15 @@ to the unitary closest to what the caller meant.
 
 The repair is verified rather than trusted. Its whole postcondition is that the
 output is unitary, and the same residual that rejected the input measures that,
-so the result is re-measured against the caller's `atol` and a projection
-landing outside it raises `std::invalid_argument` rather than returning. A
-projection that silently failed to converge would hand back an operand as
-unphysical as the one it replaced, under a policy that promised a correction.
+so the result is re-measured against the caller's `atol`. A projection landing
+outside it has repaired nothing, so the response knob decides what happens next,
+exactly as it would for an operand nothing was attempted on. A projection that
+silently failed to converge would otherwise hand back an operand as unphysical
+as the one it replaced, under a request for a correction.
+
+A repair that could not run leaves the caller's operand in place. The call
+proceeds with what it was given rather than with a half-projected buffer, which
+is what makes `Warn` and `Ignore` usable alongside `Repair::Attempt` at all.
 
 Every entry point that checks unitarity applies the repair, and none of them
 modifies the caller's matrix. What differs is how long the repair lasts, which
@@ -72,22 +105,31 @@ A `run()` repairs at its pre-flight, into a copy of the circuit that only that
 run executes. The circuit the caller holds is unchanged, so a second run repairs
 again and reports again.
 
-For trace preservation, which has no cheap canonical repair, `Fix` throws
-`std::invalid_argument` naming the property it could not repair. Saying so is
-preferred to a `Fix` that quietly returns an unphysical result under a policy
-that promised to correct it.
+Trace preservation has no cheap canonical repair, so `Repair::Attempt` throws
+`std::invalid_argument` naming the property it cannot repair. That throw does
+not consult the response knob, because the response governs an operand that is
+still invalid and this is a mistake in the calling code: it asked for something
+that does not exist. A repair that quietly did nothing would be worse, returning
+an unphysical result under a request to correct it.
 
-`Fix` also throws on the two states that cannot be repaired at all. A zero state
-offers no direction to normalize toward, and a non-finite one has a NaN norm, so
-dividing by either manufactures garbage rather than recovering a state.
+Two states cannot be repaired at all. A zero state offers no direction to
+normalize toward, and a non-finite one has a NaN norm, so dividing by either
+manufactures garbage rather than recovering a state. That is a property of the
+operand rather than of the calling code, so the response decides it: `Throw`
+raises, `Warn` reports and leaves the object alone, `Ignore` leaves it alone
+silently.
 
 ## ValidationOptions
 
-A trivially copyable aggregate carrying the two knobs.
+A trivially copyable aggregate carrying the two policy knobs and the tolerance.
 
 - `Validation policy`: defaults to `Throw`.
 - `double atol`: absolute tolerance on the residual. Defaults to
   `DEFAULT_PHYSICAL_ATOL`, which is `1e-12`.
+- `Repair repair`: defaults to `None`.
+
+`repair` is declared last so that the positional form `{policy, atol}` keeps
+naming the same two fields it always has.
 
 `DEFAULT_PHYSICAL_ATOL` is the one number every physical-validity check in the
 library judges against, and predicates over the same properties default to it
@@ -102,11 +144,28 @@ constraint on how residuals are measured rather than on the number itself.
 Construct it inline at a call site:
 
 ```cpp
+using lindblad::Repair;
+using lindblad::Validation;
+
 apply_unitary(sv, {0, 1}, U);                            // Throw at 1e-12
 apply_unitary(sv, {0, 1}, U, {Validation::Warn});        // Warn at 1e-12
 apply_unitary(sv, {0, 1}, U, {Validation::Throw, 1e-10});
 apply_unitary(sv, {0, 1}, U, {Validation::Ignore});      // no check at all
+
+// repair first, and say what happens when the repair is not enough
+apply_unitary(sv, {0, 1}, U,
+              {Validation::Throw, 1e-12, Repair::Attempt});   // else reject
+apply_unitary(sv, {0, 1}, U,
+              {Validation::Warn, 1e-12, Repair::Attempt});    // else report
+apply_unitary(sv, {0, 1}, U,
+              {Validation::Ignore, 1e-12, Repair::Attempt});  // else proceed
 ```
+
+The last two are why the knobs are separate. A batch run wants one uncorrectable
+operand reported rather than the run ended, and a caller who has decided the
+check is advisory wants the repair applied where it can be and silence where it
+cannot. `Ignore` on its own is neither: it also skips the repair on operands
+that could have been corrected.
 
 ## Choosing a tolerance
 
@@ -213,8 +272,11 @@ multiplies against a kernel that sweeps `2^n · 2^k` amplitudes, so the check is
 is fifteen parts per million. It approaches the kernel's own cost only for wide
 gates on tiny registers.
 
-`Ignore` returns before measuring anything, so opting out costs one predictable
-branch.
+`Ignore` with `Repair::None` returns before measuring anything, so opting out
+costs one predictable branch. It is the one combination that skips the
+measurement: with nothing to repair and nothing to report, the residual would be
+computed only to be discarded. Every other combination consumes the number, so
+`Ignore` with `Repair::Attempt` pays for it.
 
 ## Circuits carry their policy
 
@@ -258,8 +320,8 @@ declaration, and their distance from exact unitarity is accumulated rounding.
 `run()` reads each instruction's `ValidationOptions` exactly once, in the
 pre-flight, over the instructions present at that moment. It then applies every
 gate under `Ignore`, so an unchanged matrix is not re-measured once per gate per
-shot. Under `Fix` the pre-flight also performs the repair, and the run executes
-a repaired copy rather than the circuit the caller passed.
+shot. Under `Repair::Attempt` the pre-flight also performs the repair, and the
+run executes a repaired copy rather than the circuit the caller passed.
 
 What falls outside that window is anything that comes into being after the
 pre-flight has walked the list. No current path builds a caller-scale matrix

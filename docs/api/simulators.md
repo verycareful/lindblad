@@ -259,8 +259,8 @@ class DensityMatrix {
   matrix unchanged
 - `is_normalized(atol)` is a predicate over $\text{Tr}(\rho) = 1$ alone: it
   answers, and neither repairs nor throws
-- `check_normalized(validation)` applies a validation policy, with `Fix`
-  renormalizing in place
+- `check_normalized(validation)` applies a validation policy, with
+  `Repair::Attempt` renormalizing in place
 
 ### Density Matrix Initialization
 
@@ -614,10 +614,10 @@ class MPSState {
   is multilinear in the tensors. It throws when there is no norm to divide out,
   a zero or non-finite state, rather than returning the state unchanged
 - `is_normalized(atol)` answers without repairing or throwing
-- `check_normalized(validation)` applies a policy, with `Fix` renormalizing.
-  Under `Ignore` the contraction does not run at all, which matters more here
-  than on the dense classes because this measurement is the most expensive of
-  any state type in the library
+- `check_normalized(validation)` applies a policy, with `Repair::Attempt`
+  renormalizing. Under `Ignore` with `Repair::None` the contraction does not run
+  at all, which matters more here than on the dense classes because this
+  measurement is the most expensive of any state type in the library
 
 **SVD backend**: `svd_method` (declared in `lindblad/types.hpp`, shared with
 the qudit MPS) selects the truncation SVD. `SVDMethod::BDC` is the **default**.

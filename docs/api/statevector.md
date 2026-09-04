@@ -53,13 +53,16 @@ physical-validity check.
 
 - `Throw` (default): an unnormalized hand-over raises `std::invalid_argument`
   naming the residual and the tolerance
-- `Fix`: the amplitudes are accepted and renormalized
 - `Warn`: reported through the warning handler, then accepted unchanged
 - `Ignore`: no check, at the cost of one branch
+- `Repair::Attempt`, alongside any of the three: the amplitudes are accepted and
+  renormalized, and the response above decides only the case a rescale cannot
+  fix, a zero or non-finite buffer
 
 ```cpp
 sv.set_amplitudes(amps);                            // must already be normalized
-sv.set_amplitudes(amps, {Validation::Fix});         // normalize on the way in
+sv.set_amplitudes(amps, {Validation::Throw, DEFAULT_PHYSICAL_ATOL,
+                         Repair::Attempt});         // normalize on the way in
 sv.set_amplitudes(amps, {Validation::Ignore});      // deliberately unnormalized
 ```
 

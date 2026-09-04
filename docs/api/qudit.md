@@ -100,7 +100,7 @@ Throws `std::invalid_argument` if `d < 2` or `n_qudits < 1`.
 | `normalize()` | Renormalise to unit norm. Throws when there is no norm to divide out |
 | `norm_sq()` | Sum of `\|amplitude[i]\|²` |
 | `is_normalized(atol)` | Predicate: is the norm within `atol` of 1? Does not repair or throw |
-| `check_normalized(validation)` | Apply a validation policy; `Fix` renormalizes in place |
+| `check_normalized(validation)` | Apply a validation policy; `Repair::Attempt` renormalizes in place |
 
 `normalize()` refuses rather than returning quietly. The two states it rejects,
 zero and non-finite, are exactly those where dividing by the norm produces

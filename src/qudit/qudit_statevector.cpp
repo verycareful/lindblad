@@ -64,11 +64,14 @@ bool QuditStatevector::is_normalized(double atol) const {
 }
 
 void QuditStatevector::check_normalized(ValidationOptions validation) {
-    // Returns before measuring under Ignore: the sum is a full d^n sweep.
-    if (validation.policy == Validation::Ignore) return;
-    if (detail::check_normalized(
-            detail::state_norm_sq(amplitudes.data(), dim), validation,
-            "QuditStatevector::check_normalized")) {
+    // Returns before measuring when nothing would consume the residual: the
+    // sum is a full d^n sweep.
+    if (detail::measurement_unused(validation)) return;
+    const char* ctx = "QuditStatevector::check_normalized";
+    const double ns = detail::state_norm_sq(amplitudes.data(), dim);
+    if (detail::check_normalized(ns, validation, ctx) &&
+        detail::normalization_repairable(ns, validation, ctx,
+                                         detail::STATE_NORMALIZATION)) {
         normalize();
     }
 }

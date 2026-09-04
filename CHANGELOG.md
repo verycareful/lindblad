@@ -4,6 +4,148 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.27.0] - 2026-09-04
+
+Two parameters that existed but could not be used, and a latent out-of-bounds
+found while fixing the first of them.
+
+MA-QAOA has taken a `mixer_hamiltonian` argument since it was written and has
+never been able to use one (#41). `ValidationOptions` has been able to say
+"repair, and throw when repair is impossible" and has never been able to say
+"repair, and warn" (#110). Both are the same shape of problem: a choice that was
+fused to another choice, so half the reachable policies could not be stated.
+
+### Added
+
+- **MA-QAOA accepts custom mixer Hamiltonians (#41).** `optimize` and
+  `build_circuit` rejected a non-empty `mixer_hamiltonian` with
+  `std::invalid_argument`. That throw was the right holding position, since the
+  argument was accepted and silently ignored before it, but the parameter sat in
+  the signature with no way to use it.
+
+  A non-empty mixer is now applied as the ordered product of per-term rotations
+  `exp(-i*beta*c_k*P_k)`: exact when the mixer terms commute, a first-order
+  Trotter step otherwise. Multi-qubit terms take the basis-change and CX-chain
+  recipe rather than a factorisation into independent per-qubit rotations,
+  because `Rx(x) Ry(y)` is a different ansatz from `exp(-i*beta*XY)` and that
+  difference is the whole point of the constraint-preserving XY mixers this
+  exists to support. It is the construction plain QAOA already uses, shared
+  rather than reinvented.
+
+  The open question was never how to apply a custom mixer but which beta drives
+  which term. The MA-QAOA ansatz gives one beta per QUBIT and a custom mixer has
+  TERMS, and the two coincide only for the per-qubit X mixer the ansatz was
+  defined on, which is why the paper never had to answer it. All three answers
+  ship behind `Options::mixer_beta_dispatch` rather than one being chosen for
+  the caller: `LowestActiveQubit`, `TermIndexed`, and `Shared`, one beta for the
+  whole mixer in the standard QAOA style. `LowestActiveQubit` is the default
+  because it reduces exactly to the paper ansatz for the canonical mixer, which
+  is checked rather than assumed: routing `sum_i X_i` through the custom path
+  produces a bit-identical state to the built-in per-qubit `Rx`.
+
+  `num_parameters` gains a mixer argument whose value changes the result, and it
+  counts only the betas some mixer term dispatches to. A count that ignored the
+  mixer would leave parameters in the vector driving no gate, and an optimizer
+  cannot tell a coordinate that does nothing from one that has converged.
+
+  A mixer term whose width differs from the cost Hamiltonian's, or whose
+  coefficient carries a non-zero imaginary part, is rejected at all three entry
+  points including `num_parameters`. Checking two of three would be worse than
+  checking none: a caller could size a parameter vector for a mixer that the
+  call it was sized for then refuses.
+
+  The default is unchanged and stays unchanged. An empty `mixer_hamiltonian` is
+  the fixed per-qubit transverse field RX of MA-QAOA, with beta customisation
+  through `options.mixer_weights` and `options.orbit_assignments`, and
+  `mixer_beta_dispatch` is not consulted on that path at all.
+
+- **`Repair`, the half of the validation policy that was fused to the other
+  half (#110).** `ValidationOptions` decides what happens when a caller-supplied
+  operator is not physically valid. Three of the four old choices answered one
+  question, what should happen when the check fails, and the fourth answered a
+  different one, whether the library should try to repair the operator first.
+  Sharing an enum meant that choosing repair also chose the response, and that
+  response was fixed at throw.
+
+  So a caller could say "repair, and throw when repair is impossible" and could
+  not say "repair, and warn, then proceed" or "repair, and quietly skip". Neither
+  is exotic: the first is what a long batch run wants, where one unrepairable
+  operator should be reported rather than end the run, and the second is what a
+  caller who has already decided the check is advisory wants. `Ignore` was not
+  that, because it also skipped the repair on operators that could have been
+  repaired.
+
+  `Repair` is now its own enum, `None` or `Attempt`, and all six combinations of
+  the two knobs are reachable. It is an enum rather than a bool because a
+  property can have more than one repair: the unitary polar projection is one
+  choice among several, and naming a specific one later must not change the
+  type.
+
+### Changed
+
+- **`Validation` names one thing (#110): `Throw`, `Warn`, `Ignore`.** `Fix` is
+  removed rather than kept as a shorthand for `{Throw, Attempt}`, so there is
+  one way to say each policy rather than two. `ValidationOptions` gains its
+  `repair` field after `atol`, leaving the positional form `{policy, atol}`
+  meaning what it always has.
+
+  This is a breaking change for any code naming `Validation::Fix`. The
+  replacement is `{Validation::Throw, atol, Repair::Attempt}`, which behaves
+  identically. Circuit JSON reads `"fix"` and sets both knobs, so a stored
+  circuit keeps its meaning; it is written as the two knobs from now on.
+
+- **A repair that cannot be performed answers to the response knob (#110).**
+  This is the case the split exists for, and there are two of them. A polar
+  projection that fails to factorise, or that runs and lands outside tolerance,
+  used to throw whatever the caller asked for; it now reports through the
+  response and leaves the caller's operand in place, so the call proceeds with
+  what it was given rather than with a half-projected buffer. A state or density
+  matrix with no norm to divide out, zero or non-finite, is the same situation
+  and is treated the same way.
+
+  Asking for a repair a property does not define, trace preservation being the
+  one that defines none, still throws under every response. That is a mistake in
+  the calling code rather than a property of the operand, and the response knob
+  governs operands.
+
+- **Sixteen test sources are not compiled in this release.** They spell the
+  physical-validity policy as one fused enumerator, which no longer names
+  anything, so they do not compile. Eight say it directly and eight more reach
+  it through the shared policy-probe header every physical-validity suite
+  includes. That is 371 tests across 49 suites, which is why the totals below
+  are lower than the previous release's. They return, respelled, in the test
+  release that follows this one. The alternative was keeping `Fix` alive as a
+  second spelling, which is the thing this release set out to remove.
+
+### Fixed
+
+- **A wrong-length `orbit_assignments` indexed past the end of the MA-QAOA beta
+  array (#122).** MA-QAOA decided whether orbit sharing was active in two
+  places, and the two tests disagreed. `optimize` and `build_circuit` required
+  the vector to be the right length; the evolution required only that it was
+  non-empty. A vector of the wrong length was therefore orbit-mode-off at both
+  public entry points, which sized the parameter vector for one beta per qubit,
+  and orbit-mode-on in the evolution, which then indexed that array by an orbit
+  label. Orbit labels are caller-supplied and not bounded by the register size,
+  so an ordinary input reached it, and the evolution is the optimizer's hot path
+  and runs once per objective evaluation. The evolution now applies the same
+  test the entry points do, so all three agree by construction rather than by a
+  precondition nothing enforced.
+
+### Results
+
+2629 tests across 217 suites, 2628 passed and one intentionally red (26.6 s on
+GCC 13.3.0, 38.2 s on Clang 18.1.3; WSL, `-march=native` on both).
+
+The red one asserts that a non-empty MA-QAOA mixer throws, which is precisely
+what #41 removes. A feature release does not edit tests, so it ships red here
+and is corrected in the test release that follows, the same way the Clifford
+gate-validation pin was handled when that backend was reworked.
+
+The compiler gap in those timings is #72 again, and wider than the roughly 30%
+recorded there: the same binary content runs 44% longer under Clang, on the same
+machine and the same `-march`.
+
 ## [1.1.26.2] - 2026-09-04
 
 The six defects the observation test wave found, and the ten tests that were

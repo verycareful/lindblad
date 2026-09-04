@@ -25,6 +25,8 @@ Fields and defaults (from the header):
 - `orbit_assignments`: optional orbit indices per qubit
 - `term_indexed_gammas = false`: use term-indexed gammas when true
 - `mixer_weights`: optional PI-MA-QAOA weights
+- `mixer_beta_dispatch = MixerBetaDispatch::LowestActiveQubit`: which beta drives
+  which term of a custom mixer
 - `initial_thetas`: optional per-qubit `Ry(theta)` initialization
 - `beta_base = pi / 4`: base scale for PI-MA-QAOA betas
 - `lambda_co2 = 0.0`: stored but not referenced in the current implementation
@@ -33,6 +35,31 @@ Orbit behavior:
 
 - Orbit mode is only active if `orbit_assignments.size() == n_qubits`
 - Mixer orbit count is `max(orbit_assignments) + 1`
+- The same test decides orbit mode in `optimize`, `build_circuit`,
+  `num_parameters` and the evolution, so an `orbit_assignments` of the wrong
+  length turns orbit sharing off everywhere rather than in some places only
+
+## `MixerBetaDispatch`
+
+Read only when a non-empty `mixer_hamiltonian` is passed. The MA-QAOA ansatz
+gives one beta per QUBIT, and a custom mixer has TERMS; the two coincide only
+for the per-qubit X mixer the ansatz was defined on, so the mapping is a choice
+rather than something to infer.
+
+- `LowestActiveQubit` (default): the beta of the term's lowest active qubit, or
+  that qubit's orbit under orbit sharing. Mirrors the gamma default, and reduces
+  exactly to the paper ansatz for the canonical per-qubit X mixer
+- `TermIndexed`: one beta per mixer term per layer, mirroring
+  `term_indexed_gammas`. The most expressive, and the largest parameter count
+- `Shared`: one beta for the whole mixer per layer, standard QAOA style
+
+Beta slots are dense: a slot is the rank of a term's dispatch key among the
+distinct keys in ascending order, so the layout depends on which betas the mixer
+reaches and not on the order its terms are listed in. A mixer term that is all
+identity drives no gate and draws no beta.
+
+The default mixer is unaffected. With an empty `mixer_hamiltonian` the betas are
+per qubit, or per orbit, whatever this option says.
 
 Orbit assignment helper: `orbits_by_power`
 
@@ -86,7 +113,8 @@ Fields:
 Signature:
 
 ```cpp
-int num_parameters(const SparsePauliOp& cost_hamiltonian) const;
+int num_parameters(const SparsePauliOp& cost_hamiltonian,
+                   const SparsePauliOp& mixer_hamiltonian = {}) const;
 ```
 
 Behavior:
@@ -94,6 +122,17 @@ Behavior:
 - Orbit mode: `p * (n_cost_orbits + n_mixer_orbits)`
 - Term-indexed mode: `p * (n_terms + n_qubits)`
 - Default mode: `p * (n_qubits + n_qubits)`
+- A non-empty `mixer_hamiltonian` replaces the beta half of the count with the
+  number of beta slots its dispatch reaches, leaving the gamma half unchanged
+
+Pass the same `mixer_hamiltonian` here that `optimize` and `build_circuit` are
+given. The three stay mutually consistent: whatever this count says, the other
+two lay out and consume exactly that. A count that ignored the mixer would leave
+parameters in the vector driving no gate, and an optimizer cannot tell a
+coordinate that does nothing from one that has converged.
+
+A mixer this rejects is rejected here too, so a caller cannot size a vector for
+a mixer that the call it was sized for then refuses.
 
 ## `optimize`
 
@@ -108,11 +147,12 @@ Result optimize(
 
 Behavior (verified against `src/algorithms/maqaoa.cpp`):
 
-- The mixer is the fixed per-qubit transverse-field RX of MA-QAOA
-  (Herrman et al. 2022); customise the betas via `options.mixer_weights`
-  and `options.orbit_assignments`. A non-empty `mixer_hamiltonian` throws
-  `std::invalid_argument` (the parameter exists for QAOA signature parity;
-  first-class custom-mixer support is planned but not yet designed)
+- An empty `mixer_hamiltonian` gives the fixed per-qubit transverse-field RX of
+  MA-QAOA (Herrman et al. 2022), with the betas customised through
+  `options.mixer_weights` and `options.orbit_assignments`
+- A non-empty one is applied as the ordered product of per-term rotations
+  `exp(-i·β·c_k·P_k)`, with `options.mixer_beta_dispatch` deciding which
+  beta drives which term
 - Parameter layout per layer: `[gammas..., betas...]`
 - Uses COBYLA with bounds `[-2*pi, 2*pi]` and initial step size `0.3`
 - If `estimator.options.noise_model` is non-ideal, evaluates with `DensityMatrixSimulator`
@@ -143,9 +183,10 @@ Behavior:
 
 - Initializes with `H|0>` on each qubit unless `initial_thetas` is provided
 - Uses orbit or term-indexed gamma dispatch depending on options
-- Applies per-orbit or per-qubit mixer `Rx` rotations
-- A non-empty `mixer_hamiltonian` throws `std::invalid_argument`, matching
-  `optimize`
+- Applies per-orbit or per-qubit mixer `Rx` rotations for an empty
+  `mixer_hamiltonian`, and the custom mixer's per-term rotations otherwise
+- Emits the same gates as the direct evolution `optimize` uses, so a circuit
+  built here and a run of the optimizer describe the same ansatz
 - Kept for API compatibility and offline inspection; hot path uses direct evolution
 
 ## Example

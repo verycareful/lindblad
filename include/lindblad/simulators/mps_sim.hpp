@@ -100,11 +100,12 @@ public:
     // repair and it does not throw, and a non-finite state answers false.
     bool is_normalized(double atol = DEFAULT_PHYSICAL_ATOL) const;
 
-    // Judge this state's normalization under a validation policy. Fix
-    // renormalizes in place; Warn reports it and leaves the state as it is;
-    // Throw raises; Ignore measures nothing, so opting out costs one branch
-    // rather than a full pass. Fix on a state with nothing to divide out
-    // throws rather than returning it unrepaired.
+    // Judge this state's normalization under a validation policy.
+    // Repair::Attempt renormalizes in place; without it Warn reports and
+    // leaves the state as it is, Throw raises, and Ignore measures nothing,
+    // so opting out costs one branch rather than a full pass. A state with
+    // nothing to divide out cannot be rescaled at all, so the response
+    // decides that case too rather than the repair request forcing a throw.
     void check_normalized(ValidationOptions validation = {});
 
     // SVD ladder observability.

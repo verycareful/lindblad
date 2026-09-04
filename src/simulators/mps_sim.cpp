@@ -404,12 +404,15 @@ bool MPSState::is_normalized(double atol) const {
 }
 
 void MPSState::check_normalized(ValidationOptions validation) {
-    // Returns before measuring under Ignore. The measurement is an O(n·chi³)
-    // contraction, which is the most expensive of any state class here, so the
-    // opt-out matters most on this one.
-    if (validation.policy == Validation::Ignore) return;
-    if (detail::check_normalized(norm_sq(), validation,
-                                 "MPSState::check_normalized")) {
+    // Returns before measuring when nothing would consume the residual. The
+    // measurement is an O(n·chi³) contraction, which is the most expensive of
+    // any state class here, so the opt-out matters most on this one.
+    if (detail::measurement_unused(validation)) return;
+    const char* ctx = "MPSState::check_normalized";
+    const double ns = norm_sq();
+    if (detail::check_normalized(ns, validation, ctx) &&
+        detail::normalization_repairable(ns, validation, ctx,
+                                         detail::STATE_NORMALIZATION)) {
         normalize();
     }
 }
@@ -1418,9 +1421,9 @@ MPSSimulator::Result MPSSimulator::run(
     // Pre-flight: reject any out-of-range operand index up front (this backend
     // surfaces errors by throwing, consistent with its other run() guards).
     circuit_in.validate_operands();
-    // Under Fix a repaired copy is executed and the caller's circuit is left
-    // exactly as it was handed over; every other policy binds straight to it and
-    // nothing is copied.
+    // Under Repair::Attempt a repaired copy is executed and the caller's
+    // circuit is left exactly as it was handed over; Repair::None binds
+    // straight to it and nothing is copied.
     std::optional<QuantumCircuit> repaired_storage =
         circuit_in.validated_physical();
     const QuantumCircuit& circuit =
