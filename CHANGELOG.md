@@ -4,6 +4,74 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.27.2] - 2026-09-04
+
+One fix, its tests, and the documentation that would have prevented the
+confusion behind it.
+
+### Fixed
+
+- **An `Ignore` reaching a physical-validity dispatcher raises again, instead
+  of discarding what was measured** (#123). `Ignore` means the check does not
+  run, and the entry points implement that by returning before taking the
+  residual at all. So a dispatcher is never reached with it in normal use, and
+  reaching one means something measured the operand despite being told not to
+  look, and found it outside tolerance.
+
+  Treating that as an accept threw away a real finding. Worse, it removed the
+  only signal an entry point that lost its early return would ever produce:
+  every such entry point would have gone on passing its tests while silently
+  accepting violations. Both dispatchers fall through to the throw again.
+
+  The comment that justified the change was the root of it. It claimed `Ignore`
+  could only arrive alongside a repair request, but a repair request is settled
+  two lines above the switch, so the switch sees `Ignore` with no repair and
+  nothing else, which is precisely the combination the fall-through guarded.
+
+  `respond_unrepaired` keeps honouring `Ignore`, and that asymmetry is
+  deliberate rather than an oversight left behind: it runs only after a repair
+  was requested and attempted, so its `Ignore` is `Ignore` WITH a repair. That
+  is a policy a caller holds on purpose, meaning repair what you can and stay
+  quiet about what you cannot, and honouring it is the reason the enum was split
+  in the first place.
+
+### Tests
+
+- **`test_v11272_ignore_dispatch.cpp`**, 9 tests. The pin that caught the
+  regression covered one of the two dispatchers; the other carries the same
+  switch and the same reasoning and had no coverage for this case at all, so the
+  untested half was free to drift exactly as the tested half did.
+
+  The case is invisible from outside, since no public call can reach a
+  dispatcher with `Ignore`, so nothing in the library exercises it and a change
+  to either switch is unobservable except in a test written for it. The suite
+  therefore also pins the guard that makes it unreachable: widening it to cover
+  `Ignore` with a repair would leave the repair unable to tell whether it was
+  owed, and narrowing it would make plain `Ignore` pay for a residual nothing
+  reads.
+
+  The asymmetry with `respond_unrepaired` is asserted rather than left to be
+  inferred, so that the next reader finding two functions treating one
+  enumerator differently does not have to guess which is the bug.
+
+### Changed
+
+- **`docs/api/validation.md` states which cell of the policy grid skips the
+  measurement.** The grid has been there since the split, but a bare table left
+  the annotation to be inferred, and the row it belongs to contains two cells
+  that do measure. It now says the annotation is on one cell rather than the
+  row, that `Repair::Attempt` always measures because a repair cannot know
+  whether it is owed without asking, and that `Repair::None` is a command not to
+  repair rather than a description of whether a repair exists.
+
+### Results
+
+3077 tests across 271 suites, 3076 passed and one skipped (27.3 s on GCC 13.3.0,
+36.8 s on Clang 18.1.3; WSL, `-march=native` on both).
+
+Nothing ships red. The pin carried through the previous release for #123 is
+green.
+
 ## [1.1.27.1] - 2026-09-04
 
 The test release for 1.1.27.0. It restores the 371 tests the validation split

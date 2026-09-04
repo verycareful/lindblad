@@ -48,12 +48,33 @@ throw when the operand is still invalid" cannot also mean "repair, and warn",
 which is what a long batch run wants when one operand out of thousands cannot be
 corrected.
 
-Split, six policies are reachable:
+Split, six policies are reachable. Read the row first: it says whether the
+library may rewrite the operand. The column then says what happens if the
+operand is still invalid afterwards.
 
 | | `Throw` | `Warn` | `Ignore` |
 |---|---|---|---|
-| `Repair::None` | reject | report, proceed | proceed |
+| `Repair::None` | reject | report, proceed | proceed, **never looks** |
 | `Repair::Attempt` | repair, else reject | repair, else report and proceed | repair, else proceed |
+
+The annotation is on one cell, not on the row. `Repair::None` with `Throw` or
+`Warn` still measures, because a rejection and a report both need the residual
+they are about. `Repair::None` with `Ignore` is the only combination where
+nothing at all consumes the number, so it is never computed: that cell is what
+"ignore" means in full, and it is the cheap path in the library because there is
+genuinely nothing to do rather than because the check was skipped as an
+optimisation.
+
+`Repair::Attempt` always measures, `Ignore` included. A repair cannot know
+whether it is owed without first asking how far the operand is from valid, so
+the bottom-right cell looks, repairs what it can, and stays silent about what it
+cannot. That is a different policy from the cell above it, not a louder version
+of the same one.
+
+`Repair::None` is a command rather than a condition: it means do not attempt a
+repair, and says nothing about whether one exists. Whether a repair exists is a
+property of what is being checked, and it is a third thing again, described under
+[What a repair does](#what-a-repair-does).
 
 An enum rather than a `bool` on the repair side because a property can have more
 than one repair: the unitary polar projection is one choice among several, and

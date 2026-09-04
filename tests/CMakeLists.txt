@@ -157,6 +157,7 @@ set(LINDBLAD_TEST_SOURCES
     test_v11271_policy_grid.cpp
     test_v11271_repair_impossible.cpp
     test_v11271_validation_serialisation.cpp
+    test_v11272_ignore_dispatch.cpp
     test_v11271_mixer_dispatch.cpp
 )
 

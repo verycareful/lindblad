@@ -123,8 +123,17 @@ inline bool measurement_unused(const ValidationOptions& v) {
 }
 
 // Applies the caller's policy to a measured residual, for the properties that
-// define no repair. Ignore arrives here only alongside Repair::Attempt, since
-// the entry points return before measuring in the other case.
+// define no repair.
+//
+// Ignore does not get a case of its own, and that is deliberate. By the time
+// the switch runs, Repair::Attempt has been settled two lines above, so the
+// only Ignore that can reach it is Ignore with no repair asked for, which is
+// exactly the combination the entry points refuse to measure. Arriving here
+// therefore means something measured the operand despite being told not to
+// look, and the finding is real whatever the request said. Accepting it would
+// discard a measured violation and remove the only signal an entry point that
+// lost its early return would ever produce, so Ignore falls through to the
+// throw alongside Throw.
 inline void enforce_physical(double deviation, const ValidationOptions& v,
                              const char* ctx, const PhysicalProperty& p) {
     if (deviation <= v.atol) return;  // a NaN deviation falls through to fail
@@ -140,9 +149,8 @@ inline void enforce_physical(double deviation, const ValidationOptions& v,
         case Validation::Warn:
             emit_warning(physical_message(ctx, p, deviation, v.atol));
             return;
-        case Validation::Ignore:
-            return;
         case Validation::Throw:
+        case Validation::Ignore:
             break;
     }
     throw_not_physical(ctx, p, deviation, v.atol);
@@ -160,8 +168,9 @@ inline void enforce_physical(double deviation, const ValidationOptions& v,
 //   - Warn: reported, then false. Warn describes, it does not repair, so the
 //     caller proceeds with the object still violating the property.
 //   - Throw: does not return.
-//   - Ignore: false, having reported nothing. Reached only under
-//     Repair::Attempt, and that returns above.
+//   - Ignore: does not return either, for the same reason it does not in
+//     enforce_physical. Repair::Attempt is settled above, so an Ignore that
+//     reaches the switch is one that was never supposed to be measured.
 inline bool enforce_physical_repairable(double deviation,
                                         const ValidationOptions& v,
                                         const char* ctx,
@@ -173,9 +182,8 @@ inline bool enforce_physical_repairable(double deviation,
         case Validation::Warn:
             emit_warning(physical_message(ctx, p, deviation, v.atol));
             return false;
-        case Validation::Ignore:
-            return false;
         case Validation::Throw:
+        case Validation::Ignore:
             break;
     }
     throw_not_physical(ctx, p, deviation, v.atol);
@@ -190,6 +198,13 @@ inline bool enforce_physical_repairable(double deviation,
 // `why` names what the repair did, because "still not unitary" alone cannot
 // distinguish a projection that failed to factorise from one that ran and
 // landed outside tolerance, and those want different responses from a caller.
+//
+// Ignore DOES return here, unlike in the two dispatchers above, and the
+// difference is not an inconsistency. This is only ever reached after a repair
+// was asked for and attempted, so its Ignore is Ignore with Repair::Attempt: a
+// policy a caller can hold deliberately, meaning repair where you can and stay
+// quiet where you cannot. The Ignore the dispatchers refuse is the other one,
+// which no entry point should have measured at all.
 inline void respond_unrepaired(const ValidationOptions& v, const char* ctx,
                                const PhysicalProperty& p,
                                const std::string& why) {
