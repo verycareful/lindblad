@@ -1,5 +1,5 @@
 // test_v11241_unitary_repair.cpp - #57, the unitary polar projection behind
-// Validation::Fix.
+// Repair::Attempt.
 //
 // The repair shipped with a single test touching it, and that test asserted the
 // behaviour it replaced. Nothing exercised the projection itself, nothing
@@ -57,6 +57,7 @@ using lindblad::Complex128;
 using lindblad::DensityMatrix;
 using lindblad::MPSState;
 using lindblad::QuantumCircuit;
+using lindblad::Repair;
 using lindblad::QuditStatevector;
 using lindblad::Statevector;
 using lindblad::Validation;
@@ -256,9 +257,9 @@ TEST(V11241UnitaryRepair, NeedsRepairIsTrueUnderFixAndOnlyOutsideTolerance) {
     const auto bent = drifted_hadamard();
     const auto clean = hadamard();
 
-    EXPECT_TRUE(unitary_needs_repair(bent.data(), 2, {Validation::Fix, kAtol},
+    EXPECT_TRUE(unitary_needs_repair(bent.data(), 2, {Validation::Throw, kAtol, Repair::Attempt},
                                      "probe"));
-    EXPECT_FALSE(unitary_needs_repair(clean.data(), 2, {Validation::Fix, kAtol},
+    EXPECT_FALSE(unitary_needs_repair(clean.data(), 2, {Validation::Throw, kAtol, Repair::Attempt},
                                       "probe"))
         << "a matrix already inside tolerance must not be projected; the "
            "repair would be a no-op that still costs a factorisation";
@@ -288,7 +289,7 @@ TEST(V11241UnitaryRepair, NeedsRepairDeclinesAZeroSizedOperand) {
     // rows == 0 returns before measuring, so an empty operand cannot reach the
     // residual and be reported as a violation of a property it cannot have.
     const std::vector<Complex128> empty;
-    EXPECT_FALSE(unitary_needs_repair(empty.data(), 0, {Validation::Fix, kAtol},
+    EXPECT_FALSE(unitary_needs_repair(empty.data(), 0, {Validation::Throw, kAtol, Repair::Attempt},
                                       "probe"));
     EXPECT_FALSE(unitary_needs_repair(empty.data(), 0,
                                       {Validation::Throw, kAtol}, "probe"));
@@ -300,7 +301,7 @@ TEST(V11241UnitaryRepair, RepairVerifiesItsOwnResultAndRaisesWhenItCannot) {
     // it replaced.
     auto broken = drifted_hadamard();
     broken[3] = Complex128(0.0, std::numeric_limits<double>::infinity());
-    EXPECT_THROW(repair_unitary(broken.data(), 2, {Validation::Fix, kAtol},
+    EXPECT_THROW(repair_unitary(broken.data(), 2, {Validation::Throw, kAtol, Repair::Attempt},
                                 "probe"),
                  std::invalid_argument);
 }
@@ -308,7 +309,7 @@ TEST(V11241UnitaryRepair, RepairVerifiesItsOwnResultAndRaisesWhenItCannot) {
 TEST(V11241UnitaryRepair, RepairSucceedsAndReportsNothingOnADriftedOperand) {
     WarningProbe probe;
     auto m = drifted_hadamard();
-    EXPECT_NO_THROW(repair_unitary(m.data(), 2, {Validation::Fix, kAtol},
+    EXPECT_NO_THROW(repair_unitary(m.data(), 2, {Validation::Throw, kAtol, Repair::Attempt},
                                    "probe"));
     EXPECT_LE(unitarity_deviation(m.data(), 2), kAtol);
     EXPECT_EQ(probe.count(), 0u)
@@ -322,7 +323,7 @@ TEST(V11241UnitaryRepair, RepairSucceedsAndReportsNothingOnADriftedOperand) {
 TEST(V11241UnitaryRepair, CircuitIngressStoresTheRepairedMatrix) {
     QuantumCircuit qc(2);
     ASSERT_NO_THROW(qc.unitary(drifted_hadamard(), {0}, "fixed",
-                               {Validation::Fix, kAtol}));
+                               {Validation::Throw, kAtol, Repair::Attempt}));
     ASSERT_EQ(qc.instructions.size(), 1u);
 
     const auto& stored = qc.instructions[0].matrix;
@@ -338,7 +339,7 @@ TEST(V11241UnitaryRepair, CircuitIngressLeavesTheCallersMatrixAlone) {
     const auto before = mine;
 
     QuantumCircuit qc(2);
-    qc.unitary(mine, {0}, "fixed", {Validation::Fix, kAtol});
+    qc.unitary(mine, {0}, "fixed", {Validation::Throw, kAtol, Repair::Attempt});
 
     for (size_t i = 0; i < mine.size(); ++i) {
         EXPECT_EQ(mine[i].real, before[i].real) << "entry " << i << " real";
@@ -357,7 +358,7 @@ TEST(V11241UnitaryRepair, RepairingOneInstructionDoesNotRewriteItsSiblings) {
 
     QuantumCircuit qc(2);
     qc.unitary(bent, {0}, "kept-as-is", {Validation::Ignore, kAtol});
-    qc.unitary(bent, {1}, "repaired", {Validation::Fix, kAtol});
+    qc.unitary(bent, {1}, "repaired", {Validation::Throw, kAtol, Repair::Attempt});
     ASSERT_EQ(qc.instructions.size(), 2u);
 
     const auto& untouched = qc.instructions[0].matrix;
@@ -386,7 +387,7 @@ TEST(V11241UnitaryRepair, CircuitIngressRejectsAWrongSizedMatrix) {
     // measure than a permutation.
     QuantumCircuit qc(2);
     EXPECT_THROW(qc.unitary(std::vector<Complex128>(5, Complex128(1.0, 0.0)),
-                            {0}, "bad-shape", {Validation::Fix, kAtol}),
+                            {0}, "bad-shape", {Validation::Throw, kAtol, Repair::Attempt}),
                  std::invalid_argument)
         << "a 1-qubit gate needs a 2x2 matrix and got five entries, which "
            "permute would have refused at the same point";
@@ -408,14 +409,14 @@ TEST(V11241UnitaryRepair, AWrongSizedMatrixNeverReachesTheProjection) {
     Statevector sv(2);
     const std::vector<Complex128> wrong(5, Complex128(1.0, 0.0));
     EXPECT_THROW(lindblad::gates::apply_unitary(sv, {0}, wrong,
-                                                {Validation::Fix, kAtol}),
+                                                {Validation::Throw, kAtol, Repair::Attempt}),
                  std::invalid_argument);
 
     // The diagnostic must name the shape, not the physics. A caller told their
     // matrix is not unitary would go looking for a numerical problem in an
     // operand whose real defect is that it is the wrong size.
     try {
-        lindblad::gates::apply_unitary(sv, {0}, wrong, {Validation::Fix, kAtol});
+        lindblad::gates::apply_unitary(sv, {0}, wrong, {Validation::Throw, kAtol, Repair::Attempt});
         FAIL() << "a wrong-sized operand was accepted";
     } catch (const std::invalid_argument& e) {
         const std::string msg = e.what();
@@ -467,7 +468,7 @@ TEST(V11241UnitaryRepairReach, StatevectorKernelRepairsUnderFix) {
 
     ASSERT_NO_THROW(
         lindblad::gates::apply_unitary(sv, {1}, bent_1q(),
-                                       {Validation::Fix, kAtol}))
+                                       {Validation::Throw, kAtol, Repair::Attempt}))
         << "Fix reported no repair for unitarity, which has one";
 
     for (size_t i = 0; i < before.size(); ++i) {
@@ -480,31 +481,31 @@ TEST(V11241UnitaryRepairReach, StatevectorTwoQubitKernelRepairsUnderFix) {
     Statevector sv(4);
     ASSERT_NO_THROW(
         lindblad::gates::apply_unitary(sv, {0, 2}, bent_2q(),
-                                       {Validation::Fix, kAtol}));
+                                       {Validation::Throw, kAtol, Repair::Attempt}));
 }
 
 TEST(V11241UnitaryRepairReach, MpsSingleQubitGateRepairsUnderFix) {
     MPSState mps(4);
     ASSERT_NO_THROW(mps.apply_single_qubit_gate(bent_array<4>(2), 2,
-                                                {Validation::Fix, kAtol}));
+                                                {Validation::Throw, kAtol, Repair::Attempt}));
 }
 
 TEST(V11241UnitaryRepairReach, MpsTwoQubitGateRepairsUnderFix) {
     MPSState mps(4);
     ASSERT_NO_THROW(mps.apply_two_qubit_gate(bent_array<16>(4), 0, 1,
-                                             {Validation::Fix, kAtol}));
+                                             {Validation::Throw, kAtol, Repair::Attempt}));
 }
 
 TEST(V11241UnitaryRepairReach, DensityMatrixGateRepairsUnderFix) {
     DensityMatrix rho(3);
-    ASSERT_NO_THROW(rho.apply_gate(bent_1q(), {1}, {Validation::Fix, kAtol}));
+    ASSERT_NO_THROW(rho.apply_gate(bent_1q(), {1}, {Validation::Throw, kAtol, Repair::Attempt}));
 }
 
 TEST(V11241UnitaryRepairReach, QuditStatevectorRepairsUnderFix) {
     const int d = 3;
     QuditStatevector sv(4, d);
     ASSERT_NO_THROW(sv.apply_1qudit(1, scaled_identity(d, 1.5),
-                                    {Validation::Fix, kAtol}));
+                                    {Validation::Throw, kAtol, Repair::Attempt}));
 }
 
 TEST(V11241UnitaryRepairReach, TheDiagnosticNamesTheRealReasonWhenItRefuses) {
@@ -514,7 +515,7 @@ TEST(V11241UnitaryRepairReach, TheDiagnosticNamesTheRealReasonWhenItRefuses) {
     Statevector sv(2);
     try {
         lindblad::gates::apply_unitary(sv, {0}, bent_1q(),
-                                       {Validation::Fix, kAtol});
+                                       {Validation::Throw, kAtol, Repair::Attempt});
         SUCCEED() << "the entry point repaired, which is the ruled behaviour";
     } catch (const std::invalid_argument& e) {
         const std::string msg = e.what();

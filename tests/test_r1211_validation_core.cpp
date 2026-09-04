@@ -7,9 +7,10 @@
 // the caller's options intact.
 //
 // Three properties are measured (unitarity, Kraus trace preservation,
-// superoperator trace preservation) and four policies act on the result, so the
-// dispatcher is covered as a full cross product: every policy against a passing
-// and a failing residual, for every property.
+// superoperator trace preservation) and six policies act on the result, three
+// responses each with and without a repair asked for, so the dispatcher is
+// covered as a full cross product: every policy against a passing and a failing
+// residual, for every property.
 
 #include <gtest/gtest.h>
 
@@ -178,10 +179,14 @@ TEST(R1211Options, BracedInitialisationOmittingAtolKeepsTheDefault) {
            "no second member and must not silently get atol 0";
 }
 
-TEST(R1211Options, BothMembersSettable) {
-    const ValidationOptions v{Validation::Fix, 1e-6};
-    EXPECT_EQ(v.policy, Validation::Fix);
+TEST(R1211Options, EveryMemberSettable) {
+    const ValidationOptions v{Validation::Warn, 1e-6, Repair::Attempt};
+    EXPECT_EQ(v.policy, Validation::Warn);
     EXPECT_EQ(v.atol, 1e-6);
+    EXPECT_EQ(v.repair, Repair::Attempt)
+        << "the repair knob is the third member and must be settable "
+           "positionally, since that is how the aggregate is written across "
+           "the tree";
 }
 
 TEST(R1211Options, IsTriviallyCopyable) {
@@ -472,14 +477,18 @@ TEST(R1211Dispatch, EveryPolicyAcceptsAResidualWithinTolerance) {
     for (const auto& prop : {UNITARITY, KRAUS_TRACE_PRESERVING,
                              SUPEROP_TRACE_PRESERVING}) {
         for (auto policy : {Validation::Throw, Validation::Warn,
-                            Validation::Fix, Validation::Ignore}) {
-            WarningCapture capture;
-            const auto out = dispatch(1e-15, {policy, 1e-12}, prop);
-            EXPECT_FALSE(out.threw)
-                << prop.noun << ": a passing residual must be accepted under "
-                   "every policy, including Fix";
-            EXPECT_EQ(capture.count(), 0u)
-                << prop.noun << ": nothing to warn about when the check passes";
+                            Validation::Ignore}) {
+            for (auto repair : {Repair::None, Repair::Attempt}) {
+                WarningCapture capture;
+                const auto out = dispatch(1e-15, {policy, 1e-12, repair}, prop);
+                EXPECT_FALSE(out.threw)
+                    << prop.noun
+                    << ": a passing residual must be accepted under every "
+                       "policy, including one that asked for a repair";
+                EXPECT_EQ(capture.count(), 0u)
+                    << prop.noun
+                    << ": nothing to warn about when the check passes";
+            }
         }
     }
 }
@@ -519,7 +528,7 @@ TEST(R1211Dispatch, WarnReportsOnceAndProceeds) {
 TEST(R1211Dispatch, TheNonRepairingDispatcherSaysItHoldsNoRepair) {
     for (const auto& prop : {UNITARITY, KRAUS_TRACE_PRESERVING,
                              SUPEROP_TRACE_PRESERVING}) {
-        const auto out = dispatch(1e-6, {Validation::Fix, 1e-12}, prop);
+        const auto out = dispatch(1e-6, {Validation::Throw, 1e-12, Repair::Attempt}, prop);
         ASSERT_TRUE(out.threw) << prop.noun << ": Fix must not fall through";
         EXPECT_NE(out.message.find("no repair defined"), std::string::npos)
             << "got: " << out.message;
@@ -542,12 +551,12 @@ TEST(R1211Dispatch, TheRepairingDispatcherHandsFixBackToTheCaller) {
     for (const auto& prop : {UNITARITY, STATE_NORMALIZATION,
                              DENSITY_NORMALIZATION}) {
         EXPECT_TRUE(detail::enforce_physical_repairable(
-            1e-6, {Validation::Fix, 1e-12}, CTX, prop))
+            1e-6, {Validation::Throw, 1e-12, Repair::Attempt}, CTX, prop))
             << prop.noun
             << ": Fix did not ask the caller to repair a property that has a "
                "repair";
         EXPECT_FALSE(detail::enforce_physical_repairable(
-            1e-15, {Validation::Fix, 1e-12}, CTX, prop))
+            1e-15, {Validation::Throw, 1e-12, Repair::Attempt}, CTX, prop))
             << prop.noun
             << ": an operand already inside tolerance was sent for repair, "
                "which costs a factorisation and changes nothing";
@@ -571,7 +580,7 @@ TEST(R1211Dispatch, TheRepairingDispatcherLeavesTheOtherPoliciesAlone) {
 }
 
 TEST(R1211Dispatch, FixMessageDiffersFromTheThrowMessage) {
-    const auto fixed = dispatch(1e-6, {Validation::Fix, 1e-12}, UNITARITY);
+    const auto fixed = dispatch(1e-6, {Validation::Throw, 1e-12, Repair::Attempt}, UNITARITY);
     const auto thrown = dispatch(1e-6, {Validation::Throw, 1e-12}, UNITARITY);
     ASSERT_TRUE(fixed.threw);
     ASSERT_TRUE(thrown.threw);
@@ -582,10 +591,16 @@ TEST(R1211Dispatch, FixMessageDiffersFromTheThrowMessage) {
 }
 
 TEST(R1211Dispatch, IgnoreReachingTheDispatcherStillRejects) {
-    // The check entry points return before measuring under Ignore, so the
-    // dispatcher never sees it in normal use. If it ever does, treating it as
-    // an accept would turn a measured violation into a silent one, so the
-    // dispatcher falls through to the throw.
+    // The check entry points return before measuring under Ignore with no
+    // repair asked for, so the dispatcher never sees that combination in normal
+    // use. If it ever does, treating it as an accept would turn a measured
+    // violation into a silent one, so the dispatcher falls through to the
+    // throw.
+    //
+    // RED against issue #123: the dispatcher currently returns here. Ignore
+    // reaches this switch only with Repair::None, because Repair::Attempt is
+    // settled before it, so this is exactly the combination the fall-through
+    // guards.
     const auto out = dispatch(1e-6, {Validation::Ignore, 1e-12}, UNITARITY);
     EXPECT_TRUE(out.threw)
         << "a residual that was measured and found bad must not be discarded "

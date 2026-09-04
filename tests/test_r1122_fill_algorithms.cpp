@@ -293,7 +293,8 @@ TEST(R1122FillAlgo, MaqaoaMixerWeightsAndBuildCircuit) {
     std::vector<double> params(static_cast<size_t>(m.num_parameters(ring_cost_3q())));
     for (size_t i = 0; i < params.size(); ++i)
         params[i] = 0.1 * static_cast<double>(i + 1);
-    // Empty mixer = the paper ansatz; custom mixers throw (pinned elsewhere).
+    // Empty mixer = the paper ansatz. The custom-mixer path is a separate
+    // ansatz and is covered in its own suite.
     auto qc = m.build_circuit(ring_cost_3q(), {}, params);
     EXPECT_EQ(qc.n_qubits, 3);
     EXPECT_FALSE(qc.instructions.empty());
@@ -302,12 +303,16 @@ TEST(R1122FillAlgo, MaqaoaMixerWeightsAndBuildCircuit) {
     EXPECT_TRUE(sim.run(qc, 0, 1).success) << "built circuit must be executable";
 }
 
-TEST(R1122FillAlgo, MaqaoaRejectsCustomMixerHamiltonian) {
-    // Design decision (R.1.12.2): the MA-QAOA mixer is definitionally the
-    // fixed per-qubit RX (Herrman et al. 2022); beta customisation happens
-    // via options. A custom mixer Hamiltonian must fail LOUDLY, never be
-    // silently ignored, until the designed custom-mixer feature lands
-    // (tracked in the project TODO).
+TEST(R1122FillAlgo, MaqaoaAcceptsCustomMixerHamiltonian) {
+    // The MA-QAOA default mixer is the fixed per-qubit RX (Herrman et al.
+    // 2022) and an empty mixer_hamiltonian still means exactly that. A custom
+    // one is a first-class argument: accepted, applied as the ordered product
+    // of its per-term rotations, and counted by num_parameters.
+    //
+    // sum_i X_i is the canonical mixer, so under the default dispatch it draws
+    // one beta per qubit and the parameter count is unchanged. That equality is
+    // the load-bearing half: it is what makes the custom path a generalisation
+    // of the paper ansatz rather than a second ansatz beside it.
     SparsePauliOp cost = ring_cost_3q();
     SparsePauliOp x_mixer(std::vector<PauliString>{
         PauliString("XII"), PauliString("IXI"), PauliString("IIX")});
@@ -316,14 +321,29 @@ TEST(R1122FillAlgo, MaqaoaRejectsCustomMixerHamiltonian) {
     m.options.p = 1;
     m.options.max_iterations = 3;
     m.options.seed = 5;
-    EXPECT_THROW(m.optimize(cost, x_mixer), std::invalid_argument);
 
-    std::vector<double> params(static_cast<size_t>(m.num_parameters(cost)), 0.1);
-    EXPECT_THROW(m.build_circuit(cost, x_mixer, params), std::invalid_argument);
+    EXPECT_EQ(m.num_parameters(cost, x_mixer), m.num_parameters(cost))
+        << "the canonical mixer reaches one beta per qubit, which is what the "
+           "default path already allocates";
+
+    auto res = m.optimize(cost, x_mixer);
+    EXPECT_FALSE(res.counts.empty());
+    EXPECT_FALSE(res.optimal_params.empty());
+
+    std::vector<double> params(
+        static_cast<size_t>(m.num_parameters(cost, x_mixer)), 0.1);
+    QuantumCircuit qc;
+    ASSERT_NO_THROW(qc = m.build_circuit(cost, x_mixer, params));
+    EXPECT_EQ(qc.n_qubits, 3);
+    EXPECT_FALSE(qc.instructions.empty());
+
+    StatevectorSimulator sim;
+    EXPECT_TRUE(sim.run(qc, 0, 1).success)
+        << "a circuit built over a custom mixer must be executable";
 
     // The default (empty) mixer path is the paper ansatz and must still run.
-    auto res = m.optimize(cost);
-    EXPECT_FALSE(res.counts.empty());
+    auto plain = m.optimize(cost);
+    EXPECT_FALSE(plain.counts.empty());
 }
 
 // =============================================================================

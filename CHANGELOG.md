@@ -4,6 +4,112 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.27.1] - 2026-09-04
+
+The test release for 1.1.27.0. It restores the 371 tests the validation split
+could not compile, and covers what the two features in that release actually
+added.
+
+Bringing 371 tests back at once turned up three things, and the useful part is
+that they were three different kinds of thing: one test that pinned a contract
+the previous release deliberately changed, one library regression against a
+ruling recorded in a test's own body, and one exception type that had never been
+stated anywhere and needed deciding rather than assuming.
+
+### Tests
+
+- **The 16 restored sources**, respelled across 47 sites. `Validation::Fix`
+  becomes `{Validation::Throw, atol, Repair::Attempt}`, which is the same
+  policy said in two knobs instead of one.
+
+  The shared policy-probe header that 12 of those suites include is the one
+  place this was more than a rename. It states the contract every entry point
+  owes, and that contract grew: `expect_rejects_invalid`,
+  `expect_repairs_invalid` and `expect_accepts_valid` now walk all six
+  reachable policies rather than four. An implementation that repaired only
+  under `Throw`, or that let the response decide whether to repair at all,
+  would satisfy the old four-way contract and fails the new one.
+
+- **`test_v11271_policy_grid.cpp`**, 13 tests. Which knob decides what, checked
+  by consequence rather than by inspection: whether a repair actually ran,
+  whether a measurement was taken at all, and whether the caller's operand came
+  back rewritten.
+
+  The sharpest of these is the pair separating `Ignore` from `Ignore`. With no
+  repair asked for, nothing consumes the residual, so it is never computed: a
+  NaN operand, which any measurement at all rejects, passes silently. With a
+  repair asked for, the residual has to be taken, because a repair cannot know
+  whether it is owed otherwise, and the drift is found and corrected. Same
+  response, opposite behaviour, and the difference is the second knob.
+
+- **`test_v11271_repair_impossible.cpp`**, 13 tests. The three ways a repair
+  fails to produce a valid operand, which are not the same failure: the
+  property defines no repair (trace preservation), the repair is defined and
+  does not converge (a polar projection that cannot factorise), and the repair
+  is defined but impossible for this input (a rescale of an object with no norm
+  to divide out). Only the first ignores the response, because asking for a
+  repair that does not exist is a mistake in the calling code rather than a
+  property of the operand.
+
+  Also here, and easy to miss: a failed repair must leave the CALLER'S operand
+  in place, at both the storing and the borrowing entry points. Proceeding
+  under `Warn` or `Ignore` with a half-projected buffer would be worse than
+  either throwing or doing nothing, and it is what makes those two responses
+  usable alongside a repair at all.
+
+- **`test_v11271_validation_serialisation.cpp`**, 12 tests. Both knobs through
+  a circuit round trip, including the case a comparison written before the
+  split would miss: an instruction differing only in its repair knob, whose
+  policy and tolerance are both the default. The fused `fix` name is accepted
+  on read and never produced on write, and a name that means nothing is refused
+  rather than guessed.
+
+- **`test_v11271_mixer_dispatch.cpp`**, 24 tests. The custom mixer
+  decomposition is checked against QAOA's, which is the implementation it is
+  meant to share, with a companion case showing the factorised
+  `Rx(x) Ry(y)` shortcut disagreeing so the comparison is not vacuous. The
+  claim that the default dispatch reduces to the paper ansatz is checked as
+  bit-identity against the built-in mixer rather than as an approximation.
+  Parameter counts are checked by perturbing the vector in both directions,
+  since a count that is too large is invisible to any test that only reads it
+  back.
+
+- **`R1122FillAlgo.MaqaoaRejectsCustomMixerHamiltonian`** becomes
+  `MaqaoaAcceptsCustomMixerHamiltonian`. It pinned the throw that custom mixer
+  support removed, and shipped red in 1.1.27.0 because a feature release does
+  not edit tests. It now asserts what the feature does, including that the
+  canonical mixer leaves the parameter count unchanged.
+
+### Changed
+
+- **A zero or non-finite state under a repair request raises
+  `std::invalid_argument` rather than `std::runtime_error`.** Routing that case
+  through the response knob moved it off `normalize()`'s exception and onto the
+  one every other rejection in the physical-validity family raises. The old
+  type was an implementation leak rather than a stated contract: no
+  documentation named a type for that path, and `normalize()` called directly
+  still raises `std::runtime_error` exactly as its own documentation says.
+
+  This shipped in 1.1.27.0 without being called out, which is why it is recorded
+  here.
+
+### Known issue
+
+- **`enforce_physical` discards a measured violation under `Ignore`** (#123).
+  `Ignore` means the check does not run, and the entry points implement that by
+  returning before measuring, so the dispatcher never sees it in normal use.
+  Reaching it means something measured the operand anyway, and the dispatcher
+  now treats that as an accept instead of raising it. That removes the only
+  signal an entry point that forgot its early return would ever produce.
+  `R1211Dispatch.IgnoreReachingTheDispatcherStillRejects` ships red against it;
+  a test release does not edit library code.
+
+### Results
+
+3068 tests across 270 suites, 3066 passed, one intentionally red as described
+above and one skipped (27.7 s on GCC 13.3.0, 35.7 s on Clang 18.1.3; WSL,
+`-march=native` on both).
+
 ## [1.1.27.0] - 2026-09-04
 
 Two parameters that existed but could not be used, and a latent out-of-bounds

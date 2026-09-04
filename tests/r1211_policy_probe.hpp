@@ -3,19 +3,27 @@
 // R.1.21.1 test wave - the shared Class C policy contract.
 //
 // Nineteen entry points take a ValidationOptions, and every one of them owes
-// the same promises on three policies: Throw rejects, Warn reports and
+// the same promises on the three responses: Throw rejects, Warn reports and
 // proceeds, Ignore does not look. Stating that contract once here and applying
 // it per entry point keeps the per-backend files to the part that actually
 // differs, which is how each primitive is reached and what a violating operand
 // looks like for it.
 //
-// Fix is the policy that splits, so it has two helpers rather than one. Where
-// the property has a repair, Fix performs it and returns; where it has none,
-// Fix says so and throws. Unitarity is repaired by polar projection and
+// Repair::Attempt is the knob that splits the contract, so it has two helpers
+// rather than one. Where the property has a repair, the call performs it and
+// returns whatever the response says; where it has none, asking for one throws
+// under every response, because that is a mistake in the calling code rather
+// than a property of the operand. Unitarity is repaired by polar projection and
 // normalization by division, so those entry points take
 // expect_repairs_invalid. Trace preservation has no cheap canonical repair, so
 // its entry points take expect_rejects_invalid. Choosing the wrong one is not a
-// style question: it asserts the opposite thing about the same policy.
+// style question: it asserts the opposite thing about the same operand.
+//
+// Both helpers walk all six combinations rather than the repairing one alone.
+// The response knob is independent of the repair knob by construction, and a
+// contract that only ever asked for a repair under Throw could not tell an
+// implementation that honoured that independence from one that ignored the
+// response entirely.
 //
 // The helpers take a callable rather than an operand so the caller can build a
 // fresh state per invocation. That matters: each policy is exercised by a
@@ -74,17 +82,58 @@ struct CallOutcome {
     std::string message;
 };
 
+// `repair` defaults to None so a call naming only a response reads as the
+// response contract it is asserting, and the repairing cases name the knob they
+// are exercising.
 template <typename Apply>
 CallOutcome call_under(Apply& apply_with, lindblad::Validation policy,
-                       double atol = 1e-12) {
+                       double atol = 1e-12,
+                       lindblad::Repair repair = lindblad::Repair::None) {
     CallOutcome out;
     try {
-        apply_with(lindblad::ValidationOptions{policy, atol});
+        apply_with(lindblad::ValidationOptions{policy, atol, repair});
     } catch (const std::invalid_argument& e) {
         out.threw = true;
         out.message = e.what();
     }
     return out;
+}
+
+// The three responses, for the loops that must cover all of them.
+inline const lindblad::Validation kResponses[]{
+    lindblad::Validation::Throw, lindblad::Validation::Warn,
+    lindblad::Validation::Ignore};
+
+// Every reachable policy, for a test whose claim is about all of them at once
+// rather than about one. Six, because the two knobs are independent: three
+// responses, each with and without a repair.
+inline const lindblad::ValidationOptions kAllPolicies[]{
+    {lindblad::Validation::Throw},
+    {lindblad::Validation::Warn},
+    {lindblad::Validation::Ignore},
+    {lindblad::Validation::Throw, lindblad::DEFAULT_PHYSICAL_ATOL,
+     lindblad::Repair::Attempt},
+    {lindblad::Validation::Warn, lindblad::DEFAULT_PHYSICAL_ATOL,
+     lindblad::Repair::Attempt},
+    {lindblad::Validation::Ignore, lindblad::DEFAULT_PHYSICAL_ATOL,
+     lindblad::Repair::Attempt},
+};
+
+inline const char* response_name(lindblad::Validation v) {
+    switch (v) {
+        case lindblad::Validation::Throw:  return "Throw";
+        case lindblad::Validation::Warn:   return "Warn";
+        case lindblad::Validation::Ignore: return "Ignore";
+    }
+    return "?";
+}
+
+// Names both knobs, so a failure inside a six-way loop says which of the six
+// broke rather than printing an enumerator's integer.
+inline std::string policy_name(const lindblad::ValidationOptions& v) {
+    return std::string(response_name(v.policy)) +
+           (v.repair == lindblad::Repair::Attempt ? " with Repair::Attempt"
+                                                  : " with Repair::None");
 }
 
 // The full contract against an operand that violates its physical property.
@@ -110,16 +159,6 @@ void expect_rejects_invalid(const char* label, Apply apply_with) {
                         "indistinguishable from Ignore";
     }
     {
-        const auto out = call_under(apply_with, lindblad::Validation::Fix);
-        EXPECT_TRUE(out.threw)
-            << label << ": Fix returned without repairing anything; a silent "
-                        "Fix returns an unphysical result under a policy that "
-                        "promised a correction";
-        EXPECT_NE(out.message.find("no repair defined"), std::string::npos)
-            << label << ": Fix must say a repair is missing. Got: "
-            << out.message;
-    }
-    {
         WarningProbe probe;
         const auto out = call_under(apply_with, lindblad::Validation::Ignore);
         EXPECT_FALSE(out.threw)
@@ -128,13 +167,32 @@ void expect_rejects_invalid(const char* label, Apply apply_with) {
             << label << ": Ignore reported something; it is the one policy "
                         "that costs nothing and says nothing";
     }
+    // Asking for a repair this property does not define is a mistake in the
+    // calling code, so it is refused under every response. A response that
+    // absorbed it would return an unphysical operand to a caller who asked for
+    // a correction the library cannot make, which is the one outcome the repair
+    // knob exists to rule out.
+    for (auto response : kResponses) {
+        const auto out = call_under(apply_with, response, 1e-12,
+                                    lindblad::Repair::Attempt);
+        EXPECT_TRUE(out.threw)
+            << label << ": Repair::Attempt returned under "
+            << response_name(response)
+            << " for a property with no repair, so an unphysical operand was "
+               "accepted under a request to correct it";
+        EXPECT_NE(out.message.find("no repair defined"), std::string::npos)
+            << label << ": Repair::Attempt under " << response_name(response)
+            << " must say a repair is missing. Got: " << out.message;
+    }
 }
 
 // The same contract for an entry point whose property HAS a repair. Three of
 // the four policies behave identically to the case above and are asserted the
-// same way; Fix is the one that differs, and it differs completely. A repair
-// exists, the caller opted into it, so the call must carry it out and return
-// rather than report that no repair is defined.
+// same way; Repair::Attempt is what differs, and it differs completely. A
+// repair exists and the caller opted into it, so the call must carry it out and
+// return rather than report that no repair is defined, whatever the response
+// says. The response governs an operand that is still invalid afterwards, and a
+// repaired one is not.
 //
 // What "repaired" means cannot be stated here, because it differs per entry
 // point: a stored instruction matrix, a statevector, a density matrix. This
@@ -160,20 +218,6 @@ void expect_repairs_invalid(const char* label, Apply apply_with) {
                         "indistinguishable from Ignore";
     }
     {
-        const auto out = call_under(apply_with, lindblad::Validation::Fix);
-        EXPECT_FALSE(out.threw)
-            << label
-            << ": Fix declined to repair a property that has a repair and "
-               "ships one, so the caller was refused a correction it asked for "
-               "and the library can perform. Message: "
-            << out.message;
-        EXPECT_EQ(out.message.find("no repair defined"), std::string::npos)
-            << label
-            << ": the diagnostic claims no repair exists for a property whose "
-               "repair is implemented and reachable. Got: "
-            << out.message;
-    }
-    {
         WarningProbe probe;
         const auto out = call_under(apply_with, lindblad::Validation::Ignore);
         EXPECT_FALSE(out.threw)
@@ -182,25 +226,53 @@ void expect_repairs_invalid(const char* label, Apply apply_with) {
             << label << ": Ignore reported something; it is the one policy "
                         "that costs nothing and says nothing";
     }
+    // The repair runs under every response, because the response decides only
+    // what happens to an operand that is STILL invalid. An implementation that
+    // repaired under Throw alone would pass the old four-policy contract and
+    // fail here, which is the point of walking the row.
+    for (auto response : kResponses) {
+        const auto out = call_under(apply_with, response, 1e-12,
+                                    lindblad::Repair::Attempt);
+        EXPECT_FALSE(out.threw)
+            << label << ": Repair::Attempt under " << response_name(response)
+            << " declined to repair a property whose repair is implemented and "
+               "reachable, so the caller was refused a correction it asked for "
+               "and the library can perform. Message: "
+            << out.message;
+        EXPECT_EQ(out.message.find("no repair defined"), std::string::npos)
+            << label << ": the diagnostic under " << response_name(response)
+            << " claims no repair exists for a property that has one. Got: "
+            << out.message;
+    }
 }
 
 // A physically valid operand must pass under every policy, silently. Without
 // this half, an entry point that rejected everything would satisfy the tests
 // above.
+// Every combination is walked, including the repairing ones: an operand inside
+// tolerance owes nothing to either knob, so a repair must not run and nothing
+// must be said. An implementation that repaired unconditionally rather than on
+// a measured violation would pass every test above and fail here.
 template <typename Apply>
 void expect_accepts_valid(const char* label, Apply apply_with) {
-    const lindblad::Validation policies[]{
-        lindblad::Validation::Throw, lindblad::Validation::Warn,
-        lindblad::Validation::Fix, lindblad::Validation::Ignore};
-    for (auto policy : policies) {
-        WarningProbe probe;
-        const auto out = call_under(apply_with, policy);
-        EXPECT_FALSE(out.threw)
-            << label << ": a valid operand was rejected under policy "
-            << static_cast<int>(policy) << ". Message: " << out.message;
-        EXPECT_EQ(probe.count(), 0u)
-            << label << ": a valid operand produced a warning under policy "
-            << static_cast<int>(policy);
+    const lindblad::Repair repairs[]{lindblad::Repair::None,
+                                     lindblad::Repair::Attempt};
+    for (auto repair : repairs) {
+        for (auto response : kResponses) {
+            WarningProbe probe;
+            const auto out = call_under(apply_with, response, 1e-12, repair);
+            EXPECT_FALSE(out.threw)
+                << label << ": a valid operand was rejected under "
+                << response_name(response)
+                << (repair == lindblad::Repair::Attempt ? " with Repair::Attempt"
+                                                        : " with Repair::None")
+                << ". Message: " << out.message;
+            EXPECT_EQ(probe.count(), 0u)
+                << label << ": a valid operand produced a warning under "
+                << response_name(response)
+                << (repair == lindblad::Repair::Attempt ? " with Repair::Attempt"
+                                                        : " with Repair::None");
+        }
     }
 }
 

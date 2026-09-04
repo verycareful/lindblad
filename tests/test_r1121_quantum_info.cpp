@@ -222,7 +222,7 @@ TEST(R1121QuantumInfo, PartialTraceDensityAndStatevectorPathsAgree) {
     // An asymmetric, non-maximally-entangled 2-qubit state.
     auto sv = ket({Complex128(0.5, 0.1), Complex128(-0.2, 0.4),
                    Complex128(0.3, -0.3), Complex128(0.5, 0.2)},
-                  {Validation::Fix});
+                  {Validation::Throw, DEFAULT_PHYSICAL_ATOL, Repair::Attempt});
     auto rho = DensityMatrix::from_statevector(sv);
 
     auto from_sv = QuantumInfo::partial_trace(sv, {1});

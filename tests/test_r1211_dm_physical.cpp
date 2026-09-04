@@ -299,15 +299,13 @@ TEST(R1211DmKraus, EmptyChannelIsRejectedUnderEveryPolicy) {
     // more than atol; it cannot be read as consent to annihilate the state,
     // because what an empty list produces is not an imprecise state but no
     // state at all.
-    for (const auto policy : {Validation::Throw, Validation::Warn,
-                              Validation::Fix, Validation::Ignore}) {
+    for (const auto& v : r1211::kAllPolicies) {
         auto rho = fresh(2);
-        EXPECT_THROW(rho.apply_kraus({}, {0}, {policy}), std::invalid_argument)
-            << "issue #76: an empty channel survived policy "
-            << static_cast<int>(policy);
+        EXPECT_THROW(rho.apply_kraus({}, {0}, v), std::invalid_argument)
+            << "issue #76: an empty channel survived " << r1211::policy_name(v);
         EXPECT_NEAR(rho.trace(), 1.0, 1e-14)
-            << "issue #76: the state was annihilated under policy "
-            << static_cast<int>(policy);
+            << "issue #76: the state was annihilated under "
+            << r1211::policy_name(v);
     }
 }
 

@@ -1,6 +1,6 @@
 // 1.1.23.1 test wave - the normalization policy surface, on every state class.
 //
-// 1.1.23.0 gave Validation::Fix its first real repair and put normalization
+// 1.1.23.0 gave the repair knob its first real repair and put normalization
 // behind the Class C framework. That added the same four members to six
 // classes: is_normalized, check_normalized, a normalize() that now refuses
 // rather than returning silently, and (on Statevector) a set_amplitudes that
@@ -263,7 +263,7 @@ void expect_fix_repairs() {
     ASSERT_NE(A::measure(s), 1.0) << "the fixture must start off normalization";
 
     WarningCapture cap;
-    A::check(s, {Validation::Fix});
+    A::check(s, {Validation::Throw, DEFAULT_PHYSICAL_ATOL, Repair::Attempt});
     EXPECT_EQ(cap.count(), 0u) << "Fix repairs silently; it is not a warning";
     EXPECT_NEAR(A::measure(s), 1.0, DEFAULT_PHYSICAL_ATOL)
         << "Fix leaves the object satisfying the property it was judged against";
@@ -284,14 +284,19 @@ void expect_ignore_is_silent() {
     EXPECT_DOUBLE_EQ(A::measure(s), before) << "Ignore leaves the object alone";
 }
 
-// Inside tolerance the four policies cannot be told apart: nothing throws,
-// nothing warns, nothing moves.
+// Inside tolerance the six policies cannot be told apart: nothing throws,
+// nothing warns, nothing moves. The repairing three are included because an
+// implementation that rescaled unconditionally rather than on a measured
+// violation would be invisible to the other three.
 template <typename A>
 void expect_policies_agree_within_tolerance() {
     SCOPED_TRACE(A::name());
-    const Validation all[] = {Validation::Throw, Validation::Warn,
-                              Validation::Fix, Validation::Ignore};
-    for (Validation p : all) {
+    const ValidationOptions all[] = {
+        {Validation::Throw}, {Validation::Warn}, {Validation::Ignore},
+        {Validation::Throw, DEFAULT_PHYSICAL_ATOL, Repair::Attempt},
+        {Validation::Warn, DEFAULT_PHYSICAL_ATOL, Repair::Attempt},
+        {Validation::Ignore, DEFAULT_PHYSICAL_ATOL, Repair::Attempt}};
+    for (const ValidationOptions& p : all) {
         typename A::State s = A::scaled(1.0);
         ASSERT_NEAR(A::measure(s), 1.0, DEFAULT_PHYSICAL_ATOL)
             << "the fixture must start normalized";
@@ -305,18 +310,54 @@ void expect_policies_agree_within_tolerance() {
     }
 }
 
-// Fix is documented to throw where no repair exists, rather than returning an
-// object it could not repair.
+// A rescale is impossible for exactly two objects, so asking for one leaves
+// the operand still violating the property and the response decides. Under
+// Throw that is std::invalid_argument, the same type every other rejection in
+// this family raises: the caller handed over an object that cannot be a state,
+// which is a statement about the argument.
 template <typename A>
-void expect_fix_throws_on_unrepairable() {
+void expect_repair_throws_on_unrepairable() {
     SCOPED_TRACE(A::name());
+    const ValidationOptions repairing{Validation::Throw, DEFAULT_PHYSICAL_ATOL,
+                                      Repair::Attempt};
+
     typename A::State z = A::zero();
-    EXPECT_THROW(A::check(z, {Validation::Fix}), std::runtime_error)
+    EXPECT_THROW(A::check(z, repairing), std::invalid_argument)
         << "a zero object has no direction to normalize toward";
 
     typename A::State n = A::non_finite();
-    EXPECT_THROW(A::check(n, {Validation::Fix}), std::runtime_error)
+    EXPECT_THROW(A::check(n, repairing), std::invalid_argument)
         << "dividing by a non-finite norm spreads it rather than removing it";
+}
+
+// The same two objects under the other two responses. This is the half the
+// split exists for: a caller who asked for a repair and said what should happen
+// when one is impossible gets that, rather than the throw being the only
+// answer available.
+template <typename A>
+void expect_repair_respects_the_response_on_unrepairable() {
+    SCOPED_TRACE(A::name());
+
+    for (auto response : {Validation::Warn, Validation::Ignore}) {
+        const ValidationOptions v{response, DEFAULT_PHYSICAL_ATOL,
+                                  Repair::Attempt};
+        for (bool use_zero : {true, false}) {
+            typename A::State s = use_zero ? A::zero() : A::non_finite();
+            WarningCapture cap;
+            EXPECT_NO_THROW(A::check(s, v))
+                << "a repair that cannot run must answer to the response, and "
+                   "neither Warn nor Ignore says throw";
+            if (response == Validation::Warn) {
+                EXPECT_EQ(cap.count(), 1u)
+                    << "Warn proceeded without reporting the repair it could "
+                       "not perform, which is indistinguishable from Ignore";
+            } else {
+                EXPECT_EQ(cap.count(), 0u)
+                    << "Ignore reported something; it is the response that says "
+                       "nothing";
+            }
+        }
+    }
 }
 
 // normalize() refuses the same two objects, through the same test.
@@ -430,12 +471,18 @@ TEST(V11231NormalizationPolicy, QuditMpsPoliciesAgreeWhenValid) { expect_policie
 // Fix throws where no repair exists
 // =============================================================================
 
-TEST(V11231NormalizationPolicy, StatevectorFixThrowsOnUnrepairable) { expect_fix_throws_on_unrepairable<SvAdapter>(); }
-TEST(V11231NormalizationPolicy, DensityMatrixFixThrowsOnUnrepairable) { expect_fix_throws_on_unrepairable<DmAdapter>(); }
-TEST(V11231NormalizationPolicy, MpsStateFixThrowsOnUnrepairable) { expect_fix_throws_on_unrepairable<MpsAdapter>(); }
-TEST(V11231NormalizationPolicy, QuditStatevectorFixThrowsOnUnrepairable) { expect_fix_throws_on_unrepairable<QsvAdapter>(); }
-TEST(V11231NormalizationPolicy, QuditDensityMatrixFixThrowsOnUnrepairable) { expect_fix_throws_on_unrepairable<QdmAdapter>(); }
-TEST(V11231NormalizationPolicy, QuditMpsFixThrowsOnUnrepairable) { expect_fix_throws_on_unrepairable<QmpsAdapter>(); }
+TEST(V11231NormalizationPolicy, StatevectorRepairThrowsOnUnrepairable) { expect_repair_throws_on_unrepairable<SvAdapter>(); }
+TEST(V11231NormalizationPolicy, DensityMatrixRepairThrowsOnUnrepairable) { expect_repair_throws_on_unrepairable<DmAdapter>(); }
+TEST(V11231NormalizationPolicy, MpsStateRepairThrowsOnUnrepairable) { expect_repair_throws_on_unrepairable<MpsAdapter>(); }
+TEST(V11231NormalizationPolicy, QuditStatevectorRepairThrowsOnUnrepairable) { expect_repair_throws_on_unrepairable<QsvAdapter>(); }
+TEST(V11231NormalizationPolicy, QuditDensityMatrixRepairThrowsOnUnrepairable) { expect_repair_throws_on_unrepairable<QdmAdapter>(); }
+TEST(V11231NormalizationPolicy, QuditMpsRepairThrowsOnUnrepairable) { expect_repair_throws_on_unrepairable<QmpsAdapter>(); }
+TEST(V11231NormalizationPolicy, StatevectorUnrepairableAnswersToTheResponse) { expect_repair_respects_the_response_on_unrepairable<SvAdapter>(); }
+TEST(V11231NormalizationPolicy, DensityMatrixUnrepairableAnswersToTheResponse) { expect_repair_respects_the_response_on_unrepairable<DmAdapter>(); }
+TEST(V11231NormalizationPolicy, MpsStateUnrepairableAnswersToTheResponse) { expect_repair_respects_the_response_on_unrepairable<MpsAdapter>(); }
+TEST(V11231NormalizationPolicy, QuditStatevectorUnrepairableAnswersToTheResponse) { expect_repair_respects_the_response_on_unrepairable<QsvAdapter>(); }
+TEST(V11231NormalizationPolicy, QuditDensityMatrixUnrepairableAnswersToTheResponse) { expect_repair_respects_the_response_on_unrepairable<QdmAdapter>(); }
+TEST(V11231NormalizationPolicy, QuditMpsUnrepairableAnswersToTheResponse) { expect_repair_respects_the_response_on_unrepairable<QmpsAdapter>(); }
 
 // =============================================================================
 // normalize() refuses rather than returning unchanged
@@ -521,7 +568,7 @@ TEST(V11231SetAmplitudes, FixNormalizesTheAmplitudesGiven) {
     const std::vector<Complex128> bad = {Complex128(kScale, 0.0), Complex128(0.0, 0.0)};
 
     Statevector sv(1);
-    sv.set_amplitudes(bad, {Validation::Fix});
+    sv.set_amplitudes(bad, {Validation::Throw, DEFAULT_PHYSICAL_ATOL, Repair::Attempt});
     EXPECT_NEAR(sv.norm_sq(), 1.0, DEFAULT_PHYSICAL_ATOL);
     EXPECT_NEAR(sv.amplitudes()[0].real, 1.0, DEFAULT_PHYSICAL_ATOL)
         << "the direction the caller gave is preserved; only the length changes";
@@ -529,7 +576,7 @@ TEST(V11231SetAmplitudes, FixNormalizesTheAmplitudesGiven) {
     Statevector ptr(1);
     const double re[] = {kScale, 0.0};
     const double im[] = {0.0, 0.0};
-    ptr.set_amplitudes(re, im, 2, {Validation::Fix});
+    ptr.set_amplitudes(re, im, 2, {Validation::Throw, DEFAULT_PHYSICAL_ATOL, Repair::Attempt});
     EXPECT_NEAR(ptr.norm_sq(), 1.0, DEFAULT_PHYSICAL_ATOL);
 }
 
@@ -560,13 +607,23 @@ TEST(V11231SetAmplitudes, WarnWritesTheBufferAndReports) {
         << "Warn proceeds with the hand-over it reported";
 }
 
-TEST(V11231SetAmplitudes, FixThrowsOnAnUnrepairableBuffer) {
+TEST(V11231SetAmplitudes, RepairThrowsOnAnUnrepairableBuffer) {
     Statevector sv(1);
     const std::vector<Complex128> zero = {Complex128(0.0, 0.0), Complex128(0.0, 0.0)};
-    EXPECT_THROW(sv.set_amplitudes(zero, {Validation::Fix}), std::runtime_error);
+    EXPECT_THROW(sv.set_amplitudes(zero, {Validation::Throw, DEFAULT_PHYSICAL_ATOL,
+                                          Repair::Attempt}),
+                 std::invalid_argument);
 
     const std::vector<Complex128> nan = {Complex128(kNaN, 0.0), Complex128(0.0, 0.0)};
-    EXPECT_THROW(sv.set_amplitudes(nan, {Validation::Fix}), std::runtime_error);
+    EXPECT_THROW(sv.set_amplitudes(nan, {Validation::Throw, DEFAULT_PHYSICAL_ATOL,
+                                         Repair::Attempt}),
+                 std::invalid_argument);
+
+    // The buffer is judged before anything is written, so a hand-over refused
+    // here leaves the object holding what it held. Without this the throw could
+    // arrive after the copy and the state would carry the rejected amplitudes.
+    EXPECT_TRUE(sv.is_normalized(DEFAULT_PHYSICAL_ATOL))
+        << "a refused hand-over overwrote the state it refused to accept";
 }
 
 // =============================================================================

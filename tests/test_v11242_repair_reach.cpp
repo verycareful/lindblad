@@ -1,4 +1,4 @@
-// test_v11242_repair_reach.cpp - Validation::Fix, once it reaches everywhere.
+// test_v11242_repair_reach.cpp - Repair::Attempt, once it reaches everywhere.
 //
 // The previous release shipped twenty-four failing tests asserting that Fix
 // repairs unitarity wherever it is asked to, and that a circuit rejects a
@@ -47,6 +47,7 @@
 using lindblad::Complex128;
 using lindblad::MPSSimulator;
 using lindblad::QuantumCircuit;
+using lindblad::Repair;
 using lindblad::Statevector;
 using lindblad::StatevectorSimulator;
 using lindblad::Validation;
@@ -58,7 +59,7 @@ namespace {
 
 constexpr double kEps = std::numeric_limits<double>::epsilon();
 constexpr double kAtol = lindblad::DEFAULT_PHYSICAL_ATOL;
-const ValidationOptions kFix{Validation::Fix, kAtol};
+const ValidationOptions kFix{Validation::Throw, kAtol, Repair::Attempt};
 
 // a times the identity. Its thin SVD is I (a I) I-dagger, so the nearest
 // unitary is EXACTLY the identity whatever a is. Every expectation below is
@@ -169,7 +170,7 @@ TEST(V11242RepairReach, ABorrowingRepairReportsItselfExactlyOnce) {
     EXPECT_EQ(probe.count(), 1u)
         << "two repairs reported " << probe.count()
         << " times; the note is once per accounting, not once per call";
-    EXPECT_TRUE(probe.any_contains("Validation::Fix repaired"))
+    EXPECT_TRUE(probe.any_contains("Repair::Attempt repaired"))
         << "the note does not say what happened";
     EXPECT_TRUE(probe.any_contains("unchanged"))
         << "the note must say the caller's matrix was not modified, since that "
@@ -193,16 +194,14 @@ TEST(V11242RepairReach, TheStoringPathRepairsSilently) {
 }
 
 TEST(V11242RepairReach, NothingIsReportedWhenNoRepairRuns) {
-    for (auto policy : {Validation::Throw, Validation::Warn, Validation::Ignore,
-                        Validation::Fix}) {
+    for (const auto& v : r1211::kAllPolicies) {
         WarningProbe probe;
         std::vector<Complex128> good{Complex128(1.0, 0.0), Complex128(0.0, 0.0),
                                      Complex128(0.0, 0.0), Complex128(1.0, 0.0)};
         Statevector sv(2);
-        EXPECT_NO_THROW(
-            lindblad::gates::apply_unitary(sv, {0}, good, {policy, kAtol}));
+        EXPECT_NO_THROW(lindblad::gates::apply_unitary(sv, {0}, good, v));
         EXPECT_EQ(probe.count(), 0u)
-            << "policy " << static_cast<int>(policy)
+            << r1211::policy_name(v)
             << " reported something about an operand that was already unitary";
     }
 }

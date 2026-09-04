@@ -488,23 +488,19 @@ TEST(R1211SvRun, ShotsDoNotMultiplyTheWarningOutput) {
 TEST(R1211SvRun, ValidCircuitsRunUnchangedUnderEveryPolicy) {
     // The framework must be invisible to correct input. A Bell state is a Bell
     // state whatever the policy says.
-    for (auto policy : {Validation::Throw, Validation::Warn, Validation::Fix,
-                        Validation::Ignore}) {
+    for (const auto& v : r1211::kAllPolicies) {
         QuantumCircuit qc(2);
         qc.h(0);
-        qc.unitary(good_2q(), {0, 1}, "cnot_like", {policy, 1e-12});
+        qc.unitary(good_2q(), {0, 1}, "cnot_like", v);
 
         WarningProbe probe;
         StatevectorSimulator sim;
         const auto result = sim.run(qc, 0, 0);
         const auto amps = result.final_state.amplitudes();
         ASSERT_EQ(amps.size(), 4u);
-        EXPECT_NEAR(amps[0].real, INV_SQRT2, 1e-12)
-            << "policy " << static_cast<int>(policy);
-        EXPECT_NEAR(amps[3].real, INV_SQRT2, 1e-12)
-            << "policy " << static_cast<int>(policy);
+        EXPECT_NEAR(amps[0].real, INV_SQRT2, 1e-12) << r1211::policy_name(v);
+        EXPECT_NEAR(amps[3].real, INV_SQRT2, 1e-12) << r1211::policy_name(v);
         EXPECT_EQ(probe.count(), 0u)
-            << "a correct circuit warned under policy "
-            << static_cast<int>(policy);
+            << "a correct circuit warned under " << r1211::policy_name(v);
     }
 }
