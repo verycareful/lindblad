@@ -37,6 +37,7 @@ Exit codes: 0 ok, 1 usage/input error, 2 parity FAIL.
 import argparse
 import json
 import math
+import re
 import statistics
 import sys
 from datetime import date
@@ -56,9 +57,26 @@ DOMAIN_NOTES = {
     "dm": ("Twin noise model on both engines: 2-qubit depolarizing p=0.01 after "
            "every cx, amplitude damping gamma=0.005 after every h, versus Aer "
            "method=density_matrix."),
-    "mps": ("Layered scaling circuit; chi is the bond-dimension cap on both "
-            "engines (Aer matrix_product_state_max_bond_dimension). Lindblad "
-            "uses BDC SVD, its default."),
+    "mps": ("Two families: a brickwork of random SU(4) blocks whose Schmidt "
+            "rank exceeds every cap in the sweep, so all four caps truncate, "
+            "and the layered scaling circuit, whose rank peaks at 2 and which "
+            "therefore serves as a non-binding control. chi is the "
+            "bond-dimension cap on both engines (Aer "
+            "matrix_product_state_max_bond_dimension). Lindblad uses BDC SVD, "
+            "its default. `lb svd share` is the fraction of the row's own "
+            "median spent in the bond-split ladder, and `lb splits` the number "
+            "of splits it made. The share counts the verification each split "
+            "is held to, so it bounds what a faster SVD kernel could remove "
+            "rather than estimating it. Aer exposes no counterpart. "
+            "Read the speedup on the brickwork rows with care: both engines "
+            "get the same cap, but each applies its own weight threshold "
+            "beneath it and neither reports the bond dimension it actually "
+            "reached, so those rows compare two truncation policies as well as "
+            "two implementations. Aer's cost grows sub-cubically in the cap "
+            "where a split at that bond is cubic, which is what an effective "
+            "bond below the cap would look like. Comparing the two on output "
+            "accuracy at a binding cap is what would settle it, and that "
+            "measurement has not been made."),
     "clifford": ("H/CX/S ladder circuits versus Aer method=stabilizer; sizes "
                  "beyond statevector reach."),
     "trans": ("Full pipeline on both engines: layout, routing, optimization, "
@@ -179,7 +197,8 @@ def run_parity(val_lb, val_aer):
             worst = status
 
     shots = val_lb.get("shots", 8192)
-    keys = sorted(set(val_lb.get("counts", {})) | set(val_aer.get("counts", {})))
+    keys = sorted(set(val_lb.get("counts", {})) | set(val_aer.get("counts", {})),
+                  key=natural_key)
     for key in keys:
         a = val_lb.get("counts", {}).get(key)
         b = val_aer.get("counts", {}).get(key)
@@ -223,9 +242,22 @@ def fmt_ms(v):
     return "%10.3f" % v
 
 
+def natural_key(key):
+    """Order embedded numbers numerically rather than lexicographically.
+
+    Benchmark keys carry sizes and caps as bare digits (`chi8`, `chi64`, `n20`,
+    `n160`), and a plain sort puts chi16 ahead of chi8 and n160 ahead of n20.
+    A sweep listed in that order cannot be read as a sweep, which is the one
+    thing these tables exist to show.
+    """
+    return [int(part) if part.isdigit() else part
+            for part in re.split(r"(\d+)", key)]
+
+
 def domain_rows(domain, lb, aer):
-    keys = sorted(k for k in set(lb) | set(aer)
-                  if k.split("__", 1)[0] == domain and not k.startswith("val__"))
+    keys = sorted((k for k in set(lb) | set(aer)
+                   if k.split("__", 1)[0] == domain and not k.startswith("val__")),
+                  key=natural_key)
     rows = []
     for key in keys:
         l, a = lb.get(key), aer.get(key)
@@ -233,10 +265,32 @@ def domain_rows(domain, lb, aer):
     return rows
 
 
-def emit_domain_block(rows, with_quality):
+def svd_share(rec):
+    """Share of a Lindblad row's own median spent in the bond-split ladder.
+
+    Both halves come from the same aggregate: `svd_ms` is the median of the
+    counter across repetitions and `median_ms` the median wall time, so the
+    ratio compares like with like. Rows from a run predating the counter
+    report nothing rather than zero, a distinction that matters because zero is
+    also a legitimate reading.
+    """
+    if not rec:
+        return None
+    svd_ms = rec.get("counters", {}).get("svd_ms")
+    if svd_ms is None:
+        return None
+    median = rec["median_ms"]
+    if median <= 0.0:
+        return None
+    return 100.0 * svd_ms / median
+
+
+def emit_domain_block(rows, with_quality, with_svd=False):
     header = "%-34s %14s %14s %9s" % ("workload", "lindblad (ms)", "aer (ms)", "speedup")
     if with_quality:
         header += "   %19s %19s" % ("lb twoq/depth", "aer twoq/depth")
+    if with_svd:
+        header += "   %13s %10s" % ("lb svd share", "lb splits")
     lines = [header, "-" * len(header)]
     for key, l, a in rows:
         lb_s = fmt_ms(l["median_ms"]) if l else "         --"
@@ -255,6 +309,15 @@ def emit_domain_block(rows, with_quality):
                     return "--"
                 return "%d / %d" % (int(c.get("twoq_out", 0)), int(c.get("depth_out", 0)))
             line += "   %19s %19s" % (quality(l), quality(a))
+        if with_svd:
+            # Lindblad-only: Aer exposes no equivalent, so there is nothing to
+            # put opposite it and a blank column would invite a comparison that
+            # cannot be made.
+            share = svd_share(l)
+            calls = (l or {}).get("counters", {}).get("svd_calls")
+            line += "   %13s %10s" % (
+                "--" if share is None else "%.1f%%" % share,
+                "--" if calls is None else "%d" % int(calls))
         lines.append(line)
     return lines
 
@@ -318,7 +381,8 @@ def build_report(lb, aer, parity_lines, parity_status, env_lines):
         doc.append(DOMAIN_NOTES[domain])
         doc.append("")
         doc.append("```text")
-        doc.extend(emit_domain_block(rows, with_quality=(domain == "trans")))
+        doc.extend(emit_domain_block(rows, with_quality=(domain == "trans"),
+                                     with_svd=(domain == "mps")))
         doc.append("```")
         doc.append("")
     doc.append("## Reproducing")

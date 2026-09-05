@@ -62,8 +62,17 @@ SV_QFT = [10, 14, 18, 22]
 SV_QV = [10, 14, 18, 22]
 SV_GROVER = [8, 10, 12]
 DM_SCALING = [4, 6, 8, 10]
-MPS_N_SWEEP = [16, 24, 32, 40]          # at chi = 32
-MPS_CHI_SWEEP = [8, 16, 64]             # at n = 24 (chi = 32 comes from above)
+MPS_N_SWEEP = [16, 24, 32, 40]          # at chi = 32, scaling family
+# The bond sweep proper, on the family whose rank exceeds every cap in it.
+MPS_BRICKWORK_CHI_SWEEP = [8, 16, 32, 64]   # at n = 24, brickwork family
+# Non-binding control: the scaling family's rank peaks at 2, so no cap here
+# truncates (chi = 32 comes from the qubit sweep above).
+MPS_CHI_SWEEP = [8, 16, 64]             # at n = 24, scaling family
+# Validation-member cap, derived from the register size: an 8-qubit chain's
+# widest cut splits it 4 | 4, so a cap of 2^4 can never bind and both engines
+# run the member exactly.
+MPS_VALIDATION_QUBITS = 8
+MPS_VALIDATION_BOND = 2 ** (MPS_VALIDATION_QUBITS // 2)
 CLIFFORD_SIZES = [20, 40, 80, 160]
 # Transpiler workloads: (qasm file, circuit key, coupling map). Circuits are
 # SMALLER than their maps (n = 22 on 25/27-slot devices) and both engines
@@ -204,6 +213,8 @@ def domain_mps(results):
                             matrix_product_state_max_bond_dimension=chi)
     work = [(sim_for(32), "scaling_n%d.qasm" % n, "mps__scaling__n%d__chi32" % n)
             for n in MPS_N_SWEEP]
+    work += [(sim_for(chi), "brickwork_n24.qasm", "mps__brickwork__n24__chi%d" % chi)
+             for chi in MPS_BRICKWORK_CHI_SWEEP]
     work += [(sim_for(chi), "scaling_n24.qasm", "mps__scaling__n24__chi%d" % chi)
              for chi in MPS_CHI_SWEEP]
     for sim, fname, key in work:
@@ -291,6 +302,13 @@ def run_validation():
            "val__clifford__ladder__n8")
     sample(AerSimulator(method="density_matrix", noise_model=make_noise_model()),
            "dmscaling_n6.qasm", "val__dm__scaling__n6")
+    # Bond cap derived, not chosen: the widest cut of an 8-qubit chain splits it
+    # 4 | 4, so the Schmidt rank cannot exceed 2^4 and this cap can never bind.
+    # Both engines therefore run qv_n8 exactly, and the entry gates the MPS
+    # contraction and sampling path rather than two truncation policies.
+    sample(AerSimulator(method="matrix_product_state",
+                        matrix_product_state_max_bond_dimension=MPS_VALIDATION_BOND),
+           "qv_n8.qasm", "val__mps__qv__n8")
 
     expectation = float(Statevector(load_qasm("ansatz_n8.qasm", False))
                         .expectation_value(load_observable("obs_heisenberg_n8.txt")).real)

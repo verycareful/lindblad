@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.27.2 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.28.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "1.1.27.2")
+set(LINDBLAD_VERSION_LABEL "1.1.28.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -111,6 +111,36 @@ set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
 option(LINDBLAD_BUILD_TESTS      "Build test suite (ON when building Lindblad directly, OFF when consumed as a dependency)" ${PROJECT_IS_TOP_LEVEL})
 option(LINDBLAD_BUILD_BENCHMARKS "Build benchmarks (ON when building Lindblad directly, OFF when consumed as a dependency)" ${PROJECT_IS_TOP_LEVEL})
 option(LINDBLAD_BUILD_PYTHON     "Build Python bindings" OFF)
+# Dumps one representative two-site block per distinct shape, plus a shape
+# histogram, so an SVD kernel can be benchmarked against the matrices a
+# simulation actually produces rather than synthetic ones. OFF everywhere but a
+# deliberate harvesting build: when off, src/detail/theta_harvest.cpp is not
+# compiled and the call site in mps_sim.cpp is preprocessed away, so neither the
+# cost nor the API surface exists.
+option(LINDBLAD_MPS_THETA_HARVEST "Dump MPS two-site blocks for external SVD benchmarking" OFF)
+
+# Links the autonne kernels and makes SVDMethod::AutonneJacobi selectable. OFF
+# by default: autonne publishes no tag or release, so a consumer has to name the
+# commit it wants and there is no defensible default to name for them.
+option(LINDBLAD_WITH_AUTONNE "Link autonne and enable SVDMethod::AutonneJacobi" OFF)
+set(LINDBLAD_AUTONNE_REPOSITORY "https://github.com/shek014/autonne.git"
+    CACHE STRING "Git remote the autonne backend is fetched from")
+# A bare commit SHA, not the branch name it currently heads. The branch moves as
+# its pull request is revised, so naming it would change what this builds
+# against without anything here changing.
+#
+# This commit is the tip of a four-deep stack: shek014/autonne#2 adds the
+# kernels, #3 the corpus, install rules and CI on top of it, and #4 the
+# floating-point cross-check on top of that. Pinning the tip rather than the
+# kernels alone takes the install and export rules with it, and takes the
+# harness scaling fix that came with the cross-check. autonne's main is not a
+# usable pin: its svd_thin is still a stub returning false unconditionally.
+#
+# Re-pin once that repository tags a release. Until it does, a SHA is the only
+# thing that identifies a build: project(VERSION) there has read 0.1.0 since the
+# initial commit, so the stub and the finished kernel report the same version.
+set(LINDBLAD_AUTONNE_GIT_TAG "7af77d7bb6c8633b809cdabd8a260870cde17e8d"
+    CACHE STRING "Commit SHA, tag or branch of autonne to build against")
 option(LINDBLAD_BUILD_APPS       "Build user-facing CLI apps (lindblad_draw, ...)" ${PROJECT_IS_TOP_LEVEL})
 
 # Belt and braces alongside EIGEN_BUILD_TESTING above: a dependency that gates
@@ -204,6 +234,7 @@ target_compile_definitions(lindblad_banner_obj PRIVATE
 # ==============================================================================
 add_library(lindblad_core STATIC
     src/eigen_backend.cpp
+    src/autonne_backend.cpp
     src/svd_verify.cpp
     src/unitary_repair.cpp
     src/hw_info.cpp
@@ -287,6 +318,39 @@ add_library(lindblad::core ALIAS lindblad_core)
 target_compile_definitions(lindblad_core PUBLIC
     LINDBLAD_VERSION_LABEL="${LINDBLAD_VERSION_LABEL}"
 )
+
+# Theta harvest: the source joins the target and the macro is defined only when
+# the option is on. PUBLIC because the call site lives in a header-visible
+# detail interface, so a consumer compiling against these headers has to agree
+# with the library about whether the entry point exists.
+if(LINDBLAD_MPS_THETA_HARVEST)
+    target_sources(lindblad_core PRIVATE src/detail/theta_harvest.cpp)
+    target_compile_definitions(lindblad_core PUBLIC LINDBLAD_MPS_THETA_HARVEST)
+endif()
+
+# autonne backend. src/autonne_backend.cpp is in the target either way, so
+# SVDMethod::AutonneJacobi resolves in every build; only its body changes.
+if(LINDBLAD_WITH_AUTONNE)
+    # Refused rather than resolved to whatever the remote's default branch is.
+    # autonne carries project(VERSION 0.1.0) unchanged since its initial commit
+    # and publishes no tags, so every commit from the stub that returned false
+    # to a working kernel reports the same version. An empty pin would leave
+    # the choice to the remote, and those two commits differ by whether the
+    # backend computes anything at all.
+    if(NOT LINDBLAD_AUTONNE_GIT_TAG)
+        message(FATAL_ERROR
+            "LINDBLAD_WITH_AUTONNE=ON requires a non-empty "
+            "LINDBLAD_AUTONNE_GIT_TAG. It has a default; you have cleared it.")
+    endif()
+    include(FetchContent)
+    FetchContent_Declare(autonne
+        GIT_REPOSITORY "${LINDBLAD_AUTONNE_REPOSITORY}"
+        GIT_TAG        "${LINDBLAD_AUTONNE_GIT_TAG}"
+    )
+    FetchContent_MakeAvailable(autonne)
+    target_link_libraries(lindblad_core PUBLIC autonne::autonne)
+    target_compile_definitions(lindblad_core PUBLIC LINDBLAD_WITH_AUTONNE)
+endif()
 
 # Link OpenMP
 find_package(OpenMP REQUIRED)

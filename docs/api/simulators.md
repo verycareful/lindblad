@@ -637,6 +637,20 @@ accepted on the first attempt on decaying and exactly degenerate spectra alike.
 The two do not agree bit for bit, so a state truncated under one backend differs
 in its last digits from the same state truncated under the other.
 
+`SVDMethod::AutonneJacobi` selects a one-sided Jacobi kernel from the external
+autonne library. The enumerator exists in every build, so code compiles the same
+way whether or not the library was linked, but selecting it in a build
+configured without `-DLINDBLAD_WITH_AUTONNE=ON` throws where the kernel is
+requested, naming the option. It does not fall back to Eigen: a caller who asked
+for a specific kernel and silently received a different one is the substitution
+the ladder exists to prevent, and returning a failure instead would send the
+split down the Gram rescue and produce a valid answer from the wrong algorithm.
+The revision fetched is a bare commit SHA rather than a branch or tag, because
+that library publishes no releases and its project version has not moved across
+the range of commits a build might otherwise pick; override it with
+`-DLINDBLAD_AUTONNE_GIT_TAG=<commit>`. It is held to the same verification as
+the other two.
+
 **Verified truncation (R.1.16.0)**: the SVD output is no longer trusted
 blindly. Eigen's SVDs were found to return corrupt factorisations on
 degenerate rank-deficient inputs (the class of two-site tensors Shor-style
@@ -673,6 +687,24 @@ directions the weight budget or the bond cap rejected, and is committed only
 after verification. The verification costs roughly one extra rank-slice matrix
 multiply per two-qubit gate.
 
+`truncation_error()` is a within-run tally, and two properties bound how it can
+be read. It accumulates across every split, so it grows with the number of
+splits a run performs and two runs are comparable only when they perform the
+same ones. Each term is an absolute weight against the two-site block being
+split rather than a fraction of it, and gate application does not maintain
+canonical form, so that block's Frobenius norm is neither the state norm nor
+fixed across a run: it drifts as singular values are absorbed into the left
+tensor. A single term is therefore not bounded by 1, and a total well above 1 is
+ordinary on a deep circuit at a low bond cap.
+
+The consequence is sharper than a missing unit: the totals do not order bond
+caps. Once truncation is heavy, a low cap shrinks the blocks it goes on to
+split, so its later terms are small in absolute size, while a high cap keeps
+larger blocks and reports larger discards while losing less of the state. Deep
+enough, and the reported total rises as the bond cap rises. To compare one cap
+against another, use the bond profile or a downstream fidelity rather than this
+figure.
+
 The factorisation itself is performed in a translation unit compiled under
 strict IEEE floating-point, and so is the reconstruction residual that decides
 whether a factorisation is accepted. The residual subtracts two nearly identical
@@ -681,7 +713,8 @@ check exists to reject.
 
 **Ladder observability**. Which route a bond split took is otherwise invisible
 to the caller, since a rescued split and a clean one both yield valid tensors.
-Two counters on `MPSState` report it:
+Four counters on `MPSState` report it, three on which route was taken and one on
+what it cost:
 
 - `svd_call_count()`: bond splits performed, one per call into the truncation
   routine. This is the denominator; a fallback count means nothing without it.
@@ -694,11 +727,28 @@ Two counters on `MPSState` report it:
   excess over that ideal rather than the raw residual, and a healthy run sits
   near the square of machine epsilon. It says how close a run came to being
   rescued, and how much error the accepted route let through when it was not.
+- `svd_time_ns()`: nanoseconds spent in the truncation routine, over the same
+  splits `svd_call_count()` counts. The interval covers the factorisation, the
+  verification deciding whether to accept it, and any Gram rescue verification
+  forced, and stops before this layer copies the factors into its own storage
+  convention. It is therefore an upper bound on what a faster SVD kernel could
+  remove rather than an estimate of it: verification costs roughly one extra
+  rank-slice matrix multiply per split and survives any change of kernel, as
+  does a rescue. A split that threw contributes nothing, having no result to
+  profile.
 
 A run with `gram_fallback_count() == 0` never distrusted its SVD backend. A
 nonzero count is not an error: it is the containment working.
 
-All four figures cover every split the chain has taken, including those from
+Which splits these cover depends on the path the run took. Mid-circuit
+measurement or feedforward at nonzero shots re-simulates per shot from a fresh
+chain, so what a caller reads afterwards describes the last shot rather than the
+run. Terminal-only measurement, and the zero-shot single trajectory, make one
+forward pass and the figures cover all of it. The distinction matters most for
+`svd_time_ns()`: dividing a last-shot time by a whole run's wall clock
+understates the share by roughly the shot count.
+
+All five figures cover every split the chain has taken, including those from
 `rebuild_from_statevector` below. They describe the state rather than the route
 that produced it, so a chain rebuilt part way through a run still carries what
 the gates before the rebuild cost.

@@ -18,6 +18,7 @@
 #include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/detail/svd_truncate.hpp"
 #include "lindblad/detail/eigen_backend.hpp"
+#include "lindblad/detail/theta_harvest.hpp"
 #include "lindblad/gates.hpp"
 
 #include <optional>
@@ -110,9 +111,17 @@ void MPSState::svd_truncate(
     ++svd_calls;
     if (svd_method == SVDMethod::Jacobi) warn_jacobi_slower_once();
 
+    // Bracketing the ladder rather than the factorisation alone: the rung that
+    // recomputes through the Gram route is part of what a split costs, and a
+    // reading that excluded it would understate exactly the splits that were
+    // hardest to factor.
+    const auto svd_t0 = std::chrono::steady_clock::now();
     const detail::SvdTruncation r = detail::svd_truncate_verified(
         M.data(), rows, cols, detail::MatrixOrder::RowMajor,
         max_bond_dim, cutoff, svd_method, "MPS svd_truncate");
+    svd_nanos += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - svd_t0).count());
 
     const int k = r.rank;
     new_rank = k;
@@ -240,6 +249,14 @@ void MPSState::apply_two_qubit_gate_adjacent(
             }
         }
     }
+
+#ifdef LINDBLAD_MPS_THETA_HARVEST
+    // Offered here rather than reconstructed later: the block exists only
+    // between the gate contraction above and the factorisation below, and
+    // rebuilding it from the site tensors afterwards would duplicate this
+    // function's layout logic and drift from what actually gets factorised.
+    detail::theta_harvest_offer(theta_new, rows, cols);
+#endif
 
     // SVD theta_new into T1' and T2'
     std::vector<Complex128> U_mat, Vt_mat;
@@ -757,20 +774,27 @@ void MPSState::rebuild_from_statevector(const Statevector& sv) {
         // has not verified is the defect the ladder exists to prevent. Jacobi
         // for accuracy, since this is the reconstruction fallback and the BDCSVD
         // defect makes composite states unreliable.
+        const auto svd_t0 = std::chrono::steady_clock::now();
         const detail::SvdTruncation split = detail::svd_truncate_verified(
             block.data(), rows, half_cols, detail::MatrixOrder::RowMajor,
             max_bond_dim, cutoff, SVDMethod::Jacobi,
             "MPSState::rebuild_from_statevector");
+        const std::uint64_t svd_ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - svd_t0).count());
         const int k = split.rank;
 
-        // The same four figures MPSState::svd_truncate records, because they
+        // The same five figures MPSState::svd_truncate records, because they
         // describe the STATE rather than the route that produced it. A split
         // this sweep performed is one this chain paid for, and a caller reading
-        // truncation_error() to judge whether their bond cap was adequate is
-        // asking about the chain and not about which function built it.
+        // these counters is asking about the chain and not about which function
+        // built it. That applies to the timing too: a dense fallback's rebuild
+        // is bond-split work the run spent, so leaving it out would let a
+        // circuit hide its most expensive splits behind a >2q gate.
         ++svd_calls;
         if (split.used_gram_fallback) ++gram_fallbacks;
         total_truncation_error += split.discarded_weight;
+        svd_nanos += svd_ns;
         max_verify_resid_excess =
             std::max(max_verify_resid_excess, split.residual_excess);
 
@@ -1417,6 +1441,7 @@ MPSSimulator::Result MPSSimulator::run(
                               std::to_string(max_bond_dim) + ")");
     Result result(circuit_in.n_qubits);
     result.final_state = MPSState(circuit_in.n_qubits, max_bond_dim);
+    result.final_state.svd_method = svd_method;
 
     // Pre-flight: reject any out-of-range operand index up front (this backend
     // surfaces errors by throwing, consistent with its other run() guards).
@@ -1524,6 +1549,9 @@ MPSSimulator::Result MPSSimulator::run(
         runner.begin_run(circuit.n_qubits, shots);
         for (int shot = 0; shot < shots; ++shot) {
             result.final_state = MPSState(circuit.n_qubits, max_bond_dim);
+            // Re-applied per shot: the chain is rebuilt for each trajectory, so
+            // the assignment above it does not survive into this one.
+            result.final_state.svd_method = svd_method;
             detail::apply_initial_state(plan, result.final_state);
             clreg.assign(n_clbits, 0);
             runner.begin_shot(shot, clreg);
@@ -1642,8 +1670,19 @@ void apply_initial_state(const RunPlan& plan, MPSState& mps) {
     const InitialState& initial = plan.initial;
     const int n = mps.n_qubits;
 
+    // Re-seeding builds a fresh chain, and the constructor carries the bond cap
+    // and the weight cutoff but not the factorisation choice, which is settled
+    // by assignment. Every branch below that rebuilds `mps` therefore has to
+    // put it back, or a caller's choice of backend is silently replaced by the
+    // default before the first gate is applied.
+    //
+    // Exception: a chain supplied as an MPS brings its own, which is the one
+    // case where the caller has already answered the question.
+    const SVDMethod method = mps.svd_method;
+
     if (initial.is_default()) {
         mps = MPSState(n, mps.max_bond_dim, mps.cutoff);
+        mps.svd_method = method;
         return;
     }
 
@@ -1655,6 +1694,7 @@ void apply_initial_state(const RunPlan& plan, MPSState& mps) {
                 ") is outside a " + std::to_string(n) + " qubit register");
         }
         mps = MPSState(n, mps.max_bond_dim, mps.cutoff);
+        mps.svd_method = method;
         // A product state costs nothing in bond dimension, so this is an X on
         // each set digit rather than a dense build and a factorisation.
         //
@@ -1715,6 +1755,7 @@ void apply_initial_state(const RunPlan& plan, MPSState& mps) {
     // cost and nothing else. rebuild_from_statevector accumulates by design,
     // which is right mid-run and wrong for the state a run starts from.
     mps = MPSState(n, mps.max_bond_dim, mps.cutoff);
+    mps.svd_method = method;
     mps.rebuild_from_statevector(sv);
 }
 

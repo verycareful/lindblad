@@ -47,11 +47,26 @@ GROVER_SIZES = [8, 10, 12]        # search-register width s; total qubits 2s-3
 CLIFFORD_SIZES = [8, 20, 40, 80, 160]
 ANSATZ_SIZES = [8, 12, 16, 20]
 OBSERVABLE_SIZES = [8, 12, 16, 20]
+BRICKWORK_SIZES = [24]            # MPS bond sweep only; see gen_brickwork
 
 SCALING_LAYERS = 3
 DM_LAYERS = 2
 CLIFFORD_LAYERS = 10
 ANSATZ_LAYERS = 3
+
+# Depth of the brickwork family, MEASURED rather than derived: the layer-count
+# bound is an upper limit on what the gates can produce and says nothing about
+# what they do produce.
+#
+# It is the shallowest depth at which every cap the MPS comparison benchmark
+# sweeps (8, 16, 32, 64) discards weight. Depth 6 is shallower and reaches a
+# rank of exactly 64, which is the analytic ceiling there: the middle cut is
+# crossed three times and 4^3 = 64. That makes chi = 64 land precisely on the
+# rank, where it truncates nothing and the top of the sweep measures an
+# untruncated run. Depth 8 crosses the cut a fourth time, so the rank passes
+# 256 and all four caps sit inside the truncating regime with headroom to
+# extend the sweep past 64 later.
+BRICKWORK_LAYERS = 8
 
 
 def rng_for(tag):
@@ -99,6 +114,54 @@ def gen_scaling(n, layers, name):
             lines.append("cx q[%d],q[%d];" % (i, i + 1))
         for i in range(n):
             lines.append("rz(0.3) q[%d];" % i)
+    write_qasm(name, lines)
+
+
+def gen_brickwork(n, layers, name):
+    """Brickwork of random SU(4) blocks: the entanglement-saturating counterpart
+    to gen_scaling's ladder, and the family the MPS bond sweep runs on.
+
+    Each layer applies two-qubit blocks to one bond parity, alternating between
+    layers: an even layer covers bonds (0,1), (2,3), ..., an odd layer covers
+    (1,2), (3,4), .... Every block within a layer touches disjoint sites, so a
+    given cut is crossed once per two layers, and each crossing multiplies the
+    Schmidt rank across that cut by up to 4. The rank therefore grows with depth
+    until it meets the 2^min(k, n-k) ceiling of the cut itself, which is what
+    lets a bond-dimension cap bind. gen_scaling's ladder cannot do this: one CX
+    per layer crosses each cut, and at three layers the rank stays in single
+    digits whatever cap is applied.
+
+    A block is the canonical three-CX SU(4) ansatz (u3 on both wires, then CX
+    followed by a fresh u3 pair, three times over), with every angle drawn from
+    the seeded stream. Three CX is the minimum that spans SU(4), so the blocks
+    reach the full entangling power the pattern assumes. Sampling a Haar SU(4)
+    and decomposing it would reach the same place through a Cartan
+    decomposition whose errors are invisible in the emitted text, and the QASM
+    is the ground truth either way.
+
+    The stream is seeded from the register size alone, not from the depth, so
+    the circuit at a given depth is a prefix of the circuit at any greater
+    depth. Raising `layers` appends layers rather than redrawing the ones below,
+    which is what makes a depth sweep a measurement of one family."""
+    rng = rng_for("brickwork_n%d" % n)
+
+    def u3(q):
+        th, ph, lam = (2.0 * math.pi * rng.random() for _ in range(3))
+        return "u3(%r,%r,%r) q[%d];" % (th, ph, lam, q)
+
+    def su4(a, b):
+        out = [u3(a), u3(b)]
+        for _ in range(3):
+            out.append("cx q[%d],q[%d];" % (a, b))
+            out.append(u3(a))
+            out.append(u3(b))
+        return out
+
+    lines = header(n, "brickwork random-SU(4) circuit: %d qubits, %d layers"
+                      % (n, layers))
+    for layer in range(layers):
+        for a in range(layer % 2, n - 1, 2):
+            lines += su4(a, a + 1)
     write_qasm(name, lines)
 
 
@@ -300,6 +363,8 @@ def main():
         gen_scaling(n, SCALING_LAYERS, "scaling_n%d.qasm" % n)
     for n in DM_SIZES:
         gen_scaling(n, DM_LAYERS, "dmscaling_n%d.qasm" % n)
+    for n in BRICKWORK_SIZES:
+        gen_brickwork(n, BRICKWORK_LAYERS, "brickwork_n%d.qasm" % n)
     for n in QFT_SIZES:
         gen_qft(n)
     for n in QV_SIZES:

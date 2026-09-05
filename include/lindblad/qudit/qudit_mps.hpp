@@ -150,7 +150,21 @@ public:
     // reconstruct. Both outcomes yield equally valid tensors, so a rescued
     // state is indistinguishable from a clean one without these counters.
 
-    // Total weight (sum of sigma^2) discarded across every split so far.
+    // Total weight (sum of sigma^2) discarded across every split so far, each
+    // term taken in the scale of the block that split.
+    //
+    // It ACCUMULATES, so two runs are comparable only when they perform the
+    // same splits. Each term is an ABSOLUTE weight against its block rather
+    // than a fraction of it: gate application leaves the chain non-canonical
+    // (left_canonicalize / right_canonicalize are a caller's to invoke, and
+    // doing so afterwards cannot rescale terms already accumulated), so the
+    // block norm is neither the state norm nor fixed across a run. A total
+    // above 1 is ordinary, and the totals do not ORDER bond caps: under heavy
+    // truncation a low cap shrinks the blocks it later splits while a high cap
+    // keeps larger ones, so the reported total can rise with the cap.
+    //
+    // Read it as a within-run tally, and compare caps by bond profile or a
+    // downstream fidelity instead.
     double truncation_error() const { return total_truncation_error; }
 
     // svd_call_count() is the denominator: a bond split calls the truncation

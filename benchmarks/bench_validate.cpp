@@ -21,6 +21,7 @@
 #include "lindblad/primitives.hpp"
 #include "lindblad/simulators/clifford_sim.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
+#include "lindblad/simulators/mps_sim.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
 
 #include "compare_common.hpp"
@@ -36,6 +37,24 @@ using namespace lindblad;
 using namespace lindblad_bench;
 
 namespace {
+
+// Register size of the MPS validation member, and the bond cap that makes it
+// an exact run rather than a truncated one.
+//
+// The cap is DERIVED, not chosen. The widest cut of an 8-qubit chain splits it
+// 4 | 4, so the Schmidt rank across it cannot exceed 2^4 whatever the circuit
+// does, and a cap at that value can never bind. The member therefore measures
+// the contraction and sampling path alone: any disagreement with the other
+// engine is a defect there, not two truncation policies parting ways on a
+// discarded tail neither engine promised to keep.
+//
+// qv_n8 is the circuit because it is the corpus member that drives the rank
+// hardest at this size, so an exact MPS run on it exercises the widest bonds
+// the backend can be asked for here. It is also already a statevector
+// validation member, which means the two entries pin the same distribution
+// through two independent engines.
+constexpr int kMpsValidationQubits = 8;
+constexpr int kMpsValidationBond = 1 << (kMpsValidationQubits / 2);
 
 // Ordered copy so the JSON is deterministic and diff-friendly.
 std::map<std::string, int> ordered(const std::unordered_map<std::string, int>& counts) {
@@ -63,6 +82,7 @@ int main(int argc, char** argv) {
     StatevectorSimulator sv;
     CliffordSimulator cliff;
     DensityMatrixSimulator dm;
+    MPSSimulator mps;
     NoiseModel dm_noise;  // twin of aer_bench.py make_noise_model()
     dm_noise.add_all_qubit_quantum_error(NoiseChannels::depolarizing(0.01, 2), "cx");
     dm_noise.add_all_qubit_quantum_error(NoiseChannels::amplitude_damping(0.005), "h");
@@ -81,6 +101,9 @@ int main(int argc, char** argv) {
     counts["val__dm__scaling__n6"] = ordered(
         dm.run(load_corpus_circuit("dmscaling_n6.qasm", true), dm_noise,
                kValidationShots, kSeed).counts);
+    counts["val__mps__qv__n8"] = ordered(
+        mps.run(load_corpus_circuit("qv_n8.qasm", true), kMpsValidationBond,
+                kValidationShots, kSeed).counts);
 
     // Exact expectation validation (engine-independent ground truth).
     Estimator est;

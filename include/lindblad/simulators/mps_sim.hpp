@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <random>
 #include <unordered_map>
 #include <vector>
@@ -81,6 +82,29 @@ public:
     );
 
     // Truncation info
+    //
+    // Total weight (sum of sigma²) discarded across every split so far, each
+    // term taken in the scale of the block that split. Two properties bound
+    // what the total can answer.
+    //
+    // It ACCUMULATES, so it grows with the number of splits a run performs, and
+    // two runs are comparable only when they perform the same ones.
+    //
+    // Each term is an ABSOLUTE weight against its two-site block rather than a
+    // fraction of it. Gate application does not maintain canonical form, so
+    // that block's Frobenius norm is neither the state norm nor fixed across a
+    // run: it drifts as singular values are absorbed into the left tensor. A
+    // single term is therefore not bounded by 1, and a total well above 1 is
+    // ordinary on a deep circuit.
+    //
+    // The consequence is sharper than a missing unit: the totals do not ORDER
+    // bond caps. Once truncation is heavy, a low cap shrinks the blocks it goes
+    // on to split and its later terms are small in absolute size, while a high
+    // cap keeps larger blocks and reports larger discards while losing less of
+    // the state. Deep enough, and the reported total RISES with the bond cap.
+    //
+    // Read it as a within-run tally of what the splits dropped. To compare one
+    // bond cap against another, use the bond profile or a downstream fidelity.
     double truncation_error() const { return total_truncation_error; }
     int current_max_bond_dim() const;
 
@@ -120,8 +144,41 @@ public:
     // so a bare fallback count means nothing without it. gram_fallback_count()
     // counts only the rescues that SUCCEEDED; a Gram route that also fails
     // verification throws rather than returning.
+    //
+    // WHICH SPLITS THESE COVER depends on the path the run took. Mid-circuit
+    // measurement or feedforward at shots > 0 re-simulates per shot from a
+    // fresh chain, so what a caller reads afterwards describes the LAST shot
+    // and not the run. Terminal-only measurement, and shots == 0, make one
+    // forward pass and the figures cover all of it. The distinction is
+    // load-bearing for svd_time_ns() in particular: dividing a last-shot time
+    // by a whole run's wall clock understates the share by roughly the shot
+    // count.
     std::size_t gram_fallback_count() const { return gram_fallbacks; }
     std::size_t svd_call_count() const { return svd_calls; }
+
+    // Time spent in the bond-split factorisation path, in nanoseconds,
+    // accumulated over the same splits svd_call_count() counts. Divide by that
+    // count for the mean cost of a split, and by a run's wall time for the
+    // share of it that bond splitting accounts for.
+    //
+    // The interval covers the whole ladder: the factorisation, the verification
+    // deciding whether to accept it, and any Gram rescue that verification
+    // forced. It stops short of this layer's copy of U, S and V-dagger into its
+    // own storage convention, which is marshalling no choice of SVD backend
+    // changes.
+    //
+    // So it is an UPPER BOUND on what a faster SVD kernel could remove rather
+    // than an estimate of it. Verification costs roughly one extra rank-slice
+    // matrix multiply per split and survives any kernel swap, as does a rescue,
+    // so a kernel halving the factorisation alone moves this figure by less
+    // than half. A split that threw is not included: the ladder's last rung
+    // does not return, and a run that took it has no result to profile.
+    //
+    // Two steady_clock reads per split are the whole measurement cost, tens of
+    // nanoseconds against a factorisation of a bond-dimension-sized block. That
+    // is not enough to inflate the reading meaningfully, but it is not nothing,
+    // and the smallest splits are where it would show.
+    std::uint64_t svd_time_ns() const { return svd_nanos; }
 
     // Worst factorisation error the VERIFY rung accepted, as a fraction of
     // ||M||_F^2, maximised over splits. A perfect truncated SVD satisfies the
@@ -164,6 +221,7 @@ private:
     double total_truncation_error = 0.0;
     std::size_t gram_fallbacks = 0;
     std::size_t svd_calls = 0;
+    std::uint64_t svd_nanos = 0;
     double max_verify_resid_excess = 0.0;
 
     // SVD helper
@@ -191,6 +249,12 @@ private:
 
 class MPSSimulator {
 public:
+    // Factorisation every bond split of a run uses, copied onto the chain this
+    // simulator builds. Without it the choice is reachable only by driving
+    // MPSState directly, since run() constructs its own chain and a chain
+    // built inside a call cannot be configured from outside it.
+    SVDMethod svd_method = SVDMethod::BDC;
+
     struct Result {
         MPSState final_state;
         std::unordered_map<std::string, int> counts;

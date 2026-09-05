@@ -4,6 +4,91 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.28.0] - 2026-09-05
+
+A benchmark that measures what it claims, and what it turned out to say.
+
+The MPS comparison suite swept bond dimensions 8, 16, 32 and 64 on a circuit
+whose Schmidt rank peaks at 2. No cap ever bound, so the four sweep points were
+one measurement published under four labels, and the speedups on those rows
+described a workload that never asked the backend to do the thing the rows are
+named after. Correcting it changes what this project claims about its own MPS
+backend, in the unflattering direction, which is the point of measuring.
+
+### Added
+
+- **A brickwork circuit family whose bond dimension actually saturates the
+  sweep** (#100). `gen_brickwork` in the comparison corpus generator emits
+  random SU(4) blocks on alternating bond parities, so a cut is crossed once
+  per two layers and the rank multiplies by up to 4 each time. Its depth is
+  measured rather than derived: the layer-count bound is an upper limit and
+  says nothing about what the gates produce, which is precisely how the old
+  family came to be published as a bond sweep. At the depth chosen, the rank
+  passes 256 and all four caps discard weight. Depth 6 reaches a rank of
+  exactly 64 and was rejected for it, since chi = 64 would sit on the boundary
+  and truncate nothing.
+- **`MPSState::svd_time_ns()`**, the time a run spends in the bond-split
+  ladder, accumulated over the same splits `svd_call_count()` counts and
+  published as a share of each MPS benchmark row. The interval covers the
+  factorisation, the verification deciding whether to accept it, and any Gram
+  rescue, so it bounds what a faster SVD kernel could remove rather than
+  estimating it (#95).
+- **An MPS member in the cross-engine parity gate.** That gate had no MPS
+  entry at all: four statevector, one stabilizer, one density matrix. It runs
+  at a bond cap derived from the register width rather than chosen, so the cap
+  provably cannot bind and both engines are exact, which makes a disagreement a
+  defect in the contraction and sampling path rather than two truncation
+  policies parting ways.
+- **`SVDMethod::AutonneJacobi`**, selecting a one-sided Jacobi kernel from the
+  external autonne library, with `LINDBLAD_WITH_AUTONNE` to link it. The
+  enumerator exists in every build, so code compiles the same way either way,
+  and selecting it without the library throws where the kernel is requested
+  rather than falling back to Eigen. A caller who asks for one kernel and
+  silently receives another is the substitution the SVD ladder exists to
+  prevent.
+- **`MPSSimulator::svd_method`.** The factorisation could previously be chosen
+  only by driving `MPSState` directly, since `run()` builds its own chain.
+- **`LINDBLAD_MPS_THETA_HARVEST`**, off by default, dumping one representative
+  two-site block per distinct shape plus a shape histogram. An SVD kernel
+  benchmarked on synthetic matrices is not benchmarked on this consumer, and
+  the blocks exist nowhere outside a running simulation.
+
+### Changed
+
+- **The published bond sweep now runs on the brickwork family**, and the four
+  original rows stay as an explicitly labelled non-binding control. A workload
+  sitting far below its cap is the regime MPS exists for and is worth showing;
+  it is not bond-dimension scaling.
+- **The corrected sweep shows this backend is slower than Aer once the cap
+  binds**, by a margin that widens with the cap, where the old rows showed a
+  large win throughout. The split ladder accounts for roughly a quarter to
+  two fifths of the runtime, so no change of SVD kernel closes that gap on its
+  own.
+- **`truncation_error()` documents what it does and does not support.** Its
+  terms are absolute against a local two-site block rather than fractional, and
+  gate application does not maintain canonical form, so the scale drifts across
+  a run. A total above 1 is ordinary, and the totals do not order bond caps:
+  under heavy truncation a low cap shrinks the blocks it later splits while a
+  high cap keeps larger ones, so the reported total can rise as the cap rises.
+- **Benchmark rows sort embedded numbers numerically.** Lexicographic order put
+  chi16 ahead of chi8 and n160 ahead of n20, so a sweep could not be read as
+  one.
+
+### Fixed
+
+- **A run's chosen SVD backend survives into the run.** Seeding the initial
+  state rebuilds the chain and carried the bond cap and the weight cutoff
+  across but not the factorisation choice, which reverted to the default before
+  the first gate. Every backend selection made through the simulator was
+  silently discarded.
+- **The MPS comparison benchmark named the wrong default factorisation** in its
+  own description, reporting Jacobi where the default is BDC.
+
+### Results
+
+3077 tests across 271 suites, 3076 passed and one skipped (25.1 s on GCC
+13.3.0, 34.9 s on Clang 18.1.3; WSL, `-march=native` on both).
+
 ## [1.1.27.2] - 2026-09-04
 
 One fix, its tests, and the documentation that would have prevented the

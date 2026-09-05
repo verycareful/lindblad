@@ -12,6 +12,10 @@
 
 #include "lindblad/detail/eigen_backend.hpp"
 
+// For the AutonneJacobi route only. The definition lives in its own
+// translation unit, so nothing of autonne's is compiled into this one.
+#include "lindblad/detail/autonne_backend.hpp"
+
 #include <Eigen/Dense>
 #include <Eigen/SVD>
 
@@ -82,6 +86,16 @@ bool svd_thin(const std::complex<double>* data, int rows, int cols,
               std::complex<double>* U_out, double* S_out,
               std::complex<double>* V_out) {
     if (rows <= 0 || cols <= 0) return false;
+
+    // Routed out BEFORE the Eigen instantiations below, and by an explicit
+    // test rather than by falling off the end of them. svd_run treats anything
+    // that is not BDC as Jacobi, so a method it does not know silently becomes
+    // a different algorithm than the caller asked for, which is the one
+    // outcome the SVD ladder exists to prevent.
+    if (method == SVDMethod::AutonneJacobi) {
+        return autonne_svd_thin(data, rows, cols, order, U_out, S_out, V_out);
+    }
+
     return (order == MatrixOrder::RowMajor)
                ? svd_run<RowMajorC>(data, rows, cols, method, U_out, S_out,
                                     V_out)

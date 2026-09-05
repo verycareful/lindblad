@@ -231,7 +231,9 @@ state that cannot be produced throws under every setting.
 A state handed to the MPS backend is factorised at that run's bond cap, so one
 needing more bond dimension than the cap allows is truncated rather than
 refused. That is what running it at that cap means, and the discarded weight is
-what `truncation_error()` reports.
+what `truncation_error()` reports. That figure is a within-run tally whose terms
+are absolute rather than fractional, so it does not measure how much of the
+state a given cap cost; see the truncation section of the simulators page.
 
 ## Anchors
 

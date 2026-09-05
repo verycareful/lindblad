@@ -253,7 +253,17 @@ inline void aligned_free(void* ptr) noexcept {
 // that threshold, and selecting it emits a one-time note saying so, because a
 // caller who picked it for accuracy reasons that no longer apply should be
 // told what it costs.
-enum class SVDMethod { Jacobi, BDC };
+// Which factorisation a bond split asks for. The values name ALGORITHMS rather
+// than the library providing them, so a second kernel from the same provider
+// slots in beside the first without the first becoming ambiguous.
+//
+// AutonneJacobi is available in every build, so the public API does not change
+// shape with the build configuration. Selecting it in a build configured
+// without -DLINDBLAD_WITH_AUTONNE=ON throws at the point of use, naming the
+// option: falling back to Eigen instead would be the silent substitution the
+// SVD ladder exists to prevent, and a caller who asked for a specific kernel
+// has to be told they did not get it.
+enum class SVDMethod { Jacobi, BDC, AutonneJacobi };
 
 // Mathematical constants (PI, INV_SQRT2, ...) live in constants.hpp, included
 // at the top of this header, so every one of those names is visible to anything
