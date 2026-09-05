@@ -211,9 +211,9 @@ Example:
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLINDBLAD_BUILD_BENCHMARKS=ON -DLINDBLAD_BUILD_PYTHON=OFF
 ```
 
-### Building with Clang (recommended for performance)
+### Building with Clang (validated Linux toolchain)
 
-For maximum performance on Linux with Clang 18+ and libomp:
+For Linux builds with Clang 18+ and libomp:
 
 ```bash
 cmake -S . -B build-clang -G Ninja \
@@ -228,6 +228,10 @@ Verified with Clang 18.1.3+ and LLVM libomp. Use `-DLINDBLAD_MARCH_NATIVE=ON`
 rather than putting `-march=native` in `CMAKE_CXX_FLAGS`: user flags are
 emitted before the project's compile options, so the default
 `-march=x86-64-v3` would silently override a flag-level `-march=native`.
+
+When comparing compiler performance, prefer the benchmark targets over full
+test-suite wall-clock time because suite timings include test-harness overhead.
+Use matched flags for both compilers.
 
 ---
 
