@@ -47,6 +47,9 @@ CLAUDE.md
 
 #Website - different repo
 /lindblad-page/
+# Upstream dependency, maintained by shek014. Cloned here so issues and pull
+# requests can be raised alongside the code that consumes it. Never tracked.
+/autonne/
 
 # Maintainer-local tooling (version bump script, etc.). EXCEPTION:
 # bench_report.py is PUBLIC — docs/BuildAndTest.md, the generated
