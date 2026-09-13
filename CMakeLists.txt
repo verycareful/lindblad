@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.28.1 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.28.2 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "1.1.28.1")
+set(LINDBLAD_VERSION_LABEL "1.1.28.2")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,10 +38,13 @@ include(FetchContent)
 #
 # The variable only has an effect where a declared floor is below 3.5, which
 # here is the fetched dependencies alone; Lindblad declares 3.21 above and is
-# unaffected. The durable fix is upgrading the NLopt pin, deliberately NOT
-# bundled here: NLopt is quarantined with -fno-fast-math below because its
-# COBYLA convergence is numerically fragile, so a version change needs its own
-# optimiser-focused test cycle.
+# unaffected. It covers configure only: NLopt also runs two helper scripts
+# through `cmake -P` at build time, and a fresh process does not see it, so
+# those two files are patched in the fetched copy instead (PATCH_COMMAND on the
+# NLopt declaration below). The durable fix is upgrading the NLopt pin,
+# deliberately NOT bundled here: NLopt is quarantined with -fno-fast-math below
+# because its COBYLA convergence is numerically fragile, so a version change
+# needs its own optimiser-focused test cycle.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 # Google Test
@@ -76,11 +79,15 @@ FetchContent_Declare(
     GIT_TAG        v2.12.0
 )
 
-# NLopt
+# NLopt. The patch step raises the floor declared by the two binding-generator
+# scripts NLopt runs through `cmake -P` while building, which CMake 4 would
+# otherwise refuse; see cmake/PatchNloptPolicyFloor.cmake for what it touches.
 FetchContent_Declare(
     nlopt
     GIT_REPOSITORY https://github.com/stevengj/nlopt.git
     GIT_TAG        v2.7.1
+    PATCH_COMMAND  ${CMAKE_COMMAND} -DNLOPT_SOURCE_DIR=<SOURCE_DIR>
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchNloptPolicyFloor.cmake
 )
 set(NLOPT_PYTHON OFF CACHE BOOL "" FORCE)
 set(NLOPT_OCTAVE OFF CACHE BOOL "" FORCE)
@@ -91,13 +98,15 @@ set(NLOPT_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)  # NLopt respects NLOPT_BUILD_SHARED; kept for other deps
 
 # Eigen3 — header-only, used for robust SVD and eigendecomposition
-# 5.0.0 is the only supported version. It is pinned for the accuracy of its
-# self-adjoint eigensolver on degenerate Hermitian input, which is what the Gram
-# rescue route factorises: the null-space tail there lands at 2.086188e-16
-# against 3.4.1's 1.059506e-08, the latter being sqrt of an eigenvalue at eps
-# and the signature of that route's squared condition number. It is also the
-# version on which BDCSVD is correct for degenerate complex input, which is what
-# makes BDC the MPS default (see SVDMethod in types.hpp).
+# 5.0.0 is the only supported version. It is the version on which BDCSVD is
+# correct for degenerate complex input, which is what makes BDC the MPS default
+# (see SVDMethod in types.hpp), and its self-adjoint eigensolver is the engine
+# of the Gram rescue route. That solver's error on a null-space eigenvalue is
+# bounded by the usual n * eps * ||G||, and where inside that bound it lands
+# depends on the input's last bits: the same degenerate theta has returned a
+# null sigma at 2e-16 and at 1.6e-8 from this version, so the rescue's validity
+# floor is set above the whole band rather than at the lucky end of it (see
+# gram_validity_floor in src/svd_truncate.cpp).
 FetchContent_Declare(
     eigen
     GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git

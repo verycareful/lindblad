@@ -635,7 +635,10 @@ either way.
 Both backends are held to the same verification described below, and both are
 accepted on the first attempt on decaying and exactly degenerate spectra alike.
 The two do not agree bit for bit, so a state truncated under one backend differs
-in its last digits from the same state truncated under the other.
+in its last digits from the same state truncated under the other. The selection
+reaches every split the chain performs, the rebuild from dense amplitudes
+included, so `svd_time_ns()` under a selected kernel is that kernel's time
+throughout.
 
 `SVDMethod::AutonneJacobi` selects a one-sided Jacobi kernel from the external
 autonne library. The enumerator exists in every build, so code compiles the same
@@ -740,18 +743,32 @@ what it cost:
 A run with `gram_fallback_count() == 0` never distrusted its SVD backend. A
 nonzero count is not an error: it is the containment working.
 
-Which splits these cover depends on the path the run took. Mid-circuit
-measurement or feedforward at nonzero shots re-simulates per shot from a fresh
-chain, so what a caller reads afterwards describes the last shot rather than the
-run. Terminal-only measurement, and the zero-shot single trajectory, make one
-forward pass and the figures cover all of it. The distinction matters most for
-`svd_time_ns()`: dividing a last-shot time by a whole run's wall clock
-understates the share by roughly the shot count.
-
 All five figures cover every split the chain has taken, including those from
 `rebuild_from_statevector` below. They describe the state rather than the route
 that produced it, so a chain rebuilt part way through a run still carries what
 the gates before the rebuild cost.
+
+**Folding one chain's figures into another**.
+
+```cpp
+void MPSState::absorb_profile(const MPSState& other);
+```
+
+Adds `other`'s four tallies to this chain's and takes the larger of the two
+worst residuals. The tensors, the register width, the cap, the cutoff and the
+kernel selection are untouched, so afterwards the chain reports splits it did
+not itself perform, exactly as one chain performing both sets would have.
+
+It is what makes the figures on the chain `MPSSimulator::run` returns cover
+every split of the run on every path. Mid-circuit measurement or feedforward at
+nonzero shots re-simulates per shot, each trajectory on a chain of its own;
+each trajectory absorbs the figures the run has gathered so far and becomes the
+returned chain, so what comes back is the last trajectory in every respect,
+carrying the totals of all of them. `truncation_error()` read there is
+everything the run discarded rather than the returned tensors' own history,
+which is the accumulate-rather-than-reset contract above applied across
+trajectories. So `svd_time_ns()` against the run's wall clock is the share bond
+splitting took of the whole run, whichever path it ran on.
 
 **Rebuilding a chain from dense amplitudes**.
 
@@ -775,11 +792,15 @@ Weight the rescue's validity floor rejected is reported separately from
 squares the condition number, so a singular value that is exactly zero in the
 input returns at the scale of the square root of machine epsilon and carries
 weight that was never in the matrix. Counting that as truncation error would
-report a bond which discarded nothing as having lost something.
+report a bond which discarded nothing as having lost something. The floor is
+`sqrt(c·n·eps)·σ_max` with `n` the Gram dimension and `c` the same slack the
+verification grants: the top of the band the eigensolver's own error bound
+lets a null direction return in, so noise cannot pass as a direction, and a
+real singular value below it is one the route could not have resolved.
 
 Both counters accumulate over the state's lifetime and are not reset by gate
 application. Reconstruction from a statevector runs the ladder like any other
-split and advances both counters.
+split, through the kernel `svd_method` selects, and advances both counters.
 
 **Complexity**:
 - **Space**: $O(n \cdot \chi^2)$ where $\chi$ = max bond dimension (typically 16–256)

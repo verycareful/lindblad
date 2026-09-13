@@ -235,11 +235,12 @@ cmake -S . -B build
 
 ### Build fails inside NLopt with a CMake compatibility error
 
-Seen on CMake 4 and newer, which Homebrew already ships. Configure succeeds and
-the failure appears during the build:
+Possible on CMake 4 and newer, which Homebrew already ships, when the NLopt
+sources did not come through the fetch. Configure succeeds and the failure
+appears during the build:
 
 ```text
-CMake Error at .../_deps/nlopt-src/cmake/generate-cpp.cmake:1 (cmake_minimum_required):
+CMake Error at .../nlopt/cmake/generate-cpp.cmake:1 (cmake_minimum_required):
   Compatibility with CMake < 3.5 has been removed from CMake.
 ```
 
@@ -247,19 +248,17 @@ CMake Error at .../_deps/nlopt-src/cmake/generate-cpp.cmake:1 (cmake_minimum_req
   running helper scripts through `cmake -P` as build-time custom commands. Each
   script is a fresh CMake process, so it does not inherit the policy floor the
   project sets for its fetched dependencies, and each declares a minimum below
-  3.5 — which CMake 4 rejects outright.
-- Configure-time is already handled inside `CMakeLists.txt`. Only these
-  build-time scripts need the setting, and they read it from the environment:
+  3.5, which CMake 4 rejects outright.
+- A normal fetch does not hit this. The NLopt declaration carries a patch step
+  (`cmake/PatchNloptPolicyFloor.cmake`) that rewrites the floor in those two
+  scripts to 3.5 in the fetched copy, and fails the fetch rather than
+  continuing if either file still declares less afterwards.
+- A checkout substituted through `FETCHCONTENT_SOURCE_DIR_NLOPT` skips the
+  fetch and its patch step, so it builds from whatever floor it declares. For
+  that case the scripts read the setting from the environment:
 
 ```bash
 export CMAKE_POLICY_VERSION_MINIMUM=3.5
-cmake --build build
-```
-
-On Windows PowerShell:
-
-```powershell
-$env:CMAKE_POLICY_VERSION_MINIMUM = "3.5"
 cmake --build build
 ```
 

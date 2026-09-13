@@ -39,9 +39,11 @@
 #include <Eigen/Dense>
 
 #include <algorithm>
+#include <cmath>
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <ostream>
 #include <vector>
 
@@ -277,10 +279,10 @@ struct SvdReport {
 //
 // sigma_floor = threshold the significant sigmas are counted against. A backend
 // SVD resolves down to roughly eps * sigma_max, so the absolute default holds
-// there. The Gram route squares the condition number and resolves only to about
-// sqrt(eps) * sigma_max, so it passes the same validity floor it built its
-// partner factors with; counting below that floor reports its own noise as
-// retained rank.
+// there. The Gram route squares the condition number and resolves a null
+// direction only to the sqrt(eps)-scaled band above, so it passes the same
+// validity floor it built its partner factors with; counting below that floor
+// reports its own noise as retained rank.
 inline SvdReport report_from_factors(const Eigen::MatrixXcd& M,
                                      const Eigen::VectorXd& S,
                                      const Eigen::MatrixXcd& U,
@@ -358,10 +360,25 @@ inline SvdReport run_svd_report(const Eigen::MatrixXcd& M,
     return report_from_factors(M, S, U, V);
 }
 
+// The Gram route's validity floor, as the library derives it: the top of the
+// band a null direction's sigma can land in. The eigensolver's error on an
+// eigenvalue of G is bounded by slack * n * eps * sigma_max², so a sigma that
+// is exactly zero in M comes back anywhere up to sqrt(slack * n * eps) *
+// sigma_max, and the floor sits there rather than at bare sqrt(eps), which
+// is inside the band. Slack is the backward-error allowance the ladder's
+// verify rung grants, so the two rungs cannot disagree about it.
+constexpr double kGramFloorSlack = 64.0;
+
+inline double gram_validity_floor(int gd, double sigma_max) {
+    return std::sqrt(kGramFloorSlack * static_cast<double>(gd) *
+                     std::numeric_limits<double>::epsilon()) *
+           sigma_max;
+}
+
 // In-test replication of the svd_truncate Gram fallback route: G = M^H M or
 // M M^H on the smaller side, eigendecomposed through the seam, sigmas
 // descending from sqrt(max(lambda, 0)), partner factor built only above the
-// sqrt(eps)-scaled floor.
+// validity floor.
 //
 // Replicated rather than called because the library route is reachable only
 // when the primary factorisation fails verification, which is precisely the
@@ -388,7 +405,7 @@ inline SvdReport run_gram_route_report(const Eigen::MatrixXcd& M) {
         S(i) = std::sqrt(std::max(0.0, evals(gd - 1 - i)));
     }
     const double smax = (gd > 0) ? S(0) : 0.0;
-    const double floor_g = std::max(1e-12, 1.5e-8 * smax);
+    const double floor_g = std::max(1e-12, gram_validity_floor(gd, smax));
 
     Eigen::MatrixXcd U(rows, gd), V(cols, gd);
     if (tall) {

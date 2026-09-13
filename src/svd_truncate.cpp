@@ -32,13 +32,6 @@ using RowMajorC = Eigen::Matrix<std::complex<double>, Eigen::Dynamic,
 using ColMajorC = Eigen::Matrix<std::complex<double>, Eigen::Dynamic,
                                 Eigen::Dynamic, Eigen::ColMajor>;
 
-// The Gram route squares the condition number, so sigmas below sqrt(eps) times
-// sigma_max carry no information there however much weight they hold. Relative
-// to sigma_max, so it means the same thing on every target. This is a validity
-// floor, NOT a truncation knob: weight below it is still honestly counted as
-// discarded.
-constexpr double kGramValidityFloorRel = 1.5e-8;  // ~sqrt(DBL_EPSILON)
-
 // Slack on the backward error a stable SVD is entitled to, in units of
 // N*eps*‖M‖_F. Generous because the two errors are not symmetric: a false
 // REJECT costs one Gram recomputation, while a false ACCEPT is a wrong state
@@ -50,6 +43,29 @@ constexpr double kGramValidityFloorRel = 1.5e-8;  // ~sqrt(DBL_EPSILON)
 // while a healthy factorisation of the same matrices measures 2.8e-30. Ten
 // orders of clearance above, four below.
 constexpr double kBackwardErrorSlack = 64.0;
+
+// The Gram route's validity floor: below it a sigma is not trustworthy DATA on
+// that route, however much weight it holds. Forming G = M†M squares the
+// condition number, and a self-adjoint eigensolver's error on an eigenvalue
+// is bounded by slack * n * eps * ||G||, with ||G|| = sigma_max². An eigenvalue
+// that is exactly zero in M therefore comes back anywhere in [0, that bound],
+// and its square root anywhere in [0, sqrt(slack * n * eps) * sigma_max]: the
+// floor is the top of that band, so noise on a null direction cannot pass as
+// a direction. A floor at bare sqrt(eps) * sigma_max sits INSIDE the band and
+// keeps a null direction whenever the solver's error on it exceeds one eps,
+// which it routinely does. The same bound is the eigenvector's accuracy: a
+// sigma at the floor has its direction resolved to about one part in slack,
+// and one below it worse, so a direction the floor rejects is one the route
+// could not have built correctly anyway.
+//
+// Relative to sigma_max, so it means the same thing on every target. A
+// validity floor, NOT a truncation knob: weight below it is still counted as
+// absent from the factorisation, in its own bucket.
+double gram_validity_floor(int gd, double sigma_max) {
+    return std::sqrt(kBackwardErrorSlack * static_cast<double>(gd) *
+                     std::numeric_limits<double>::epsilon()) *
+           sigma_max;
+}
 
 // One rung of the ladder: build the kept slice from a candidate factorisation
 // and decide whether it is trustworthy. Returns false to reject it, leaving
@@ -138,7 +154,7 @@ bool attempt(const MatT& mat, int rows, int cols,
     // `below_floor` is weight the validity floor rejected as untrustworthy, and
     // on the Gram route that is not loss, it is noise the route manufactured.
     // Forming G = M†M squares the condition number, so an eigenvalue that is
-    // exactly zero in M comes back at the scale of eps, and its sqrt is ~1e-8.
+    // exactly zero in M comes back at the scale of eps, and its sqrt at ~1e-8.
     // Three such values carry ~1e-16 of weight that was never in the matrix.
     // Reporting it as truncation error describes a bond that discarded nothing
     // as having lost something. The primary route passes sigma_floor = 0, so
@@ -294,7 +310,7 @@ SvdTruncation run_ladder(const MapT& mat, int rows, int cols, int max_bond_dim,
         Sg(i) = std::sqrt(std::max(0.0, g_evals(gd - 1 - i)));
     }
     const double smax = (gd > 0) ? Sg(0) : 0.0;
-    const double floor_g = kGramValidityFloorRel * smax;
+    const double floor_g = gram_validity_floor(gd, smax);
 
     // Eigenvectors arrive ascending and are reversed into descending sigma
     // order by copying whole columns; both sides are column-major, so a column

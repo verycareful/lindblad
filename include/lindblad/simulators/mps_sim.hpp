@@ -145,14 +145,10 @@ public:
     // counts only the rescues that SUCCEEDED; a Gram route that also fails
     // verification throws rather than returning.
     //
-    // WHICH SPLITS THESE COVER depends on the path the run took. Mid-circuit
-    // measurement or feedforward at shots > 0 re-simulates per shot from a
-    // fresh chain, so what a caller reads afterwards describes the LAST shot
-    // and not the run. Terminal-only measurement, and shots == 0, make one
-    // forward pass and the figures cover all of it. The distinction is
-    // load-bearing for svd_time_ns() in particular: dividing a last-shot time
-    // by a whole run's wall clock understates the share by roughly the shot
-    // count.
+    // On a chain MPSSimulator::run returns, all five figures cover every split
+    // of the run on every path, the per-shot trajectories included: a run that
+    // re-simulates per shot returns the last trajectory's tensors carrying the
+    // totals of all of them (see absorb_profile).
     std::size_t gram_fallback_count() const { return gram_fallbacks; }
     std::size_t svd_call_count() const { return svd_calls; }
 
@@ -188,6 +184,16 @@ public:
     // how close a run came to being rescued, and how much error the accepted
     // route let through when it was not.
     double max_verify_residual_excess() const { return max_verify_resid_excess; }
+
+    // Fold another chain's five profile figures into this one: the four tallies
+    // add, the worst accepted residual takes the larger of the two. The tensors
+    // are untouched, so this is how a chain comes to report splits it did not
+    // itself perform. MPSSimulator::run uses it on the per-shot path, where
+    // every trajectory runs on a chain of its own and the returned one carries
+    // their sum. truncation_error() after absorbing is everything the run
+    // discarded, consistent with the accumulate-rather-than-reset contract
+    // above, and is not the returned tensors' own history.
+    void absorb_profile(const MPSState& other);
 
     // Measurements and expectation values
     std::vector<double> probabilities_single(int qubit) const;

@@ -354,6 +354,22 @@ int MPSState::current_max_bond_dim() const {
     return max_chi;
 }
 
+// =============================================================================
+// absorb_profile
+// =============================================================================
+
+// The tallies add and the residual takes the max, because that is how each
+// figure is accumulated across the splits of one chain: a chain that absorbed
+// another reports exactly what one chain performing both sets of splits would.
+void MPSState::absorb_profile(const MPSState& other) {
+    svd_calls += other.svd_calls;
+    svd_nanos += other.svd_nanos;
+    gram_fallbacks += other.gram_fallbacks;
+    total_truncation_error += other.total_truncation_error;
+    max_verify_resid_excess =
+        std::max(max_verify_resid_excess, other.max_verify_resid_excess);
+}
+
 // ⟨ψ|ψ⟩ by left-to-right transfer-matrix contraction:
 //   E_{q+1}[aR', aR] = Σ_{phys, aL', aL} conj(A_q[aL', phys, aR'])
 //                                        · E_q[aL', aL] · A_q[aL, phys, aR]
@@ -771,13 +787,15 @@ void MPSState::rebuild_from_statevector(const Statevector& sv) {
         //
         // Through the shared ladder rather than a bare factorisation: this path
         // selects a rank from singular values, and a rank chosen from values it
-        // has not verified is the defect the ladder exists to prevent. Jacobi
-        // for accuracy, since this is the reconstruction fallback and the BDCSVD
-        // defect makes composite states unreliable.
+        // has not verified is the defect the ladder exists to prevent. With
+        // this chain's selected kernel, like every other split it performs: a
+        // caller who chose one is owed it here as much as on the gate path,
+        // and a kernel this build cannot provide throws here as it does there.
+        if (svd_method == SVDMethod::Jacobi) warn_jacobi_slower_once();
         const auto svd_t0 = std::chrono::steady_clock::now();
         const detail::SvdTruncation split = detail::svd_truncate_verified(
             block.data(), rows, half_cols, detail::MatrixOrder::RowMajor,
-            max_bond_dim, cutoff, SVDMethod::Jacobi,
+            max_bond_dim, cutoff, svd_method,
             "MPSState::rebuild_from_statevector");
         const std::uint64_t svd_ns = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1542,20 +1560,25 @@ MPSSimulator::Result MPSSimulator::run(
     std::vector<int> clreg(n_clbits, 0);
 
     if (shots > 0 && has_measure && !terminal_only) {
-        // Per-shot trajectories: re-initialise the MPS to |0...0⟩ and
-        // re-simulate for every shot so that each MEASURE collapses the state
-        // independently (required for mid-circuit measurement / feedforward).
+        // Per-shot trajectories: every shot runs on a fresh chain from the
+        // initial state so that each MEASURE collapses independently (required
+        // for mid-circuit measurement / feedforward). Each trajectory then
+        // absorbs the profile figures the run has gathered so far and becomes
+        // result.final_state, so the chain the caller reads afterwards is the
+        // last trajectory in every respect (tensors, cap, cutoff, kernel) and
+        // carries the totals of all of them.
         result.counts.clear();
         runner.begin_run(circuit.n_qubits, shots);
         for (int shot = 0; shot < shots; ++shot) {
-            result.final_state = MPSState(circuit.n_qubits, max_bond_dim);
-            // Re-applied per shot: the chain is rebuilt for each trajectory, so
-            // the assignment above it does not survive into this one.
-            result.final_state.svd_method = svd_method;
-            detail::apply_initial_state(plan, result.final_state);
+            MPSState trajectory(circuit.n_qubits, max_bond_dim);
+            // The constructor carries the bond cap and the cutoff but not the
+            // factorisation choice, so the selection is copied onto every
+            // chain that will split.
+            trajectory.svd_method = svd_method;
+            detail::apply_initial_state(plan, trajectory);
             clreg.assign(n_clbits, 0);
             runner.begin_shot(shot, clreg);
-            run_trajectory(result.final_state, clreg);
+            run_trajectory(trajectory, clreg);
 
             // Build bitstring: clbit 0 is LSB (rightmost), highest clbit is MSB.
             std::string bits(n_clbits, '0');
@@ -1563,6 +1586,9 @@ MPSSimulator::Result MPSSimulator::run(
                 if (clreg[c]) bits[n_clbits - 1 - c] = '1';
             }
             result.counts[bits]++;
+
+            trajectory.absorb_profile(result.final_state);
+            result.final_state = std::move(trajectory);
         }
     } else {
         detail::apply_initial_state(plan, result.final_state);

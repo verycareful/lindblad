@@ -168,6 +168,10 @@ set(LINDBLAD_TEST_SOURCES
     test_v11281_svd_selection.cpp
     test_v11281_svd_time.cpp
     test_v11281_theta_harvest.cpp
+    # test_v11282_rebuild_kernel.cpp reads LINDBLAD_WITH_AUTONNE the same way.
+    test_v11282_profile_totals.cpp
+    test_v11282_rebuild_kernel.cpp
+    test_v11282_gram_floor.cpp
 )
 
 # The R.1.16.0 diagnostic's strict leg. This flag governs the file's OWN

@@ -4,6 +4,152 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.28.2] - 2026-09-13
+
+The patch for the two defects the 1.1.28.1 tests found, a third that fixing
+them uncovered in the truncation ladder's rescue route, and a build change
+the TODO had been holding for the first slot that could carry it. The four
+tests 1.1.28.1 shipped red are green. Nothing ships red.
+
+### Fixed
+
+- **The chain a per-shot run returns profiles the whole run, not its last
+  trajectory** (#126). Mid-circuit measurement or feedforward at nonzero shots
+  re-simulates per shot, and every trajectory ran on a chain of its own, so
+  the five profile figures on `final_state` (`svd_call_count()`,
+  `svd_time_ns()`, `gram_fallback_count()`, `truncation_error()`,
+  `max_verify_residual_excess()`) described one shot out of N. Each
+  trajectory now absorbs the figures the run has gathered so far and becomes
+  the returned chain, through a new `MPSState::absorb_profile(other)` that
+  adds the four tallies and takes the larger of the two worst residuals. What
+  comes back is the last trajectory in every respect, its own cap, cutoff and
+  kernel included, carrying the totals of all of them. `truncation_error()`
+  read there is everything the run discarded rather than the returned
+  tensors' own history, which is the accumulate-rather-than-reset contract
+  applied across trajectories, and `svd_time_ns()` against the run's wall
+  clock is the share bond splitting took of the whole run on every path. The
+  paragraph that documented the last-shot reading is gone from the header,
+  the API page and the benchmark.
+
+- **The rebuild from dense amplitudes uses the chain's selected SVD kernel**
+  (#127). `rebuild_from_statevector` named Jacobi outright, so every dense
+  fallback and every dense seeding factorised under Jacobi whatever the chain
+  or the simulator had selected, and a build without autonne selecting
+  `AutonneJacobi` ran silently instead of throwing there. It now passes the
+  chain's `svd_method` like the gate path does: BDC unless the caller asked
+  for something else, `svd_time_ns()` under a selected kernel is that
+  kernel's time on every split, and the one-time note that Jacobi is the
+  slower kernel fires from whichever call site runs it first.
+
+- **The Gram rescue's validity floor sits above the eigensolver's noise band
+  rather than inside it.** Forming the Gram matrix squares the condition
+  number, so a singular value that is exactly zero returns as the square root
+  of the solver's error on a zero eigenvalue: anywhere in
+  `[0, sqrt(c·n·eps)]·σ_max` under the backward-error bound. The floor that
+  refuses those as data was `1.5e-8·σ_max`, bare `sqrt(eps)` to within a
+  percent, which keeps a null direction whenever the solver's error on it
+  exceeds one eps. The 13-qubit Shor theta my diagnostics factorise has
+  returned its null sigma at 2e-16 and at 1.6e-8 from the same Eigen version,
+  one rounding pattern apart; the fix above changed that theta's last bits
+  (its dense fallbacks now rebuild under BDC) and on one configuration the
+  route counted rank 5 for a rank-4 block. The floor is now
+  `sqrt(64·n·eps)·σ_max`, `n` the Gram dimension and 64 the slack the
+  verification rung already grants, so noise cannot pass as a direction.
+  Weight below the floor is reported as `floor_rejected_weight` as before. A
+  real singular value between the old floor and the new one is now rejected
+  in a rescue rather than kept; on that route its direction was resolved to
+  `n·eps·σ_max²/σ²`, tens of percent at that scale, so what was kept was not
+  the direction either. The primary route, which applies no floor, is
+  unchanged.
+
+### Changed
+
+- **NLopt builds on CMake 4 without an environment variable.** The pinned
+  NLopt generates its bindings by running two helper scripts through
+  `cmake -P` at build time, each declaring a CMake floor below 3.5, which
+  CMake 4 refuses; the policy variable the project sets covers configure only
+  and a fresh process never sees it. A patch step on the NLopt fetch
+  (`cmake/PatchNloptPolicyFloor.cmake`) now rewrites the floor in the fetched
+  copy to 3.5, in CMake script mode so every host and generator runs it the
+  same way, and fails the fetch rather than continuing if either script still
+  declares less afterwards. Nothing about the NLopt pin or its numerics
+  changes. The Troubleshooting entry in `docs/BuildAndTest.md` covers the one
+  case that remains, a checkout substituted through
+  `FETCHCONTENT_SOURCE_DIR_NLOPT`, which skips the patch.
+
+- **`docs/api/simulators.md`** gives `absorb_profile` its signature and the
+  run-level statement of what the profile figures cover, says the kernel
+  selection reaches every split including the rebuild, and states the Gram
+  floor's derivation. The Eigen pin's comment in `CMakeLists.txt` no longer
+  cites one lucky null tail as a property of the solver.
+
+### Tests
+
+- **`test_v11282_profile_totals.cpp`**, 12 tests. `absorb_profile` directly:
+  tallies add and the residual takes the max, order independent, the state
+  and its settings untouched, a fresh chain is the identity, a chain absorbing
+  itself doubles, repeats accumulate. Then the per-shot path through `run()`:
+  one shot reports exactly what the zero-shot trajectory reports, bit for bit
+  on the state and on every figure that does not read a clock; the totals
+  grow with the shot count the way each figure's contract says; seeding
+  rebuilds are counted per shot alongside the gate splits; the returned
+  tensors are a trajectory's end state rather than the accumulator's; a
+  supplied chain's cap, cutoff and kernel survive the loop; the other two
+  paths are unchanged.
+
+- **`test_v11282_rebuild_kernel.cpp`**, 9 tests. A random 8-qubit state
+  rebuilt at a cap of 16, so the site-0 block is 2x128 and BDC and Jacobi
+  provably take different routes while no cut can be truncated. Both kernels
+  reconstruct the input; the two rebuilds differ by a nonzero amount below
+  rounding, so the selection reaches the split and both are exact; a chain
+  that selected nothing rebuilds as one that selected BDC, bit for bit;
+  seeding through `run()` equals a direct rebuild under each kernel; changing
+  the selection applies to the whole next sweep. Two tests compile only
+  without autonne: a rebuild that throws leaves the chain and its counters
+  exactly as they were, and the throw reaches the caller of `run()` through
+  the seeding path. Two run only with autonne linked: the rebuild passes the
+  ladder with zero rescues and agrees with BDC to rounding, and seeding
+  reaches it.
+
+- **`test_v11282_gram_floor.cpp`**, 3 tests, through the diagnostic replica of
+  the rescue route (the library's runs only when the primary factorisation
+  fails verification, which no test can produce on demand). The floor is
+  above bare `sqrt(eps)` and equal to its derivation; on eight shapes and
+  twenty-four seeds of rank-deficient products the route reports the
+  constructed rank with a clean kept slice and a reconstruction within what
+  the squared condition number entitles it to; and the largest sigma the null
+  space returns stays below the floor on every one of them, which is the
+  bound the floor rests on, measured. The old floor misses the rank on three
+  of those 192 inputs.
+
+- Green again from 1.1.28.1: `V11281SvdTime.PerShotPathCountsEverySplitOfEveryShot`,
+  `PerShotPathAccumulatesTime`, `PerShotPathAccumulatesDiscardedWeight`
+  (#126) and `V11281SvdSelection.AutonneWithoutTheLibraryThrowsFromTheRebuildPath`
+  (#127). `R1161MpsShor` and `R1161StrictFP` `GramRouteReconstructsPoisonTheta`,
+  which went red on one configuration between the two fixes, are green with
+  the floor.
+
+### Results
+
+3149 tests across 278 suites, 3131 passed and 18 skipped, none failed (16.0 s,
+Clang 22.1.8, `-march=native`, CachyOS Linux, native). Six configurations:
+
+| Compiler | Target | Options | Tests | Passed | Skipped | Time |
+|---|---|---|---|---|---|---|
+| Clang 22.1.8 | native | none (the documented build) | 3149 | 3131 | 18 | 16.0 s |
+| Clang 22.1.8 | native | autonne, harvest | 3142 | 3141 | 1 | 16.5 s |
+| Clang 22.1.8 | x86-64-v3 | autonne, harvest | 3142 | 3141 | 1 | 15.3 s |
+| GCC 14.3.1 | native | autonne, harvest | 3142 | 3141 | 1 | 17.0 s |
+| GCC 14.3.1 | x86-64-v3 | autonne, harvest | 3142 | 3141 | 1 | 16.5 s |
+| Clang 20.1.8 | native | autonne, harvest | 3142 | 3141 | 1 | 16.2 s |
+
+278 suites in every configuration. The one skip everywhere needs 17 GB of
+memory; the other seventeen on the documented build need autonne or the
+harvest. The documented build carries seven tests the others do not: the
+absent-backend throw cases, which compile only where autonne is not linked.
+The Python tool tests pass, 66 with five skipped where no harvest binary is
+named, and the histogram test passes against the GCC build.
+
 ## [1.1.28.1] - 2026-09-13
 
 The test release for 1.1.28.0. It covers the four things that release planned

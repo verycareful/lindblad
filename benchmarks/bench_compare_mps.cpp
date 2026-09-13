@@ -67,11 +67,9 @@ static void BM_CmpMPS(benchmark::State& state, const char* file, int bond_dim) {
     // Set after the loop: Google Benchmark clears counters when the loop
     // starts, so a value assigned before it reports as zero.
     //
-    // The corpus circuits carry terminal-only measurement, so a run is one
-    // forward pass and these figures cover all of it. On a mid-circuit
-    // measurement circuit the simulator re-simulates per shot and the counters
-    // would describe the last shot alone, which is why this benchmark's
-    // circuits are the gate-only corpus members.
+    // The figures on the returned chain cover every split of the run on every
+    // path. The corpus circuits carry terminal-only measurement, so here that
+    // is one forward pass per iteration.
     const std::chrono::nanoseconds svd_ns(
         static_cast<std::chrono::nanoseconds::rep>(
             last.final_state.svd_time_ns()));
