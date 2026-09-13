@@ -78,6 +78,11 @@ CLAUDE.md
 /aer_validation.json
 /lindblad_validation.json
 
+# MPS two-site blocks dumped by a LINDBLAD_MPS_THETA_HARVEST=ON build,
+# written under the working directory by every process that performs a
+# bond split, the test binary included
+/theta_harvest/
+
 # Python virtual environments
 /.venv/
 /venv/

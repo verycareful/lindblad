@@ -4,6 +4,138 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.28.1] - 2026-09-13
+
+The test release for 1.1.28.0. It covers the four things that release planned
+tests for (the bond sweep's corpus, the Eigen versus autonne differential, the
+brickwork generator, the theta harvest) and the two it shipped without naming
+tests for (the `svd_time_ns()` accumulator and the fix that lets a chosen SVD
+kernel survive into a run). It found two defects, both in what the MPS chain's
+own bookkeeping says about a run, and ships four tests red against them.
+
+This is also the first release measured on the project's new host. The full
+suite runs in about 17 s where the previous host took 25 to 35 s, and the
+compiler ordering that #72 has tracked since R.1.20.5 (GCC a third faster than
+Clang on the suite wall clock) does not appear here at all: every compiler
+lands within 8% of every other. Details on the issue.
+
+### Tests
+
+- **`test_v11281_bond_saturation.cpp`**, 7 tests. The corpus circuit the MPS
+  bond sweep runs on must reach past every cap the sweep names, which is the
+  test that would have caught the original defect. The criterion is
+  threshold-free: a cap binds when the run at that cap differs, in bond
+  profile or accumulated discarded weight, from the run one above it. Two
+  exact runs are bit-identical, so any tolerance would only widen what counts
+  as "the same". A six-qubit brickwork built to sit exactly on its rank
+  ceiling at every cut is the case that separates reaching a cap from being
+  truncated by one: its peak bond equals the cap and it discards nothing, and
+  a criterion of "peak bond at least the cap" calls that binding. The scaling
+  family and `qv_n8` at the derived parity cap are the controls that prove
+  the criterion can say no, and the published splits column is derived from
+  the circuit (one split per adjacent cx) rather than read off the page.
+
+- **`test_v11281_svd_selection.cpp`**, 21 tests. One test per construction
+  site the kernel choice used to be lost at (default, basis and statevector
+  seeding, the per-shot loop, the terminal-only pass), and one for the
+  supplied-chain branch that must not copy. The field carrying is shown to
+  reach the factorisation by asserting BDC and Jacobi differ by a nonzero
+  amount below rounding, since two kernels producing a bit-identical state is
+  the same code having run twice. Five tests compile only into a build
+  without autonne and pin the absent-backend throw at the kernel, through
+  `run()`, on the chain directly, and its absence on a circuit that never
+  splits. Eight run only on a build that links autonne: spectra, reconstruction
+  in both storage orders, isometry, the null-space tail on a rank-deficient
+  block, the ladder accepting the factors without a Gram rescue, and the
+  simulator agreeing with BDC at a cap that cannot bind. The rescue count is
+  asserted zero in both places, because the ladder would repair a transposed
+  or swapped factor into a correct state and a state comparison alone would
+  pass for the wrong reason.
+
+- **`test_v11281_svd_time.cpp`**, 13 tests. The accumulator's contract from the
+  header: zero on a fresh chain, untouched by single-qubit gates, advancing
+  with the count on every split, charged at both call sites (gate path and
+  rebuild), accumulating rather than resetting, bounded above by the run's
+  own wall clock, covering exactly the single pass on the terminal-only path
+  and exactly one trajectory at `shots == 0`. Three tests assert the same for
+  the per-shot path and are red (#126, below).
+
+- **`test_v11281_theta_harvest.cpp`**, 7 tests, skipped unless the build
+  carries `LINDBLAD_MPS_THETA_HARVEST`. The hexfloat round trip is checked bit
+  for bit on values chosen to break a decimal rendering (a third, negative
+  zero, the smallest subnormal, the largest finite, all mantissa bits set),
+  and again on infinities and NaN. The header line is the exact one autonne's
+  reader expects, entries are in row-major order, and the first block of a
+  shape wins over later ones. The block the harvest writes is compared against
+  the two-site contraction computed independently from the documented layout,
+  with a gate asserted asymmetric under transposition and under a swap of the
+  two sites' roles, so the comparison is known to be able to fail for either
+  mistake. The shape histogram is written at process exit and is checked from
+  outside, by a Python test that runs this suite in a fresh process.
+
+- **Python**, 43 tests across `tests/tools/`. `test_gen_circuits.py` guards the
+  brickwork generator: block structure, parity alternation, adjacency, seed
+  determinism, the prefix property on the gate lines (the header names the
+  layer count, so it is not a byte prefix of the file), and the committed
+  corpus being byte-identical to a fresh generation, every file. `test_bench_keys.py`
+  imports `aer_bench.py` with Qiskit stubbed and checks that both harnesses
+  register the same timing and validation keys, that every MPS row's label
+  names the file and cap it actually runs, and that the parity member's bond
+  cap is derived from its width on both sides. `test_bench_report.py` gains
+  natural ordering (`chi8` before `chi16`, `n20` before `n160`), the svd share
+  with a zero counter distinguished from a missing one, the column's presence
+  on the MPS block alone, and checks on the committed benchmark page itself.
+  `test_theta_harvest_histogram.py` runs a harvest-enabled test binary and
+  checks the histogram against the offers the suite makes; it skips unless
+  `LINDBLAD_HARVEST_TEST_BINARY` names one.
+
+- `brickwork_n24.qasm` joins the registered-workload list in the corpus suite.
+
+### Known issues
+
+- **The MPS profile counters describe the last trajectory on the per-shot
+  path** (#126). Any circuit with a mid-circuit measurement, a condition or a
+  reset, run at `shots > 0`, rebuilds the chain per trajectory and returns the
+  last one, so `svd_call_count()`, `svd_time_ns()`, `gram_fallback_count()`,
+  `truncation_error()` and `max_verify_residual_excess()` all report one shot
+  out of N. The documentation said so; the numbers are wrong all the same,
+  since the figures exist to profile a run. Three `V11281SvdTime.PerShotPath*`
+  tests assert the run-level contract the other two paths meet and ship red.
+  The #124 reproducer and every published benchmark row run single-pass
+  circuits and are unaffected.
+
+- **The rebuild from dense amplitudes ignores `svd_method`** (#127).
+  `rebuild_from_statevector` factorises with Jacobi whatever the chain
+  selected, protection kept from before BDC became the default and Eigen moved
+  to 5.0.0, and which the ladder's verify rung already provides. A caller who
+  selects BDC or AutonneJacobi silently gets Jacobi on the widest blocks a run
+  forms, and a kernel profile mixes kernels without saying so.
+  `V11281SvdSelection.AutonneWithoutTheLibraryThrowsFromTheRebuildPath` ships
+  red on builds without autonne. Results are correct on every path.
+
+### Changed
+
+- **`docs/BuildAndTest.md`** lists `LINDBLAD_WITH_AUTONNE` and
+  `LINDBLAD_MPS_THETA_HARVEST` among the configure options and says which
+  suites skip without them, which compile only without autonne, and how the
+  histogram test is pointed at a harvest-enabled binary.
+
+- **The reference host for the Results line is CachyOS Linux**, native, with
+  Clang 22.1.8, GCC 14.3.1 and Clang 20.1.8, replacing WSL with Clang 18.1.3
+  and GCC 13.3.0. Suite times in this and later entries are not comparable
+  to earlier ones. The bond-saturation suite, estimated at over ten seconds
+  from the published benchmark rows, costs 0.7 s here.
+
+### Results
+
+Default configuration: 3125 tests across 275 suites, 3105 passed, four
+intentionally red as described above and sixteen skipped (one needing 17 GB of
+memory, fifteen needing the optional autonne and harvest builds); 17.0 s on
+Clang 22.1.8. With both options on: 3120 tests across 275 suites, 3116 passed,
+three red and one skipped; 16.2 to 17.5 s across Clang 22.1.8, GCC 14.3.1 and
+Clang 20.1.8, at `-march=native` and at the pinned `-march=x86-64-v3`. CachyOS
+Linux, native.
+
 ## [1.1.28.0] - 2026-09-05
 
 A benchmark that measures what it claims, and what it turned out to say.

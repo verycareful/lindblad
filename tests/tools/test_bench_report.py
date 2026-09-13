@@ -193,5 +193,252 @@ class ParityGateMath(unittest.TestCase):
         self.assertEqual(worst, "FAIL")
 
 
+# =============================================================================
+# 1.1.28.1: natural ordering, the svd column, and the committed page
+# =============================================================================
+
+def gbench_fixture_with_mps():
+    """The base fixture plus an MPS sweep: rows whose keys embed numbers that
+    lexicographic order misplaces, one with the svd counters, one without, and
+    one with a zero counter, which is a legitimate reading and not a missing
+    one."""
+    data = gbench_fixture()
+    mps = [
+        ("mps__brickwork__n24__chi16", 101.0, {"svd_ms": 23.23, "svd_calls": 276}),
+        ("mps__brickwork__n24__chi8", 19.0, {"svd_ms": 8.1, "svd_calls": 276}),
+        ("mps__brickwork__n24__chi64", 6200.0, {}),
+        ("mps__scaling__n160__chi32", 5.0, {"svd_ms": 0.0, "svd_calls": 0}),
+        ("mps__scaling__n20__chi32", 1.0, {"svd_ms": 0.1, "svd_calls": 57}),
+    ]
+    for key, ms, counters in mps:
+        data["benchmarks"].append({
+            "name": "BM_CmpMPS/%s_median" % key, "run_name": "BM_CmpMPS/%s" % key,
+            "run_type": "aggregate", "aggregate_name": "median",
+            "real_time": ms, "time_unit": "ms", **counters})
+    return data
+
+
+def aer_fixture_with_mps():
+    data = aer_fixture()
+    for key, ms in [("mps__brickwork__n24__chi16", 40.0), ("mps__brickwork__n24__chi8", 28.0),
+                    ("mps__brickwork__n24__chi64", 330.0), ("mps__scaling__n160__chi32", 50.0),
+                    ("mps__scaling__n20__chi32", 10.0)]:
+        data["benchmarks"].append({"name": key, "median_ms": ms, "mean_ms": ms,
+                                   "stddev_ms": 0.1, "reps": 5})
+    return data
+
+
+class NaturalOrdering(unittest.TestCase):
+    """natural_key: embedded numbers compare as numbers."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("bench_report", SCRIPT)
+        cls.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.mod)
+
+    def sort(self, keys):
+        return sorted(keys, key=self.mod.natural_key)
+
+    def test_chi_sweep_reads_as_a_sweep(self):
+        self.assertEqual(self.sort(["chi16", "chi8", "chi64", "chi32"]),
+                         ["chi8", "chi16", "chi32", "chi64"])
+
+    def test_register_sizes_read_as_a_sweep(self):
+        self.assertEqual(self.sort(["n160", "n20", "n40", "n80"]),
+                         ["n20", "n40", "n80", "n160"])
+        self.assertEqual(self.sort(["s10", "s12", "s8"]), ["s8", "s10", "s12"])
+
+    def test_full_keys_order_by_every_embedded_number(self):
+        keys = ["mps__scaling__n24__chi16", "mps__scaling__n24__chi8",
+                "mps__scaling__n16__chi32", "mps__scaling__n24__chi64",
+                "mps__brickwork__n24__chi8"]
+        self.assertEqual(self.sort(keys), [
+            "mps__brickwork__n24__chi8",
+            "mps__scaling__n16__chi32",
+            "mps__scaling__n24__chi8",
+            "mps__scaling__n24__chi16",
+            "mps__scaling__n24__chi64"])
+
+    def test_keys_without_digits_sort_by_string(self):
+        self.assertEqual(self.sort(["beta", "alpha", "gamma"]), ["alpha", "beta", "gamma"])
+
+    def test_domain_rows_come_out_in_natural_order(self):
+        lb = {"mps__scaling__n24__chi16": {"median_ms": 1.0, "counters": {}},
+              "mps__scaling__n24__chi8": {"median_ms": 1.0, "counters": {}},
+              "mps__scaling__n24__chi64": {"median_ms": 1.0, "counters": {}},
+              "val__mps__qv__n8": {"median_ms": 1.0, "counters": {}},
+              "sv__scaling__n10": {"median_ms": 1.0, "counters": {}}}
+        rows = self.mod.domain_rows("mps", lb, {})
+        self.assertEqual([k for k, _, _ in rows],
+                         ["mps__scaling__n24__chi8", "mps__scaling__n24__chi16",
+                          "mps__scaling__n24__chi64"])
+
+
+class SvdShare(unittest.TestCase):
+    """svd_share: a zero counter is a reading, a missing one is not."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("bench_report", SCRIPT)
+        cls.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.mod)
+
+    def share(self, rec):
+        return self.mod.svd_share(rec)
+
+    def test_missing_record_reports_nothing(self):
+        self.assertIsNone(self.share(None))
+
+    def test_missing_counter_reports_nothing(self):
+        self.assertIsNone(self.share({"median_ms": 10.0, "counters": {}}))
+        self.assertIsNone(self.share({"median_ms": 10.0}))
+
+    def test_zero_counter_is_zero_percent(self):
+        self.assertEqual(self.share({"median_ms": 10.0, "counters": {"svd_ms": 0.0}}), 0.0)
+
+    def test_non_positive_median_reports_nothing(self):
+        self.assertIsNone(self.share({"median_ms": 0.0, "counters": {"svd_ms": 1.0}}))
+
+    def test_share_is_the_ratio_in_percent(self):
+        self.assertAlmostEqual(self.share({"median_ms": 19.0, "counters": {"svd_ms": 8.1}}),
+                               100.0 * 8.1 / 19.0)
+
+    def test_column_distinguishes_zero_from_missing(self):
+        rows = [
+            ("mps__a", {"median_ms": 10.0, "counters": {"svd_ms": 0.0, "svd_calls": 0}}, None),
+            ("mps__b", {"median_ms": 10.0, "counters": {}}, None),
+            ("mps__c", {"median_ms": 10.0, "counters": {"svd_ms": 2.5, "svd_calls": 7}}, None),
+            ("mps__d", None, {"median_ms": 10.0, "counters": {}}),
+        ]
+        lines = self.mod.emit_domain_block(rows, with_quality=False, with_svd=True)
+        self.assertIn("lb svd share", lines[0])
+        self.assertIn("lb splits", lines[0])
+        by_key = {l.split()[0]: l for l in lines[2:]}
+        self.assertRegex(by_key["mps__a"], r"0\.0%\s+0$")
+        self.assertRegex(by_key["mps__b"], r"--\s+--$")
+        self.assertRegex(by_key["mps__c"], r"25\.0%\s+7$")
+        self.assertRegex(by_key["mps__d"], r"--\s+--$")
+
+    def test_column_is_absent_unless_asked_for(self):
+        rows = [("sv__a", {"median_ms": 10.0, "counters": {"svd_ms": 1.0}}, None)]
+        plain = self.mod.emit_domain_block(rows, with_quality=False)
+        explicit = self.mod.emit_domain_block(rows, with_quality=False, with_svd=False)
+        self.assertEqual(plain, explicit)
+        self.assertNotIn("svd", lines_text(plain))
+        # Every line is as wide as the header, so the block still reads as a
+        # table without the column.
+        self.assertTrue(all(len(l) == len(plain[0]) for l in plain))
+
+
+def lines_text(lines):
+    return "\n".join(lines)
+
+
+class SvdColumnEndToEnd(unittest.TestCase):
+    """The MPS block of a generated report carries the column; no other does."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def write(self, name, payload):
+        path = self.dir / name
+        path.write_text(json.dumps(payload))
+        return str(path)
+
+    def run_script(self, lb_val, aer_val, extra=()):
+        out = self.dir / "report.md"
+        cmd = [sys.executable, str(SCRIPT),
+               "--lindblad", self.write("gb.json", gbench_fixture_with_mps()),
+               "--aer", self.write("aer.json", aer_fixture_with_mps()),
+               "--validate-lindblad", self.write("vlb.json", lb_val),
+               "--validate-aer", self.write("vaer.json", aer_val),
+               "--out", str(out), *extra]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        report = out.read_text() if out.exists() else ""
+        return proc, report
+
+    def mps_block(self, report):
+        lines = report.splitlines()
+        start = lines.index("## Matrix Product State")
+        end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("## "))
+        return lines[start:end]
+
+    def test_mps_block_has_the_column_and_the_sweep_order(self):
+        lb, aer = validation_fixtures()
+        proc, report = self.run_script(lb, aer)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        block = self.mps_block(report)
+        header = next(l for l in block if l.startswith("workload"))
+        self.assertIn("lb svd share", header)
+        rows = [l for l in block if l.startswith("mps__")]
+        self.assertEqual([r.split()[0] for r in rows], [
+            "mps__brickwork__n24__chi8",
+            "mps__brickwork__n24__chi16",
+            "mps__brickwork__n24__chi64",
+            "mps__scaling__n20__chi32",
+            "mps__scaling__n160__chi32"])
+        by_key = {r.split()[0]: r for r in rows}
+        self.assertRegex(by_key["mps__brickwork__n24__chi8"], r"42\.6%\s+276$")
+        self.assertRegex(by_key["mps__brickwork__n24__chi16"], r"23\.0%\s+276$")
+        self.assertRegex(by_key["mps__brickwork__n24__chi64"], r"--\s+--$")
+        self.assertRegex(by_key["mps__scaling__n160__chi32"], r"0\.0%\s+0$")
+
+    def test_other_blocks_do_not_carry_the_column(self):
+        lb, aer = validation_fixtures()
+        _, report = self.run_script(lb, aer)
+        lines = report.splitlines()
+        for title in ("## Statevector", "## Transpiler", "## Estimator", "## Clifford / Stabilizer"):
+            start = lines.index(title)
+            header = next(l for l in lines[start:] if l.startswith("workload"))
+            self.assertNotIn("svd", header, title)
+
+
+class CommittedBenchmarksPage(unittest.TestCase):
+    """docs/Benchmarks.md as committed: generated by the tool, so it has to
+    show what the tool now guarantees. A regeneration with a regressed tool
+    would land here."""
+
+    PAGE = REPO_ROOT / "docs" / "Benchmarks.md"
+    CORPUS = REPO_ROOT / "benchmarks" / "compare" / "circuits"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lines = cls.PAGE.read_text().splitlines()
+        start = cls.lines.index("## Matrix Product State")
+        end = next(i for i in range(start + 1, len(cls.lines)) if cls.lines[i].startswith("## "))
+        cls.block = cls.lines[start:end]
+        cls.rows = [l for l in cls.block if l.startswith("mps__")]
+
+    def test_brickwork_sweep_is_published_in_cap_order_with_every_cell(self):
+        keys = [r.split()[0] for r in self.rows if r.startswith("mps__brickwork__")]
+        self.assertEqual(keys, ["mps__brickwork__n24__chi%d" % c for c in (8, 16, 32, 64)])
+        for r in self.rows:
+            if r.startswith("mps__brickwork__"):
+                self.assertNotIn("--", r, "a brickwork row is missing a cell: " + r)
+
+    def test_published_splits_are_the_corpus_cx_count(self):
+        # One split per adjacent cx, and every brickwork cx is adjacent, so the
+        # `lb splits` cell is the number of cx lines in the corpus file.
+        text = (self.CORPUS / "brickwork_n24.qasm").read_text()
+        cx = sum(1 for l in text.splitlines() if l.startswith("cx "))
+        for r in self.rows:
+            if r.startswith("mps__brickwork__"):
+                self.assertEqual(int(r.split()[-1]), cx, r)
+
+    def test_mps_parity_member_is_published_and_passes(self):
+        line = next(l for l in self.lines if l.startswith("val__mps__qv__n8"))
+        self.assertTrue(line.rstrip().endswith("PASS"), line)
+
+    def test_rows_are_in_natural_order(self):
+        spec = importlib.util.spec_from_file_location("bench_report", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        keys = [r.split()[0] for r in self.rows]
+        self.assertEqual(keys, sorted(keys, key=mod.natural_key))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,14 @@ Important CMake options:
 - `LINDBLAD_BUILD_BENCHMARKS` (default `ON`)
 - `LINDBLAD_BUILD_PYTHON` (default `OFF`)
 - `LINDBLAD_BUILD_COVERAGE` (default `OFF`)
+- `LINDBLAD_WITH_AUTONNE` (default `OFF`): fetches the autonne kernels at a
+  pinned commit and makes `SVDMethod::AutonneJacobi` selectable. Without it
+  the enumerator still exists and selecting it throws at the first bond split.
+- `LINDBLAD_MPS_THETA_HARVEST` (default `OFF`): every MPS bond split offers its
+  two-site block to a harvest that writes one representative per distinct
+  shape, as autonne-format hexfloat, plus a shape histogram at exit, under
+  `theta_harvest/` in the working directory. A profiling build, not a
+  production one.
 
 Example with options:
 
@@ -62,6 +70,26 @@ For multi-config builds, specify configuration:
 
 ```powershell
 ctest --test-dir build -C Release --output-on-failure
+```
+
+Some tests need a configuration the default build does not carry, and they
+skip rather than fail without it:
+
+- The autonne differential tests (`V11281SvdSelection.Autonne*`) and the theta
+  harvest tests (`V11281ThetaHarvest.*`) run only on a build configured with
+  `LINDBLAD_WITH_AUTONNE=ON` and `LINDBLAD_MPS_THETA_HARVEST=ON` respectively.
+  The tests asserting that selecting `AutonneJacobi` without the library throws
+  are compiled only into a build without it, so the two configurations
+  together cover both branches and their test counts differ by that many.
+- `V11231NormalizationMargin.TheResidualAtLargeRegisterSizes` needs about
+  17 GB of memory and runs only with `LINDBLAD_BIG_MARGIN_SWEEP=1` set.
+- The harvest histogram is written when the process exits, so it is checked
+  from outside by a Python test that runs a harvest-enabled test binary in a
+  temporary directory. It skips unless `LINDBLAD_HARVEST_TEST_BINARY` names
+  one:
+
+```bash
+LINDBLAD_HARVEST_TEST_BINARY=./build-harvest/tests/lindblad_tests python3 -m unittest discover -s tests/tools -p 'test_theta_harvest_histogram.py' -v
 ```
 
 ## Line-Ending Check

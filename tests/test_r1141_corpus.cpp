@@ -48,6 +48,7 @@ const std::set<std::string> kRegisteredWorkloads = {
     "ansatz_n12.qasm", "ansatz_n16.qasm", "ansatz_n20.qasm",       // estimator
     "scaling_n8.qasm", "qft_n8.qasm", "qv_n8.qasm",
     "clifford_n8.qasm", "ansatz_n8.qasm",                          // validation
+    "brickwork_n24.qasm",                                          // MPS bond sweep
 };
 
 // Expected qubit count from the filename. Grover files are named by the

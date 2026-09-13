@@ -159,6 +159,15 @@ set(LINDBLAD_TEST_SOURCES
     test_v11271_validation_serialisation.cpp
     test_v11272_ignore_dispatch.cpp
     test_v11271_mixer_dispatch.cpp
+    # The 1.1.28.1 wave. Two of these read LINDBLAD_WITH_AUTONNE and
+    # LINDBLAD_MPS_THETA_HARVEST, which lindblad_core exports PUBLIC when the
+    # options are on: the autonne differential and harvest cases skip at run
+    # time without them, and the not-linked throw cases compile only without
+    # autonne. No per-file flags either way.
+    test_v11281_bond_saturation.cpp
+    test_v11281_svd_selection.cpp
+    test_v11281_svd_time.cpp
+    test_v11281_theta_harvest.cpp
 )
 
 # The R.1.16.0 diagnostic's strict leg. This flag governs the file's OWN
