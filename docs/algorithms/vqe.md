@@ -68,7 +68,7 @@ That header provides the VQE class and the common ansatz helper methods.
 
 VQE uses `Estimator` internally to evaluate the ansatz energy against the target Hamiltonian.
 
-The optimizer is driven by NLopt. The `options.optimizer` field selects the algorithm: `"COBYLA"` (default), `"NELDER_MEAD"`, or `"POWELL"`. Energy evaluations go through the estimator attached to the `VQE` instance.
+The optimizer is driven by NLopt. The `options.optimizer` field selects the algorithm: `"COBYLA"` (default), `"NELDER_MEAD"`, or `"BOBYQA"`. Energy evaluations go through the estimator attached to the `VQE` instance.
 
 ## Public API Details
 
@@ -76,7 +76,7 @@ The optimizer is driven by NLopt. The `options.optimizer` field selects the algo
 
 - `max_iterations` limits the NLopt budget
 - `convergence_threshold` sets the relative tolerance
-- `optimizer` selects the NLopt algorithm: `"COBYLA"` (default), `"NELDER_MEAD"`, `"POWELL"`
+- `optimizer` selects the NLopt algorithm: `"COBYLA"` (default), `"NELDER_MEAD"`, `"BOBYQA"`
 - `seed` is available for reproducible workflows that use seeded components
 
 ### `VQE::Result`
@@ -136,7 +136,7 @@ Common issues include:
 
 - a Hamiltonian that does not match the ansatz qubit count
 - an ansatz with zero trainable parameters
-- an unsupported optimizer name
+- an unsupported optimizer name (defaults to COBYLA with a warning)
 - estimator or primitive configuration that cannot evaluate the provided circuit
 
 ## Common Pitfalls
@@ -147,7 +147,7 @@ Common issues include:
 
 ## Testing Notes
 
-There is currently no dedicated VQE-only test file in the repository. VQE behavior is exercised indirectly through the variational stack and shared primitive coverage.
+The dedicated optimizer selection tests live in [tests/test_V11283_algos.cpp](../../tests/test_V11283_algos.cpp). VQE behavior is also exercised through the variational stack and shared primitive coverage.
 
 ## Related Source Files
 

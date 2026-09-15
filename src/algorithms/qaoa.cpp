@@ -99,10 +99,18 @@ QAOA::Result QAOA::optimize(
     for (auto& p : params) p = perturb(rng);
     result.initial_params = params;
 
-    // NLopt — optimizer selected by options.optimizer
+    // Map the public optimizer name to NLopt. Unknown names remain usable by
+    // warning and selecting COBYLA as the documented fallback.
     nlopt_algorithm algo = NLOPT_LN_COBYLA;
-    if (options.optimizer == "NELDER_MEAD") algo = NLOPT_LN_NELDERMEAD;
-    else if (options.optimizer == "POWELL")  algo = NLOPT_LN_BOBYQA;
+    if (options.optimizer == "COBYLA") algo = NLOPT_LN_COBYLA;
+    else if (options.optimizer == "NELDER_MEAD") algo = NLOPT_LN_NELDERMEAD;
+    else if (options.optimizer == "BOBYQA")  algo = NLOPT_LN_BOBYQA;
+    else {
+        algo = NLOPT_LN_COBYLA;  // default
+        emit_warning(
+            "QAOA::optimize: unknown optimizer '" +
+            options.optimizer + "', defaulting to COBYLA");
+    }
     nlopt_opt opt = nlopt_create(algo, n_params);
     QAOACallbackData cb_data{&estimator, &cost_hamiltonian, &mixer, this};
     nlopt_set_min_objective(opt, qaoa_objective, &cb_data);

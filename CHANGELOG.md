@@ -4,6 +4,52 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.28.3] - 2026-09-15
+
+The variational algorithms now expose the optimizer choices their public
+options promise, fail closed on unusable optimizer output, and report an
+actionable diagnostic when a caller names an unsupported optimizer.
+
+### Fixed
+
+- **VQE and QAOA now select COBYLA, Nelder-Mead, and BOBYQA explicitly.** The
+  public optimizer string is mapped to its corresponding NLopt algorithm,
+  including the default COBYLA path. An unknown name emits a warning and uses
+  COBYLA rather than silently selecting an implementation-defined path.
+
+- **VQE no longer reports evaluation-limit termination as convergence.** A
+  result is converged only when NLopt returns a successful stopping status
+  other than `NLOPT_MAXEVAL_REACHED` and the reported eigenvalue is finite.
+
+### Tests
+
+- **`tests/test_V11283_algos.cpp`** adds focused VQE and QAOA coverage for the
+  supported optimizers, the default path, unknown-name fallback, warning
+  delivery, finite results, populated optimization histories, and the rule
+  that hitting `max_iterations` does not report convergence. The tests use
+  valid one-qubit Hamiltonians and parameterized ansatzes so optimizer
+  dispatch reaches the objective callback instead of failing on empty inputs.
+
+### Changed
+
+- **Algorithm documentation** now lists BOBYQA, describes unknown-optimizer
+  fallback through the warning channel, and links the dedicated optimizer
+  tests in `docs/algorithms/qaoa.md` and `docs/algorithms/vqe.md`.
+
+### Results
+
+3162 tests across 280 suites, 3144 passed and 18 skipped, none failed (16.4 s,
+Clang 22.1.8, `-march=native`, CachyOS Linux, native). Six configurations:
+
+| Compiler | Target | Options | Tests | Passed | Skipped | Time |
+|---|---|---|---:|---:|---:|---:|
+| Clang 22.1.8 | native | none (the documented build) | 3162 | 3144 | 18 | 16.4 s |
+| Clang 22.1.8 | native | autonne, harvest | 3155 | 3154 | 1 | 16.4 s |
+| Clang 22.1.8 | x86-64-v3 | autonne, harvest | 3155 | 3154 | 1 | 15.4 s |
+| GCC 14.3.1 | native | autonne, harvest | 3155 | 3154 | 1 | 16.9 s |
+| GCC 14.3.1 | x86-64-v3 | autonne, harvest | 3155 | 3154 | 1 | 17.0 s |
+| Clang 20.1.8 | native | autonne, harvest | 3155 | 3154 | 1 | 16.5 s |
+
 ## [1.1.28.2] - 2026-09-13
 
 The patch for the two defects the 1.1.28.1 tests found, a third that fixing

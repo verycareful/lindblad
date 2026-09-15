@@ -58,10 +58,18 @@ VQE::Result VQE::compute_minimum_eigenvalue(
         for (auto& p : params) p = dist(rng);
     }
 
-    // Set up NLopt optimiser
+    // Map the public optimizer name to NLopt. Unknown names remain usable by
+    // warning and selecting COBYLA as the documented fallback.
     nlopt_algorithm algo = NLOPT_LN_COBYLA;
     if (options.optimizer == "NELDER_MEAD") algo = NLOPT_LN_NELDERMEAD;
-    else if (options.optimizer == "POWELL") algo = NLOPT_LN_BOBYQA;
+    else if (options.optimizer == "COBYLA") algo = NLOPT_LN_COBYLA;
+    else if (options.optimizer == "BOBYQA") algo = NLOPT_LN_BOBYQA;
+    else {
+        algo = NLOPT_LN_COBYLA;  // default
+        emit_warning(
+            "VQE::compute_minimum_eigenvalue: unknown optimizer '" +
+            options.optimizer + "', defaulting to COBYLA");
+    };
 
     nlopt_opt opt = nlopt_create(algo, n_params);
     nlopt_set_maxeval(opt, options.max_iterations);
@@ -100,8 +108,10 @@ VQE::Result VQE::compute_minimum_eigenvalue(
     result.eigenvalue = min_val;
     result.optimal_parameters = params;
     result.num_iterations = static_cast<int>(result.energy_history.size());
-    result.converged = (nlopt_res > 0);
-
+    // Reaching the evaluation limit is a valid result but not convergence;
+    // convergence also requires a finite objective value.
+    result.converged = (nlopt_res > 0 && nlopt_res != NLOPT_MAXEVAL_REACHED &&
+                        is_finite_strict(min_val));
     nlopt_destroy(opt);
 
     return result;

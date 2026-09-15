@@ -88,7 +88,7 @@ QAOA uses both `Estimator` and `Sampler`.
 - `p` sets the number of layers
 - `max_iterations` controls the optimizer budget
 - `convergence_threshold` controls stop tolerance
-- `optimizer` selects the classical optimizer: `"COBYLA"` (default), `"NELDER_MEAD"`, or `"POWELL"`
+- `optimizer` selects the classical optimizer: `"COBYLA"` (default), `"NELDER_MEAD"`, or `"BOBYQA"`
 - `seed` drives reproducible initialization
 - `initial_thetas` optionally replaces the default H-state preparation with per-qubit `Ry(theta)` initialization
 
@@ -152,7 +152,7 @@ Common issues include:
 
 - the cost Hamiltonian is empty or malformed
 - the mixer Hamiltonian does not match the expected qubit count
-- the optimizer name is not supported by NLopt
+- the optimizer name is not supported by NLopt (defaults to COBYLA with a warning)
 - the circuit is configured with inconsistent qubit/register dimensions
 
 ## Common Pitfalls
@@ -163,7 +163,7 @@ Common issues include:
 
 ## Testing Notes
 
-There is currently no standalone QAOA test file. The closest coverage lives in the MAQAOA tests, which exercise the same circuit-building and optimization plumbing:
+The dedicated optimizer selection tests live in [tests/test_V11283_algos.cpp](../../tests/test_V11283_algos.cpp). Additional coverage lives in the MAQAOA tests, which exercise the same circuit-building and optimization plumbing:
 
 - [tests/test_maqaoa.cpp](../../tests/test_maqaoa.cpp)
 - [tests/test_maqaoa_5qubit.cpp](../../tests/test_maqaoa_5qubit.cpp)
