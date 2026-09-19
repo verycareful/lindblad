@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #include "lindblad/simulators/clifford_sim.hpp"
 #include "lindblad/circuit.hpp"
 #include "lindblad/statevector.hpp"
@@ -1346,7 +1355,10 @@ bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
             case GT::CY: case GT::ISWAP: case GT::ECR:
                 break;
             // Rotations land in the Clifford group only at multiples of π/2.
+            // The two-qubit Ising rotations are exp(-iθ/2 P⊗Q) for Pauli P, Q
+            // and are Clifford on exactly the same grid as the one-qubit ones.
             case GT::P: case GT::RX: case GT::RY: case GT::RZ:
+            case GT::RXX: case GT::RYY: case GT::RZZ: case GT::RZX:
                 if (inst.params.empty()) return false;
                 if (clifford_quarter_turn(inst.params[0]) < 0) return false;
                 break;
@@ -1420,6 +1432,22 @@ CliffordSimulator::Result CliffordSimulator::run(
         return k;
     };
 
+    // RZZ(kπ/2) on the tableau. exp(-iθ/2 Z⊗Z) is diagonal with phase
+    // exp(-iθ/2 z_a z_b); relative to |00⟩ that is (1, i, i, 1) at θ = π/2,
+    // which is cx(a,b) . s(b) . cx(a,b): the CX folds a⊕b onto b, S puts i on
+    // b = 1, the CX unfolds. θ = π is Z⊗Z up to a global phase the formalism
+    // does not carry, and θ = 3π/2 is the θ = -π/2 rotation up to the same,
+    // so it is the S† form. The other three Ising rotations are this one
+    // conjugated by the single-qubit Cliffords that rotate Z into X or Y.
+    auto apply_rzz_k = [](auto& state, int a, int b, int k) {
+        switch (k) {
+            case 0:  break;
+            case 1:  state.apply_cx(a, b); state.apply_s(b);   state.apply_cx(a, b); break;
+            case 2:  state.apply_z(a);     state.apply_z(b);   break;
+            default: state.apply_cx(a, b); state.apply_sdg(b); state.apply_cx(a, b); break;
+        }
+    };
+
     // Apply one non-measurement Clifford gate to `state` (MEASURE/RESET/BARRIER
     // handled by the callers). Shared by both execution paths.
     // Generic over the tableau layout: the bit-sliced ColumnTableau and the
@@ -1468,6 +1496,44 @@ CliffordSimulator::Result CliffordSimulator::run(
                     default: state.apply_h(inst.qubits[0]);
                              state.apply_z(inst.qubits[0]); break;
                 }
+                break;
+            }
+            case GT::RZZ: {
+                apply_rzz_k(state, inst.qubits[0], inst.qubits[1], quarter_turn_or_throw(inst));
+                break;
+            }
+            case GT::RXX: {
+                // X = H Z H on both operands: exp(-iθ/2 X⊗X) = (H⊗H) RZZ(θ) (H⊗H).
+                const int a = inst.qubits[0], b = inst.qubits[1];
+                const int k = quarter_turn_or_throw(inst);
+                if (k == 0) break;
+                state.apply_h(a); state.apply_h(b);
+                apply_rzz_k(state, a, b, k);
+                state.apply_h(a); state.apply_h(b);
+                break;
+            }
+            case GT::RYY: {
+                // Y = S X S†, so exp(-iθ/2 Y⊗Y) = (S⊗S) RXX(θ) (S†⊗S†): in
+                // circuit order S† first, then the RXX sequence, then S.
+                const int a = inst.qubits[0], b = inst.qubits[1];
+                const int k = quarter_turn_or_throw(inst);
+                if (k == 0) break;
+                state.apply_sdg(a); state.apply_sdg(b);
+                state.apply_h(a);   state.apply_h(b);
+                apply_rzz_k(state, a, b, k);
+                state.apply_h(a);   state.apply_h(b);
+                state.apply_s(a);   state.apply_s(b);
+                break;
+            }
+            case GT::RZX: {
+                // Z on qubits[0], X on qubits[1] (see apply_rzx): conjugate
+                // the second operand alone.
+                const int a = inst.qubits[0], b = inst.qubits[1];
+                const int k = quarter_turn_or_throw(inst);
+                if (k == 0) break;
+                state.apply_h(b);
+                apply_rzz_k(state, a, b, k);
+                state.apply_h(b);
                 break;
             }
             case GT::CX:    state.apply_cx(inst.qubits[0], inst.qubits[1]); break;

@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #include "lindblad/qudit/qudit_mps.hpp"
 
 #include "lindblad/detail/validate.hpp"
@@ -6,10 +15,12 @@
 #include <Eigen/SVD>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace lindblad {
@@ -26,19 +37,22 @@ static inline Complex128 from_std(const std::complex<double>& z) noexcept {
     return Complex128(z.real(), z.imag());
 }
 
-// One-time note when the Jacobi backend is selected on the qudit MPS. The latch
-// is per layer, so this fires even when a qubit MPS in the same process has
-// already noted its own selection.
-static void warn_jacobi_slower_once_qudit() {
+// One-time note when either Jacobi kernel is selected on the qudit MPS. The
+// latch is per layer, so this fires even when a qubit MPS in the same process
+// has already noted its own selection. The cost figures are the qubit layer's.
+static void warn_jacobi_slower_once_qudit(SVDMethod m) {
     static bool warned = false;
     if (warned) return;
     warned = true;
     emit_warning(
-        "note: SVDMethod::Jacobi selected for the qudit MPS. BDC is the "
-        "default and is substantially faster as bond dimension grows "
-        "(measured 5x at 32x32, 50x at 128x128); both are accepted by the "
-        "truncation verify rung on the first attempt. Below a 16x16 block "
-        "the two run identical code, since BDCSVD delegates to Jacobi there.");
+        std::string("note: SVDMethod::") + to_string(m) +
+        " selected for the qudit MPS. BDC is the default (autonne divide and conquer) "
+        "and is faster as the block grows and the spectrum "
+        "decays: measured on a 128x128 decaying spectrum, 2.7x over Jacobi "
+        "and 19x over EigenJacobi. Every kernel is accepted by the truncation "
+        "verify rung on the first attempt. Jacobi resolves the tail of a "
+        "graded spectrum with relative accuracy, which is why it remains "
+        "selectable; select it for that, not for speed.");
 }
 
 // =============================================================================
@@ -130,24 +144,33 @@ size_t QuditMPS::ipow(size_t base, int exp) noexcept {
 
 // Every bond split in this class goes through here, which is what keeps the
 // four call sites from selecting a rank four different ways. The ladder itself
-// (SELECT -> VERIFY -> FALLBACK -> THROW, and why each rung exists) is shared
-// with the qubit layer; see include/lindblad/detail/svd_truncate.hpp.
+// (kernel, Jacobi rescue, Gram rescue, throw, and why each rung exists) is
+// shared with the qubit layer; see include/lindblad/detail/svd_truncate.hpp.
 //
 // Eigen matrices are column-major and Complex128 is layout-identical to
 // std::complex<double>, so the block is mapped in place rather than copied.
 detail::SvdTruncation QuditMPS::truncate_block(const detail::DenseMatrix& M,
                                                const char* ctx) {
     ++svd_calls;
-    if (svd_method == SVDMethod::Jacobi) warn_jacobi_slower_once_qudit();
+    if (svd_method == SVDMethod::Jacobi || svd_method == SVDMethod::EigenJacobi)
+        warn_jacobi_slower_once_qudit(svd_method);
+    // Bracketing the whole ladder, rescue included, as the qubit layer does.
+    const auto svd_t0 = std::chrono::steady_clock::now();
     detail::SvdTruncation r = detail::svd_truncate_verified(
         reinterpret_cast<const Complex128*>(M.data()),
         M.rows(), M.cols(),
         detail::MatrixOrder::ColMajor, max_bond_dim, svd_cutoff, svd_method,
-        ctx);
+        svd_rescue, ctx);
+    svd_nanos += static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - svd_t0).count());
 
     // Counted past the throw, so this reports rescues that SUCCEEDED: a failed
-    // rescue does not return.
+    // rescue does not return. The Gram route's floor-rejected weight is booked
+    // beside the truncation total, never inside it.
+    if (r.used_jacobi_rescue) ++jacobi_rescues;
     if (r.used_gram_fallback) ++gram_fallbacks;
+    floor_rejected += r.floor_rejected_weight;
     total_truncation_error += r.discarded_weight;
     max_verify_resid_excess =
         std::max(max_verify_resid_excess, r.residual_excess);

@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #pragma once
 
 #include "lindblad/circuit.hpp"
@@ -27,18 +36,31 @@ namespace algorithms {
 class VQE {
 public:
     struct Options {
+        // Cap on OBJECTIVE EVALUATIONS (one per circuit run through the
+        // estimator). Reaching it ends the run with converged = false.
         int max_iterations = 100;
+        // Relative x tolerance at which the minimiser declares convergence.
         double convergence_threshold = 1e-6;
-        std::string optimizer = "COBYLA";  // COBYLA, NELDER_MEAD, POWELL
+        // Which minimiser runs the classical loop. "COBYLA" (the default) is
+        // FLOP's implementation; "NLOPT_COBYLA", "NELDER_MEAD" and "BOBYQA"
+        // are NLopt's. An unknown name warns and runs the default.
+        std::string optimizer = "COBYLA";
+        // Displacement of the first trial points from the start along each
+        // parameter axis, in radians. A derivative-free method spends its
+        // first n + 1 evaluations building this simplex, so on a small
+        // budget the step decides how much of it is left for descent.
+        double initial_step = 0.3;
+        // Seed for the initial parameter draw when none is supplied. 0 draws
+        // the seed from std::random_device, as every simulator does.
         uint64_t seed = 0;
     };
 
     struct Result {
-        double eigenvalue;
+        double eigenvalue = 0.0;
         std::vector<double> optimal_parameters;
-        int num_iterations;
-        std::vector<double> energy_history;
-        bool converged;
+        int num_iterations = 0;                  // objective evaluations made
+        std::vector<double> energy_history;      // every evaluation, in order
+        bool converged = false;
     };
 
     Options options;
@@ -72,9 +94,22 @@ class QAOA {
 public:
     struct Options {
         int p = 1;                     // number of QAOA layers
+        // Cap on OBJECTIVE EVALUATIONS (one per circuit run through the
+        // estimator). Reaching it ends the run with converged = false.
         int max_iterations = 100;
+        // Relative x tolerance at which the minimiser declares convergence.
         double convergence_threshold = 1e-6;
+        // Which minimiser runs the classical loop. "COBYLA" (the default) is
+        // FLOP's implementation; "NLOPT_COBYLA", "NELDER_MEAD" and "BOBYQA"
+        // are NLopt's. An unknown name warns and runs the default.
         std::string optimizer = "COBYLA";
+        // Displacement of the first trial points from the start along each
+        // parameter axis, in radians. A derivative-free method spends its
+        // first n + 1 evaluations building this simplex, so on a small
+        // budget the step decides how much of it is left for descent.
+        double initial_step = 0.3;
+        // Seed for the initial parameter perturbation and the final sampling.
+        // 0 draws the seed from std::random_device, as every simulator does.
         uint64_t seed = 0;
 
         // QSP-QAOA: per-qubit initial state preparation angles.
@@ -87,13 +122,13 @@ public:
     };
 
     struct Result {
-        double optimal_value;
+        double optimal_value = 0.0;
         std::vector<double> initial_params;
         std::vector<double> optimal_params;  // [gamma_1, beta_1, ..., gamma_p, beta_p]
         std::unordered_map<std::string, int> counts;
         std::string best_bitstring;
-        int num_iterations;
-        bool converged;
+        int num_iterations = 0;              // objective evaluations made
+        bool converged = false;
     };
 
     Options options;
@@ -126,9 +161,20 @@ class MAQAOA {
 public:
     struct Options {
         int p = 1;
+        // Cap on OBJECTIVE EVALUATIONS, per layer under layerwise and for the
+        // whole run otherwise. Reaching it ends the run with converged = false.
         int max_iterations = 200;
+        // Relative x tolerance at which the minimiser declares convergence.
         double convergence_threshold = 1e-6;
+        // Which minimiser runs the classical loop. "COBYLA" (the default) is
+        // FLOP's implementation; "NLOPT_COBYLA", "NELDER_MEAD" and "BOBYQA"
+        // are NLopt's. An unknown name warns and runs the default.
         std::string optimizer = "COBYLA";
+        // Displacement of the first trial points from the start along each
+        // parameter axis, in radians. A derivative-free method spends its
+        // first n + 1 evaluations building this simplex, so on a small
+        // budget the step decides how much of it is left for descent.
+        double initial_step = 0.3;
         bool layerwise = false;        // iteratively optimise layer by layer
 
         // Progressive training: layerwise schedule without parameter freezing.
@@ -202,13 +248,13 @@ public:
     };
 
     struct Result {
-        double optimal_value;
+        double optimal_value = 0.0;
         std::vector<double> optimal_params;
         std::vector<double> initial_params;       // per-layer concatenated initial guess
         std::unordered_map<std::string, int> counts;
         std::string best_bitstring;
         int num_iterations = 0;                   // total evaluations across all layers
-        bool converged;
+        bool converged = false;
         std::vector<double> per_layer_costs;      // best energy at end of each layer
         std::vector<int>    layer_nfev;           // evaluations per layer
         std::vector<double> wall_time_by_layer;   // wall seconds per layer

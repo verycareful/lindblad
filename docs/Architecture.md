@@ -229,7 +229,8 @@ Responsibilities:
 
 - Primitive interfaces (`Estimator`, `Sampler`) for reusable execution
 - Variational and search algorithms built on primitives
-- Optimization loop integration through NLopt
+- Optimization loop through one internal seam (`detail/optimizer.hpp`) over
+  FLOP (the default COBYLA) and NLopt (`NLOPT_COBYLA`, `NELDER_MEAD`, `BOBYQA`)
 
 ### 7. External Interface Layers
 

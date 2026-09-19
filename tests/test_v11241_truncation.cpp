@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // test_v11241_truncation.cpp - the truncation ladder's accounting, and the
 // statevector reconstruction that now goes through it (#93).
 //
@@ -97,9 +106,10 @@ double tail_weight(const std::vector<double>& sigmas, int k) {
 
 SvdTruncation truncate(const std::vector<Complex128>& block, int n,
                        int max_bond_dim, double cutoff,
-                       SVDMethod method = SVDMethod::BDC) {
+                       SVDMethod method = SVDMethod::EigenBDC) {
     return svd_truncate_verified(block.data(), n, n, MatrixOrder::RowMajor,
-                                 max_bond_dim, cutoff, method, "v11241");
+                                 max_bond_dim, cutoff, method, /*rescue=*/true,
+                                 "v11241");
 }
 
 // A circuit whose state needs more bond dimension than a tight cap allows, ending
@@ -166,7 +176,7 @@ TEST(V11241Truncation, TheFloorFieldIsExactlyZeroOnThePrimaryRoute) {
     const int n = static_cast<int>(sigmas.size());
     const auto block = diagonal_block(sigmas);
 
-    for (auto method : {SVDMethod::Jacobi, SVDMethod::BDC}) {
+    for (auto method : {SVDMethod::EigenJacobi, SVDMethod::EigenBDC}) {
         for (double cutoff : {0.0, 0.02, 0.07, 0.5}) {
             const auto r = truncate(block, n, n, cutoff, method);
             EXPECT_EQ(r.floor_rejected_weight, 0.0)

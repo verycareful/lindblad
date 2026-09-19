@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // eigen_backend.cpp - every Eigen decomposition in the library, in one TU
 //
 // Compiled -fno-fast-math (see the top-level CMakeLists.txt). The reason this
@@ -12,7 +21,7 @@
 
 #include "lindblad/detail/eigen_backend.hpp"
 
-// For the AutonneJacobi route only. The definition lives in its own
+// For the two autonne methods only. The definition lives in its own
 // translation unit, so nothing of autonne's is compiled into this one.
 #include "lindblad/detail/autonne_backend.hpp"
 
@@ -43,12 +52,13 @@ bool svd_run(const std::complex<double>* data, int rows, int cols,
     const Eigen::Map<const PlainT> mat(data, rows, cols);
     const int k = std::min(rows, cols);
 
-    // The two backends are separate instantiations rather than one call behind
-    // a pointer: they are different types, and dispatching on the method here
-    // keeps that the only place either name appears.
-    if (method == SVDMethod::BDC) {
-        Eigen::BDCSVD<PlainT> svd(mat,
-                                  Eigen::ComputeThinU | Eigen::ComputeThinV);
+    // The two Eigen kernels are separate instantiations rather than one call
+    // behind a pointer: they are different types, and dispatching on the method
+    // here keeps that the only place either name appears.
+    if (method == SVDMethod::EigenBDC) {
+        // The thin-factor request is a template argument, the form Eigen 5
+        // keeps; the runtime-flag constructor is deprecated there.
+        Eigen::BDCSVD<PlainT, Eigen::ComputeThinU | Eigen::ComputeThinV> svd(mat);
         if (svd.info() != Eigen::Success) return false;
         Eigen::Map<ColMajorC>(U_out, rows, k) = svd.matrixU();
         Eigen::Map<ColMajorC>(V_out, cols, k) = svd.matrixV();
@@ -56,7 +66,7 @@ bool svd_run(const std::complex<double>* data, int rows, int cols,
         return true;
     }
 
-    Eigen::JacobiSVD<PlainT> svd(mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    Eigen::JacobiSVD<PlainT, Eigen::ComputeThinU | Eigen::ComputeThinV> svd(mat);
     if (svd.info() != Eigen::Success) return false;
     Eigen::Map<ColMajorC>(U_out, rows, k) = svd.matrixU();
     Eigen::Map<ColMajorC>(V_out, cols, k) = svd.matrixV();
@@ -87,13 +97,14 @@ bool svd_thin(const std::complex<double>* data, int rows, int cols,
               std::complex<double>* V_out) {
     if (rows <= 0 || cols <= 0) return false;
 
-    // Routed out BEFORE the Eigen instantiations below, and by an explicit
-    // test rather than by falling off the end of them. svd_run treats anything
-    // that is not BDC as Jacobi, so a method it does not know silently becomes
-    // a different algorithm than the caller asked for, which is the one
-    // outcome the SVD ladder exists to prevent.
-    if (method == SVDMethod::AutonneJacobi) {
-        return autonne_svd_thin(data, rows, cols, order, U_out, S_out, V_out);
+    // Routed by PROVIDER before the Eigen instantiations below, and by an
+    // explicit test rather than by falling off the end of them. svd_run treats
+    // anything that is not EigenBDC as EigenJacobi, so a method it does not
+    // know would silently become a different algorithm than the caller asked
+    // for, which is the one outcome the SVD ladder exists to prevent.
+    if (method == SVDMethod::Jacobi || method == SVDMethod::BDC) {
+        return autonne_svd_thin(data, rows, cols, order, method, U_out, S_out,
+                                V_out);
     }
 
     return (order == MatrixOrder::RowMajor)

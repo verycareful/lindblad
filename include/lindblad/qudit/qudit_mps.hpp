@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #pragma once
 
 #include "lindblad/types.hpp"
@@ -67,10 +76,11 @@ public:
     // Fraction of total weight (sum of sigma^2) truncation may discard. Not a
     // magnitude threshold: a bare singular value is never compared against it.
     double svd_cutoff;
-    // SVD backend: BDC by default, faster as bond dimension grows. Jacobi is
-    // selectable and emits a one-time note that it is the slower algorithm.
-    // Shared enum lives in types.hpp.
+    // Factorisation every bond split asks for first, and whether a rejected
+    // one may descend the rescue ladder. Same meaning as MPSState::svd_method
+    // and MPSState::svd_rescue; the enum is documented in types.hpp.
     SVDMethod svd_method = SVDMethod::BDC;
+    bool svd_rescue = true;
     std::vector<MPSSiteTensor> tensors;
 
     // Construct in state |0...0> with bond dim 1.
@@ -168,11 +178,23 @@ public:
     double truncation_error() const { return total_truncation_error; }
 
     // svd_call_count() is the denominator: a bond split calls the truncation
-    // once, so a bare fallback count means nothing without it.
-    // gram_fallback_count() counts only the rescues that SUCCEEDED; a Gram
-    // route that also fails verification throws rather than returning.
+    // once, so a bare rescue count means nothing without it.
+    // jacobi_rescue_count() and gram_fallback_count() count only the rescues
+    // that SUCCEEDED, one or the other per rescued split; a split on which
+    // every rung fails throws rather than returning. floor_rejected_weight()
+    // is the Gram route's validity-floor cost, booked outside
+    // truncation_error(); the meaning of each is with the qubit MPSState's
+    // accessors of the same names.
     std::size_t svd_call_count() const { return svd_calls; }
+    std::size_t jacobi_rescue_count() const { return jacobi_rescues; }
     std::size_t gram_fallback_count() const { return gram_fallbacks; }
+    double floor_rejected_weight() const { return floor_rejected; }
+
+    // Time spent in the bond-split factorisation path, in nanoseconds, over
+    // the same splits svd_call_count() counts and bracketing the whole ladder
+    // the way the qubit MPSState::svd_time_ns() does, so the two layers'
+    // figures mean the same thing.
+    std::uint64_t svd_time_ns() const { return svd_nanos; }
 
     // Worst factorisation error the VERIFY rung accepted, as a fraction of
     // ||M||_F^2, maximised over splits. A perfect truncated SVD satisfies the
@@ -186,7 +208,10 @@ private:
 
     double total_truncation_error = 0.0;
     std::size_t svd_calls = 0;
+    std::size_t jacobi_rescues = 0;
     std::size_t gram_fallbacks = 0;
+    double floor_rejected = 0.0;
+    std::uint64_t svd_nanos = 0;
     double max_verify_resid_excess = 0.0;
 
     // The single truncation path for every bond split in this class. Runs the

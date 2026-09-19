@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // mps_sim.cpp — Matrix Product State simulator
 // SVD truncation defaults to BDC, which is divide-and-conquer and pulls away
 // from Jacobi as the block grows; Jacobi is selectable and notes once that it
@@ -38,26 +47,33 @@
 
 namespace lindblad {
 
-// Emit a one-time note when the Jacobi backend is selected. It is correct, and
-// it is the slower algorithm above Eigen's divide-and-conquer threshold:
-// measured through the truncation ladder the gap is 5x at 32x32 and 50x at
-// 128x128. A caller selecting it deliberately is entitled to, and is told the
-// cost once rather than on every split.
+// Emit a one-time note when either Jacobi kernel is selected. Both are
+// correct, and both are the slower algorithm as the block grows: autonne's
+// Jacobi by 2.7x against BDC on a 128x128 decaying spectrum, Eigen's by 19x. A
+// caller selecting one deliberately is entitled to, and is told the cost once
+// rather than on every split.
 //
 // The latch is per layer rather than per process: the qudit MPS carries its own
 // so that selecting Jacobi there is reported even when a qubit simulation in
-// the same process already noted it. Two backends, two things a caller needs
+// the same process already noted it. Two layers, two things a caller needs
 // told.
-static void warn_jacobi_slower_once() {
+static bool is_jacobi(SVDMethod m) {
+    return m == SVDMethod::Jacobi || m == SVDMethod::EigenJacobi;
+}
+
+static void warn_jacobi_slower_once(SVDMethod m) {
     static bool warned = false;
     if (warned) return;
     warned = true;
     emit_warning(
-        "note: SVDMethod::Jacobi selected for the qubit MPS. BDC is the "
-        "default and is substantially faster as bond dimension grows "
-        "(measured 5x at 32x32, 50x at 128x128); both are accepted by the "
-        "truncation verify rung on the first attempt. Below a 16x16 block "
-        "the two run identical code, since BDCSVD delegates to Jacobi there.");
+        std::string("note: SVDMethod::") + to_string(m) +
+        " selected for the qubit MPS. BDC is the default (autonne divide and conquer) "
+        "and is faster as the block grows and the spectrum "
+        "decays: measured on a 128x128 decaying spectrum, 2.7x over Jacobi "
+        "and 19x over EigenJacobi. Every kernel is accepted by the truncation "
+        "verify rung on the first attempt. Jacobi resolves the tail of a "
+        "graded spectrum with relative accuracy, which is why it remains "
+        "selectable; select it for that, not for speed.");
 }
 
 // =============================================================================
@@ -88,14 +104,11 @@ MPSState::MPSState(int n_qubits, int max_bond_dim, double cutoff)
 }
 
 // =============================================================================
-// SVD via Eigen3 BDCSVD — robust divide-and-conquer SVD
-// Truncates to max_bond_dim singular values above cutoff threshold.
-// =============================================================================
-
 // svd_truncate - adapter onto the shared verified truncation
+// =============================================================================
 //
-// The ladder itself (SELECT -> VERIFY -> FALLBACK -> THROW, and why each rung
-// exists) lives in include/lindblad/detail/svd_truncate.hpp and is shared with
+// The ladder itself (kernel, Jacobi rescue, Gram rescue, throw, and why each
+// rung exists) lives in include/lindblad/detail/svd_truncate.hpp and is shared with
 // the qudit layer, so the two cannot drift apart in what they guarantee. What
 // stays here is this layer's storage convention and its own counters: the
 // blocks are row-major, the caller wants V-dagger rather than V, and the
@@ -109,7 +122,7 @@ void MPSState::svd_truncate(
     int& new_rank
 ) {
     ++svd_calls;
-    if (svd_method == SVDMethod::Jacobi) warn_jacobi_slower_once();
+    if (is_jacobi(svd_method)) warn_jacobi_slower_once(svd_method);
 
     // Bracketing the ladder rather than the factorisation alone: the rung that
     // recomputes through the Gram route is part of what a split costs, and a
@@ -118,7 +131,7 @@ void MPSState::svd_truncate(
     const auto svd_t0 = std::chrono::steady_clock::now();
     const detail::SvdTruncation r = detail::svd_truncate_verified(
         M.data(), rows, cols, detail::MatrixOrder::RowMajor,
-        max_bond_dim, cutoff, svd_method, "MPS svd_truncate");
+        max_bond_dim, cutoff, svd_method, svd_rescue, "MPS svd_truncate");
     svd_nanos += static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - svd_t0).count());
@@ -149,8 +162,11 @@ void MPSState::svd_truncate(
     }
 
     // Counted past the throw, so this reports rescues that SUCCEEDED: a failed
-    // rescue does not return.
+    // rescue does not return. The Gram route's floor-rejected weight is booked
+    // beside the truncation total, never inside it.
+    if (r.used_jacobi_rescue) ++jacobi_rescues;
     if (r.used_gram_fallback) ++gram_fallbacks;
+    floor_rejected += r.floor_rejected_weight;
     total_truncation_error += r.discarded_weight;
     max_verify_resid_excess =
         std::max(max_verify_resid_excess, r.residual_excess);
@@ -364,7 +380,9 @@ int MPSState::current_max_bond_dim() const {
 void MPSState::absorb_profile(const MPSState& other) {
     svd_calls += other.svd_calls;
     svd_nanos += other.svd_nanos;
+    jacobi_rescues += other.jacobi_rescues;
     gram_fallbacks += other.gram_fallbacks;
+    floor_rejected += other.floor_rejected;
     total_truncation_error += other.total_truncation_error;
     max_verify_resid_excess =
         std::max(max_verify_resid_excess, other.max_verify_resid_excess);
@@ -791,18 +809,18 @@ void MPSState::rebuild_from_statevector(const Statevector& sv) {
         // this chain's selected kernel, like every other split it performs: a
         // caller who chose one is owed it here as much as on the gate path,
         // and a kernel this build cannot provide throws here as it does there.
-        if (svd_method == SVDMethod::Jacobi) warn_jacobi_slower_once();
+        if (is_jacobi(svd_method)) warn_jacobi_slower_once(svd_method);
         const auto svd_t0 = std::chrono::steady_clock::now();
         const detail::SvdTruncation split = detail::svd_truncate_verified(
             block.data(), rows, half_cols, detail::MatrixOrder::RowMajor,
-            max_bond_dim, cutoff, svd_method,
+            max_bond_dim, cutoff, svd_method, svd_rescue,
             "MPSState::rebuild_from_statevector");
         const std::uint64_t svd_ns = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - svd_t0).count());
         const int k = split.rank;
 
-        // The same five figures MPSState::svd_truncate records, because they
+        // The same figures MPSState::svd_truncate records, because they
         // describe the STATE rather than the route that produced it. A split
         // this sweep performed is one this chain paid for, and a caller reading
         // these counters is asking about the chain and not about which function
@@ -810,7 +828,9 @@ void MPSState::rebuild_from_statevector(const Statevector& sv) {
         // is bond-split work the run spent, so leaving it out would let a
         // circuit hide its most expensive splits behind a >2q gate.
         ++svd_calls;
+        if (split.used_jacobi_rescue) ++jacobi_rescues;
         if (split.used_gram_fallback) ++gram_fallbacks;
+        floor_rejected += split.floor_rejected_weight;
         total_truncation_error += split.discarded_weight;
         svd_nanos += svd_ns;
         max_verify_resid_excess =
@@ -1460,6 +1480,7 @@ MPSSimulator::Result MPSSimulator::run(
     Result result(circuit_in.n_qubits);
     result.final_state = MPSState(circuit_in.n_qubits, max_bond_dim);
     result.final_state.svd_method = svd_method;
+    result.final_state.svd_rescue = svd_rescue;
 
     // Pre-flight: reject any out-of-range operand index up front (this backend
     // surfaces errors by throwing, consistent with its other run() guards).
@@ -1575,6 +1596,7 @@ MPSSimulator::Result MPSSimulator::run(
             // factorisation choice, so the selection is copied onto every
             // chain that will split.
             trajectory.svd_method = svd_method;
+            trajectory.svd_rescue = svd_rescue;
             detail::apply_initial_state(plan, trajectory);
             clreg.assign(n_clbits, 0);
             runner.begin_shot(shot, clreg);
@@ -1705,10 +1727,12 @@ void apply_initial_state(const RunPlan& plan, MPSState& mps) {
     // Exception: a chain supplied as an MPS brings its own, which is the one
     // case where the caller has already answered the question.
     const SVDMethod method = mps.svd_method;
+    const bool rescue = mps.svd_rescue;
 
     if (initial.is_default()) {
         mps = MPSState(n, mps.max_bond_dim, mps.cutoff);
         mps.svd_method = method;
+        mps.svd_rescue = rescue;
         return;
     }
 
@@ -1721,6 +1745,7 @@ void apply_initial_state(const RunPlan& plan, MPSState& mps) {
         }
         mps = MPSState(n, mps.max_bond_dim, mps.cutoff);
         mps.svd_method = method;
+        mps.svd_rescue = rescue;
         // A product state costs nothing in bond dimension, so this is an X on
         // each set digit rather than a dense build and a factorisation.
         //
@@ -1782,6 +1807,7 @@ void apply_initial_state(const RunPlan& plan, MPSState& mps) {
     // which is right mid-run and wrong for the state a run starts from.
     mps = MPSState(n, mps.max_bond_dim, mps.cutoff);
     mps.svd_method = method;
+    mps.svd_rescue = rescue;
     mps.rebuild_from_statevector(sv);
 }
 

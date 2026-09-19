@@ -1,7 +1,16 @@
+# Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+# SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+#
+# This file is part of the Lindblad Quantum Computing Framework and is
+# licensed under the Lindblad Software License Agreement, Version 2.3. The
+# full text is in the LICENSE file at the root of the repository. Free for
+# non-commercial and academic use; commercial use requires a separate
+# Commercial License Agreement with the Author.
+
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.28.3 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.29.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "1.1.28.3")
+set(LINDBLAD_VERSION_LABEL "1.1.29.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -97,6 +106,20 @@ set(NLOPT_SWIG OFF CACHE BOOL "" FORCE)
 set(NLOPT_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)  # NLopt respects NLOPT_BUILD_SHARED; kept for other deps
 
+# FLOP: the derivative-free minimiser behind the variational algorithms'
+# default "COBYLA" (see include/lindblad/detail/optimizer.hpp for the seam).
+# NLopt stays alongside it for the "NLOPT_COBYLA", "NELDER_MEAD" and "BOBYQA"
+# selections. FLOP takes the project-wide flags as they are: its own suite runs
+# under both -ffast-math and strict FP and requires identical results, so the
+# quarantine NLopt needs below is not needed here.
+FetchContent_Declare(
+    flop
+    GIT_REPOSITORY https://github.com/verycareful/FLOP.git
+    GIT_TAG        0.1.0.4
+)
+set(FLOP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(FLOP_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+
 # Eigen3 — header-only, used for robust SVD and eigendecomposition
 # 5.0.0 is the only supported version. It is the version on which BDCSVD is
 # correct for degenerate complex input, which is what makes BDC the MPS default
@@ -128,28 +151,15 @@ option(LINDBLAD_BUILD_PYTHON     "Build Python bindings" OFF)
 # cost nor the API surface exists.
 option(LINDBLAD_MPS_THETA_HARVEST "Dump MPS two-site blocks for external SVD benchmarking" OFF)
 
-# Links the autonne kernels and makes SVDMethod::AutonneJacobi selectable. OFF
-# by default: autonne publishes no tag or release, so a consumer has to name the
-# commit it wants and there is no defensible default to name for them.
-option(LINDBLAD_WITH_AUTONNE "Link autonne and enable SVDMethod::AutonneJacobi" OFF)
+# autonne (shek014/autonne): the SVD kernels behind SVDMethod::Jacobi and
+# SVDMethod::BDC, the MPS bond split's default and its first rescue. Always
+# fetched and linked, like Eigen; every SVDMethod value works in every build.
+# Pinned to a release tag. The remote is a cache variable so a fork can be
+# substituted without editing this file.
 set(LINDBLAD_AUTONNE_REPOSITORY "https://github.com/shek014/autonne.git"
-    CACHE STRING "Git remote the autonne backend is fetched from")
-# A bare commit SHA, not the branch name it currently heads. The branch moves as
-# its pull request is revised, so naming it would change what this builds
-# against without anything here changing.
-#
-# This commit is the tip of a four-deep stack: shek014/autonne#2 adds the
-# kernels, #3 the corpus, install rules and CI on top of it, and #4 the
-# floating-point cross-check on top of that. Pinning the tip rather than the
-# kernels alone takes the install and export rules with it, and takes the
-# harness scaling fix that came with the cross-check. autonne's main is not a
-# usable pin: its svd_thin is still a stub returning false unconditionally.
-#
-# Re-pin once that repository tags a release. Until it does, a SHA is the only
-# thing that identifies a build: project(VERSION) there has read 0.1.0 since the
-# initial commit, so the stub and the finished kernel report the same version.
-set(LINDBLAD_AUTONNE_GIT_TAG "7af77d7bb6c8633b809cdabd8a260870cde17e8d"
-    CACHE STRING "Commit SHA, tag or branch of autonne to build against")
+    CACHE STRING "Git remote the autonne SVD kernels are fetched from")
+set(LINDBLAD_AUTONNE_GIT_TAG "v0.3.0"
+    CACHE STRING "Tag, commit SHA or branch of autonne to build against")
 option(LINDBLAD_BUILD_APPS       "Build user-facing CLI apps (lindblad_draw, ...)" ${PROJECT_IS_TOP_LEVEL})
 
 # Belt and braces alongside EIGEN_BUILD_TESTING above: a dependency that gates
@@ -159,7 +169,7 @@ option(LINDBLAD_BUILD_APPS       "Build user-facing CLI apps (lindblad_draw, ...
 # so forcing it OFF affects dependencies only.
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(nlopt eigen)
+FetchContent_MakeAvailable(nlopt flop eigen)
 
 # The three MPS translation units take the project-wide -ffast-math. Every
 # factorisation they reach is performed in eigen_backend.cpp and checked by the
@@ -283,6 +293,7 @@ add_library(lindblad_core STATIC
     src/transpiler/scheduling/scheduling.cpp
     src/primitives/estimator.cpp
     src/primitives/sampler.cpp
+    src/algorithms/optimizer.cpp
     src/algorithms/vqe.cpp
     src/algorithms/qaoa.cpp
     src/algorithms/maqaoa.cpp
@@ -337,36 +348,31 @@ if(LINDBLAD_MPS_THETA_HARVEST)
     target_compile_definitions(lindblad_core PUBLIC LINDBLAD_MPS_THETA_HARVEST)
 endif()
 
-# autonne backend. src/autonne_backend.cpp is in the target either way, so
-# SVDMethod::AutonneJacobi resolves in every build; only its body changes.
-if(LINDBLAD_WITH_AUTONNE)
-    # Refused rather than resolved to whatever the remote's default branch is.
-    # autonne carries project(VERSION 0.1.0) unchanged since its initial commit
-    # and publishes no tags, so every commit from the stub that returned false
-    # to a working kernel reports the same version. An empty pin would leave
-    # the choice to the remote, and those two commits differ by whether the
-    # backend computes anything at all.
-    if(NOT LINDBLAD_AUTONNE_GIT_TAG)
-        message(FATAL_ERROR
-            "LINDBLAD_WITH_AUTONNE=ON requires a non-empty "
-            "LINDBLAD_AUTONNE_GIT_TAG. It has a default; you have cleared it.")
-    endif()
-    include(FetchContent)
-    FetchContent_Declare(autonne
-        GIT_REPOSITORY "${LINDBLAD_AUTONNE_REPOSITORY}"
-        GIT_TAG        "${LINDBLAD_AUTONNE_GIT_TAG}"
-    )
-    FetchContent_MakeAvailable(autonne)
-    target_link_libraries(lindblad_core PUBLIC autonne::autonne)
-    target_compile_definitions(lindblad_core PUBLIC LINDBLAD_WITH_AUTONNE)
+# autonne. Refused rather than resolved to whatever the remote's default branch
+# is: an empty pin would leave the choice of kernel version to the remote.
+if(NOT LINDBLAD_AUTONNE_GIT_TAG)
+    message(FATAL_ERROR
+        "LINDBLAD_AUTONNE_GIT_TAG must name the autonne version to build "
+        "against. It has a default; you have cleared it.")
 endif()
+FetchContent_Declare(autonne
+    GIT_REPOSITORY "${LINDBLAD_AUTONNE_REPOSITORY}"
+    GIT_TAG        "${LINDBLAD_AUTONNE_GIT_TAG}"
+)
+set(AUTONNE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(AUTONNE_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(autonne)
+# PRIVATE: no public header names an autonne type (detail/autonne_backend.hpp
+# passes raw buffers), so a consumer sees it only as a link dependency.
+target_link_libraries(lindblad_core PRIVATE autonne::autonne)
 
 # Link OpenMP
 find_package(OpenMP REQUIRED)
 target_link_libraries(lindblad_core PUBLIC OpenMP::OpenMP_CXX)
 
-# Link NLopt
-target_link_libraries(lindblad_core PUBLIC nlopt)
+# The two minimiser libraries. PRIVATE: no public header includes either, so
+# a consumer sees them only as link dependencies of the static archive.
+target_link_libraries(lindblad_core PRIVATE flop::flop nlopt)
 
 # Link Eigen3 (header-only)
 target_link_libraries(lindblad_core PUBLIC Eigen3::Eigen)

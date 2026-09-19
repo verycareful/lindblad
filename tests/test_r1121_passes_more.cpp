@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // R.1.12.1 coverage gap-closure: transpiler passes that were unreferenced by
 // any suite (TrivialLayout, StochasticSwap, BasisTranslator, ALAPSchedule) plus
 // preset_pass_manager. Plan DoD #1: zero unreferenced public symbols.

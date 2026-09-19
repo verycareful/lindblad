@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // optimize_1q.cpp — Single-qubit gate optimization passes
 //
 // Optimize1qGates: Collect runs of consecutive 1Q gates on the same qubit,
@@ -443,8 +452,8 @@ static void tensor_factor(const Eigen::Matrix4cd& W,
     int best = (int)(std::max_element(norms, norms + 4) - norms);
     int ri = (best >= 2) ? 2 : 0, ci = (best % 2) ? 2 : 0;
 
-    Eigen::JacobiSVD<Eigen::Matrix2cd> svd0(W.block<2,2>(ri, ci),
-                                             Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::JacobiSVD<Eigen::Matrix2cd, Eigen::ComputeFullU | Eigen::ComputeFullV>
+        svd0(W.block<2,2>(ri, ci));
     W0 = svd0.matrixU() * svd0.matrixV().adjoint();
 
     Eigen::Matrix2cd W0inv = W0.adjoint();
@@ -452,7 +461,7 @@ static void tensor_factor(const Eigen::Matrix4cd& W,
         for (int j = 0; j < 2; ++j)
             W1(i, j) = (W0inv * W.block<2,2>(2 * i, 2 * j)).trace() / 2.0;
 
-    Eigen::JacobiSVD<Eigen::Matrix2cd> svd1(W1, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::JacobiSVD<Eigen::Matrix2cd, Eigen::ComputeFullU | Eigen::ComputeFullV> svd1(W1);
     W1 = svd1.matrixU() * svd1.matrixV().adjoint();
 }
 

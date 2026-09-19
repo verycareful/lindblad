@@ -441,6 +441,14 @@ Their successors → slot 1
 
 **Use**: Minimize circuit depth for execution.
 
+The timing rule is exposed on its own as
+`std::vector<int> asap_schedule_times(const QuantumCircuit&)`: entry `i` is the
+cycle instruction `i` starts in, a gate occupying its wires for one cycle and a
+`barrier` synchronising its wires without occupying them. The pass writes these
+values into `Instruction::schedule_time`, and the observation harness reads the
+same function for `Anchor::every_layer()`, so "layer" means one thing in the
+library.
+
 ### ALAPSchedule (As-Late-As-Possible)
 
 **Behavior**: Assign each gate to the latest slot such that the critical path length is preserved.

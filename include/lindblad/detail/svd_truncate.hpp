@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #pragma once
 
 #include "lindblad/types.hpp"
@@ -25,18 +34,26 @@
 // matched away; the only way to find it is to measure the factorisation against
 // the matrix it came from.
 //
-// The ladder is SELECT -> VERIFY -> FALLBACK -> THROW, and each rung is
-// documented at its implementation. A caller sees only a valid factorisation or
-// an exception: which rung produced it is reported through the return value so
-// a caller that wants to count rescues can, and ignored otherwise.
+// The ladder is: the selected kernel, then autonne's Jacobi (an independent
+// road to the same factorisation, skipped when it WAS the selected kernel),
+// then the Gram route (a self-adjoint eigendecomposition of M†M, sharing no
+// code with either SVD), then THROW. Every candidate passes the same SELECT and
+// VERIFY before it is accepted. Each rung is documented at its implementation.
 //
-// DEFINED in src/svd_truncate.cpp, under the project-wide flags. The two pieces
+// Descending a rung is reported, not hidden: one warning through the warning
+// channel per rung taken, naming the caller, the block shape and the kernel
+// that failed, so a run that was rescued on every bond reads as one. A caller
+// that wants no rescue at all passes rescue = false and the first failure
+// throws. Which rung produced an accepted factorisation is also returned, so a
+// caller that counts rescues can.
+//
+// DEFINED in src/svd_truncate.cpp, under the project-wide flags. The pieces
 // this ladder cannot afford to have optimised are quarantined where they live
-// rather than here: the factorisation itself in src/eigen_backend.cpp, whose
-// entry guard -ffast-math would otherwise delete, and the reconstruction
-// residual in src/svd_verify.cpp, which subtracts two nearly identical matrices
-// to decide accept or reject. Selection, budgeting and rescue routing are
-// ordinary arithmetic and are compiled as such.
+// rather than here: the Eigen kernels in src/eigen_backend.cpp, whose entry
+// guards -ffast-math would otherwise delete, and the reconstruction residual in
+// src/svd_verify.cpp, which subtracts two nearly identical matrices to decide
+// accept or reject. Selection, budgeting and rescue routing are ordinary
+// arithmetic and are compiled as such.
 
 namespace lindblad {
 namespace detail {
@@ -81,10 +98,12 @@ struct SvdTruncation {
     // epsilon.
     double residual_excess = 0.0;
 
-    // True when the primary factorisation failed verification and the Gram
-    // route produced the returned slice. Both outcomes are equally valid
-    // tensors, so this is the only way to tell a state that took the primary
-    // path throughout from one that was rescued on every bond.
+    // Which rescue rung produced the returned slice, when the selected kernel's
+    // factorisation failed verification: autonne's Jacobi, or the Gram route
+    // after that failed too. At most one is set. All three outcomes are equally
+    // valid tensors, so these flags are the only way to tell a state that took
+    // the primary path throughout from one that was rescued on every bond.
+    bool used_jacobi_rescue = false;
     bool used_gram_fallback = false;
 };
 
@@ -101,14 +120,19 @@ struct SvdTruncation {
 //          directly. The budget is a CEILING, not a quota: on a bimodal
 //          spectrum there is nothing between the noise and the budget, so
 //          nothing extra is discarded.
-// ctx    = caller name, used in the exception messages so a failure names the
-//          layer it came from.
+// method = the kernel the caller selected for the first rung.
+// rescue = whether a rejected factorisation may descend the ladder. false
+//          turns the first rejection into the throw below, for a caller who
+//          would rather stop than accept a tensor from a kernel it did not
+//          name.
+// ctx    = caller name, used in the warning and exception messages so a
+//          rescue or a failure names the layer it came from.
 //
-// Throws std::runtime_error when both the backend factorisation and the Gram
-// fallback fail verification, rather than returning a corrupt tensor.
+// Throws std::runtime_error when every permitted rung fails verification,
+// rather than returning a corrupt tensor.
 SvdTruncation svd_truncate_verified(const Complex128* data, int rows, int cols,
                                     MatrixOrder order, int max_bond_dim,
-                                    double cutoff, SVDMethod method,
+                                    double cutoff, SVDMethod method, bool rescue,
                                     const char* ctx);
 
 } // namespace detail

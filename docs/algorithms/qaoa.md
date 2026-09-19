@@ -86,10 +86,11 @@ QAOA uses both `Estimator` and `Sampler`.
 ### `QAOA::Options`
 
 - `p` sets the number of layers
-- `max_iterations` controls the optimizer budget
-- `convergence_threshold` controls stop tolerance
-- `optimizer` selects the classical optimizer: `"COBYLA"` (default), `"NELDER_MEAD"`, or `"BOBYQA"`
-- `seed` drives reproducible initialization
+- `max_iterations` caps objective evaluations (one per iteration for every method here); reaching it reports `converged = false`
+- `convergence_threshold` sets the relative `x` tolerance
+- `optimizer` selects the minimiser: `"COBYLA"` (default, FLOP), `"NLOPT_COBYLA"`, `"NELDER_MEAD"`, `"BOBYQA"` (NLopt)
+- `initial_step` sets the first trial displacement along each parameter axis (default `0.3`)
+- `seed` seeds the initial perturbation and the final sampling; `0` draws from `std::random_device`
 - `initial_thetas` optionally replaces the default H-state preparation with per-qubit `Ry(theta)` initialization
 
 ### `QAOA::Result`
@@ -99,8 +100,8 @@ QAOA uses both `Estimator` and `Sampler`.
 - `optimal_params` stores the best parameters in `[gamma_1, beta_1, ..., gamma_p, beta_p]` order
 - `counts` stores measurement counts from the final sampled circuit
 - `best_bitstring` stores the highest-priority sampled bitstring
-- `num_iterations` records optimizer iterations
-- `converged` indicates whether the optimizer stopped due to convergence rather than iteration exhaustion
+- `num_iterations` records objective evaluations made
+- `converged` indicates whether the minimiser stopped on its tolerance with a finite value, rather than on the evaluation cap
 
 ### `QAOA::build_circuit`
 
@@ -152,7 +153,7 @@ Common issues include:
 
 - the cost Hamiltonian is empty or malformed
 - the mixer Hamiltonian does not match the expected qubit count
-- the optimizer name is not supported by NLopt (defaults to COBYLA with a warning)
+- the optimizer name is not one of the four supported (defaults to COBYLA with a warning)
 - the circuit is configured with inconsistent qubit/register dimensions
 
 ## Common Pitfalls
@@ -160,6 +161,7 @@ Common issues include:
 - `optimal_params` are stored in layer order, not grouped by Hamiltonian term.
 - `initial_thetas` changes the state preparation before the QAOA layers start.
 - `best_bitstring` is selected from sampled outcomes, so it reflects the final measurement stage, not only the continuous optimizer's objective value.
+- Above `2^20` amplitudes the statevector kernels and the expectation-value reduction run in parallel and the summation order depends on the thread count, so the energy differs in its last bits between thread counts and the minimiser can turn that into a different final energy. To reproduce a run at that size, pin `OMP_NUM_THREADS` as well as `seed`.
 
 ## Testing Notes
 
@@ -174,4 +176,6 @@ The dedicated optimizer selection tests live in [tests/test_V11283_algos.cpp](..
 - [docs/api/qaoa.md](../api/qaoa.md)
 - [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp)
 - [src/algorithms/qaoa.cpp](../../src/algorithms/qaoa.cpp)
+- [include/lindblad/detail/optimizer.hpp](../../include/lindblad/detail/optimizer.hpp): the minimiser seam (FLOP and NLopt behind one interface)
+- [src/algorithms/optimizer.cpp](../../src/algorithms/optimizer.cpp)
 - [tests/test_maqaoa.cpp](../../tests/test_maqaoa.cpp)

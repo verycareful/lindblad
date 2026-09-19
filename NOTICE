@@ -3,6 +3,9 @@ Copyright © 2026 Sricharan Suresh (github.com/verycareful)
 
 This software is licensed under the Lindblad Software License Agreement Version 2.3.
 Free for non-commercial and academic use. Commercial use requires a separate license agreement.
+Source files carry the identifier LicenseRef-Lindblad-2.3, the SPDX form for a
+license that is not on the SPDX list; it refers to the LICENSE file in this
+repository.
 Licensing inquiries: lindblad.software@proton.me
 
 ================================================================================
@@ -90,6 +93,45 @@ reproduced below.
     LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
     ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
     POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------------------------------
+FLOP 0.1.0.4
+Source:   https://github.com/verycareful/FLOP
+License:  Mozilla Public License 2.0 (MPL-2.0)
+          https://www.mozilla.org/en-US/MPL/2.0/
+Used in:  The variational algorithms (VQE, QAOA, MA-QAOA): FLOP's COBYLA is
+          the default classical minimiser. Statically linked into the core
+          library.
+
+Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+
+This Source Code Form is subject to the terms of the Mozilla Public License,
+v. 2.0. If a copy of the MPL was not distributed with this file, You can obtain
+one at https://mozilla.org/MPL/2.0/.
+
+MPL NOTICE: FLOP is consumed unmodified through its FetchContent target. The MPL
+attaches to FLOP's own files only; Lindblad's files remain under the Lindblad
+Software License Agreement. FLOP's source is available at the URL above.
+
+--------------------------------------------------------------------------------
+autonne 0.3.0
+Source:   https://github.com/shek014/autonne
+License:  Apache License 2.0
+          https://www.apache.org/licenses/LICENSE-2.0
+Used in:  The matrix-product-state simulators (qubit and qudit): autonne's
+          one-sided Jacobi and divide-and-conquer SVD kernels are the default
+          bond-split factorisation and its first rescue. Statically linked into
+          the core library.
+
+Copyright 2026 The autonne Authors
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at the URL above. Unless required by applicable law or agreed to in
+writing, software distributed under the License is distributed on an "AS IS"
+BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and limitations
+under the License.
 
 --------------------------------------------------------------------------------
 NLopt 2.7.1

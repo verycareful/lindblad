@@ -197,15 +197,19 @@ instead of naming a setting that could not help.
   register-form files)
 - `barrier` honours its operand list (`barrier q[0], r;` mixes indexed bits
   and whole registers); a bare `barrier;` covers the full register
-- `if (creg == n) ...` conditionals are NOT supported and surface as an
-  unknown-gate error; import feedforward circuits through QASM 3, whose
-  parser supports single-bit `if` conditions
-- That refusal is one-directional, and it is the reason a QASM 2 round trip of
-  a conditional circuit does not close. `to_qasm2()` under
-  `ConditionExport::Always` emits `if (c == v) ...` when the register is one bit
-  wide. The text is valid OpenQASM 2.0 and other tools read it, but
-  `from_qasm2()` does not. Use `to_qasm3()` / `from_qasm3()`, which close the
-  round trip, or `to_json()`
+- `if (creg == v) qop;` is read when `creg` is one bit wide, which is the
+  only case where OpenQASM 2.0's register-wide comparison says the same thing
+  as `Instruction::condition_clbit` / `condition_value`, and the only form
+  `to_qasm2()` writes. `v` must be `0` or `1`. The condition lands on every
+  instruction the guarded statement produces, so a conditioned custom `gate`
+  is conditioned as a whole. A register wider than one bit throws
+  `std::runtime_error` naming the register and its width, as the QASM 3
+  parser does for the same comparison: a register-wide condition has no
+  single-bit meaning and is not narrowed silently. Use QASM 3 for those.
+- With that, a conditional circuit with a one-bit classical register survives
+  `to_qasm2()` under `ConditionExport::Always` followed by `from_qasm2()` with
+  its condition intact. `to_qasm3()` / `from_qasm3()` and `to_json()` close
+  the round trip for every register width
 
 ## QASM 3.0 Round-Trip
 

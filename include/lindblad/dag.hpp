@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #pragma once
 
 #include "lindblad/circuit.hpp"
@@ -50,6 +59,14 @@ public:
     // Conversion
     static DAGCircuit from_circuit(const QuantumCircuit& qc);
     QuantumCircuit to_circuit() const;
+
+    // Resolve a node id to its node. Every id-returning method below hands out
+    // node_id values, and node_id is deliberately NOT the index into `nodes`
+    // (ids survive substitution and removal, indices do not), so this is the
+    // one way to get from an id to the node without a linear search. Returns
+    // nullptr for an id this DAG does not hold.
+    const DAGNode* node(int node_id) const;
+    DAGNode* node(int node_id);
 
     // DAG operations used by transpiler
     std::vector<int> topological_sort() const;

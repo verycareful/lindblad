@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // test_v11241_eigen_backend.cpp - the decomposition seam's own contract.
 //
 // detail::eigen_backend became the single point at which this library performs
@@ -182,7 +191,7 @@ TEST(V11241EigenBackend, ThinShapesAreTheSmallerDimension) {
     for (auto [rows, cols] : {std::pair{6, 6}, std::pair{8, 3}, std::pair{3, 8}}) {
         const auto buf = asym_colmajor(rows, cols);
         const auto f = run_svd(buf, rows, cols, MatrixOrder::ColMajor,
-                               SVDMethod::BDC);
+                               SVDMethod::EigenBDC);
         ASSERT_TRUE(f.ok) << rows << "x" << cols;
         EXPECT_EQ(f.k, std::min(rows, cols));
         EXPECT_EQ(f.U.size(), static_cast<size_t>(rows) * f.k);
@@ -195,7 +204,7 @@ TEST(V11241EigenBackend, ReconstructsTheMatrixInBothOrientations) {
     for (auto [rows, cols] : {std::pair{6, 6}, std::pair{8, 3}, std::pair{3, 8}}) {
         const auto buf = asym_colmajor(rows, cols);
         const double scale = std::sqrt(frob_sq(buf));
-        for (auto method : {SVDMethod::Jacobi, SVDMethod::BDC}) {
+        for (auto method : {SVDMethod::EigenJacobi, SVDMethod::EigenBDC}) {
             const auto f = run_svd(buf, rows, cols, MatrixOrder::ColMajor, method);
             ASSERT_TRUE(f.ok);
             for (int r = 0; r < rows; ++r) {
@@ -211,7 +220,7 @@ TEST(V11241EigenBackend, ReconstructsTheMatrixInBothOrientations) {
 
 TEST(V11241EigenBackend, SingularValuesAreDescending) {
     const auto buf = asym_colmajor(7, 7);
-    for (auto method : {SVDMethod::Jacobi, SVDMethod::BDC}) {
+    for (auto method : {SVDMethod::EigenJacobi, SVDMethod::EigenBDC}) {
         const auto f = run_svd(buf, 7, 7, MatrixOrder::ColMajor, method);
         ASSERT_TRUE(f.ok);
         for (int i = 1; i < f.k; ++i) {
@@ -225,7 +234,7 @@ TEST(V11241EigenBackend, SingularValuesAreDescending) {
 TEST(V11241EigenBackend, FactorColumnsAreOrthonormal) {
     const int rows = 6, cols = 4;
     const auto buf = asym_colmajor(rows, cols);
-    const auto f = run_svd(buf, rows, cols, MatrixOrder::ColMajor, SVDMethod::BDC);
+    const auto f = run_svd(buf, rows, cols, MatrixOrder::ColMajor, SVDMethod::EigenBDC);
     ASSERT_TRUE(f.ok);
 
     // U†U = I over the kept columns, and likewise V†V. The thin factors carry
@@ -251,7 +260,7 @@ TEST(V11241EigenBackend, VIsReturnedAsVRatherThanVDagger) {
     const int n = 5;
     const auto buf = asym_colmajor(n, n);
     const double scale = std::sqrt(frob_sq(buf));
-    const auto f = run_svd(buf, n, n, MatrixOrder::ColMajor, SVDMethod::BDC);
+    const auto f = run_svd(buf, n, n, MatrixOrder::ColMajor, SVDMethod::EigenBDC);
     ASSERT_TRUE(f.ok);
 
     for (int j = 0; j < f.k; ++j) {
@@ -270,8 +279,8 @@ TEST(V11241EigenBackend, BothBackendsAgreeOnTheSpectrum) {
     const int n = 8;
     const auto buf = asym_colmajor(n, n);
     const double scale = std::sqrt(frob_sq(buf));
-    const auto j = run_svd(buf, n, n, MatrixOrder::ColMajor, SVDMethod::Jacobi);
-    const auto b = run_svd(buf, n, n, MatrixOrder::ColMajor, SVDMethod::BDC);
+    const auto j = run_svd(buf, n, n, MatrixOrder::ColMajor, SVDMethod::EigenJacobi);
+    const auto b = run_svd(buf, n, n, MatrixOrder::ColMajor, SVDMethod::EigenBDC);
     ASSERT_TRUE(j.ok);
     ASSERT_TRUE(b.ok);
     ASSERT_EQ(j.k, b.k);
@@ -297,8 +306,8 @@ TEST(V11241EigenBackend, RowMajorAndColumnMajorDescribeTheSameMatrix) {
     const auto cm = asym_colmajor(n, n);
     const double scale = std::sqrt(frob_sq(cm));
 
-    const auto fr = run_svd(rm, n, n, MatrixOrder::RowMajor, SVDMethod::BDC);
-    const auto fc = run_svd(cm, n, n, MatrixOrder::ColMajor, SVDMethod::BDC);
+    const auto fr = run_svd(rm, n, n, MatrixOrder::RowMajor, SVDMethod::EigenBDC);
+    const auto fc = run_svd(cm, n, n, MatrixOrder::ColMajor, SVDMethod::EigenBDC);
     ASSERT_TRUE(fr.ok);
     ASSERT_TRUE(fc.ok);
 
@@ -322,7 +331,7 @@ TEST(V11241EigenBackend, RowMajorHonoursRectangularShape) {
         const auto rm = asym_rowmajor(rows, cols);
         const double scale = std::sqrt(frob_sq(rm));
         const auto f = run_svd(rm, rows, cols, MatrixOrder::RowMajor,
-                               SVDMethod::Jacobi);
+                               SVDMethod::EigenJacobi);
         ASSERT_TRUE(f.ok) << rows << "x" << cols;
         for (int r = 0; r < rows; ++r)
             for (int c = 0; c < cols; ++c)
@@ -336,7 +345,7 @@ TEST(V11241EigenBackend, NonFiniteInputIsRefusedRatherThanFactorised) {
     const int n = 4;
     auto buf = asym_colmajor(n, n);
     buf[5] = Z(std::numeric_limits<double>::quiet_NaN(), 0.0);
-    const auto f = run_svd(buf, n, n, MatrixOrder::ColMajor, SVDMethod::Jacobi);
+    const auto f = run_svd(buf, n, n, MatrixOrder::ColMajor, SVDMethod::EigenJacobi);
     EXPECT_FALSE(f.ok)
         << "a NaN entry was accepted; the caller's fallback route never runs "
            "and the unspecified outputs are read as a factorisation";
@@ -497,7 +506,7 @@ TEST(V11241SvdVerify, ExactFactorisationHasVanishingResidual) {
     const int n = 6;
     const auto buf = asym_colmajor(n, n);
     const double fsq = frob_sq(buf);
-    const auto f = run_svd(buf, n, n, MatrixOrder::ColMajor, SVDMethod::BDC);
+    const auto f = run_svd(buf, n, n, MatrixOrder::ColMajor, SVDMethod::EigenBDC);
     ASSERT_TRUE(f.ok);
 
     const double resid = svd_reconstruction_residual_sq(
@@ -515,7 +524,7 @@ TEST(V11241SvdVerify, TruncatedResidualEqualsTheDiscardedWeight) {
     const int n = 7;
     const auto buf = asym_colmajor(n, n);
     const double fsq = frob_sq(buf);
-    const auto f = run_svd(buf, n, n, MatrixOrder::ColMajor, SVDMethod::Jacobi);
+    const auto f = run_svd(buf, n, n, MatrixOrder::ColMajor, SVDMethod::EigenJacobi);
     ASSERT_TRUE(f.ok);
 
     for (int k = 1; k <= f.k; ++k) {
@@ -537,8 +546,8 @@ TEST(V11241SvdVerify, ResidualAgreesAcrossStorageOrders) {
     const auto cm = asym_colmajor(n, n);
     const double fsq = frob_sq(cm);
 
-    const auto fr = run_svd(rm, n, n, MatrixOrder::RowMajor, SVDMethod::BDC);
-    const auto fc = run_svd(cm, n, n, MatrixOrder::ColMajor, SVDMethod::BDC);
+    const auto fr = run_svd(rm, n, n, MatrixOrder::RowMajor, SVDMethod::EigenBDC);
+    const auto fc = run_svd(cm, n, n, MatrixOrder::ColMajor, SVDMethod::EigenBDC);
     ASSERT_TRUE(fr.ok);
     ASSERT_TRUE(fc.ok);
 

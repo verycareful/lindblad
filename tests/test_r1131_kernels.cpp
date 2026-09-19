@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // R.1.13.1 test patch — shared low-level kernels.
 // Covers audit F-11 (single shared sv_collapse_qubit for MEASURE and RESET),
 // F-20 (apply_rccx single 3-level-stride pass), and F-8 (apply_unitary

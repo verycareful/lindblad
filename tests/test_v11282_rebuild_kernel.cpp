@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // 1.1.28.2 test wave - the rebuild from dense amplitudes uses the selected
 // kernel (#127).
 //
@@ -5,14 +14,12 @@
 // dense fallback and every dense seeding factorises through it. It runs the
 // kernel the chain's svd_method selects, like the gate path does, so a caller
 // who chose one gets it on every split and a caller who chose none gets BDC
-// on every split. The 1.1.28.1 wave pinned the not-linked half of that
-// (selecting AutonneJacobi on a build without the library throws from the
-// rebuild) and it goes green with this release. This file pins the half that
-// needs the kernel to actually differ.
+// on every split. This file pins that the selection reaches the rebuild, which
+// needs the kernels to actually differ.
 //
-// The instrument is the same as for the gate path: BDC and Jacobi are
-// different algorithms and do not agree bit for bit on blocks at or above
-// Eigen's divide-and-conquer threshold, so two rebuilds of one state under
+// The instrument is the same as for the gate path: the default BDC and
+// EigenJacobi are different algorithms from different libraries and do not
+// agree bit for bit on blocks of any size, so two rebuilds of one state under
 // the two kernels that agree exactly mean the selection never reached the
 // split. The difference is bounded above as well, because at a cap the state
 // cannot exceed both rebuilds are exact and two exact factorisations of one
@@ -20,11 +27,11 @@
 // halves: its site-0 block is 2 x 128, wide enough for the two kernels to take
 // different routes, and no cut of 8 qubits has rank above 16.
 //
-// The linked half runs on a build with autonne and is skipped elsewhere: the
-// rebuild under AutonneJacobi passes the ladder without a rescue and agrees
-// with BDC to rounding. The one-time note that Jacobi is the slower kernel
-// also fires from the rebuild, but its latch is per process and any earlier
-// test may have tripped it, so that is not pinned here.
+// The last group holds autonne's Jacobi against the default: the rebuild
+// under it passes the ladder without a rescue and agrees with BDC to rounding.
+// The one-time note that Jacobi is the slower kernel also fires from the
+// rebuild, but its latch is per process and any earlier test may have tripped
+// it, so that is not pinned here.
 
 #include <gtest/gtest.h>
 
@@ -139,19 +146,6 @@ MPSState seeded_under(std::shared_ptr<const Statevector> sv, SVDMethod method) {
     return sim.run(QuantumCircuit(sv->n_qubits), kCap, kShots, kSeed, plan).final_state;
 }
 
-#ifdef LINDBLAD_WITH_AUTONNE
-constexpr bool kAutonneLinked = true;
-#else
-constexpr bool kAutonneLinked = false;
-#endif
-
-#define SKIP_UNLESS_AUTONNE()                                                  \
-    do {                                                                       \
-        if (!kAutonneLinked) {                                                 \
-            GTEST_SKIP() << "configure with -DLINDBLAD_WITH_AUTONNE=ON to run"; \
-        }                                                                      \
-    } while (0)
-
 }  // namespace
 
 // =============================================================================
@@ -163,7 +157,7 @@ TEST(V11282RebuildKernel, BothKernelsReconstructTheInput) {
     // the chain contracts back to the amplitudes it was built from, to the
     // rounding of n - 1 verified splits.
     const auto sv = random_state(kQubits, kSeed);
-    for (const SVDMethod method : {SVDMethod::BDC, SVDMethod::Jacobi}) {
+    for (const SVDMethod method : {SVDMethod::BDC, SVDMethod::EigenJacobi}) {
         const MPSState chain = rebuilt_under(*sv, method);
         EXPECT_EQ(chain.svd_call_count(), static_cast<std::size_t>(kQubits - 1));
         EXPECT_EQ(chain.current_max_bond_dim(), kCap)
@@ -177,7 +171,7 @@ TEST(V11282RebuildKernel, RebuildUsesTheSelectedKernel) {
     // twice. Below rounding, or one of the two is not an exact factorisation.
     const auto sv = random_state(kQubits, kSeed);
     const MPSState bdc = rebuilt_under(*sv, SVDMethod::BDC);
-    const MPSState jacobi = rebuilt_under(*sv, SVDMethod::Jacobi);
+    const MPSState jacobi = rebuilt_under(*sv, SVDMethod::EigenJacobi);
     ASSERT_EQ(bdc.svd_call_count(), jacobi.svd_call_count());
 
     const double diff = max_amplitude_diff(bdc.to_statevector(), jacobi.to_statevector());
@@ -201,7 +195,7 @@ TEST(V11282RebuildKernel, RebuildDefaultsToBdc) {
     const Statevector by_default = untouched.to_statevector();
 
     EXPECT_EQ(max_amplitude_diff(by_default, rebuilt_under(*sv, SVDMethod::BDC).to_statevector()), 0.0);
-    EXPECT_GT(max_amplitude_diff(by_default, rebuilt_under(*sv, SVDMethod::Jacobi).to_statevector()), 0.0);
+    EXPECT_GT(max_amplitude_diff(by_default, rebuilt_under(*sv, SVDMethod::EigenJacobi).to_statevector()), 0.0);
 }
 
 TEST(V11282RebuildKernel, SeedingReachesTheRebuildKernel) {
@@ -211,13 +205,13 @@ TEST(V11282RebuildKernel, SeedingReachesTheRebuildKernel) {
     // the two kernels' results differ from each other.
     const auto sv = random_state(kQubits, kSeed);
     const Statevector via_bdc = seeded_under(sv, SVDMethod::BDC).to_statevector();
-    const Statevector via_jacobi = seeded_under(sv, SVDMethod::Jacobi).to_statevector();
+    const Statevector via_jacobi = seeded_under(sv, SVDMethod::EigenJacobi).to_statevector();
 
     EXPECT_EQ(max_amplitude_diff(via_bdc, rebuilt_under(*sv, SVDMethod::BDC).to_statevector()), 0.0);
-    EXPECT_EQ(max_amplitude_diff(via_jacobi, rebuilt_under(*sv, SVDMethod::Jacobi).to_statevector()), 0.0);
+    EXPECT_EQ(max_amplitude_diff(via_jacobi, rebuilt_under(*sv, SVDMethod::EigenJacobi).to_statevector()), 0.0);
     EXPECT_GT(max_amplitude_diff(via_bdc, via_jacobi), 0.0)
         << "the seeding path rebuilt under one kernel whichever was selected";
-    EXPECT_EQ(seeded_under(sv, SVDMethod::Jacobi).svd_call_count(),
+    EXPECT_EQ(seeded_under(sv, SVDMethod::EigenJacobi).svd_call_count(),
               static_cast<std::size_t>(kQubits - 1));
 }
 
@@ -228,52 +222,17 @@ TEST(V11282RebuildKernel, SelectionAppliesToEverySplitOfTheRebuild) {
     // change is wholly the new kernel's.
     const auto sv = random_state(kQubits, kSeed);
     MPSState chain = rebuilt_under(*sv, SVDMethod::BDC);
-    chain.svd_method = SVDMethod::Jacobi;
+    chain.svd_method = SVDMethod::EigenJacobi;
     chain.rebuild_from_statevector(*sv);
     EXPECT_EQ(max_amplitude_diff(chain.to_statevector(),
-                                 rebuilt_under(*sv, SVDMethod::Jacobi).to_statevector()),
+                                 rebuilt_under(*sv, SVDMethod::EigenJacobi).to_statevector()),
               0.0);
     EXPECT_EQ(chain.svd_call_count(), 2u * static_cast<std::size_t>(kQubits - 1))
         << "the second rebuild's splits accumulate onto the first's";
 }
 
 // =============================================================================
-// The absent backend. Compiled only where autonne is NOT linked.
-// =============================================================================
-
-#ifndef LINDBLAD_WITH_AUTONNE
-
-TEST(V11282RebuildKernel, AThrowingRebuildLeavesTheChainAsItWas) {
-    // The rebuild builds beside the chain and moves the tensors across only
-    // at the end, and it charges the counters only after a split returns. A
-    // kernel this build cannot provide throws at the first split, so nothing
-    // has changed when the exception leaves.
-    const auto sv = random_state(kQubits, kSeed);
-    MPSState chain = rebuilt_under(*sv, SVDMethod::BDC);
-    const Statevector before = chain.to_statevector();
-    const std::size_t splits = chain.svd_call_count();
-    const double discarded = chain.truncation_error();
-
-    chain.svd_method = SVDMethod::AutonneJacobi;
-    EXPECT_THROW(chain.rebuild_from_statevector(*random_state(kQubits, kSeed + 1)),
-                 std::runtime_error);
-
-    EXPECT_EQ(max_amplitude_diff(chain.to_statevector(), before), 0.0);
-    EXPECT_EQ(chain.svd_call_count(), splits);
-    EXPECT_EQ(chain.truncation_error(), discarded);
-}
-
-TEST(V11282RebuildKernel, SeedingUnderTheAbsentBackendThrowsFromRun) {
-    // The seeding path reaches the rebuild's kernel selection, so the throw
-    // reaches the caller of run() with nothing else in the circuit.
-    const auto sv = random_state(kQubits, kSeed);
-    EXPECT_THROW(seeded_under(sv, SVDMethod::AutonneJacobi), std::runtime_error);
-}
-
-#endif  // !LINDBLAD_WITH_AUTONNE
-
-// =============================================================================
-// The linked backend. Skipped unless the build links autonne.
+// autonne's Jacobi against the default
 // =============================================================================
 
 TEST(V11282RebuildKernel, AutonneRebuildPassesTheLadderWithoutRescue) {
@@ -281,13 +240,12 @@ TEST(V11282RebuildKernel, AutonneRebuildPassesTheLadderWithoutRescue) {
     // so a selection that never reaches the split cannot pass as agreement,
     // and the rescue counter is asserted zero, so a broken adapter cannot pass
     // by being rescued into correctness.
-    SKIP_UNLESS_AUTONNE();
     const auto sv = random_state(kQubits, kSeed);
     const MPSState bdc = rebuilt_under(*sv, SVDMethod::BDC);
-    const MPSState jacobi = rebuilt_under(*sv, SVDMethod::Jacobi);
-    const MPSState autonne = rebuilt_under(*sv, SVDMethod::AutonneJacobi);
+    const MPSState jacobi = rebuilt_under(*sv, SVDMethod::EigenJacobi);
+    const MPSState autonne = rebuilt_under(*sv, SVDMethod::Jacobi);
 
-    ASSERT_EQ(autonne.svd_method, SVDMethod::AutonneJacobi);
+    ASSERT_EQ(autonne.svd_method, SVDMethod::Jacobi);
     ASSERT_EQ(autonne.svd_call_count(), bdc.svd_call_count());
     EXPECT_EQ(autonne.gram_fallback_count(), 0u)
         << "the autonne route was rescued through Gram on some split of the "
@@ -311,12 +269,11 @@ TEST(V11282RebuildKernel, AutonneRebuildPassesTheLadderWithoutRescue) {
 }
 
 TEST(V11282RebuildKernel, AutonneSeedingReachesTheRebuild) {
-    SKIP_UNLESS_AUTONNE();
     const auto sv = random_state(kQubits, kSeed);
-    const MPSState seeded = seeded_under(sv, SVDMethod::AutonneJacobi);
-    EXPECT_EQ(seeded.svd_method, SVDMethod::AutonneJacobi);
+    const MPSState seeded = seeded_under(sv, SVDMethod::Jacobi);
+    EXPECT_EQ(seeded.svd_method, SVDMethod::Jacobi);
     EXPECT_EQ(seeded.gram_fallback_count(), 0u);
     EXPECT_EQ(max_amplitude_diff(seeded.to_statevector(),
-                                 rebuilt_under(*sv, SVDMethod::AutonneJacobi).to_statevector()),
+                                 rebuilt_under(*sv, SVDMethod::Jacobi).to_statevector()),
               0.0);
 }

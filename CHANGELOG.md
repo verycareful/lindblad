@@ -4,6 +4,202 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.29.0] - 2026-09-19
+
+Two dependencies change hands. The variational algorithms run their classical
+loop through one internal seam, and FLOP's COBYLA is the default behind it;
+NLopt stays for the methods FLOP does not have yet. The matrix-product-state
+simulators factorise every bond split with autonne's kernels by default, Eigen's
+become a selection, and the rescue ladder now reports every rung it descends.
+Around those two swaps, the release fixes the bug list the optimizer
+measurements and the autonne work turned up, teaches the tableau backend the
+four Ising rotations, closes the QASM 2 conditional round trip, and puts a
+license header on every source file. Three tests ship red on purpose; they are
+listed under Known red.
+
+### Added
+
+- **`SVDMethod::Jacobi` and `SVDMethod::BDC` are autonne's kernels, and `BDC`
+  is the default** on `MPSState`, `MPSSimulator` and `QuditMPS`. autonne
+  (shek014/autonne) is fetched at its release tag in every build, so every
+  `SVDMethod` value works in every configuration and the build option that used
+  to gate it is gone. Eigen's kernels remain selectable as
+  `SVDMethod::EigenJacobi` and `SVDMethod::EigenBDC`. Selecting either Jacobi
+  emits a one-time note per MPS layer that it is the slower kernel; `EigenBDC`
+  is silent.
+
+- **The rescue ladder is `kernel -> Jacobi -> Gram -> throw`, and every
+  descent is reported.** A factorisation the verify rung rejects is retried
+  with autonne's Jacobi (skipped when Jacobi was the selected kernel), then
+  through the Gram route, and each rung taken emits one warning naming the
+  layer, the block shape, the kernel that failed and the reason the rung
+  measured: the reconstruction residual against its allowance, or which entry
+  was non-finite, or that the kernel declined the block. `svd_rescue = false`
+  on any of the three option surfaces turns the first rejection into a throw
+  instead. `SvdTruncation::used_jacobi_rescue`, `jacobi_rescue_count()` and
+  `floor_rejected_weight()` join the ladder counters on both MPS layers, and
+  `QuditMPS` gains `svd_time_ns()`, so the two layers expose the same figures.
+
+- **`"NLOPT_COBYLA"`** as an optimizer name on `VQE`, `QAOA` and `MAQAOA`,
+  alongside the default `"COBYLA"` (FLOP), `"NELDER_MEAD"` and `"BOBYQA"`
+  (NLopt). **`Options::initial_step`** (default `0.3`) on all three: the
+  displacement of the first trial points along each parameter axis, passed to
+  every backend explicitly so no library default decides how much of a small
+  budget the initial simplex spends.
+
+- **`RXX`, `RYY`, `RZZ` and `RZX` at multiples of pi/2 run on the tableau
+  backend.** `is_clifford()` accepts them on the same quarter-turn grid as the
+  one-qubit rotations, and the dispatch runs them as `cx . s . cx` on the ZZ
+  axis conjugated by the single-qubit Cliffords that rotate Z into X or Y. A
+  circuit using them no longer leaves the fast path silently under automatic
+  backend selection.
+
+- **`from_qasm2()` reads `if (creg == v) qop;`** when the register is one bit
+  wide, which is the only form `to_qasm2()` writes. The condition lands on
+  every instruction the guarded statement produces, so a conditioned custom
+  gate is conditioned as a whole. A wider register throws, as the QASM 3
+  parser does for the same comparison. A conditional circuit with a one-bit
+  register now survives the QASM 2 round trip with its condition intact (#90).
+
+- **`DAGCircuit::node(int node_id)`** resolves an id to its node in constant
+  time. Every traversal method hands out ids, and until now nothing public
+  could resolve one without a linear search of `nodes`.
+
+- **`asap_schedule_times(const QuantumCircuit&)`** exposes the ASAP timing
+  rule on its own. `ASAPSchedule` writes it into `Instruction::schedule_time`
+  and `Anchor::every_layer()` reads its layer boundaries from it, so "layer"
+  has one definition in the library.
+
+- **A license header on every source file**: headers, sources, tests,
+  benchmarks, apps, bindings, CMake and the Python tools all open with the
+  copyright line, the identifier `LicenseRef-Lindblad-2.3` (the SPDX form for
+  a license not on the SPDX list, resolving to the `LICENSE` file) and a
+  four-line pointer to that file.
+
+### Changed
+
+- **The variational algorithms call their minimiser through one seam.** VQE,
+  QAOA and MA-QAOA no longer include NLopt's header or name its algorithms;
+  they describe a request (backend, evaluation cap, tolerance, initial step,
+  bounds) and read a library-neutral outcome. The seam tracks the best finite
+  feasible point itself, so a backend that returns without writing a value
+  cannot surface an uninitialised one, and a non-finite objective ends the run
+  with the best finite point seen rather than propagating. FLOP is fetched at
+  its release tag and linked beside NLopt (#101).
+
+- **`Anchor::every_layer()` fires at the scheduler's layers.** The observation
+  harness previously computed its own greedy layering; it now takes the layer
+  numbers `ASAPSchedule` would emit, and records a boundary where the executed
+  prefix of the circuit is exactly the set of instructions scheduled at or
+  before some cycle. A circuit whose instruction order interleaves layers has
+  no such point for the interleaved layers, and no observation is made under
+  their names. The last instruction is always a boundary.
+
+- **The initial parameter draw is bit-identical across compilers and
+  floating-point models.** The three algorithms draw from the engine's top 53
+  bits with one correctly rounded `std::fma`, in place of
+  `std::uniform_real_distribution`, whose header-only arithmetic produced
+  values an ulp apart between translation units built under different flags,
+  which a derivative-free minimiser then amplified into different
+  trajectories. Every seeded starting point changes as a result.
+
+- **Eigen's SVD options are template arguments** at all four sites, the form
+  Eigen 5 keeps; the deprecated runtime-flag constructors are gone (#99).
+
+- **Documentation**: the MPS pages describe the kernel table, the ladder,
+  `svd_rescue` and every counter; the variational pages name the four
+  optimizers, `initial_step`, the seed semantics, that `max_iterations` caps
+  evaluations, that above `2^20` amplitudes a result depends on the thread
+  count and `OMP_NUM_THREADS` must be pinned to reproduce it, and that
+  layerwise MA-QAOA is not monotone in its per-layer budget; the QASM page
+  records the closed round trip; the DAG, transpiler, observation and build
+  pages cover the new surface. The README's dependency table lists autonne and
+  FLOP, and its configure line and the CI workflow drop the CMake policy-floor
+  workaround that the patched NLopt fetch made redundant.
+
+### Fixed
+
+- **`VQE::Options::seed` is honoured.** The draw was seeded with a constant
+  regardless of the option. `0` now draws from `std::random_device`, the
+  convention every simulator follows, so a caller who wants a reproducible
+  start sets a seed, as with QAOA and MA-QAOA.
+
+- **`QAOA::Result::num_iterations` is written.** It had no default and was
+  never assigned, so reading it was an uninitialised read. It now counts
+  objective evaluations, as VQE's does. Every `Result` field on the three
+  algorithms carries a default.
+
+- **`MAQAOAOptions::optimizer` is read.** Both MA-QAOA paths hardcoded COBYLA
+  whatever the option said.
+
+- **`MPSState` books the Gram route's floor-rejected weight.** The ladder
+  reported it per split and the chain discarded it; it is now accumulated and
+  exposed as `floor_rejected_weight()`, separately from `truncation_error()`
+  since it is not truncation.
+
+- The `optimizer` comment on `VQE::Options` listed a name the code does not
+  accept.
+
+### Removed
+
+- The `LINDBLAD_WITH_AUTONNE` build option and `SVDMethod::AutonneJacobi`.
+  autonne is always linked and its Jacobi is `SVDMethod::Jacobi`. Tests that
+  asserted the behaviour of a build without autonne are gone with the
+  configuration they tested.
+
+### Known red
+
+Three tests fail deliberately, each pinning behaviour this release changed on
+purpose. All three are corrected in the next test release.
+
+- **`R1191CliffordValidation.RunUnsupportedCliffordGateThrows`** uses
+  `rzz(pi/2)` as its example of a Clifford gate the tableau does not dispatch.
+  It is dispatched now, so the test's premise is gone; it becomes a positive
+  check that the gate runs and matches the statevector.
+
+- **`V11261Anchors.EveryLayerMatchesTheHandComputedLayering`** hand-computed
+  the greedy layering `{1, 3, 5}` for a circuit whose instruction order
+  interleaves layers (`cx(2, 3)` is scheduled in cycle 0 but follows the
+  cycle-1 `cx(0, 1)`), and its fixture says it was built so that any other
+  layering would land elsewhere. Under the scheduler's definition the
+  boundaries are `{3, 5}`, and that is the intended answer.
+
+- **`V11241SeamRules.NoHeaderUnderIncludeNamesAnEigenType`** searches public
+  headers for the bare token `Eigen` and trips on the enumerators
+  `EigenJacobi` and `EigenBDC`. No Eigen type is named; the lint's spelling is
+  tightened to the qualified `Eigen::` form in the next test release.
+
+### Known behaviour
+
+autonne's `svd_thin_bdc`, the new default kernel, declines some blocks and
+returns false; the ladder then serves the split from autonne's Jacobi on the
+first retry, with a warning, and nothing in the suite reaches the Gram route.
+In the full run this happens on 58 splits per Clang leg, all of them qudit
+(`d = 3`) blocks of shapes 9x9, 9x27, 27x9, 27x27 and 27x81, and on 63 and 69
+splits on the two GCC legs, which additionally decline some qubit 32x32 blocks
+and one 81x81 qudit block. Every affected test passes. The compiler dependence
+places the cause in the kernel's own acceptance rather than in this library's
+verification; it is tracked in TODO and will be reported upstream with
+reproducers once the declined blocks have been captured.
+
+### Results
+
+Six configurations, every leg failing exactly the three tests listed under
+Known red and nothing else (CachyOS Linux, native):
+
+| Compiler | Target | Options | Tests | Passed | Skipped | Failed | Time |
+|---|---|---|---:|---:|---:|---:|---:|
+| Clang 22.1.8 | native | none (the documented build) | 3155 | 3144 | 8 | 3 | 17.4 s |
+| Clang 22.1.8 | native | harvest | 3155 | 3151 | 1 | 3 | 17.4 s |
+| Clang 22.1.8 | x86-64-v3 | harvest | 3155 | 3151 | 1 | 3 | 16.3 s |
+| GCC 14.3.1 | native | harvest | 3155 | 3151 | 1 | 3 | 19.6 s |
+| GCC 14.3.1 | x86-64-v3 | harvest | 3155 | 3151 | 1 | 3 | 18.4 s |
+| Clang 20.1.8 | native | harvest | 3155 | 3151 | 1 | 3 | 17.0 s |
+
+The documented build skips the seven theta-harvest tests and the large
+register-size margin test; the harvest legs skip the margin test alone. The
+Python tool suites pass: 66 tests (5 skipped) and the 5 histogram tests.
+
 ## [1.1.28.3] - 2026-09-15
 
 The variational algorithms now expose the optimizer choices their public

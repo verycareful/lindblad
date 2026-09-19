@@ -121,7 +121,10 @@ The most important fields are:
 - `initial_thetas`: per-qubit initial state preparation angles
 - `beta_base`: baseline beta scale for PI-MA-QAOA
 - `lambda_co2`: scalar objective weighting term
-- `optimizer` is currently not wired in MAQAOA; the implementation always uses COBYLA via NLopt
+- `optimizer` selects the minimiser: `"COBYLA"` (default, FLOP), `"NLOPT_COBYLA"`, `"NELDER_MEAD"`, `"BOBYQA"` (NLopt); an unknown name warns and runs the default
+- `initial_step` sets the first trial displacement along each parameter axis (default `0.3`)
+- `max_iterations` caps objective evaluations per layer under `layerwise`, for the whole run otherwise; reaching it reports `converged = false`
+- `seed` seeds the initial perturbation; `0` draws from `std::random_device`
 
 ### `MAQAOA::Result`
 
@@ -202,7 +205,8 @@ Common issues include:
 ## Common Pitfalls
 
 - MAQAOA is not just QAOA with a different name; its parameter shape can change substantially.
-- Layerwise optimization changes how the optimizer state evolves across layers.
+- Layerwise optimization changes how the optimizer state evolves across layers, and it is not monotone in the budget: each layer starts from where the previous one converged, so a larger per-layer budget can end at a worse final energy. Compare budgets by the final energy.
+- Above `2^20` amplitudes (20 qubits, the production instance size) the statevector kernels and the expectation-value reduction run in parallel, and the summation order depends on the thread count. The energy differs in its last bits between thread counts, and the minimiser can turn that into a different final energy. To reproduce a run at that size, pin `OMP_NUM_THREADS` as well as `seed`.
 - `term_indexed_gammas` should be documented carefully in examples because it changes the expected parameter count.
 - If you set orbit assignments, the parameter count can drop significantly.
 
@@ -221,4 +225,6 @@ Relevant tests live in:
 - [docs/api/maqaoa.md](../api/maqaoa.md)
 - [include/lindblad/algorithms.hpp](../../include/lindblad/algorithms.hpp)
 - [src/algorithms/maqaoa.cpp](../../src/algorithms/maqaoa.cpp)
+- [include/lindblad/detail/optimizer.hpp](../../include/lindblad/detail/optimizer.hpp): the minimiser seam (FLOP and NLopt behind one interface)
+- [src/algorithms/optimizer.cpp](../../src/algorithms/optimizer.cpp)
 - [tests/test_maqaoa.cpp](../../tests/test_maqaoa.cpp)

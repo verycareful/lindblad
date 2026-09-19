@@ -239,7 +239,8 @@ parameters).
 | `d` | `int` | local dimension |
 | `max_bond_dim` | `int` | maximum retained singular values per bond |
 | `svd_cutoff` | `double` | max fraction of total weight truncation may discard |
-| `svd_method` | `SVDMethod` | SVD backend: default `BDC`, which is divide-and-conquer and pulls away from Jacobi as the block grows. `Jacobi` is selectable and emits a one-time note that it is the slower algorithm. Below a 16x16 block the two run identical code. Declared in `lindblad/types.hpp`. |
+| `svd_method` | `SVDMethod` | Bond-split kernel: default `BDC` (autonne's divide and conquer); `Jacobi` (autonne), `EigenBDC` and `EigenJacobi` are selectable. Either Jacobi emits a one-time note that it is the slower algorithm. Same meaning as the qubit `MPSState::svd_method`; declared in `lindblad/types.hpp`. |
+| `svd_rescue` | `bool` | `true` (default): a factorisation the verify rung rejects descends the rescue ladder (autonne `Jacobi`, then the Gram route), one warning per rung. `false`: the first rejection throws. |
 | `tensors` | `std::vector<MPSSiteTensor>` | site tensors |
 
 ### Gate and oracle API
@@ -297,6 +298,25 @@ that contracted the whole MPS to a dense $d^n$ statevector before sampling, so
 measurement is now $O(n \cdot \chi^3)$ with memory bounded by the bond dimension.
 The phase/function oracles still use the dense `to_statevector()` fallback (a
 separate, documented limitation).
+
+### Ladder observability
+
+```cpp
+double truncation_error() const;
+std::size_t svd_call_count() const;
+std::size_t jacobi_rescue_count() const;
+std::size_t gram_fallback_count() const;
+double floor_rejected_weight() const;
+std::uint64_t svd_time_ns() const;
+double max_verify_residual_excess() const;
+```
+
+The same figures the qubit `MPSState` exposes, with the same meanings (see the
+simulators reference): splits performed, how many were rescued on each rung,
+the Gram route's floor-rejected weight, nanoseconds spent in the whole ladder
+over those splits, and the worst factorisation error the verify rung accepted.
+`svd_time_ns()` brackets the ladder the way the qubit layer does, so the two
+layers' figures can be read against each other.
 
 ### `MPSSiteTensor`
 

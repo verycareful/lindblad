@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // The R.1.16.0 (#44) diagnostic's strict leg.
 //
 // This TU compiles -fno-fast-math (per-source override in tests/CMakeLists.txt)
@@ -60,7 +69,7 @@ TEST(DiagR1160StrictFP, JacobiPoisonKeptSliceIsCleanAndExact) {
     ASSERT_FALSE(matrix_bad(theta)) << "poison theta reconstruction corrupt "
                                        "before any SVD — library evolution "
                                        "differs from the probe run";
-    const auto r = run_svd_report(theta, lindblad::SVDMethod::Jacobi);
+    const auto r = run_svd_report(theta, lindblad::SVDMethod::EigenJacobi);
     print_report("strict/jacobi/poison", r);
 
     EXPECT_NEAR(r.sum_sq, r.frob_sq, 1e-12);
@@ -75,8 +84,8 @@ TEST(DiagR1160StrictFP, JacobiPoisonKeptSliceIsCleanAndExact) {
 TEST(DiagR1160StrictFP, BdcOnR1112BugMatrix) {
     const auto M = build_bdcsvd_bug_matrix();
     ASSERT_FALSE(matrix_bad(M));
-    const auto rb = run_svd_report(M, lindblad::SVDMethod::BDC);
-    const auto rj = run_svd_report(M, lindblad::SVDMethod::Jacobi);
+    const auto rb = run_svd_report(M, lindblad::SVDMethod::EigenBDC);
+    const auto rj = run_svd_report(M, lindblad::SVDMethod::EigenJacobi);
     print_report("strict/bdc/simon36", rb);
     print_report("strict/jacobi/simon36", rj);
 
@@ -141,7 +150,7 @@ TEST(DiagR1160StrictFP, LibraryGateApplicationStillCorruptsUnderItsOwnFlags) {
 TEST(R1161StrictFP, PoisonThetaKeptSliceContract) {
     const auto theta = build_poison_theta();
     ASSERT_FALSE(matrix_bad(theta));
-    const auto r = run_svd_report(theta, lindblad::SVDMethod::Jacobi);
+    const auto r = run_svd_report(theta, lindblad::SVDMethod::EigenJacobi);
     print_report("r1161-strict/jacobi/poison", r);
 
     const bool accepted = !r.kept_slice_bad && r.trunc_recon_err >= 0.0 &&
@@ -178,8 +187,8 @@ TEST(R1161StrictFP, PoisonThetaKeptSliceContract) {
 TEST(R1161StrictFP, Simon36JacobiReference) {
     const auto M = build_bdcsvd_bug_matrix();
     ASSERT_FALSE(matrix_bad(M));
-    const auto rj = run_svd_report(M, lindblad::SVDMethod::Jacobi);
-    const auto rb = run_svd_report(M, lindblad::SVDMethod::BDC);
+    const auto rj = run_svd_report(M, lindblad::SVDMethod::EigenJacobi);
+    const auto rb = run_svd_report(M, lindblad::SVDMethod::EigenBDC);
     print_report("r1161-strict/jacobi/simon36", rj);
     print_report("r1161-strict/bdc/simon36", rb);
     for (const auto* leg : {&rj, &rb}) {

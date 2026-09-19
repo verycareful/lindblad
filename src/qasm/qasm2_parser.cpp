@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #include "lindblad/circuit.hpp"
 
 #include <cctype>
@@ -89,7 +98,25 @@ public:
         stream.str(qasm);
         in_gate_def = false;
 
+        // A classical condition peeled off a line is written onto every
+        // instruction that line appended, once the line is done. The branches
+        // below each `continue` out of the body, so the write happens at the
+        // top of the next iteration and once more after the loop, rather than
+        // at a tail no branch reaches.
+        int cond_clbit = -1;
+        int cond_value = 0;
+        std::size_t body_start = 0;
+        auto apply_pending_condition = [&]() {
+            if (cond_clbit < 0) return;
+            for (std::size_t k = body_start; k < qc.instructions.size(); ++k) {
+                qc.instructions[k].condition_clbit = cond_clbit;
+                qc.instructions[k].condition_value = cond_value;
+            }
+            cond_clbit = -1;
+        };
+
         while (std::getline(stream, line)) {
+            apply_pending_condition();
             line = trim(line);
             if (line.empty() || line[0] == '/' || line.substr(0, 2) == "//") continue;
             if (line.find("OPENQASM") != std::string::npos) continue;
@@ -110,6 +137,67 @@ public:
             // Remove semicolon
             if (!line.empty() && line.back() == ';') {
                 line.pop_back();
+            }
+
+            // Classical condition: `if (creg == value) qop`. OpenQASM 2.0 has
+            // only the register-wide form, and Instruction carries a single
+            // clbit condition, so the two say the same thing exactly when the
+            // register is one bit wide. That is also the only case to_qasm2()
+            // ever writes. A wider register has no single-bit meaning and is
+            // refused, as the QASM 3 parser refuses it; a silent narrowing
+            // would be a different circuit under the caller's name.
+            //
+            // The guard is peeled off here and the rest of the line falls
+            // through to the ordinary parse below. The condition is then
+            // written onto every instruction that parse appended, so a custom
+            // gate inlined into several primitives is conditioned as a whole.
+            body_start = qc.instructions.size();
+            if (line.size() > 3 && line.compare(0, 2, "if") == 0 &&
+                (line[2] == ' ' || line[2] == '(')) {
+                const auto open = line.find('(');
+                const auto close = line.find(')', open == std::string::npos ? 0 : open);
+                const auto eq = line.find("==");
+                if (open == std::string::npos || close == std::string::npos ||
+                    eq == std::string::npos || eq < open || eq > close) {
+                    throw std::runtime_error(
+                        "QASM2Parser: malformed condition '" + line +
+                        "'; expected `if (creg == value) qop;`");
+                }
+                const std::string reg = trim(line.substr(open + 1, eq - open - 1));
+                const std::string val = trim(line.substr(eq + 2, close - eq - 2));
+                int c_off = 0, c_size = 0;
+                if (!resolve_reg_whole(reg, creg_offsets, creg_sizes, c_off, c_size)) {
+                    throw std::runtime_error(
+                        "QASM2Parser: condition names '" + reg +
+                        "', which is not a declared creg");
+                }
+                if (c_size != 1) {
+                    throw std::runtime_error(
+                        "QASM2Parser: condition on creg '" + reg + "' of width " +
+                        std::to_string(c_size) +
+                        "; only a one-bit register maps to a single-bit condition. "
+                        "Use OpenQASM 3 for a register-wide comparison.");
+                }
+                std::size_t consumed = 0;
+                int value = 0;
+                try {
+                    value = std::stoi(val, &consumed);
+                } catch (const std::exception&) {
+                    consumed = 0;
+                }
+                if (consumed != val.size() || (value != 0 && value != 1)) {
+                    throw std::runtime_error(
+                        "QASM2Parser: condition value '" + val +
+                        "' is not 0 or 1, the only values a one-bit register takes");
+                }
+                cond_clbit = c_off;
+                cond_value = value;
+                line = trim(line.substr(close + 1));
+                if (line.empty()) {
+                    throw std::runtime_error(
+                        "QASM2Parser: condition `if (" + reg + " == " + val +
+                        ")` guards no instruction");
+                }
             }
 
             // Parse gate name and arguments
@@ -238,6 +326,7 @@ public:
                 }
             }
         }
+        apply_pending_condition();
 
         return qc;
     }

@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #pragma once
 
 #include "lindblad/observation.hpp"
@@ -57,10 +66,16 @@ public:
     // and on how the target rounded, so the same state could carry a different
     // bond dimension on a different CPU.
     double cutoff;
-    // SVD backend: BDC by default, faster as bond dimension grows. Jacobi is
-    // selectable and emits a one-time note that it is the slower algorithm.
-    // Shared enum lives in types.hpp.
+    // Factorisation every bond split asks for first. BDC (autonne's divide and
+    // conquer) by default; the alternatives and what each promises are with the
+    // enum in types.hpp.
     SVDMethod svd_method = SVDMethod::BDC;
+    // Whether a factorisation the VERIFY rung rejects may descend the rescue
+    // ladder (autonne Jacobi, then the Gram route), each descent reported
+    // through the warning channel. false: the first rejection throws, for a
+    // caller who would rather stop than accept a tensor from a kernel they did
+    // not name.
+    bool svd_rescue = true;
     std::vector<MPSTensor> tensors;
 
 public:
@@ -134,22 +149,32 @@ public:
 
     // SVD ladder observability.
     //
-    // svd_truncate runs SELECT -> VERIFY -> FALLBACK -> THROW: it distrusts the
-    // SVD backend's factorisation and recomputes through the Gram route when
-    // verification rejects it. Both outcomes are silent from outside, so these
-    // two counters are the only way to tell a state that took the primary path
-    // throughout from one that was rescued on every bond.
+    // svd_truncate runs the verified ladder: it distrusts the
+    // selected kernel's factorisation and, when verification rejects it,
+    // descends to autonne's Jacobi and then to the Gram route. A rescued split
+    // is warned about as it happens and is otherwise indistinguishable from a
+    // clean one, so these counters are the record of how often it happened.
     //
     // svd_call_count() is the denominator: a bond split calls svd_truncate once,
-    // so a bare fallback count means nothing without it. gram_fallback_count()
-    // counts only the rescues that SUCCEEDED; a Gram route that also fails
-    // verification throws rather than returning.
+    // so a bare rescue count means nothing without it. jacobi_rescue_count()
+    // and gram_fallback_count() count only the rescues that SUCCEEDED, one or
+    // the other per rescued split; a split on which every rung fails throws
+    // rather than returning.
     //
-    // On a chain MPSSimulator::run returns, all five figures cover every split
-    // of the run on every path, the per-shot trajectories included: a run that
-    // re-simulates per shot returns the last trajectory's tensors carrying the
-    // totals of all of them (see absorb_profile).
+    // floor_rejected_weight() is the Gram route's own cost: the sigma weight
+    // below its validity floor on every split it rescued (see
+    // SvdTruncation::floor_rejected_weight). It is NOT truncation and is kept
+    // out of truncation_error(), which would otherwise report a bond that
+    // discarded nothing as having lost something. Zero unless some split took
+    // the Gram rung.
+    //
+    // On a chain MPSSimulator::run returns, every figure here covers every
+    // split of the run on every path, the per-shot trajectories included: a
+    // run that re-simulates per shot returns the last trajectory's tensors
+    // carrying the totals of all of them (see absorb_profile).
+    std::size_t jacobi_rescue_count() const { return jacobi_rescues; }
     std::size_t gram_fallback_count() const { return gram_fallbacks; }
+    double floor_rejected_weight() const { return floor_rejected; }
     std::size_t svd_call_count() const { return svd_calls; }
 
     // Time spent in the bond-split factorisation path, in nanoseconds,
@@ -225,7 +250,9 @@ public:
 
 private:
     double total_truncation_error = 0.0;
+    std::size_t jacobi_rescues = 0;
     std::size_t gram_fallbacks = 0;
+    double floor_rejected = 0.0;
     std::size_t svd_calls = 0;
     std::uint64_t svd_nanos = 0;
     double max_verify_resid_excess = 0.0;
@@ -255,11 +282,14 @@ private:
 
 class MPSSimulator {
 public:
-    // Factorisation every bond split of a run uses, copied onto the chain this
-    // simulator builds. Without it the choice is reachable only by driving
-    // MPSState directly, since run() constructs its own chain and a chain
-    // built inside a call cannot be configured from outside it.
+    // Factorisation every bond split of a run uses, and whether a rejected one
+    // may be rescued, both copied onto the chain this simulator builds. Without
+    // them the choice is reachable only by driving MPSState directly, since
+    // run() constructs its own chain and a chain built inside a call cannot be
+    // configured from outside it. Meaning of each: MPSState::svd_method and
+    // MPSState::svd_rescue.
     SVDMethod svd_method = SVDMethod::BDC;
+    bool svd_rescue = true;
 
     struct Result {
         MPSState final_state;

@@ -41,8 +41,8 @@ Fields:
 - `clbit_wires`: classical wires this node sits on
 
 The distinction between `node_id` and position in `nodes` matters whenever you
-hold an id across a mutation. Ids are handed out by an internal counter and an
-internal map resolves them to positions.
+hold an id across a mutation. Ids are handed out by an internal counter, and
+`node(int node_id)` resolves one to its node.
 
 ### `DAGEdge`
 
@@ -92,6 +92,18 @@ out. It is worth knowing that `to_circuit` picks *a* valid order, not the one
 you started with. Independent gates may come back in a different sequence, which
 is semantically identical and textually different.
 
+### Resolving an id
+
+```cpp
+const DAGNode* node(int node_id) const;
+DAGNode* node(int node_id);
+```
+
+Returns the node an id names, in constant time through the same map the DAG
+uses internally, or `nullptr` for an id this DAG does not hold. Every
+traversal method below hands out ids, so this is how a caller gets from one of
+them to the instruction it stands for without searching `nodes`.
+
 ### Traversal
 
 ```cpp
@@ -105,12 +117,10 @@ std::vector<int> predecessors(int node_id) const;
 that could execute right now. Boundary nodes do not count as predecessors, which
 is what makes the first layer of a circuit come back rather than an empty list.
 
-All four return **node ids, not indices into `nodes`**. There is no public
-mapping from an id back to its node, so resolving one means searching `nodes`
-for a matching `node_id`. That is linear per lookup, and it is the reason the
-routing pass in this project builds its own front layer by iterating `nodes`
-directly rather than calling `front_layer`. If you are resolving many ids, build
-your own id-to-index map once and reuse it.
+All four return **node ids, not indices into `nodes`**; resolve each through
+`node(id)`. The routing pass in this project builds its own front layer by
+iterating `nodes` directly rather than calling `front_layer`, since it walks
+every node anyway.
 
 ### Mutation
 

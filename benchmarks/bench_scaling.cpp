@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // bench_scaling.cpp — standard-circuit scaling across the four backends
 // (R.1.13 benchmarks). Each backend runs the same layered circuit over the
 // qubit range where it is viable: statevector (n<=26), density matrix (n<=10,

@@ -1,36 +1,23 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #include "lindblad/algorithms.hpp"
+#include "lindblad/detail/optimizer.hpp"
 #include "lindblad/gates.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <random>
 #include <stdexcept>
-
-// NLopt for optimisation
-#include <nlopt.h>
 
 namespace lindblad {
 namespace algorithms {
-
-// =============================================================================
-// NLopt callback helper
-// =============================================================================
-
-struct VQECallbackData {
-    Estimator* estimator;
-    const QuantumCircuit* ansatz;
-    const SparsePauliOp* hamiltonian;
-    std::vector<double>* energy_history;
-};
-
-static double vqe_objective(unsigned n, const double* x, double* /*grad*/, void* data) {
-    auto* cb = static_cast<VQECallbackData*>(data);
-    std::vector<double> params(x, x + n);
-    double energy = cb->estimator->run_single(*cb->ansatz, *cb->hamiltonian, params);
-    cb->energy_history->push_back(energy);
-    return energy;
-}
 
 // =============================================================================
 // VQE
@@ -41,6 +28,8 @@ VQE::Result VQE::compute_minimum_eigenvalue(
     const QuantumCircuit& ansatz,
     const std::vector<double>& initial_params
 ) {
+    static constexpr const char* kWhere = "VQE::compute_minimum_eigenvalue";
+
     Result result;
     result.converged = false;
 
@@ -49,70 +38,36 @@ VQE::Result VQE::compute_minimum_eigenvalue(
         n_params = static_cast<int>(initial_params.size());
     }
 
-    // Initial parameters
+    // Initial parameters: the caller's, or a seeded draw over one full turn
+    // per angle. The draw is bit-exact across compilers (see uniform_in).
     std::vector<double> params = initial_params;
     if (params.empty()) {
-        std::mt19937_64 rng(42);
-        std::uniform_real_distribution<double> dist(-PI, PI);
+        auto rng = detail::seeded_rng(options.seed);
         params.resize(n_params);
-        for (auto& p : params) p = dist(rng);
+        for (auto& p : params) p = detail::uniform_in(rng, -PI, PI);
     }
 
-    // Map the public optimizer name to NLopt. Unknown names remain usable by
-    // warning and selecting COBYLA as the documented fallback.
-    nlopt_algorithm algo = NLOPT_LN_COBYLA;
-    if (options.optimizer == "NELDER_MEAD") algo = NLOPT_LN_NELDERMEAD;
-    else if (options.optimizer == "COBYLA") algo = NLOPT_LN_COBYLA;
-    else if (options.optimizer == "BOBYQA") algo = NLOPT_LN_BOBYQA;
-    else {
-        algo = NLOPT_LN_COBYLA;  // default
-        emit_warning(
-            "VQE::compute_minimum_eigenvalue: unknown optimizer '" +
-            options.optimizer + "', defaulting to COBYLA");
+    detail::OptimizerSpec spec;
+    spec.backend = detail::resolve_optimizer(options.optimizer, kWhere);
+    spec.max_evaluations = options.max_iterations;
+    spec.xtol_rel = options.convergence_threshold;
+    spec.initial_step = options.initial_step;
+
+    // Every evaluation lands in energy_history, so the history is the full
+    // trajectory including the point the optimiser finally returns.
+    auto objective = [&](std::span<const double> x) -> double {
+        std::vector<double> point(x.begin(), x.end());
+        const double energy = estimator.run_single(ansatz, hamiltonian, point);
+        result.energy_history.push_back(energy);
+        return energy;
     };
 
-    nlopt_opt opt = nlopt_create(algo, n_params);
-    nlopt_set_maxeval(opt, options.max_iterations);
-    nlopt_set_xtol_rel(opt, options.convergence_threshold);
+    const detail::OptimizerOutcome out = detail::minimize(spec, objective, params, kWhere);
 
-    VQECallbackData cb_data;
-    cb_data.estimator = &estimator;
-    cb_data.ansatz = &ansatz;
-    cb_data.hamiltonian = &hamiltonian;
-    cb_data.energy_history = &result.energy_history;
-    nlopt_set_min_objective(opt, vqe_objective, &cb_data);
-
-    // NLopt failure codes (< 0) can return without writing min_val, so an
-    // uninitialised min_val surfaces an indeterminate stack value as
-    // Result::eigenvalue. Initialise to a detectably non-finite marker (see
-    // quiet_nan_strict in types.hpp), recover the best objective actually
-    // evaluated from the recorded history, and fail loudly if the objective
-    // never ran. The integer status check comes FIRST: it carries no
-    // floating-point meaning for the optimiser to reason about.
-    double min_val = quiet_nan_strict();
-    nlopt_result nlopt_res = nlopt_optimize(opt, params.data(), &min_val);
-
-    if (nlopt_res < 0 || !is_finite_strict(min_val)) {
-        if (result.energy_history.empty()) {
-            nlopt_destroy(opt);
-            throw std::runtime_error(
-                "VQE::compute_minimum_eigenvalue: optimiser returned no finite "
-                "energy (nlopt code " +
-                std::to_string(static_cast<int>(nlopt_res)) +
-                ") and never evaluated the objective");
-        }
-        min_val = *std::min_element(result.energy_history.begin(),
-                                    result.energy_history.end());
-    }
-
-    result.eigenvalue = min_val;
-    result.optimal_parameters = params;
-    result.num_iterations = static_cast<int>(result.energy_history.size());
-    // Reaching the evaluation limit is a valid result but not convergence;
-    // convergence also requires a finite objective value.
-    result.converged = (nlopt_res > 0 && nlopt_res != NLOPT_MAXEVAL_REACHED &&
-                        is_finite_strict(min_val));
-    nlopt_destroy(opt);
+    result.eigenvalue = out.f;
+    result.optimal_parameters = out.x;
+    result.num_iterations = out.evaluations;
+    result.converged = out.converged;
 
     return result;
 }

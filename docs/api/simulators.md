@@ -508,7 +508,10 @@ feedforward, or reset use the general per-shot trajectory path.
 
 **Limitations**:
 - Only the Clifford gate set above; $T$ and $T^\dagger$ are outside it
-- Parameterized rotations are accepted only at multiples of $\pi/2$
+- Parameterized rotations are accepted only at multiples of $\pi/2$. That
+  covers the one-qubit `p`, `rx`, `ry`, `rz` and the two-qubit Ising rotations
+  `rxx`, `ryy`, `rzz`, `rzx`, which the tableau runs as `cx . s . cx` on the
+  ZZ axis conjugated by the single-qubit Cliffords that rotate Z into X or Y
 - A gate outside the set throws rather than being applied approximately
 
 **Is-Clifford Check**:
@@ -601,7 +604,8 @@ class MPSState {
     std::vector<MPSTensor> tensors;
     int max_bond_dim;    // chi parameter
     double cutoff;       // max fraction of weight truncation may discard
-    SVDMethod svd_method = SVDMethod::BDC;     // SVD backend
+    SVDMethod svd_method = SVDMethod::BDC;     // bond-split kernel
+    bool svd_rescue = true;                    // descend the ladder on a rejected factorisation
 };
 ```
 
@@ -619,52 +623,61 @@ class MPSState {
   at all, which matters more here than on the dense classes because this
   measurement is the most expensive of any state type in the library
 
-**SVD backend**: `svd_method` (declared in `lindblad/types.hpp`, shared with
-the qudit MPS) selects the truncation SVD. `SVDMethod::BDC` is the **default**.
-It is divide-and-conquer where Jacobi is `O(n^3)` per sweep, so the gap widens
-with the block: measured through the truncation ladder, BDC costs roughly a
-fifth of Jacobi at 32x32 and a fiftieth at 128x128, which is a two-site theta at
-bond dimension 64.
+**SVD kernel**: `svd_method` (declared in `lindblad/types.hpp`, shared with
+the qudit MPS) selects the factorisation every bond split asks for first. Four
+kernels from two providers; the values name algorithms, prefixed by provider
+only where both offer the same one:
 
-`SVDMethod::Jacobi` remains selectable and emits a one-time note to the warning
-channel that it is the slower algorithm. Below Eigen's divide-and-conquer
-threshold the choice is nominal: BDCSVD delegates to the Jacobi kernel for
-blocks smaller than 16x16, so a theta at bond dimension 4 runs identical code
-either way.
+| Value | Provider | Method | Accuracy promise |
+|---|---|---|---|
+| `BDC` (default) | autonne | Householder bidiagonalisation, Gu-Eisenstat divide and conquer | absolute: `abs(s_i - s_i(true)) <= 64 * max(rows, cols) * eps * s_max` |
+| `Jacobi` | autonne | one-sided cyclic Jacobi | relative, on every singular value down to a column floor of `2^-500` |
+| `EigenBDC` | Eigen | `BDCSVD` | Eigen's |
+| `EigenJacobi` | Eigen | `JacobiSVD` | Eigen's |
 
-Both backends are held to the same verification described below, and both are
-accepted on the first attempt on decaying and exactly degenerate spectra alike.
-The two do not agree bit for bit, so a state truncated under one backend differs
-in its last digits from the same state truncated under the other. The selection
-reaches every split the chain performs, the rebuild from dense amplitudes
-included, so `svd_time_ns()` under a selected kernel is that kernel's time
-throughout.
+`BDC` is the default because a bond split truncates on weight, which is what
+an absolute bound serves, and because its cost is `O(n^3)` with a constant the
+spectrum barely moves: on a 128x128 decaying spectrum it is 2.7x faster than
+`Jacobi` and no faster on a flat one. `Jacobi` resolves the tail of a graded
+spectrum that an absolute bound treats as noise, and is the ladder's first
+rescue (below), so it is the choice when the tail matters more than the
+clock. Selecting either Jacobi kernel emits a one-time note per MPS layer to
+the warning channel that it is the slower algorithm; selecting `EigenBDC` is
+silent. Every kernel is available in every build, so the public API does not
+change shape with the build configuration.
 
-`SVDMethod::AutonneJacobi` selects a one-sided Jacobi kernel from the external
-autonne library. The enumerator exists in every build, so code compiles the same
-way whether or not the library was linked, but selecting it in a build
-configured without `-DLINDBLAD_WITH_AUTONNE=ON` throws where the kernel is
-requested, naming the option. It does not fall back to Eigen: a caller who asked
-for a specific kernel and silently received a different one is the substitution
-the ladder exists to prevent, and returning a failure instead would send the
-split down the Gram rescue and produce a valid answer from the wrong algorithm.
-The revision fetched is a bare commit SHA rather than a branch or tag, because
-that library publishes no releases and its project version has not moved across
-the range of commits a build might otherwise pick; override it with
-`-DLINDBLAD_AUTONNE_GIT_TAG=<commit>`. It is held to the same verification as
-the other two.
+The autonne kernels take the project's floating-point flags as they are, being
+verified under both models by their own suite; the Eigen kernels run in a
+translation unit compiled under strict IEEE arithmetic, since Eigen's entry
+guards do not survive `-ffast-math`. All four are held to the same verification
+described below. Kernels do not agree bit for bit, so a state truncated under
+one differs in its last digits from the same state truncated under another.
+The selection reaches every split the chain performs, the rebuild from dense
+amplitudes included, so `svd_time_ns()` under a selected kernel is that
+kernel's time throughout.
 
-**Verified truncation (R.1.16.0)**: the SVD output is no longer trusted
-blindly. Eigen's SVDs were found to return corrupt factorisations on
-degenerate rank-deficient inputs (the class of two-site tensors Shor-style
-circuits produce), in failure shapes ranging from NaN singular vectors to a
-wrong-but-finite kept vector. Every truncation therefore now: selects the
-kept singular values by bit-level-finite comparison (immune to ordering
-corruption), verifies the kept factorisation against the Frobenius identity
-`‖M − U·S·V†‖²_F = Σ(discarded σ²)`, recomputes via a Gram-matrix
-eigendecomposition if verification fails, and throws `std::runtime_error`
-rather than continue if both routes fail — an MPS run can no longer produce
-a silently corrupted state from a bad SVD.
+The autonne revision is fetched at a release tag; override it with
+`-DLINDBLAD_AUTONNE_GIT_TAG=<tag or commit>`, or point
+`-DLINDBLAD_AUTONNE_REPOSITORY` at a local clone to build without network.
+
+**Verified truncation**: the SVD output is not trusted blindly. A third-party
+SVD can return a corrupt factorisation on degenerate rank-deficient input (the
+class of two-site tensors Shor-style circuits produce), in failure shapes
+ranging from NaN singular vectors to a wrong-but-finite kept vector. Every
+truncation therefore: selects the kept singular values by bit-level-finite
+comparison (immune to ordering corruption), verifies the kept factorisation
+against the Frobenius identity `‖M − U·S·V†‖²_F = Σ(discarded σ²)`, and on a
+rejection descends a rescue ladder: autonne's `Jacobi` (an independent road to
+the same factorisation, skipped when it was the selected kernel), then a
+Gram-matrix eigendecomposition (sharing no code with either SVD), then
+`std::runtime_error` rather than continuing with a corrupt tensor. Every rung
+descended is reported through the warning channel, naming the layer, the block
+shape and the kernel that failed, so a run rescued on every bond reads as one.
+
+`svd_rescue = false` forbids the descent: the first rejected factorisation
+throws, for a caller who would rather stop than accept a tensor from a kernel
+they did not name. `MPSSimulator` carries the same two fields and copies them
+onto every chain it builds.
 
 That identity is an equality for a true truncated SVD, so the allowance above
 the discarded weight is only the backward error a stable SVD is entitled to.
@@ -714,16 +727,23 @@ whether a factorisation is accepted. The residual subtracts two nearly identical
 matrices, and one computed too small would admit exactly the factorisations the
 check exists to reject.
 
-**Ladder observability**. Which route a bond split took is otherwise invisible
-to the caller, since a rescued split and a clean one both yield valid tensors.
-Four counters on `MPSState` report it, three on which route was taken and one on
-what it cost:
+**Ladder observability**. A rescued split is warned about as it happens and
+is otherwise indistinguishable from a clean one, since both yield valid
+tensors. The counters on `MPSState` are the record of how often it happened
+and what it cost:
 
 - `svd_call_count()`: bond splits performed, one per call into the truncation
-  routine. This is the denominator; a fallback count means nothing without it.
-- `gram_fallback_count()`: splits where the SVD backend's factorisation failed
-  verification and the Gram route was used instead. Only successful rescues are
-  counted, because a Gram route that also fails verification throws.
+  routine. This is the denominator; a rescue count means nothing without it.
+- `jacobi_rescue_count()`: splits where the selected kernel's factorisation
+  failed verification and autonne's `Jacobi` produced the accepted slice.
+- `gram_fallback_count()`: splits where the Gram route produced the accepted
+  slice, after the selected kernel and the Jacobi rescue both failed. Only
+  successful rescues are counted on either rung, because a split on which every
+  rung fails throws.
+- `floor_rejected_weight()`: the Gram route's own cost, summed over the splits
+  it rescued: singular weight below its validity floor (see the rebuild section
+  below). It is not truncation and is kept out of `truncation_error()`. Zero
+  unless some split took the Gram rung.
 - `max_verify_residual_excess()`: the worst factorisation error verification
   accepted, as a fraction of $\|M\|_F^2$, maximised over splits. The Frobenius
   identity holds with equality for a true truncated SVD, so this reports the
@@ -740,10 +760,11 @@ what it cost:
   does a rescue. A split that threw contributes nothing, having no result to
   profile.
 
-A run with `gram_fallback_count() == 0` never distrusted its SVD backend. A
-nonzero count is not an error: it is the containment working.
+A run with both rescue counts at zero never distrusted its kernel. A nonzero
+count is not an error: it is the containment working, and the warning channel
+carries one message per rescue for the run that wants to know when.
 
-All five figures cover every split the chain has taken, including those from
+Every figure covers every split the chain has taken, including those from
 `rebuild_from_statevector` below. They describe the state rather than the route
 that produced it, so a chain rebuilt part way through a run still carries what
 the gates before the rebuild cost.
@@ -754,8 +775,8 @@ the gates before the rebuild cost.
 void MPSState::absorb_profile(const MPSState& other);
 ```
 
-Adds `other`'s four tallies to this chain's and takes the larger of the two
-worst residuals. The tensors, the register width, the cap, the cutoff and the
+Adds `other`'s tallies to this chain's and takes the larger of the two worst
+residuals. The tensors, the register width, the cap, the cutoff and the
 kernel selection are untouched, so afterwards the chain reports splits it did
 not itself perform, exactly as one chain performing both sets would have.
 
@@ -787,8 +808,9 @@ discarded weight is added to `truncation_error()`. Throws
 `std::invalid_argument` when `sv` does not cover the same number of qubits as the
 chain.
 
-Weight the rescue's validity floor rejected is reported separately from
-`truncation_error()`, because it is not truncation. Forming the Gram matrix
+Weight the Gram route's validity floor rejected is reported separately from
+`truncation_error()`, as `floor_rejected_weight()`, because it is not
+truncation. Forming the Gram matrix
 squares the condition number, so a singular value that is exactly zero in the
 input returns at the scale of the square root of machine epsilon and carries
 weight that was never in the matrix. Counting that as truncation error would
@@ -798,9 +820,9 @@ verification grants: the top of the band the eigensolver's own error bound
 lets a null direction return in, so noise cannot pass as a direction, and a
 real singular value below it is one the route could not have resolved.
 
-Both counters accumulate over the state's lifetime and are not reset by gate
+The counters accumulate over the state's lifetime and are not reset by gate
 application. Reconstruction from a statevector runs the ladder like any other
-split, through the kernel `svd_method` selects, and advances both counters.
+split, through the kernel `svd_method` selects, and advances every counter.
 
 **Complexity**:
 - **Space**: $O(n \cdot \chi^2)$ where $\chi$ = max bond dimension (typically 16–256)
@@ -955,9 +977,20 @@ auto result = sim.run(large_circuit, 100);  // 100 shots
     `MPSSimulator::run(circuit, max_bond_dim, shots, seed)` takes the bond
     dimension where `StatevectorSimulator::run(circuit, shots, seed)` takes the
     shot count
-- **cutoff**: SVD truncation threshold; typical 1e-12 to 1e-8
-  - Discards singular values $< \text{cutoff}$
-  - Minimal impact on accuracy for cutoff $\leq 1e-10$
+- **cutoff**: the fraction of total singular weight ($\sum \sigma^2$) a bond
+  split may discard; default `1e-16` on `MPSState`
+  - A weight fraction, not a magnitude threshold: no bare singular value is
+    compared against it, so the same state carries the same bond dimension on
+    every CPU
+  - The budget is a ceiling: on a spectrum with nothing between the noise and
+    the budget, nothing extra is discarded
+- **svd_method** (`SVDMethod`, default `BDC`): the kernel every bond split asks
+  for first; `Jacobi`, `EigenBDC` and `EigenJacobi` are selectable (see the
+  kernel table under `MPSState`). Set on `MPSSimulator` for `run()` or on an
+  `MPSState` driven directly
+- **svd_rescue** (`bool`, default `true`): whether a factorisation the verify
+  rung rejects may descend the rescue ladder, one warning per rung; `false`
+  turns the first rejection into a `std::runtime_error`
 
 ## Simulator Selection Guide
 

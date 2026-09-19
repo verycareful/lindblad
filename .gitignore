@@ -50,6 +50,9 @@ CLAUDE.md
 # Upstream dependency, maintained by shek014. Cloned here so issues and pull
 # requests can be raised alongside the code that consumes it. Never tracked.
 /autonne/
+# FLOP: the optimizer library (verycareful/FLOP), cloned nested for development,
+# consumed by lindblad through FetchContent. Its own repository, never a submodule.
+/FLOP/
 
 # Maintainer-local tooling (version bump script, etc.). EXCEPTION:
 # bench_report.py is PUBLIC — docs/BuildAndTest.md, the generated

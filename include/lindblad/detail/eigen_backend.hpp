@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #pragma once
 
 #include "lindblad/types.hpp"  // SVDMethod
@@ -58,6 +67,12 @@ enum class MatrixOrder { RowMajor, ColMajor };
 // Every output buffer must hold its full size before the call. Returns false
 // when the backend reports failure, in which case the outputs are unspecified
 // and the caller is expected to take its fallback route rather than read them.
+//
+// `method` selects the provider as well as the algorithm: SVDMethod::Jacobi
+// and SVDMethod::BDC are routed to autonne (detail/autonne_backend.hpp), the
+// Eigen-prefixed values run here. The routing is by explicit test, so a method
+// this function does not know can never fall through to a kernel the caller
+// did not name.
 bool svd_thin(const std::complex<double>* data, int rows, int cols,
               MatrixOrder order, SVDMethod method,
               std::complex<double>* U_out, double* S_out,

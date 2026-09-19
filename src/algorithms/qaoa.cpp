@@ -1,17 +1,25 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #include "lindblad/algorithms.hpp"
+#include "lindblad/detail/optimizer.hpp"
 #include "lindblad/gates.hpp"
 
 #include <cmath>
 #include <limits>
-#include <random>
 #include <stdexcept>
-
-#include <nlopt.h>
 
 namespace lindblad {
 namespace algorithms {
 
-static constexpr double kBound = 2.0 * PI;
+static constexpr double kBound = 2.0 * PI;    // box on every gamma and beta
+static constexpr double kPerturb = 0.05;      // half-width of the initial draw
 
 // PRECONDITION: bitstring.size() == cost_hamiltonian.n_qubits(). Callers filter
 // mismatched keys out; this helper does not signal failure in-band. Returning
@@ -48,24 +56,6 @@ static double computational_basis_cost(
 }
 
 // =============================================================================
-// QAOA NLopt callback
-// =============================================================================
-
-struct QAOACallbackData {
-    Estimator* estimator;
-    const SparsePauliOp* cost_hamiltonian;
-    const SparsePauliOp* mixer_hamiltonian;
-    const QAOA* qaoa;
-};
-
-static double qaoa_objective(unsigned n, const double* x, double* /*grad*/, void* data) {
-    auto* cb = static_cast<QAOACallbackData*>(data);
-    std::vector<double> params(x, x + n);
-    auto circuit = cb->qaoa->build_circuit(*cb->cost_hamiltonian, *cb->mixer_hamiltonian, params);
-    return cb->estimator->run_single(circuit, *cb->cost_hamiltonian);
-}
-
-// =============================================================================
 // QAOA
 // =============================================================================
 
@@ -73,8 +63,9 @@ QAOA::Result QAOA::optimize(
     const SparsePauliOp& cost_hamiltonian,
     const SparsePauliOp& mixer_hamiltonian_in
 ) {
+    static constexpr const char* kWhere = "QAOA::optimize";
+
     Result result;
-    result.converged = false;
 
     int nq = cost_hamiltonian.n_qubits();
 
@@ -90,52 +81,34 @@ QAOA::Result QAOA::optimize(
 
     int n_params = 2 * options.p;  // gamma_i, beta_i for each layer
 
-    std::mt19937_64 rng(options.seed != 0
-        ? static_cast<uint64_t>(options.seed)
-        : static_cast<uint64_t>(std::random_device{}()));
-    std::uniform_real_distribution<double> perturb(-0.05, 0.05);
-
+    // Small seeded perturbation about zero; bit-exact across compilers (see
+    // uniform_in).
+    auto rng = detail::seeded_rng(options.seed);
     std::vector<double> params(n_params);
-    for (auto& p : params) p = perturb(rng);
+    for (auto& p : params) p = detail::uniform_in(rng, -kPerturb, kPerturb);
     result.initial_params = params;
 
-    // Map the public optimizer name to NLopt. Unknown names remain usable by
-    // warning and selecting COBYLA as the documented fallback.
-    nlopt_algorithm algo = NLOPT_LN_COBYLA;
-    if (options.optimizer == "COBYLA") algo = NLOPT_LN_COBYLA;
-    else if (options.optimizer == "NELDER_MEAD") algo = NLOPT_LN_NELDERMEAD;
-    else if (options.optimizer == "BOBYQA")  algo = NLOPT_LN_BOBYQA;
-    else {
-        algo = NLOPT_LN_COBYLA;  // default
-        emit_warning(
-            "QAOA::optimize: unknown optimizer '" +
-            options.optimizer + "', defaulting to COBYLA");
-    }
-    nlopt_opt opt = nlopt_create(algo, n_params);
-    QAOACallbackData cb_data{&estimator, &cost_hamiltonian, &mixer, this};
-    nlopt_set_min_objective(opt, qaoa_objective, &cb_data);
-    nlopt_set_maxeval(opt, options.max_iterations);
-    nlopt_set_xtol_rel(opt, options.convergence_threshold);
-    std::vector<double> lb(n_params, -kBound);
-    std::vector<double> ub(n_params, kBound);
-    nlopt_set_lower_bounds(opt, lb.data());
-    nlopt_set_upper_bounds(opt, ub.data());
-    std::vector<double> initial_step(n_params, 0.3);
-    nlopt_set_initial_step(opt, initial_step.data());
+    detail::OptimizerSpec spec;
+    spec.backend = detail::resolve_optimizer(options.optimizer, kWhere);
+    spec.max_evaluations = options.max_iterations;
+    spec.xtol_rel = options.convergence_threshold;
+    spec.initial_step = options.initial_step;
+    spec.lower.assign(n_params, -kBound);
+    spec.upper.assign(n_params, kBound);
 
-    // NLopt failure codes (< 0) can return WITHOUT writing min_val, so reading
-    // it uninitialised surfaces an indeterminate stack value as
-    // Result::optimal_value. The marker is a detectably non-finite NaN (see
-    // quiet_nan_strict in types.hpp), so a failed run reports that alongside
-    // converged=false rather than garbage; the success path is unchanged.
-    double min_val = quiet_nan_strict();
-    nlopt_result nlopt_res = nlopt_optimize(opt, params.data(), &min_val);
-    nlopt_destroy(opt);
+    auto objective = [&](std::span<const double> x) -> double {
+        std::vector<double> point(x.begin(), x.end());
+        auto circuit = build_circuit(cost_hamiltonian, mixer, point);
+        return estimator.run_single(circuit, cost_hamiltonian);
+    };
 
-    result.optimal_value = min_val;
-    result.optimal_params = params;
-    result.converged = (nlopt_res > 0 && nlopt_res != NLOPT_MAXEVAL_REACHED &&
-                        is_finite_strict(min_val));
+    const detail::OptimizerOutcome out = detail::minimize(spec, objective, params, kWhere);
+
+    result.optimal_value = out.f;
+    result.optimal_params = out.x;
+    result.num_iterations = out.evaluations;
+    result.converged = out.converged;
+    params = out.x;
 
     // Sample to get best bitstring
     sampler.options.seed = options.seed;

@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #pragma once
 
 #include "lindblad/constants.hpp"
@@ -236,34 +245,46 @@ inline void aligned_free(void* ptr) noexcept {
 }
 
 // =============================================================================
-// SVDMethod — SVD backend selector for the MPS layers
+// SVDMethod - which factorisation a bond split asks for
 // =============================================================================
-// BDC is the DEFAULT on both the qubit and qudit MPS. It is divide-and-conquer
-// and Jacobi is O(n^3) per sweep, so the gap widens with the matrix: measured
-// through the truncation ladder, BDC costs 0.42x of Jacobi at 16x16, 0.20x at
-// 32x32, and 0.02x at 128x128 (bond dimension 64). Both return factorisations
-// the verify rung accepts on the first attempt, on decaying and exactly
-// degenerate spectra alike.
+// The values name ALGORITHMS, prefixed by provider only where two providers
+// offer the same algorithm. Unprefixed names are autonne's kernels
+// (shek014/autonne, fetched by the build); the Eigen-prefixed names are
+// Eigen's, kept selectable so a caller can hold the two providers against
+// each other on their own workload.
 //
-// Below Eigen's divide-and-conquer threshold the choice is nominal: BDCSVD
-// delegates to the Jacobi kernel for matrices smaller than 16, so a two-site
-// theta at bond dimension 4 runs identical code either way.
+// BDC is the DEFAULT on both the qubit and qudit MPS. autonne's
+// divide-and-conquer runs Householder bidiagonalisation and Gu-Eisenstat's
+// secular-equation merge with deflation, is O(n^3) with a constant the spectrum
+// barely moves, and returns orthonormal factors by construction. Its accuracy
+// promise is absolute, |s_i - s_i(true)| <= 64 * max(rows, cols) * eps * s_max,
+// which is what a bond split truncating on weight needs; measured on a 128x128
+// decaying spectrum it is 2.7x faster than Jacobi and no faster on a flat one.
 //
-// Jacobi remains selectable. It is the slower algorithm at every size above
-// that threshold, and selecting it emits a one-time note saying so, because a
-// caller who picked it for accuracy reasons that no longer apply should be
-// told what it costs.
-// Which factorisation a bond split asks for. The values name ALGORITHMS rather
-// than the library providing them, so a second kernel from the same provider
-// slots in beside the first without the first becoming ambiguous.
+// Jacobi is autonne's one-sided cyclic Jacobi. Slower as the block grows and
+// the spectrum decays, but RELATIVELY accurate on every singular value down to
+// a column floor of 2^-500, so it resolves the tail of a graded spectrum that
+// an absolute bound treats as noise. It is also the ladder's first rescue when
+// the primary factorisation fails verification (see detail/svd_truncate.hpp),
+// because it reaches the same answer by an independent road.
 //
-// AutonneJacobi is available in every build, so the public API does not change
-// shape with the build configuration. Selecting it in a build configured
-// without -DLINDBLAD_WITH_AUTONNE=ON throws at the point of use, naming the
-// option: falling back to Eigen instead would be the silent substitution the
-// SVD ladder exists to prevent, and a caller who asked for a specific kernel
-// has to be told they did not get it.
-enum class SVDMethod { Jacobi, BDC, AutonneJacobi };
+// EigenJacobi and EigenBDC are Eigen's JacobiSVD and BDCSVD, run through the
+// strict-FP translation unit in src/eigen_backend.cpp. Every kernel is
+// available in every build, so the public API does not change shape with the
+// build configuration. Selecting either Jacobi emits a one-time note per MPS
+// layer that it is the slower algorithm; selecting EigenBDC is silent.
+enum class SVDMethod { Jacobi, BDC, EigenJacobi, EigenBDC };
+
+// The enumerator's name, for diagnostics.
+constexpr const char* to_string(SVDMethod m) noexcept {
+    switch (m) {
+        case SVDMethod::Jacobi:      return "Jacobi";
+        case SVDMethod::BDC:         return "BDC";
+        case SVDMethod::EigenJacobi: return "EigenJacobi";
+        case SVDMethod::EigenBDC:    return "EigenBDC";
+    }
+    return "SVDMethod(?)";
+}
 
 // Mathematical constants (PI, INV_SQRT2, ...) live in constants.hpp, included
 // at the top of this header, so every one of those names is visible to anything

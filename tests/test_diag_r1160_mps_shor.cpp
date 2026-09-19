@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // TEMPORARY DIAGNOSTIC (R.1.16.0, issue #44) — not release test content.
 // Remove (or promote the keepers into the R.1.16.1 suite) before the
 // R.1.16.0 release commit.
@@ -498,9 +507,9 @@ TEST(DiagR1160MpsShor, FastMathSvdOnPoisonTheta) {
     ASSERT_FALSE(diag_r1160::matrix_bad(theta))
         << "poison theta reconstruction corrupt before any SVD";
     const auto rj =
-        diag_r1160::run_svd_report(theta, lindblad::SVDMethod::Jacobi);
+        diag_r1160::run_svd_report(theta, lindblad::SVDMethod::EigenJacobi);
     const auto rb =
-        diag_r1160::run_svd_report(theta, lindblad::SVDMethod::BDC);
+        diag_r1160::run_svd_report(theta, lindblad::SVDMethod::EigenBDC);
     print_svd_report("fast/jacobi/poison", rj);
     print_svd_report("fast/bdc/poison", rb);
     // No hard assertions: the values ARE the answer (see twin TU).
@@ -510,9 +519,9 @@ TEST(DiagR1160MpsShor, FastMathSvdOnR1112BugMatrix) {
     const auto M = diag_r1160::build_bdcsvd_bug_matrix();
     ASSERT_FALSE(diag_r1160::matrix_bad(M));
     const auto rb =
-        diag_r1160::run_svd_report(M, lindblad::SVDMethod::BDC);
+        diag_r1160::run_svd_report(M, lindblad::SVDMethod::EigenBDC);
     const auto rj =
-        diag_r1160::run_svd_report(M, lindblad::SVDMethod::Jacobi);
+        diag_r1160::run_svd_report(M, lindblad::SVDMethod::EigenJacobi);
     print_svd_report("fast/bdc/simon36", rb);
     print_svd_report("fast/jacobi/simon36", rj);
     // Expected from the R.1.11.2 note (recorded under fast-math): Jacobi
@@ -958,7 +967,7 @@ TEST(R1161MpsShor, PoisonThetaKeptSliceContract) {
     const auto theta = diag_r1160::build_poison_theta();
     ASSERT_FALSE(diag_r1160::matrix_bad(theta));
     const auto r =
-        diag_r1160::run_svd_report(theta, lindblad::SVDMethod::Jacobi);
+        diag_r1160::run_svd_report(theta, lindblad::SVDMethod::EigenJacobi);
     print_svd_report("r1161/jacobi/poison", r);
 
     const bool accepted = !r.kept_slice_bad && r.trunc_recon_err >= 0.0 &&
@@ -989,9 +998,9 @@ TEST(R1161MpsShor, Simon36JacobiReference) {
     const auto M = diag_r1160::build_bdcsvd_bug_matrix();
     ASSERT_FALSE(diag_r1160::matrix_bad(M));
     const auto rj =
-        diag_r1160::run_svd_report(M, lindblad::SVDMethod::Jacobi);
+        diag_r1160::run_svd_report(M, lindblad::SVDMethod::EigenJacobi);
     const auto rb =
-        diag_r1160::run_svd_report(M, lindblad::SVDMethod::BDC);
+        diag_r1160::run_svd_report(M, lindblad::SVDMethod::EigenBDC);
     print_svd_report("r1161/jacobi/simon36", rj);
     print_svd_report("r1161/bdc/simon36", rb);
     for (const auto* leg : {&rj, &rb}) {

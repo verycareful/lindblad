@@ -16,12 +16,13 @@ This page documents the public `lindblad::algorithms::MAQAOA` API in detail.
 Fields and defaults (from the header):
 
 - `p = 1`: number of layers
-- `max_iterations = 200`: optimizer budget
-- `convergence_threshold = 1e-6`: relative tolerance
-- `optimizer = "COBYLA"`: declared but not wired (implementation uses COBYLA unconditionally)
+- `max_iterations = 200`: cap on objective evaluations, per layer under `layerwise` and for the whole run otherwise (one evaluation per iteration for every method here). Reaching it ends the run with `converged = false`
+- `convergence_threshold = 1e-6`: relative `x` tolerance at which the minimiser declares convergence
+- `optimizer = "COBYLA"`: which minimiser runs the classical loop. `"COBYLA"` is FLOP's; `"NLOPT_COBYLA"`, `"NELDER_MEAD"` and `"BOBYQA"` are NLopt's. An unknown name warns and runs the default
+- `initial_step = 0.3`: first trial displacement along each parameter axis, in radians
 - `layerwise = false`: enable layer-by-layer optimization
 - `progressive = false`: keep earlier layers free when layerwise
-- `seed = 0`: RNG seed for parameter initialization
+- `seed = 0`: seed for the initial parameter perturbation; `0` draws from `std::random_device`. The draw is bit-identical across compilers for a given seed
 - `orbit_assignments`: optional orbit indices per qubit
 - `term_indexed_gammas = false`: use term-indexed gammas when true
 - `mixer_weights`: optional PI-MA-QAOA weights
@@ -154,7 +155,7 @@ Behavior (verified against `src/algorithms/maqaoa.cpp`):
   `exp(-i·β·c_k·P_k)`, with `options.mixer_beta_dispatch` deciding which
   beta drives which term
 - Parameter layout per layer: `[gammas..., betas...]`
-- Uses COBYLA with bounds `[-2*pi, 2*pi]` and initial step size `0.3`
+- Uses the minimiser `options.optimizer` names with bounds `[-2*pi, 2*pi]` on every parameter and first step `options.initial_step`
 - If `estimator.options.noise_model` is non-ideal, evaluates with `DensityMatrixSimulator`
 - If ideal, uses direct statevector evolution (`evolve_into`) instead of rebuilding circuits
 - Sampling uses `sampler.options.noise_model`; ideal sampling uses `Statevector::sample_counts`
@@ -163,9 +164,10 @@ Behavior (verified against `src/algorithms/maqaoa.cpp`):
 
 Layerwise details:
 
-- Each layer is optimized with its own COBYLA run
+- Each layer is optimized with its own minimiser run under its own `max_iterations` budget
 - `progressive = true` keeps all prior parameters free
 - `progressive = false` freezes earlier layers
+- The schedule is greedy: layer `k` starts from wherever layer `k - 1` converged, so the final energy is not monotone in the per-layer budget. A larger budget can converge layer 0 to a different point from which layer 1 does worse, and the measured instances show exactly that. Compare budgets by the final energy, not by assuming more is better; the joint path has no such effect
 
 ## `build_circuit`
 

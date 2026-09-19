@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // 1.1.23.1 test wave - the shared truncation ladder, driven directly.
 //
 // 1.1.23.0 moved SELECT -> VERIFY -> FALLBACK -> THROW out of the qubit MPS
@@ -75,14 +84,14 @@ std::vector<std::vector<double>> diagonal(const std::vector<double>& d) {
 detail::SvdTruncation truncate(const std::vector<std::vector<double>>& m,
                                int max_bond_dim, double cutoff,
                                detail::MatrixOrder order = detail::MatrixOrder::RowMajor,
-                               SVDMethod method = SVDMethod::Jacobi) {
+                               SVDMethod method = SVDMethod::EigenJacobi) {
     const int rows = static_cast<int>(m.size());
     const int cols = static_cast<int>(m[0].size());
     const std::vector<Complex128> buf =
         (order == detail::MatrixOrder::RowMajor) ? row_major(m) : col_major(m);
     return detail::svd_truncate_verified(buf.data(), rows, cols, order,
                                          max_bond_dim, cutoff, method,
-                                         "V11231SvdLadder");
+                                         /*rescue=*/true, "V11231SvdLadder");
 }
 
 // Sum of squares of the entries, which for a diagonal matrix is the total
@@ -342,9 +351,9 @@ TEST(V11231SvdLadder, BothBackendsProduceAVerifiedFactorisation) {
     const auto sigmas = diagonal({1.0, 0.5, 0.25});
 
     const auto jacobi = truncate(sigmas, 64, 1e-16,
-                                 detail::MatrixOrder::RowMajor, SVDMethod::Jacobi);
+                                 detail::MatrixOrder::RowMajor, SVDMethod::EigenJacobi);
     const auto bdc = truncate(sigmas, 64, 1e-16,
-                              detail::MatrixOrder::RowMajor, SVDMethod::BDC);
+                              detail::MatrixOrder::RowMajor, SVDMethod::EigenBDC);
 
     EXPECT_EQ(jacobi.rank, bdc.rank);
     EXPECT_LT(jacobi.residual_excess, kHealthyExcess);

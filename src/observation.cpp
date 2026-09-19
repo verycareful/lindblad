@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #include "lindblad/observation.hpp"
 
 #include "lindblad/circuit.hpp"
@@ -6,6 +15,7 @@
 #include "lindblad/simulators/clifford_sim.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/simulators/mps_sim.hpp"
+#include "lindblad/transpiler.hpp"
 
 #include <algorithm>
 #include <exception>
@@ -979,35 +989,35 @@ ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& 
               !indexed_.empty() || !labelled_.empty();
 }
 
-// Greedy ASAP layering over qubit occupancy: an instruction opens a new layer
-// when one of its qubits is already used in the current one. The boundary is
-// recorded on the LAST instruction of each layer, which is the point a caller
-// asking to see every layer wants to be handed the state at.
+// Layer boundaries from the scheduler's own timing rule (asap_schedule_times),
+// so "every layer" means the layer ASAPSchedule would emit and nothing else.
+//
+// The harness executes instructions in circuit order and can only hand over
+// the state that exists after some instruction, so a boundary is an index i at
+// which the executed prefix {0..i} is exactly the set of instructions the
+// scheduler places at or before cycle T, for some T: every layer up to T is
+// complete and nothing later has run. Such an index is recorded as the end of
+// layer T. A circuit whose instruction order interleaves layers (a later
+// instruction scheduled earlier than one before it) has no such prefix for
+// the layers it interleaves, and no boundary is recorded for them: the state
+// "at the end of that layer" never exists during this run, and reporting some
+// other state under its name would be the wrong answer.
 void ObservationRunner::compute_layer_boundaries(const QuantumCircuit& circuit) {
-    const int count = static_cast<int>(circuit.instructions.size());
+    const std::vector<int> times = asap_schedule_times(circuit);
+    const int count = static_cast<int>(times.size());
     if (count == 0) return;
 
-    std::vector<bool> used(static_cast<std::size_t>(circuit.n_qubits), false);
+    // How many instructions the scheduler places at or before each cycle.
+    const int max_time = *std::max_element(times.begin(), times.end());
+    std::vector<int> placed_by(static_cast<std::size_t>(max_time) + 1, 0);
+    for (int t : times) ++placed_by[static_cast<std::size_t>(t)];
+    for (std::size_t t = 1; t < placed_by.size(); ++t) placed_by[t] += placed_by[t - 1];
+
+    int prefix_max = -1;
     for (int i = 0; i < count; ++i) {
-        const Instruction& inst = circuit.instructions[i];
-
-        bool collides = false;
-        for (const int q : inst.qubits) {
-            if (q >= 0 && q < circuit.n_qubits && used[static_cast<std::size_t>(q)]) {
-                collides = true;
-                break;
-            }
-        }
-
-        if (collides) {
-            layer_end_.insert(i - 1);
-            std::fill(used.begin(), used.end(), false);
-        }
-        for (const int q : inst.qubits) {
-            if (q >= 0 && q < circuit.n_qubits) used[static_cast<std::size_t>(q)] = true;
-        }
+        prefix_max = std::max(prefix_max, times[static_cast<std::size_t>(i)]);
+        if (placed_by[static_cast<std::size_t>(prefix_max)] == i + 1) layer_end_.insert(i);
     }
-    layer_end_.insert(count - 1);
 }
 
 void ObservationRunner::begin_run(int n_qubits, int n_shots) {

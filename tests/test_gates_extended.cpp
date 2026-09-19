@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // Extended gate tests — all gate functions absent from the original suite.
 // Covers: SDG, TDG, SX/SXdg, P, U/U1/U2/U3, CY, CH, iSWAP,
 //         CRX/CRY/CRZ, CP, ECR, RXX/RYY/RZZ, CCZ, CSWAP, apply_unitary.

@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // test_eigen_svd_pin.cpp - does the pinned Eigen factorise our two reproducers
 // correctly, and does the library path over the same inputs still hold?
 //
@@ -173,7 +182,7 @@ TEST(EigenSvdPin, FrozenPoisonThetaJacobiIsCorrect) {
     ASSERT_EQ(M.cols(), 8);
 
     expect_healthy("pin/jacobi/frozen-poison",
-                   run_svd_report(M, SVDMethod::Jacobi), /*n=*/8, kPoisonRank,
+                   run_svd_report(M, SVDMethod::EigenJacobi), /*n=*/8, kPoisonRank,
                    kPoisonSigma);
 }
 
@@ -181,7 +190,7 @@ TEST(EigenSvdPin, FrozenPoisonThetaBdcIsCorrect) {
     const auto M = poison_r1151::build_poison_theta_r1151();
     ASSERT_FALSE(matrix_bad(M)) << "frozen literal corrupt before any SVD ran";
 
-    expect_healthy("pin/bdc/frozen-poison", run_svd_report(M, SVDMethod::BDC),
+    expect_healthy("pin/bdc/frozen-poison", run_svd_report(M, SVDMethod::EigenBDC),
                    /*n=*/8, kPoisonRank, kPoisonSigma);
 }
 
@@ -192,7 +201,7 @@ TEST(EigenSvdPin, FrozenSimon36JacobiIsCorrect) {
     ASSERT_EQ(M.cols(), 36);
 
     expect_healthy("pin/jacobi/frozen-simon36",
-                   run_svd_report(M, SVDMethod::Jacobi), /*n=*/36,
+                   run_svd_report(M, SVDMethod::EigenJacobi), /*n=*/36,
                    simon36_rank(), simon36_sigma());
 }
 
@@ -203,7 +212,7 @@ TEST(EigenSvdPin, FrozenSimon36BdcIsCorrect) {
     const auto M = simon36_r1112::build_simon36_r1112();
     ASSERT_FALSE(matrix_bad(M)) << "frozen literal corrupt before any SVD ran";
 
-    expect_healthy("pin/bdc/frozen-simon36", run_svd_report(M, SVDMethod::BDC),
+    expect_healthy("pin/bdc/frozen-simon36", run_svd_report(M, SVDMethod::EigenBDC),
                    /*n=*/36, simon36_rank(), simon36_sigma());
 }
 
@@ -256,7 +265,7 @@ TEST(LibrarySvdPath, BuiltSimon36JacobiIsCorrect) {
     ASSERT_EQ(M.rows(), 36);
     ASSERT_EQ(M.cols(), 36);
 
-    expect_healthy("built/jacobi/simon36", run_svd_report(M, SVDMethod::Jacobi),
+    expect_healthy("built/jacobi/simon36", run_svd_report(M, SVDMethod::EigenJacobi),
                    /*n=*/36, simon36_rank(), simon36_sigma());
 }
 
@@ -264,7 +273,7 @@ TEST(LibrarySvdPath, BuiltSimon36BdcIsCorrect) {
     const auto M = build_bdcsvd_bug_matrix();
     ASSERT_FALSE(matrix_bad(M)) << "reproducer corrupt before any SVD ran";
 
-    expect_healthy("built/bdc/simon36", run_svd_report(M, SVDMethod::BDC),
+    expect_healthy("built/bdc/simon36", run_svd_report(M, SVDMethod::EigenBDC),
                    /*n=*/36, simon36_rank(), simon36_sigma());
 }
 
@@ -274,7 +283,7 @@ TEST(LibrarySvdPath, BuiltPoisonThetaJacobiIsCorrect) {
     ASSERT_EQ(M.rows(), 8);
     ASSERT_EQ(M.cols(), 8);
 
-    expect_healthy("built/jacobi/poison", run_svd_report(M, SVDMethod::Jacobi),
+    expect_healthy("built/jacobi/poison", run_svd_report(M, SVDMethod::EigenJacobi),
                    /*n=*/8, kPoisonRank, kPoisonSigma);
 }
 
@@ -282,7 +291,7 @@ TEST(LibrarySvdPath, BuiltPoisonThetaBdcIsCorrect) {
     const auto M = build_poison_theta();
     ASSERT_FALSE(matrix_bad(M)) << "reproducer corrupt before any SVD ran";
 
-    expect_healthy("built/bdc/poison", run_svd_report(M, SVDMethod::BDC),
+    expect_healthy("built/bdc/poison", run_svd_report(M, SVDMethod::EigenBDC),
                    /*n=*/8, kPoisonRank, kPoisonSigma);
 }
 
@@ -298,8 +307,8 @@ TEST(LibrarySvdPath, TheBuiltSimon36StillCarriesTheFrozenSpectrum) {
     ASSERT_EQ(built.rows(), frozen.rows());
     ASSERT_EQ(built.cols(), frozen.cols());
 
-    const auto rb = run_svd_report(built, SVDMethod::Jacobi);
-    const auto rf = run_svd_report(frozen, SVDMethod::Jacobi);
+    const auto rb = run_svd_report(built, SVDMethod::EigenJacobi);
+    const auto rf = run_svd_report(frozen, SVDMethod::EigenJacobi);
     ASSERT_FALSE(rb.corrupt);
     ASSERT_FALSE(rf.corrupt);
     ASSERT_EQ(rb.rank, rf.rank)

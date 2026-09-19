@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #pragma once
 
 #include "lindblad/dag.hpp"
@@ -178,6 +187,16 @@ public:
     DAGCircuit run(const DAGCircuit& dag, const TranspilationContext& ctx) const override;
     std::string name() const override { return "RemoveResetInZeroState"; }
 };
+
+// The ASAP timing rule, as a function of the instruction list alone: entry i
+// is the cycle instruction i starts in. A gate starts at the first cycle every
+// operand wire is free and occupies its wires for one cycle; a BARRIER
+// synchronises its wires to the latest of them and occupies nothing. This is
+// the ONE definition of a scheduling layer in the library: ASAPSchedule writes
+// it into Instruction::schedule_time, and the observation harness's
+// Anchor::every_layer() reads its layer boundaries from it, so an observer
+// watching "every layer" fires at the layers the scheduler would emit.
+std::vector<int> asap_schedule_times(const QuantumCircuit& qc);
 
 // Scheduling passes — assign time slots to instructions
 class ASAPSchedule : public TranspilationPass {

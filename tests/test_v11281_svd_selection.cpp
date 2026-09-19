@@ -1,6 +1,15 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // 1.1.28.1 test wave - which SVD kernel a run actually uses.
 //
-// 1.1.28.0 added a third SVDMethod, AutonneJacobi, and a public
+// 1.1.28.0 added autonne's Jacobi as an SVDMethod and a public
 // MPSSimulator::svd_method so a caller can choose the kernel through the main
 // entry point rather than by driving MPSState directly. It also fixed the
 // reason that knob could never have worked: seeding the initial state
@@ -10,7 +19,7 @@
 // Selecting Jacobi through the simulator had the same defect in every release
 // before that one.
 //
-// Three groups here.
+// Two groups here.
 //
 // The knob survives. One test per construction site, because each site is a
 // separate place the choice was lost: the default seeding, a basis seeding, a
@@ -20,16 +29,7 @@
 // two different claims. Two kernels that produce a bit-identical state are the
 // same code having run twice, which is exactly what the pre-fix simulator did.
 //
-// The absent backend fails loud. Without LINDBLAD_WITH_AUTONNE the enumerator
-// still exists and selecting it throws where the kernel is requested. It does
-// NOT return false, because false means "attempted and did not converge",
-// which sends the ladder into its Gram rescue and hands the caller a valid
-// answer from a kernel they did not ask for. These tests are compiled out of a
-// build that links autonne, since a superset build cannot exercise the branch,
-// and run on the default configuration.
-//
-// The linked backend agrees with the one it replaces. Skipped unless the build
-// links autonne. Two layers: the seam (svd_thin) on blocks of the shapes a
+// autonne's Jacobi agrees with the other kernels. Two layers: the seam (svd_thin) on blocks of the shapes a
 // saturating chain forms, where the factors are checked directly, and the
 // simulator on qv_n8 at a cap that provably cannot bind, where two exact
 // factorisations of one state must agree to rounding. The ladder's verify
@@ -174,9 +174,9 @@ TEST(V11281SvdSelection, DefaultMethodIsBdcEverywhere) {
 
 TEST(V11281SvdSelection, MethodSurvivesDefaultSeeding) {
     MPSSimulator sim;
-    sim.svd_method = SVDMethod::Jacobi;
+    sim.svd_method = SVDMethod::EigenJacobi;
     const auto r = sim.run(one_split_circuit(), 4, kShots, kSeed);
-    EXPECT_EQ(r.final_state.svd_method, SVDMethod::Jacobi)
+    EXPECT_EQ(r.final_state.svd_method, SVDMethod::EigenJacobi)
         << "the default |0...0> seeding rebuilt the chain and dropped the kernel";
 }
 
@@ -186,9 +186,9 @@ TEST(V11281SvdSelection, MethodSurvivesBasisSeeding) {
     RunPlan plan;
     plan.initial = InitialState::basis(5);
     MPSSimulator sim;
-    sim.svd_method = SVDMethod::Jacobi;
+    sim.svd_method = SVDMethod::EigenJacobi;
     const auto r = sim.run(qc, 4, kShots, kSeed, plan);
-    EXPECT_EQ(r.final_state.svd_method, SVDMethod::Jacobi)
+    EXPECT_EQ(r.final_state.svd_method, SVDMethod::EigenJacobi)
         << "the basis seeding rebuilt the chain and dropped the kernel";
 }
 
@@ -198,9 +198,9 @@ TEST(V11281SvdSelection, MethodSurvivesStatevectorSeeding) {
     RunPlan plan;
     plan.initial = InitialState::from(ramp_state());
     MPSSimulator sim;
-    sim.svd_method = SVDMethod::Jacobi;
+    sim.svd_method = SVDMethod::EigenJacobi;
     const auto r = sim.run(qc, 4, kShots, kSeed, plan);
-    EXPECT_EQ(r.final_state.svd_method, SVDMethod::Jacobi)
+    EXPECT_EQ(r.final_state.svd_method, SVDMethod::EigenJacobi)
         << "the dense seeding rebuilt the chain and dropped the kernel";
 }
 
@@ -209,9 +209,9 @@ TEST(V11281SvdSelection, MethodSurvivesThePerShotPath) {
     // a construction site of its own, distinct from the seeding branches, and
     // the returned chain is the last trajectory's.
     MPSSimulator sim;
-    sim.svd_method = SVDMethod::Jacobi;
+    sim.svd_method = SVDMethod::EigenJacobi;
     const auto r = sim.run(per_shot_circuit(), 4, 4, kSeed);
-    EXPECT_EQ(r.final_state.svd_method, SVDMethod::Jacobi)
+    EXPECT_EQ(r.final_state.svd_method, SVDMethod::EigenJacobi)
         << "the per-shot rebuild dropped the kernel";
 }
 
@@ -219,9 +219,9 @@ TEST(V11281SvdSelection, MethodSurvivesTheTerminalOnlyPath) {
     QuantumCircuit qc = one_split_circuit();
     qc.measure_all();
     MPSSimulator sim;
-    sim.svd_method = SVDMethod::Jacobi;
+    sim.svd_method = SVDMethod::EigenJacobi;
     const auto r = sim.run(qc, 4, 16, kSeed);
-    EXPECT_EQ(r.final_state.svd_method, SVDMethod::Jacobi);
+    EXPECT_EQ(r.final_state.svd_method, SVDMethod::EigenJacobi);
 }
 
 TEST(V11281SvdSelection, SuppliedChainKeepsItsOwnMethod) {
@@ -229,7 +229,7 @@ TEST(V11281SvdSelection, SuppliedChainKeepsItsOwnMethod) {
     // chain handed in already answers the question, and overriding it would
     // change the kernel under a caller who configured the chain themselves.
     auto chain = std::make_shared<MPSState>(3, 4);
-    chain->svd_method = SVDMethod::Jacobi;
+    chain->svd_method = SVDMethod::EigenJacobi;
     RunPlan plan;
     plan.initial = InitialState::from(std::shared_ptr<const MPSState>(chain));
     QuantumCircuit qc(3);
@@ -237,7 +237,7 @@ TEST(V11281SvdSelection, SuppliedChainKeepsItsOwnMethod) {
     MPSSimulator sim;
     sim.svd_method = SVDMethod::BDC;
     const auto r = sim.run(qc, 4, kShots, kSeed, plan);
-    EXPECT_EQ(r.final_state.svd_method, SVDMethod::Jacobi)
+    EXPECT_EQ(r.final_state.svd_method, SVDMethod::EigenJacobi)
         << "a supplied chain's own kernel was overridden by the simulator's";
 }
 
@@ -254,7 +254,7 @@ TEST(V11281SvdSelection, SelectorReachesTheFactorisation) {
     MPSSimulator sim;
     sim.svd_method = SVDMethod::BDC;
     const auto bdc = sim.run(qc, cap, kShots, kSeed);
-    sim.svd_method = SVDMethod::Jacobi;
+    sim.svd_method = SVDMethod::EigenJacobi;
     const auto jacobi = sim.run(qc, cap, kShots, kSeed);
     ASSERT_EQ(bdc.final_state.svd_call_count(), jacobi.final_state.svd_call_count());
 
@@ -270,91 +270,7 @@ TEST(V11281SvdSelection, SelectorReachesTheFactorisation) {
 }
 
 // =============================================================================
-// The absent backend. Compiled only where autonne is NOT linked.
-// =============================================================================
-
-#ifndef LINDBLAD_WITH_AUTONNE
-
-namespace {
-
-// Single-qubit gates only, so no bond split and the kernel is never asked.
-QuantumCircuit no_split_circuit() {
-    QuantumCircuit qc(2);
-    qc.h(0).x(1).h(1);
-    return qc;
-}
-
-// CX as MPSState::apply_two_qubit_gate takes it: rows and columns index
-// (q1, q2) with q1 the high bit, the layout the adjacent kernel documents, so
-// with q1 as control the gate swaps |10> and |11>.
-std::array<Complex128, 16> cx_matrix() {
-    std::array<Complex128, 16> u{};
-    u[0 * 4 + 0] = Complex128(1.0, 0.0);
-    u[1 * 4 + 1] = Complex128(1.0, 0.0);
-    u[2 * 4 + 3] = Complex128(1.0, 0.0);
-    u[3 * 4 + 2] = Complex128(1.0, 0.0);
-    return u;
-}
-
-}  // namespace
-
-TEST(V11281SvdSelection, AutonneWithoutTheLibraryThrowsAtTheKernel) {
-    const int n = 2;
-    std::vector<Z> a = {Z(1.0, 0.0), Z(0.0, 0.5), Z(0.25, 0.0), Z(0.0, -1.0)};
-    std::vector<Z> u(static_cast<std::size_t>(n) * n), v(static_cast<std::size_t>(n) * n);
-    std::vector<double> s(static_cast<std::size_t>(n));
-    try {
-        svd_thin(a.data(), n, n, MatrixOrder::RowMajor, SVDMethod::AutonneJacobi,
-                 u.data(), s.data(), v.data());
-        FAIL() << "svd_thin returned instead of throwing for a backend this "
-                  "build did not link";
-    } catch (const std::runtime_error& e) {
-        const std::string what = e.what();
-        EXPECT_NE(what.find("AutonneJacobi"), std::string::npos) << what;
-        EXPECT_NE(what.find("LINDBLAD_WITH_AUTONNE"), std::string::npos)
-            << "the message does not say how to get the backend: " << what;
-    }
-}
-
-TEST(V11281SvdSelection, AutonneWithoutTheLibraryThrowsFromRun) {
-    // Through the main entry point. run() does not catch, so the throw reaches
-    // the caller as a throw, and the fact that it is a throw at all is the
-    // contract: a false return would have been rescued through the Gram route
-    // and the caller would hold a valid state from a kernel they did not ask
-    // for, with nothing to say so.
-    MPSSimulator sim;
-    sim.svd_method = SVDMethod::AutonneJacobi;
-    EXPECT_THROW(sim.run(one_split_circuit(), 4, kShots, kSeed), std::runtime_error);
-}
-
-TEST(V11281SvdSelection, AutonneWithoutTheLibraryIsHarmlessUntilASplit) {
-    // The throw is at the point of use. A circuit that never splits never asks
-    // for the kernel, so selecting the absent backend costs nothing until the
-    // first two-qubit gate. The enumerator exists in every build for exactly
-    // this reason: code compiles the same way either way.
-    MPSSimulator sim;
-    sim.svd_method = SVDMethod::AutonneJacobi;
-    EXPECT_NO_THROW(sim.run(no_split_circuit(), 4, kShots, kSeed));
-}
-
-TEST(V11281SvdSelection, AutonneWithoutTheLibraryThrowsFromTheChainDirectly) {
-    MPSState chain(2, 4);
-    chain.svd_method = SVDMethod::AutonneJacobi;
-    EXPECT_THROW(chain.apply_two_qubit_gate(cx_matrix(), 0, 1), std::runtime_error);
-}
-
-TEST(V11281SvdSelection, AutonneWithoutTheLibraryThrowsFromTheRebuildPath) {
-    // The rebuild from dense amplitudes is the second call site of the ladder
-    // and factorises through the same kernel selector.
-    MPSState chain(3, 4);
-    chain.svd_method = SVDMethod::AutonneJacobi;
-    EXPECT_THROW(chain.rebuild_from_statevector(*ramp_state()), std::runtime_error);
-}
-
-#endif  // !LINDBLAD_WITH_AUTONNE
-
-// =============================================================================
-// The linked backend. Skipped unless the build links autonne.
+// autonne's Jacobi against the other kernels
 // =============================================================================
 
 namespace {
@@ -437,40 +353,25 @@ const std::vector<std::pair<int, int>> kShapes = {
     {2, 4}, {4, 2}, {4, 8}, {8, 4}, {16, 32}, {32, 16}, {64, 128}, {128, 64},
 };
 
-#ifdef LINDBLAD_WITH_AUTONNE
-constexpr bool kAutonneLinked = true;
-#else
-constexpr bool kAutonneLinked = false;
-#endif
-
-#define SKIP_UNLESS_AUTONNE()                                                  \
-    do {                                                                       \
-        if (!kAutonneLinked) {                                                 \
-            GTEST_SKIP() << "configure with -DLINDBLAD_WITH_AUTONNE=ON to run"; \
-        }                                                                      \
-    } while (0)
-
 }  // namespace
 
 TEST(V11281SvdSelection, AutonneReturnsTrueOnEveryShape) {
-    SKIP_UNLESS_AUTONNE();
     for (const auto& [rows, cols] : kShapes) {
         const auto a = random_block(rows, cols, kSeed + rows * 1000 + cols);
         const auto f = run_svd(a, rows, cols, MatrixOrder::RowMajor,
-                               SVDMethod::AutonneJacobi);
+                               SVDMethod::Jacobi);
         EXPECT_TRUE(f.ok) << rows << "x" << cols << ": the kernel reported failure";
     }
 }
 
 TEST(V11281SvdSelection, AutonneSpectrumMatchesBdc) {
-    SKIP_UNLESS_AUTONNE();
     for (const auto& [rows, cols] : kShapes) {
         const auto a = random_block(rows, cols, kSeed + rows * 1000 + cols);
         const int n = std::max(rows, cols);
         const double scale = frob(a);
         const auto b = run_svd(a, rows, cols, MatrixOrder::RowMajor, SVDMethod::BDC);
         const auto j = run_svd(a, rows, cols, MatrixOrder::RowMajor,
-                               SVDMethod::AutonneJacobi);
+                               SVDMethod::Jacobi);
         ASSERT_TRUE(b.ok);
         ASSERT_TRUE(j.ok);
         for (int i = 0; i < b.k; ++i) {
@@ -490,13 +391,12 @@ TEST(V11281SvdSelection, AutonneFactorsReconstructTheInputInBothOrders) {
     // singular values. Reconstruction is not, and it is checked under both
     // layouts because the adapter maps MatrixOrder explicitly and a wrong
     // mapping factorises the transpose cleanly.
-    SKIP_UNLESS_AUTONNE();
     for (const auto& [rows, cols] : kShapes) {
         const auto a = random_block(rows, cols, kSeed + rows * 7 + cols);
         const int n = std::max(rows, cols);
         const double scale = frob(a);
         for (MatrixOrder order : {MatrixOrder::RowMajor, MatrixOrder::ColMajor}) {
-            const auto f = run_svd(a, rows, cols, order, SVDMethod::AutonneJacobi);
+            const auto f = run_svd(a, rows, cols, order, SVDMethod::Jacobi);
             ASSERT_TRUE(f.ok);
             for (int r = 0; r < rows; ++r) {
                 for (int c = 0; c < cols; ++c) {
@@ -512,12 +412,11 @@ TEST(V11281SvdSelection, AutonneFactorsReconstructTheInputInBothOrders) {
 }
 
 TEST(V11281SvdSelection, AutonneFactorsAreIsometries) {
-    SKIP_UNLESS_AUTONNE();
     for (const auto& [rows, cols] : kShapes) {
         const auto a = random_block(rows, cols, kSeed + rows + cols * 7);
         const int n = std::max(rows, cols);
         const auto f = run_svd(a, rows, cols, MatrixOrder::RowMajor,
-                               SVDMethod::AutonneJacobi);
+                               SVDMethod::Jacobi);
         ASSERT_TRUE(f.ok);
         for (int i = 0; i < f.k; ++i) {
             for (int j = 0; j < f.k; ++j) {
@@ -535,11 +434,10 @@ TEST(V11281SvdSelection, AutonneFactorsAreIsometries) {
 }
 
 TEST(V11281SvdSelection, AutonneNullSpaceTailLandsAtEpsilon) {
-    SKIP_UNLESS_AUTONNE();
     for (int n : {4, 8, 16, 32}) {
         const auto a = rank_two_block(n, n);
         const double scale = frob(a);
-        const auto f = run_svd(a, n, n, MatrixOrder::RowMajor, SVDMethod::AutonneJacobi);
+        const auto f = run_svd(a, n, n, MatrixOrder::RowMajor, SVDMethod::Jacobi);
         ASSERT_TRUE(f.ok);
         for (int i = 2; i < n; ++i) {
             EXPECT_NEAR(f.S[static_cast<std::size_t>(i)], 0.0, tol(n, scale))
@@ -555,7 +453,6 @@ TEST(V11281SvdSelection, AutonnePassesTheLadderWithoutRescue) {
     // caller gets a valid slice with only a counter to say the primary route
     // was not taken. This asserts the primary route IS taken for autonne, on
     // every shape, which is the check the state comparison below cannot make.
-    SKIP_UNLESS_AUTONNE();
     const double cutoff = MPSState(1).cutoff;
     for (const auto& [rows, cols] : kShapes) {
         const auto z = random_block(rows, cols, kSeed + rows * 3 + cols * 5);
@@ -564,7 +461,7 @@ TEST(V11281SvdSelection, AutonnePassesTheLadderWithoutRescue) {
         const int cap = std::min(rows, cols);
         const auto split = lindblad::detail::svd_truncate_verified(
             a.data(), rows, cols, MatrixOrder::RowMajor, cap, cutoff,
-            SVDMethod::AutonneJacobi, "V11281SvdSelection");
+            SVDMethod::Jacobi, /*rescue=*/true, "V11281SvdSelection");
         EXPECT_FALSE(split.used_gram_fallback)
             << rows << "x" << cols << ": the autonne factors failed verification "
                "and the Gram route produced the slice";
@@ -584,19 +481,18 @@ TEST(V11281SvdSelection, AutonneAgreesWithBdcAtANonBindingCap) {
     // that never reaches the split cannot pass as agreement, and the rescue
     // counter is asserted zero, so a broken adapter cannot pass by being
     // rescued into correctness.
-    SKIP_UNLESS_AUTONNE();
     const auto qc = load_corpus_circuit("qv_n8.qasm", false);
     const int cap = 1 << (qc.n_qubits / 2);
 
     MPSSimulator sim;
     sim.svd_method = SVDMethod::BDC;
     const auto bdc = sim.run(qc, cap, kShots, kSeed);
-    sim.svd_method = SVDMethod::Jacobi;
+    sim.svd_method = SVDMethod::EigenJacobi;
     const auto jacobi = sim.run(qc, cap, kShots, kSeed);
-    sim.svd_method = SVDMethod::AutonneJacobi;
+    sim.svd_method = SVDMethod::Jacobi;
     const auto autonne = sim.run(qc, cap, kShots, kSeed);
 
-    ASSERT_EQ(autonne.final_state.svd_method, SVDMethod::AutonneJacobi);
+    ASSERT_EQ(autonne.final_state.svd_method, SVDMethod::Jacobi);
     ASSERT_EQ(autonne.final_state.svd_call_count(), bdc.final_state.svd_call_count());
     EXPECT_EQ(autonne.final_state.gram_fallback_count(), 0u)
         << "the autonne route was rescued through Gram on some split, so this "
@@ -622,11 +518,10 @@ TEST(V11281SvdSelection, AutonneAtABindingCapIsReportedNotAsserted) {
     // Where the cap binds the two kernels are entitled to differ: they may
     // select different directions to keep at a near-degenerate split. The
     // figure is recorded for the release notes and not judged.
-    SKIP_UNLESS_AUTONNE();
     const auto qc = load_corpus_circuit("qv_n8.qasm", false);
     const int cap = 4;
     const double diff = max_amplitude_diff(state_under(qc, cap, SVDMethod::BDC),
-                                           state_under(qc, cap, SVDMethod::AutonneJacobi));
+                                           state_under(qc, cap, SVDMethod::Jacobi));
     ::testing::Test::RecordProperty("binding_cap_bdc_vs_autonne", std::to_string(diff));
     SUCCEED() << "chi = " << cap << " max amplitude difference " << diff;
 }

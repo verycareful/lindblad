@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // scheduling.cpp — ASAP and ALAP scheduling passes
 //
 // Assigns a time slot (cycle) to each instruction based on data dependencies.
@@ -22,50 +31,51 @@ namespace lindblad {
 // ASAPSchedule — As Soon As Possible
 // =============================================================================
 
-DAGCircuit ASAPSchedule::run(
-    const DAGCircuit& dag, const TranspilationContext& /*ctx*/
-) const {
-    QuantumCircuit qc = dag.to_circuit();
-    QuantumCircuit scheduled(qc.n_qubits, qc.n_clbits);
-    scheduled.name = qc.name;
+std::vector<int> asap_schedule_times(const QuantumCircuit& qc) {
+    std::vector<int> times(qc.instructions.size(), 0);
 
     // Track the next available cycle for each qubit wire
-    std::vector<int> wire_available(qc.n_qubits, 0);
+    std::vector<int> wire_available(static_cast<std::size_t>(qc.n_qubits), 0);
 
-    for (auto& inst : qc.instructions) {
+    for (std::size_t i = 0; i < qc.instructions.size(); ++i) {
+        const Instruction& inst = qc.instructions[i];
         if (inst.type == Instruction::GateType::BARRIER) {
             // Barrier synchronizes all involved wires to the latest cycle
             int max_cycle = 0;
             for (int q : inst.qubits) {
-                max_cycle = std::max(max_cycle, wire_available[q]);
+                max_cycle = std::max(max_cycle, wire_available[static_cast<std::size_t>(q)]);
             }
             for (int q : inst.qubits) {
-                wire_available[q] = max_cycle;
+                wire_available[static_cast<std::size_t>(q)] = max_cycle;
             }
-            // Tag the instruction with its scheduled cycle
-            inst.schedule_time = max_cycle;
-            scheduled.instructions.push_back(inst);
+            times[i] = max_cycle;
             continue;
         }
 
         // Find the earliest cycle when all operand wires are free
         int start_cycle = 0;
         for (int q : inst.qubits) {
-            start_cycle = std::max(start_cycle, wire_available[q]);
+            start_cycle = std::max(start_cycle, wire_available[static_cast<std::size_t>(q)]);
         }
-
-        // Tag the instruction with its scheduled cycle
-        inst.schedule_time = start_cycle;
+        times[i] = start_cycle;
 
         // Mark wires as occupied until the next cycle
         for (int q : inst.qubits) {
-            wire_available[q] = start_cycle + 1;
+            wire_available[static_cast<std::size_t>(q)] = start_cycle + 1;
         }
-
-        scheduled.instructions.push_back(inst);
     }
+    return times;
+}
 
-    return DAGCircuit::from_circuit(scheduled);
+DAGCircuit ASAPSchedule::run(
+    const DAGCircuit& dag, const TranspilationContext& /*ctx*/
+) const {
+    QuantumCircuit qc = dag.to_circuit();
+    const std::vector<int> times = asap_schedule_times(qc);
+    for (std::size_t i = 0; i < qc.instructions.size(); ++i) {
+        qc.instructions[i].schedule_time = times[i];
+    }
+    return DAGCircuit::from_circuit(qc);
 }
 
 // =============================================================================

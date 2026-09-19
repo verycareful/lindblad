@@ -251,9 +251,16 @@ Anchor::after_each_measurement();
 Anchor::where(PredicateFn pred);     // after each instruction satisfying pred
 ```
 
-Layer boundaries are computed by greedy layering over qubit occupancy: an
-instruction opens a new layer when one of its qubits is already used in the
-current one, and the boundary falls on the last instruction of each layer.
+Layer boundaries come from the scheduler's timing rule, `asap_schedule_times`
+in `lindblad/transpiler.hpp`, the same rule `ASAPSchedule` writes into
+`Instruction::schedule_time`: a gate starts at the first cycle every operand
+wire is free, a `barrier` synchronises its wires, and the layer numbers an
+observer sees are the ones the scheduler would emit. The boundary for layer
+`T` falls on the instruction after which every instruction scheduled at or
+before `T` has run and nothing later has. A circuit whose instruction order
+interleaves layers has no such point for the interleaved layers, and no
+observation is made under their names, since the state at the end of such a
+layer never exists during the run. The last instruction is always a boundary.
 
 ### Resolution
 

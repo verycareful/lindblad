@@ -9,17 +9,18 @@ This page documents the public `lindblad::algorithms::QAOA` API in detail.
 
 ## Class Overview
 
-`QAOA` optimizes a cost Hamiltonian by alternating cost and mixer unitaries for `p` layers and using NLopt for parameter search. It exposes an `optimize` entry point and a `build_circuit` helper.
+`QAOA` optimizes a cost Hamiltonian by alternating cost and mixer unitaries for `p` layers, with a derivative-free minimiser (FLOP's COBYLA by default, NLopt's methods selectable) for the parameter search. It exposes an `optimize` entry point and a `build_circuit` helper.
 
 ## `Options`
 
 Fields and defaults (from the header):
 
 - `p = 1`: number of QAOA layers
-- `max_iterations = 100`: optimizer budget
-- `convergence_threshold = 1e-6`: relative tolerance
-- `optimizer = "COBYLA"`: NLopt backend selector — supported values: `"COBYLA"`, `"NELDER_MEAD"`, `"POWELL"`
-- `seed = 0`: RNG seed for parameter initialization
+- `max_iterations = 100`: cap on objective evaluations (one circuit run through the estimator each; one per iteration for every method here). Reaching it ends the run with `converged = false`
+- `convergence_threshold = 1e-6`: relative `x` tolerance at which the minimiser declares convergence
+- `optimizer = "COBYLA"`: which minimiser runs the classical loop. `"COBYLA"` is FLOP's; `"NLOPT_COBYLA"`, `"NELDER_MEAD"` and `"BOBYQA"` are NLopt's. An unknown name warns and runs the default
+- `initial_step = 0.3`: first trial displacement along each parameter axis, in radians
+- `seed = 0`: seed for the initial parameter perturbation and the final sampling; `0` draws from `std::random_device`. The draw is bit-identical across compilers for a given seed
 - `initial_thetas`: optional per-qubit `Ry(theta)` initialization (empty uses H)
 
 ## `Result`
@@ -31,8 +32,8 @@ Fields:
 - `optimal_params`: final parameter vector, ordered `[gamma_1, beta_1, ..., gamma_p, beta_p]`
 - `counts`: final sampler counts
 - `best_bitstring`: selected bitstring after post-processing
-- `num_iterations`: total optimizer iterations
-- `converged`: true when NLopt reports success (excluding max-eval termination)
+- `num_iterations`: objective evaluations made
+- `converged`: true when the minimiser stopped on its tolerance with a finite value; the evaluation cap, a non-finite value and a minimiser failure all report false
 
 ## `optimize`
 
@@ -50,7 +51,7 @@ Behavior (verified against `src/algorithms/qaoa.cpp`):
 - If `mixer_hamiltonian` is empty, constructs a default mixer $\sum_i X_i$
 - Parameter count is `2 * p`
 - Initializes parameters in `[-0.05, 0.05]` with RNG seeded by `options.seed`
-- Uses the optimizer specified by `options.optimizer` (default COBYLA); bounds `[-2*pi, 2*pi]`, initial step size `0.3`
+- Uses the minimiser `options.optimizer` names (default FLOP COBYLA); bounds `[-2*pi, 2*pi]` on every parameter, first step `options.initial_step`
 - Evaluates the objective with `Estimator::run_single`
 - Samples the final circuit with `Sampler::run_single`
 - Chooses `best_bitstring` by minimum computational-basis cost (tie-break by count)

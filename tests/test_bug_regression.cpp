@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // Black-box regression tests for the 8 open bugs tracked in TODO as of R.1.7.4.
 // Each test is designed to FAIL if the corresponding bug is still open.
 // Run under ctest (WSL) and compare the pass/fail verdict against the TODO list

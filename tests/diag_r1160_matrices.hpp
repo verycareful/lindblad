@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // diag_r1160_matrices.hpp — shared builders for the R.1.16.0 (#44) SVD
 // diagnostics. Header-only because these are matrix builders and report
 // formatters; the arithmetic is ordinary and every including TU may have its
@@ -233,7 +242,7 @@ inline Eigen::MatrixXcd build_bdcsvd_bug_matrix() {
     // Jacobi for the peel, deliberately: this factorisation BUILDS the
     // reproducer, so it must be the backend that is correct on this input
     // rather than the one under test. BDCSVD is what mishandles the result.
-    if (!seam_svd(M0, lindblad::SVDMethod::Jacobi, s0, U0, V0)) {
+    if (!seam_svd(M0, lindblad::SVDMethod::EigenJacobi, s0, U0, V0)) {
         return Eigen::MatrixXcd();  // empty: matrix_bad() reports the failure
     }
     int k0 = 0;

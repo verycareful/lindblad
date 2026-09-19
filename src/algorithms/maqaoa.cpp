@@ -1,4 +1,14 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 #include "lindblad/algorithms.hpp"
+#include "lindblad/detail/optimizer.hpp"
 #include "lindblad/gates.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
@@ -11,11 +21,9 @@
 #include <cmath>
 #include <limits>
 #include <map>
-#include <random>
+#include <span>
 #include <stdexcept>
 #include <iostream>
-
-#include <nlopt.h>
 
 namespace lindblad {
 namespace algorithms {
@@ -469,12 +477,11 @@ struct MAQAOACallbackData {
     const std::vector<std::vector<int>>* active_qubits;
 };
 
-static double maqaoa_objective(unsigned n, const double* x, double* /*grad*/, void* data) {
-    auto* cb = static_cast<MAQAOACallbackData*>(data);
-    if (cb->params_buf.size() != n) {
-        cb->params_buf.resize(n);
+static double maqaoa_objective(MAQAOACallbackData* cb, std::span<const double> x) {
+    if (cb->params_buf.size() != x.size()) {
+        cb->params_buf.resize(x.size());
     }
-    std::copy(x, x + n, cb->params_buf.begin());
+    std::copy(x.begin(), x.end(), cb->params_buf.begin());
     if (!cb->maqaoa->estimator.options.noise_model.is_ideal()) {
         auto circuit = cb->maqaoa->build_circuit(
             *cb->cost_hamiltonian, *cb->mixer_hamiltonian, cb->params_buf);
@@ -536,10 +543,9 @@ struct LayerCBData {
     const std::vector<std::vector<int>>* active_qubits;
 };
 
-static double layer_objective(unsigned n, const double* x, double* /*grad*/, void* raw) {
-    auto* d = static_cast<LayerCBData*>(raw);
+static double layer_objective(LayerCBData* d, std::span<const double> x) {
     // Update free portion in-place (Change 7: no allocation, no copy)
-    std::copy(x, x + n, d->all_params.begin() + d->free_start);
+    std::copy(x.begin(), x.end(), d->all_params.begin() + d->free_start);
     if (!d->maqaoa->estimator.options.noise_model.is_ideal()) {
         auto circuit = d->maqaoa->build_circuit(
             *d->cost_hamiltonian, *d->mixer_hamiltonian, d->all_params);
@@ -672,8 +678,8 @@ MAQAOA::Result MAQAOA::optimize(
 
     const int params_per_layer = n_cost_params_per_layer + n_mixer_params;
     const int n_params         = options.p * params_per_layer;
-    constexpr double kPi       = PI;
-    constexpr double kBound    = 2.0 * kPi;
+    constexpr double kBound    = 2.0 * PI;   // box on every gamma and beta
+    constexpr double kPerturb  = 0.05;       // half-width of the initial draw
 
     // Precompute active qubits per cost term once — eliminates ~1M hot-path allocations
     // across 10K optimizer evaluations x 100 terms (P-8).
@@ -698,10 +704,25 @@ MAQAOA::Result MAQAOA::optimize(
 
     const auto t_global_start = std::chrono::steady_clock::now();
 
-    // Seeded RNG for initial-parameter perturbation
-    std::mt19937_64 rng(options.seed != 0 ? static_cast<uint64_t>(options.seed)
-                                          : static_cast<uint64_t>(std::random_device{}()));
-    std::uniform_real_distribution<double> perturb(-0.05, 0.05);
+    // Seeded RNG for the initial-parameter perturbation; the draw is
+    // bit-exact across compilers (see uniform_in).
+    auto rng = detail::seeded_rng(options.seed);
+    auto perturb = [&rng]() { return detail::uniform_in(rng, -kPerturb, kPerturb); };
+
+    // Both paths hand the minimiser the same request shape; only the
+    // dimension and the objective differ.
+    static constexpr const char* kWhere = "MAQAOA::optimize";
+    const detail::OptimizerBackend backend = detail::resolve_optimizer(options.optimizer, kWhere);
+    auto make_spec = [&](int n) {
+        detail::OptimizerSpec spec;
+        spec.backend = backend;
+        spec.max_evaluations = options.max_iterations;
+        spec.xtol_rel = options.convergence_threshold;
+        spec.initial_step = options.initial_step;
+        spec.lower.assign(n, -kBound);
+        spec.upper.assign(n, kBound);
+        return spec;
+    };
 
     // -------------------------------------------------------------------------
     // Layerwise path
@@ -718,19 +739,19 @@ MAQAOA::Result MAQAOA::optimize(
             // Initialise this layer's parameters (Change 2: PI-MA-QAOA beta init)
             // Gammas: random perturbation seeded by options.seed
             for (int i = 0; i < n_cost_params_per_layer; ++i) {
-                all_params.push_back(perturb(rng));
+                all_params.push_back(perturb());
             }
             // Betas: PI-MA-QAOA when mixer_weights provided, else same alternating
             // pattern continuing from where gammas left off (identical to original)
             if (has_mw) {
                 for (int i = 0; i < n_mixer_params; ++i) {
                     all_params.push_back(
-                        options.beta_base * (options.mixer_weights[i] / w_max) + perturb(rng)
+                        options.beta_base * (options.mixer_weights[i] / w_max) + perturb()
                     );
                 }
             } else {
                 for (int j = 0; j < n_mixer_params; ++j) {
-                    all_params.push_back(perturb(rng));
+                    all_params.push_back(perturb());
                 }
             }
 
@@ -765,42 +786,29 @@ MAQAOA::Result MAQAOA::optimize(
                       << " budget=" << options.max_iterations
                       << std::endl;
 
-            nlopt_opt opt = nlopt_create(NLOPT_LN_COBYLA, n_free);
-            nlopt_set_min_objective(opt, layer_objective, &cb);
-            nlopt_set_maxeval(opt, options.max_iterations);
-            nlopt_set_xtol_rel(opt, options.convergence_threshold);
-
-            std::vector<double> lb(n_free, -kBound);
-            std::vector<double> ub(n_free, kBound);
-            nlopt_set_lower_bounds(opt, lb.data());
-            nlopt_set_upper_bounds(opt, ub.data());
-            std::vector<double> initial_step(n_free, 0.3);
-            nlopt_set_initial_step(opt, initial_step.data());
-
             std::vector<double> x0(all_params.begin() + free_start, all_params.end());
-            // Save initial guess before COBYLA modifies x0 (Change 4)
+            // Save initial guess before the minimiser moves it (Change 4)
             result.initial_params.insert(result.initial_params.end(), x0.begin(), x0.end());
 
-            // NLopt can return without writing min_val. The marker for that is
-            // a detectably non-finite NaN (see quiet_nan_strict in types.hpp).
-            // The integer nlopt_res is checked alongside it and carries no
-            // floating-point meaning for the optimiser to reason about.
-            double min_val              = quiet_nan_strict();
-            const nlopt_result nlopt_res = nlopt_optimize(opt, x0.data(), &min_val);
-            nlopt_destroy(opt);
+            auto objective = [&cb](std::span<const double> x) {
+                return layer_objective(&cb, x);
+            };
+            const detail::OptimizerOutcome out =
+                detail::minimize(make_spec(n_free), objective, x0, kWhere);
+            std::copy(out.x.begin(), out.x.end(), x0.begin());
 
             const auto   t_layer_end  = std::chrono::steady_clock::now();
             const double layer_wall   = std::chrono::duration<double>(
                 t_layer_end - t_layer_start).count();
 
             std::cout << "[MAQAOA] layer=" << layer
-                      << " done, nlopt_res=" << nlopt_res
+                      << " done, status=" << out.status
                       << " nfev=" << cb.nfev
                       << " best=" << cb.best_val
                       << " wall_time=" << layer_wall << "s"
                       << std::endl;
 
-            if (nlopt_res < 0 || nlopt_res == NLOPT_MAXEVAL_REACHED || !is_finite_strict(min_val)) {
+            if (!out.converged) {
                 all_layers_converged = false;
             }
 
@@ -857,17 +865,17 @@ MAQAOA::Result MAQAOA::optimize(
 
         for (int layer = 0; layer < options.p; ++layer) {
             for (int i = 0; i < n_cost_params_per_layer; ++i) {
-                params.push_back(perturb(rng));
+                params.push_back(perturb());
             }
             if (has_mw) {
                 for (int i = 0; i < n_mixer_params; ++i) {
                     params.push_back(
-                        options.beta_base * (options.mixer_weights[i] / w_max) + perturb(rng)
+                        options.beta_base * (options.mixer_weights[i] / w_max) + perturb()
                     );
                 }
             } else {
                 for (int j = 0; j < n_mixer_params; ++j) {
-                    params.push_back(perturb(rng));
+                    params.push_back(perturb());
                 }
             }
         }
@@ -886,28 +894,16 @@ MAQAOA::Result MAQAOA::optimize(
         };
         cb_data.params_buf.resize(n_params);
 
-        nlopt_opt opt = nlopt_create(NLOPT_LN_COBYLA, n_params);
-        nlopt_set_min_objective(opt, maqaoa_objective, &cb_data);
-        nlopt_set_maxeval(opt, options.max_iterations);
-        nlopt_set_xtol_rel(opt, options.convergence_threshold);
+        auto objective = [&cb_data](std::span<const double> x) {
+            return maqaoa_objective(&cb_data, x);
+        };
+        const detail::OptimizerOutcome out =
+            detail::minimize(make_spec(n_params), objective, params, kWhere);
 
-        std::vector<double> lb(n_params, -kBound);
-        std::vector<double> ub(n_params, kBound);
-        nlopt_set_lower_bounds(opt, lb.data());
-        nlopt_set_upper_bounds(opt, ub.data());
-        std::vector<double> initial_step(n_params, 0.3);
-        nlopt_set_initial_step(opt, initial_step.data());
-
-        // See the layerwise path above for why the marker is bit-built.
-        double min_val               = quiet_nan_strict();
-        const nlopt_result nlopt_res  = nlopt_optimize(opt, params.data(), &min_val);
-        nlopt_destroy(opt);
-
-        result.optimal_value  = is_finite_strict(min_val) ? min_val : 1e12;
+        params                = out.x;
+        result.optimal_value  = is_finite_strict(out.f) ? out.f : 1e12;
         result.optimal_params = params;
-        result.converged      = (nlopt_res > 0) &&
-                    (nlopt_res != NLOPT_MAXEVAL_REACHED) &&
-                    is_finite_strict(min_val);
+        result.converged      = out.converged;
         result.num_iterations = cb_data.nfev;
 
         // Sampling directly from the evolved statevector (Change 10)

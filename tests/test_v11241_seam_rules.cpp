@@ -1,3 +1,12 @@
+// Copyright (c) 2026 Sricharan Suresh (github.com/verycareful)
+// SPDX-License-Identifier: LicenseRef-Lindblad-2.3
+//
+// This file is part of the Lindblad Quantum Computing Framework and is
+// licensed under the Lindblad Software License Agreement, Version 2.3. The
+// full text is in the LICENSE file at the root of the repository. Free for
+// non-commercial and academic use; commercial use requires a separate
+// Commercial License Agreement with the Author.
+
 // test_v11241_seam_rules.cpp - the decomposition seam, enforced rather than
 // verified by hand.
 //
@@ -61,7 +70,8 @@ struct Allowed {
 // Fixed-size and real-valued instantiations, which are distinct types from the
 // backend's dynamic complex ones and cannot merge with them.
 const Allowed kAllowed[] = {
-    {"src/transpiler/optimisation/optimize_1q.cpp", "Eigen::Matrix2cd"},
+    {"src/transpiler/optimisation/optimize_1q.cpp",
+     "Eigen::Matrix2cd,Eigen::ComputeFullU|Eigen::ComputeFullV"},
     {"src/transpiler/optimisation/optimize_1q.cpp", "Eigen::Matrix4d"},
     {"src/transpiler/optimisation/optimize_1q.cpp", "Eigen::MatrixXd"},
 };
