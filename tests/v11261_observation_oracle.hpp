@@ -173,22 +173,23 @@ inline RecorderPtr recorder() { return std::make_shared<RecordingObserver>(); }
 // Circuits whose anchor expectations are worked out by hand
 // =============================================================================
 
-// Four qubits, laid out so the layering is not the obvious one. The greedy
-// walk closes a layer when an instruction collides with a qubit already used
-// inside it, and clears the WHOLE occupancy set at that point rather than
-// carrying the untouched qubits forward:
+// Four qubits, laid out so the layering is not the obvious one. Layers are the
+// scheduler's (asap_schedule_times): a gate starts at the first cycle every
+// operand wire is free.
 //
-//   index 0  h(0)      no collision       used {0}
-//   index 1  h(1)      no collision       used {0,1}
-//   index 2  cx(0,1)   collides on 0   -> layer ends at 1, then used {0,1}
-//   index 3  cx(2,3)   no collision       used {0,1,2,3}
-//   index 4  x(0)      collides on 0   -> layer ends at 3, then used {0}
-//   index 5  cx(1,2)   no collision       used {0,1,2}
-//   end of circuit                     -> layer ends at 5
+//   index 0  h(0)      cycle 0
+//   index 1  h(1)      cycle 0
+//   index 2  cx(0,1)   cycle 1
+//   index 3  cx(2,3)   cycle 0   qubits 2 and 3 are free from the start
+//   index 4  x(0)      cycle 2
+//   index 5  cx(1,2)   cycle 2
 //
-// Qubit 3 goes idle from index 4 onward, and index 3 shares a layer with two
-// instructions touching neither of its qubits, so a layering computed any
-// other way lands somewhere other than {1, 3, 5}.
+// A boundary is an index after which every instruction of cycles 0..T has run
+// and nothing later has. Layer 0 has none: cx(2,3) belongs to it but runs after
+// cx(0,1) from layer 1, so no executed prefix is exactly layer 0. Layer 1 ends
+// at index 3, where cycles 0 and 1 are both complete, and layer 2 at the end.
+// Reading the circuit in order and closing a layer on each qubit collision
+// gives {1, 3, 5} instead, which is why this circuit separates the two.
 inline QuantumCircuit layered_circuit() {
     QuantumCircuit qc(4);
     qc.h(0);
@@ -200,7 +201,7 @@ inline QuantumCircuit layered_circuit() {
     return qc;
 }
 
-inline std::vector<int> layered_circuit_layer_ends() { return {1, 3, 5}; }
+inline std::vector<int> layered_circuit_layer_ends() { return {3, 5}; }
 
 // Mid-circuit measurement plus feedforward, which is what puts a backend on
 // its per-shot trajectory route: the X on qubit 1 runs or does not run

@@ -4,6 +4,177 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.29.1] - 2026-09-25
+
+The test release for 1.1.29.0. It adds 141 tests in eight suites covering
+everything that release changed: the optimizer seam and the three algorithms
+behind it, the initial parameter draw, the four SVD kernels and the rescue
+ladder's reporting, the Ising rotations on the tableau, the QASM 2 condition,
+the scheduler's layer rule and `DAGCircuit::node`. It corrects the three tests
+1.1.29.0 shipped red. It found four defects and ships ten tests red against
+them, listed under Known red.
+
+### Tests
+
+- **`test_v11291_optimizer_seam.cpp`**, 30 tests, on all four backends. A
+  malformed request (empty or non-finite start, a cap below one, a step or
+  tolerance that is not positive and finite, bounds of the wrong size, inverted
+  or violated) is refused before the objective runs once. The returned value is
+  the objective at the returned point, the evaluation count is every call, and
+  the cap is never exceeded; reaching it is never convergence. A NaN or infinite
+  value, including negative infinity, ends the run with the best finite point
+  seen; no finite value at all throws. An exception thrown by the objective
+  reaches the caller with its type and message intact, including a
+  non-standard one on the NLopt backends, where it crosses C frames. Every
+  evaluated point and the returned one stay inside the box, and the opening
+  trial points are one initial step along each axis, at two step sizes on
+  dyadic starts so the comparison is exact.
+
+- **`test_v11291_variational.cpp`**, 40 tests. VQE's energy history equals a
+  replay of the same objective straight through the seam, for each optimizer
+  name at two step sizes, which is only possible if the name, cap, tolerance
+  and step all reach the backend. The seed now decides VQE's start, seed 0
+  draws a fresh one, supplied parameters override it, and the reported energy
+  is the lowest evaluated and is reproduced exactly by its parameters. QAOA
+  writes `num_iterations`; MA-QAOA honours its optimizer on both paths, with an
+  unknown name warning and running the default bit for bit; QAOA and MA-QAOA
+  parameters stay inside the documented `[-2pi, 2pi]`. The starting draw of all
+  three algorithms is checked bit for bit against a reference computed in
+  integer arithmetic from the engine's output words, which the standard fixes,
+  so every compiler is compared against the same numbers; an engine loaded with
+  a chosen state drives the lowest and highest words.
+
+- **`test_v11291_svd_kernels.cpp`**, 18 tests. All four kernels reproduce the
+  statevector on qubit chains and on a seven-qutrit chain whose blocks the
+  default kernel declines on current builds. The Jacobi rescues the counter
+  records equal the warnings the ladder emits, each naming its layer, block
+  shape, failing kernel and reason. `svd_rescue = false` throws at the first
+  rejection without descending, on the ladder and on both MPS layers. The
+  Jacobi selection note is counted in a fresh process: once per layer, whichever
+  Jacobi kernel came first, and never for the BDC kernels. The defaults, the
+  simulator handing its selection to the chain, the qudit `svd_time_ns()` and
+  `floor_rejected_weight()` staying out of `truncation_error()` are covered too.
+
+- **`test_v11291_clifford_ising.cpp`**, 9 tests. `rxx`, `ryy`, `rzz` and `rzx`
+  at eighteen quarter-turn angles and six operand orders match the statevector
+  on every Pauli expectation, on both tableau layouts. `rzx` is shown not to be
+  symmetric in its operands, a half turn equals the Pauli product,
+  `is_clifford()` and `run()` agree on every angle, both sampling routes stay on
+  the state's support, and a 24-qubit circuit using all four runs exactly under
+  automatic backend selection.
+
+- **`test_v11291_qasm_conditions.cpp`**, 23 tests. A one-bit condition survives
+  the QASM 2 round trip, a custom gate (nested too) and a whole-register
+  measurement are conditioned in full and nothing after them is, the condition
+  bit is the register's place among several, and malformed or out-of-range
+  guards are refused.
+
+- **`test_v11291_scheduling.cpp`**, 21 tests. The ASAP rule on hand-worked
+  circuits (barriers on some wires and on all, measurements), `ASAPSchedule`
+  writing exactly what `asap_schedule_times` returns, and `every_layer` firing
+  where the definition says on random circuits, interleaved ones and barrier
+  ones. `DAGCircuit::node` resolves every id a traversal hands out, returns null
+  for ids it does not hold, including removed and substituted ones, and its
+  mutable overload writes through.
+
+- The three tests 1.1.29.0 shipped red are corrected.
+  `R1191CliffordValidation.RunUnsupportedCliffordGateThrows` becomes
+  `RunIsingRotationAtAQuarterTurnMatchesTheStatevector`.
+  `V11261Anchors.EveryLayerMatchesTheHandComputedLayering` expects `{3, 5}`, the
+  scheduler's layers. `V11241SeamRules.NoHeaderUnderIncludeNamesAnEigenType`
+  matches `Eigen` as a whole word, which still catches `Eigen::` and
+  `<Eigen/...>` and no longer trips on `EigenJacobi` or `EigenBDC`.
+
+### Known red
+
+Ten tests fail deliberately, against four defects. The fixes are planned for
+the next patch release.
+
+- **The QASM parsers accept conditions their grammars forbid** (five tests).
+  `from_qasm2()` reads `if (c == ) x q[0];` as a condition on 0, accepts a
+  `barrier` after `if`, and accepts `01`, `00`, `+1`, `-0` and `+0` as the
+  value. `from_qasm3()` accepts a value outside 0 and 1 for a single bit, which
+  parses into a condition that can never hold.
+  `V11291QasmConditions.Qasm2AnEmptyValueIsRefused`, `Qasm2BarrierAfterIfIsRefused`,
+  `Qasm2ValueSpellingsTheGrammarForbidsAreRefused`,
+  `Qasm3BitConditionOutsideZeroOneIsRefused` and
+  `Qasm3OneBitRegisterConditionOutsideZeroOneIsRefused`.
+
+- **An exact expectation value does not check the width of a Pauli term**
+  (two tests). A term wider than the state is evaluated as if the missing qubits
+  were in |0> when they carry Z, and reads past the end of the amplitude arrays
+  when they carry X or Y. The estimator's default exact path inherits it, so a
+  VQE whose Hamiltonian is wider than its ansatz returns an energy; the sampled
+  and density-matrix paths already refuse the same input. The code predates
+  1.1.29.0. `V11291Variational.AnExactExpectationRefusesATermWiderThanTheState`
+  and `TheExactEstimatorRefusesATermWiderThanTheCircuit`, both using a Z-only
+  term so the suite never performs the out-of-bounds read.
+
+- **BOBYQA refusing its box is reported as an objective failure** (two tests).
+  BOBYQA needs every interval at least twice the initial step wide and refuses
+  otherwise before evaluating anything; the refusal reaches the caller as a
+  `std::runtime_error` saying the objective produced no finite value, rather
+  than an `std::invalid_argument` naming the cause. From the public API this
+  takes QAOA or MA-QAOA with BOBYQA and an `initial_step` above 2pi.
+  `V11291OptimizerSeam.BobyqaRefusingABoxTooNarrowForItsStepIsAnInvalidArgument`
+  and `V11291Variational.QaoaBobyqaWithAStepTooWideForTheBoxIsAnInvalidArgument`.
+
+- **The initial parameter draw can return its upper bound** (one test). The
+  draw is documented as half-open, and on a range whose upper bound is large
+  against its width, such as `[1, 2)` or `[pi, 2pi)`, the highest engine word
+  rounds onto the bound. Every range the algorithms draw from is symmetric
+  about zero, where the highest word stays at least one spacing below the
+  bound, so no result is affected, and the fix leaves every existing draw
+  bit-identical. `V11291UniformDraw.TheHighestWordStaysBelowHiOnEveryOrderedRange`.
+
+### Known behaviour
+
+- **Scheduling tracks qubit wires only.** A classical condition does not delay
+  the instruction it guards, so `ASAPSchedule` and `ALAPSchedule` can place a
+  gate conditioned on a measurement in, or before, the cycle of that
+  measurement, and `Anchor::every_layer()` takes its layers from the same rule.
+  `QuantumCircuit::depth()` counts the same way, and `DAGCircuit::depth()`,
+  which follows classical edges, can be larger. No simulation result is
+  affected, since every simulator executes in circuit order. The model is
+  documented and asserted as it stands by the `ClassicalWires` tests in
+  `V11291Scheduling`; changing it is a separate decision.
+
+### Changed
+
+- **The Jacobi selection note** no longer states that every kernel is accepted
+  on its first attempt, which is not true of BDC on qudit blocks.
+
+- **Documentation.** The VQE page gives the initial draw as uniform in
+  `[-pi, pi)` under the seed, in place of "a small default vector". The
+  simulators page lists the four Ising rotations in the Clifford gate set, says
+  the reconstruction residual is always computed under strict floating point
+  while the autonne kernels take the project's flags, says a rescue warning
+  needs no action from a caller, and says how rescue warnings collapse:
+  identical ones arrive as one repeat count at the next `flush_warnings()`,
+  which `MPSSimulator::run()` does and a caller driving an `MPSState` or
+  `QuditMPS` directly does itself, so the rescue counters rather than the
+  warning lines are the number of rescues. The qudit simulators page says the
+  same for its layer. The transpiler and observation pages state that the
+  timing rule tracks qubit wires only.
+
+### Results
+
+Six configurations, every leg failing exactly the ten tests listed under Known
+red and nothing else (CachyOS Linux, native):
+
+| Compiler | Target | Options | Tests | Passed | Skipped | Failed | Time |
+|---|---|---|---:|---:|---:|---:|---:|
+| Clang 22.1.8 | native | none (the documented build) | 3296 | 3278 | 8 | 10 | 17.3 s |
+| Clang 22.1.8 | native | harvest | 3296 | 3285 | 1 | 10 | 17.5 s |
+| Clang 22.1.8 | x86-64-v3 | harvest | 3296 | 3285 | 1 | 10 | 16.1 s |
+| GCC 14.3.1 | native | harvest | 3296 | 3285 | 1 | 10 | 20.3 s |
+| GCC 14.3.1 | x86-64-v3 | harvest | 3296 | 3285 | 1 | 10 | 19.3 s |
+| Clang 20.1.8 | native | harvest | 3296 | 3285 | 1 | 10 | 17.9 s |
+
+3296 tests across 288 suites. The documented build skips the seven
+theta-harvest tests and the large register-size margin test; the harvest legs
+skip the margin test alone.
+
 ## [1.1.29.0] - 2026-09-19
 
 Two dependencies change hands. The variational algorithms run their classical

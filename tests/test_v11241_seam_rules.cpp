@@ -187,9 +187,19 @@ TEST(V11241SeamRules, NoHeaderUnderIncludeNamesAnEigenType) {
         if (ext != ".hpp" && ext != ".h") continue;
         ++scanned;
 
+        // "Eigen" as a whole word: the namespace (Eigen::), an include
+        // (<Eigen/...>) or a namespace block. An identifier that merely begins
+        // with it, such as the SVDMethod enumerators EigenJacobi and EigenBDC,
+        // names no Eigen type and is not a hit.
+        auto ident = [](char c) {
+            return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+        };
         const std::string masked = mask(read(e.path()));
         for (std::size_t pos = masked.find("Eigen"); pos != std::string::npos;
              pos = masked.find("Eigen", pos + 1)) {
+            const std::size_t end = pos + 5;
+            if (pos > 0 && ident(masked[pos - 1])) continue;
+            if (end < masked.size() && ident(masked[end])) continue;
             hits.push_back({relative_slashes(e.path(), root),
                             line_of(masked, pos), masked.substr(pos, 48)});
         }

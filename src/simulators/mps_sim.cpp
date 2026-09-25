@@ -70,8 +70,7 @@ static void warn_jacobi_slower_once(SVDMethod m) {
         " selected for the qubit MPS. BDC is the default (autonne divide and conquer) "
         "and is faster as the block grows and the spectrum "
         "decays: measured on a 128x128 decaying spectrum, 2.7x over Jacobi "
-        "and 19x over EigenJacobi. Every kernel is accepted by the truncation "
-        "verify rung on the first attempt. Jacobi resolves the tail of a "
+        "and 19x over EigenJacobi. Jacobi resolves the tail of a "
         "graded spectrum with relative accuracy, which is why it remains "
         "selectable; select it for that, not for speed.");
 }

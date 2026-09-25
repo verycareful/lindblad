@@ -24,6 +24,8 @@
 
 #include <gtest/gtest.h>
 
+#include "v11251_clifford_oracle.hpp"
+
 #include "lindblad/simulators/clifford_sim.hpp"
 #include "lindblad/circuit.hpp"
 #include "lindblad/constants.hpp"
@@ -137,16 +139,23 @@ TEST(R1191CliffordValidation, RunUnsupportedGateThrows) {
     EXPECT_THROW(sim.run(qc, /*shots=*/16), std::invalid_argument);
 }
 
-TEST(R1191CliffordValidation, RunUnsupportedCliffordGateThrows) {
-    // RZZ at π/2 is genuinely Clifford (it equals cx(a,b) · s(b) · cx(a,b)) but
-    // the tableau dispatch carries no case for it, so a direct run() must throw
-    // rather than silently drop the gate. is_clifford() rejects it as well,
-    // which is what keeps the AUTO route from ever reaching this throw.
+TEST(R1191CliffordValidation, RunIsingRotationAtAQuarterTurnMatchesTheStatevector) {
+    // RZZ at π/2 is Clifford (it equals cx(a,b) · s(b) · cx(a,b)) and the
+    // tableau dispatches it, so is_clifford() accepts it and a direct run()
+    // applies it rather than throwing or dropping it. The state is compared on
+    // every Pauli expectation, on an input where dropping the gate would show.
     QuantumCircuit qc(2);
+    qc.h(0).h(1);
     qc.rzz(PI_2, 0, 1);
-    EXPECT_FALSE(CliffordSimulator::is_clifford(qc));
+    EXPECT_TRUE(CliffordSimulator::is_clifford(qc));
+    EXPECT_TRUE(v11251::clifford_matches_statevector_exhaustive(qc));
+
+    QuantumCircuit dropped(2);
+    dropped.h(0).h(1);
     CliffordSimulator sim;
-    EXPECT_THROW(sim.run(qc, /*shots=*/16), std::invalid_argument);
+    const auto with = sim.run(qc, 0, 1), without = sim.run(dropped, 0, 1);
+    EXPECT_FALSE(v11251::states_equal_exhaustive(with.final_state, without.final_state))
+        << "rzz(pi/2) on |++> left the state unchanged";
 }
 
 TEST(R1191CliffordValidation, RunCliffordCircuitStillSucceeds) {

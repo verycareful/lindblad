@@ -449,6 +449,13 @@ values into `Instruction::schedule_time`, and the observation harness reads the
 same function for `Anchor::every_layer()`, so "layer" means one thing in the
 library.
 
+Only qubit wires are tracked. A classical condition does not delay the
+instruction it guards, so a gate conditioned on a measurement can be scheduled
+in, or before, the cycle of the measurement that sets its bit. `ALAPSchedule`
+and `QuantumCircuit::depth()` follow the same model; `DAGCircuit::depth()`
+follows the DAG's classical edges and can be larger. Simulation is unaffected,
+since every simulator executes instructions in circuit order.
+
 ### ALAPSchedule (As-Late-As-Possible)
 
 **Behavior**: Assign each gate to the latest slot such that the critical path length is preserved.

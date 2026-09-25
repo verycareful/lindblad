@@ -417,7 +417,7 @@ $$\langle P \rangle = 2^{-n} \text{Tr}(P_0 \rho) \quad \text{where} \quad P_0 \t
 
 Efficient exact simulation of Clifford circuits using stabilizer tableau representation.
 
-The supported gate set is $\{H, S, S^\dagger, \sqrt{X}, \sqrt{X}^\dagger, X, Y, Z, CX, CY, CZ, SWAP, iSWAP, ECR\}$, together with $P$, $RX$, $RY$ and $RZ$ at multiples of $\pi/2$, which are the angles at which those rotations are Clifford.
+The supported gate set is $\{H, S, S^\dagger, \sqrt{X}, \sqrt{X}^\dagger, X, Y, Z, CX, CY, CZ, SWAP, iSWAP, ECR\}$, together with $P$, $RX$, $RY$, $RZ$, $RXX$, $RYY$, $RZZ$ and $RZX$ at multiples of $\pi/2$, which are the angles at which those rotations are Clifford.
 
 Global phase is not represented in the stabilizer formalism, so the backend reproduces each gate up to phase. That is exact for measurement outcomes and Pauli expectations, which is everything this backend reports.
 
@@ -721,14 +721,14 @@ enough, and the reported total rises as the bond cap rises. To compare one cap
 against another, use the bond profile or a downstream fidelity rather than this
 figure.
 
-The factorisation itself is performed in a translation unit compiled under
-strict IEEE floating-point, and so is the reconstruction residual that decides
-whether a factorisation is accepted. The residual subtracts two nearly identical
-matrices, and one computed too small would admit exactly the factorisations the
-check exists to reject.
+The reconstruction residual that decides whether a factorisation is accepted is
+computed in a translation unit compiled under strict IEEE floating-point, whichever
+kernel produced it. The residual subtracts two nearly identical matrices, and one
+computed too small would admit exactly the factorisations the check exists to
+reject.
 
-**Ladder observability**. A rescued split is warned about as it happens and
-is otherwise indistinguishable from a clean one, since both yield valid
+**Ladder observability**. A rescued split is reported through the warning
+channel and is otherwise indistinguishable from a clean one, since both yield valid
 tensors. The counters on `MPSState` are the record of how often it happened
 and what it cost:
 
@@ -761,8 +761,25 @@ and what it cost:
   profile.
 
 A run with both rescue counts at zero never distrusted its kernel. A nonzero
-count is not an error: it is the containment working, and the warning channel
-carries one message per rescue for the run that wants to know when.
+count is not an error: it is the containment working.
+
+The warning channel reports every rescue, and collapses identical messages the
+way it collapses every repeated warning (see the
+[validation reference](validation.md)): the
+first occurrence of a message is delivered at once, and later identical ones
+arrive as a single repeat count at the next `flush_warnings()`.
+`MPSSimulator::run()` flushes when it returns. A caller driving an `MPSState` or
+a `QuditMPS` directly calls `flush_warnings()` to receive the counts. Rescues of
+blocks with the same layer, shape and cause produce identical messages, so the
+number of warning lines is not the number of rescues; `jacobi_rescue_count()`
+and `gram_fallback_count()` are.
+
+A rescue warning needs no action from a caller. The tensor that continues has
+passed verification, and a split no rung can serve throws instead of
+continuing. The warning matters only to someone developing the kernel that
+declined (autonne or Eigen) or Lindblad itself. Under the default `BDC`, some
+blocks are declined and served by the `Jacobi` rung, mostly from qudit chains
+at `d = 3`, and which blocks depends on the compiler.
 
 Every figure covers every split the chain has taken, including those from
 `rebuild_from_statevector` below. They describe the state rather than the route
@@ -989,7 +1006,8 @@ auto result = sim.run(large_circuit, 100);  // 100 shots
   kernel table under `MPSState`). Set on `MPSSimulator` for `run()` or on an
   `MPSState` driven directly
 - **svd_rescue** (`bool`, default `true`): whether a factorisation the verify
-  rung rejects may descend the rescue ladder, one warning per rung; `false`
+  rung rejects may descend the rescue ladder, one warning per rung (identical
+  warnings collapse into a repeat count); `false`
   turns the first rejection into a `std::runtime_error`
 
 ## Simulator Selection Guide

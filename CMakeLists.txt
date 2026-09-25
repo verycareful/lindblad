@@ -8,9 +8,9 @@
 # Commercial License Agreement with the Author.
 
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.29.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.29.1 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "1.1.29.0")
+set(LINDBLAD_VERSION_LABEL "1.1.29.1")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -172,9 +172,10 @@ set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(nlopt flop eigen)
 
 # The three MPS translation units take the project-wide -ffast-math. Every
-# factorisation they reach is performed in eigen_backend.cpp and checked by the
-# reconstruction residual in svd_verify.cpp, both strict unconditionally below,
-# so what these files hold is contraction, environment and selection arithmetic.
+# factorisation they reach is performed in autonne_backend.cpp or eigen_backend.cpp
+# and checked by the reconstruction residual in svd_verify.cpp, the Eigen side and
+# the residual strict unconditionally below, so what these files hold is
+# contraction, environment and selection arithmetic.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # Unconditionally strict, and NOT under any of the options above. These two
     # TUs are what a released configuration is measured AGAINST: eigen_backend.cpp

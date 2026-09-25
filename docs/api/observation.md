@@ -261,6 +261,9 @@ before `T` has run and nothing later has. A circuit whose instruction order
 interleaves layers has no such point for the interleaved layers, and no
 observation is made under their names, since the state at the end of such a
 layer never exists during the run. The last instruction is always a boundary.
+The rule tracks qubit wires only, so a gate conditioned on a measurement shares
+a layer with whatever else is free on its qubits, which can be earlier than the
+measurement; see the [transpiler reference](transpiler.md).
 
 ### Resolution
 

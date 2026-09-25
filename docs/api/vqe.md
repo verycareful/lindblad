@@ -77,7 +77,8 @@ Behavior:
 
 - Evaluates the supplied ansatz against the supplied Hamiltonian
 - Uses the `Estimator` member on the `VQE` instance
-- Uses `initial_params` if provided, otherwise starts from a small default vector
+- Uses `initial_params` if provided, otherwise draws each parameter uniformly
+  from `[-pi, pi)` under `options.seed`
 
 Preconditions:
 

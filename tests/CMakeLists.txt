@@ -176,6 +176,12 @@ set(LINDBLAD_TEST_SOURCES
     test_v11282_rebuild_kernel.cpp
     test_v11282_gram_floor.cpp
     test_V11283_algos.cpp
+    test_v11291_optimizer_seam.cpp
+    test_v11291_variational.cpp
+    test_v11291_svd_kernels.cpp
+    test_v11291_clifford_ising.cpp
+    test_v11291_qasm_conditions.cpp
+    test_v11291_scheduling.cpp
 )
 
 # The R.1.16.0 diagnostic's strict leg. This flag governs the file's OWN

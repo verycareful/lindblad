@@ -240,7 +240,7 @@ parameters).
 | `max_bond_dim` | `int` | maximum retained singular values per bond |
 | `svd_cutoff` | `double` | max fraction of total weight truncation may discard |
 | `svd_method` | `SVDMethod` | Bond-split kernel: default `BDC` (autonne's divide and conquer); `Jacobi` (autonne), `EigenBDC` and `EigenJacobi` are selectable. Either Jacobi emits a one-time note that it is the slower algorithm. Same meaning as the qubit `MPSState::svd_method`; declared in `lindblad/types.hpp`. |
-| `svd_rescue` | `bool` | `true` (default): a factorisation the verify rung rejects descends the rescue ladder (autonne `Jacobi`, then the Gram route), one warning per rung. `false`: the first rejection throws. |
+| `svd_rescue` | `bool` | `true` (default): a factorisation the verify rung rejects descends the rescue ladder (autonne `Jacobi`, then the Gram route), one warning per rung (identical warnings collapse into a repeat count). `false`: the first rejection throws. |
 | `tensors` | `std::vector<MPSSiteTensor>` | site tensors |
 
 ### Gate and oracle API
@@ -316,7 +316,12 @@ simulators reference): splits performed, how many were rescued on each rung,
 the Gram route's floor-rejected weight, nanoseconds spent in the whole ladder
 over those splits, and the worst factorisation error the verify rung accepted.
 `svd_time_ns()` brackets the ladder the way the qubit layer does, so the two
-layers' figures can be read against each other.
+layers' figures can be read against each other. A rescue warning needs no
+action from a caller; the [simulators reference](simulators.md) says why. Identical rescue
+warnings collapse into a repeat count delivered at `flush_warnings()`, which
+nothing in the qudit layer calls on the caller's behalf, so
+`jacobi_rescue_count()` is the number of rescues rather than the number of
+warning lines.
 
 ### `MPSSiteTensor`
 
