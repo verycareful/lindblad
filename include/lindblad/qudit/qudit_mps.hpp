@@ -117,8 +117,10 @@ public:
     void apply_1qudit(int q, const std::vector<Complex128>& U,
                       ValidationOptions validation = {});
 
-    // d^2 x d^2 unitary on adjacent qudits (q, q+1).
-    // Row index r = out_q*d + out_{q+1}; col index c = in_q*d + in_{q+1}.
+    // d^2 x d^2 unitary on adjacent qudits (q, q+1). Project LSB-first
+    // convention (docs/Architecture.md "Conventions"): qudit q is the LEAST
+    // significant digit of the index, so row r = out_{q+1}*d + out_q and
+    // column c = in_{q+1}*d + in_q.
     void apply_2qudit_adjacent(int q, const std::vector<Complex128>& U,
                                ValidationOptions validation = {});
 

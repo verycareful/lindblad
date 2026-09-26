@@ -78,8 +78,9 @@ qubit 1, Z on qubit 2.
 Every externally supplied matrix follows `gates::apply_unitary`: bit i of the
 row/column index is the state of `qubits[i]`, so `qubits[0]` is the least
 significant bit. This binds `QuantumCircuit::unitary()`, `Instruction::matrix`,
-`KrausChannel::operators` (for multi-qubit channels), and `control()`'s
-generated matrices. Backends whose internal sub-block addressing is MSB-first
+`KrausChannel::operators` (for multi-qubit channels), `control()`'s
+generated matrices, and the matrices handed to the backend primitives
+`DensityMatrix::apply_gate` and `MPSState::apply_two_qubit_gate`. Backends whose internal sub-block addressing is MSB-first
 (DensityMatrix, the MPS 2-qubit path) bridge by bit-reversal internally; named
 built-in gate matrices inside the simulators are an internal detail and stay
 in their builders' frame.

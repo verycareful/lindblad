@@ -330,8 +330,9 @@ TEST(R1122FillFront, EstimatorSampledPathBranchesAndValidation) {
     SparsePauliOp too_short(std::vector<PauliString>{PauliString("Z")});
     EXPECT_THROW(est.run_single(qc, too_short, {}), std::invalid_argument);
 
-    SparsePauliOp bad_char(std::vector<PauliString>{PauliString("QI")});
-    EXPECT_THROW(est.run_single(qc, bad_char, {}), std::invalid_argument);
+    // A label outside I, X, Y, Z is refused when the string is built, before
+    // any estimator sees it.
+    EXPECT_THROW((void)PauliString("QI"), std::invalid_argument);
 }
 
 TEST(R1122FillFront, EstimatorTranspileCacheAndNoisyEvaluation) {

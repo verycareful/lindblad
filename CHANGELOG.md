@@ -4,6 +4,155 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.29.2] - 2026-09-26
+
+The patch for the ten tests 1.1.29.1 shipped red, and for what fixing them
+turned up. The QASM parsers follow their grammars strictly and resolve every
+operand against its own register. A Pauli operator has one width, one alphabet
+and, wherever a real expectation value comes back, a Hermitian form (#130).
+NLopt's refusals and the top of the initial draw behave as documented.
+`MPSState::apply_two_qubit_gate` takes its matrix in the project's convention,
+which is a breaking change. MA-QAOA's cost gammas follow the documented layout.
+All ten pins pass, and nothing ships red.
+
+### Fixed
+
+- **The QASM 2 condition is read as the grammar writes it.** An empty value
+  (`if (c == )`) no longer parses as 0, a value spelled `01`, `+1` or `-0` is
+  refused, and a barrier after `if` is refused, since only a gate call, measure
+  or reset may follow it. OpenQASM 3 refuses a condition value other than 0 or
+  1, which could never hold and made the `else` branch run only when the bit
+  was 0; leading zeros stay valid there.
+- **Both QASM parsers check every index against its register.** `x q[3]` on a
+  two-qubit `q` used to act on the next register's second qubit, which the
+  circuit's own bounds check could not tell from a legitimate one. QASM 2 also
+  sent an undeclared register to qubit 0, took `r[-1]` to the previous
+  register, matched register names as substrings (so `aq[0]` could resolve
+  through `q`, depending on hash order), widened a barrier on an undeclared
+  register to the whole circuit, and dropped the second statement on a line
+  without a word. Each is now refused.
+- **QASM 2 recognises a statement keyword only as a whole leading token.**
+  `x resets[0]` was a reset, `h barriers[0]` a barrier, any line on a register
+  whose name contained `qreg`, `creg` or `include` was skipped, and a call to a
+  gate named like `gatefoo` opened a definition that swallowed every line up
+  to the next brace. Trailing `//` comments are stripped before parsing.
+- **Every integer and angle literal a QASM parser cannot represent is its own
+  parse error.** A value too large for an `int`, a float outside double range
+  and a `pow` product that overflows now throw `std::runtime_error` with the
+  parser's prefix, like every other refusal, instead of escaping as
+  `std::out_of_range`, which is a `logic_error` and slipped past a caller
+  catching `runtime_error`.
+- **An exact expectation checks the observable's width (#130).** A Pauli term
+  wider than the state read a missing Z qubit as |0> and made an X or Y index
+  past the amplitude arrays; the density-matrix path compared only the first
+  term, and `to_matrix()` wrote past its matrix for a term wider than the
+  first. Every term must now be exactly the state's width on every path: the
+  statevector and batch expectations, the density matrix, all three Estimator
+  modes, `ExpectationObserver` (refused before the run) and the QAOA and
+  MA-QAOA entry points, which also check the cost and mixer against each other.
+- **A Pauli string is written with `I`, `X`, `Y` and `Z`, uppercase.** The
+  statevector kernels read any other character, a lowercase one included, as
+  identity while the density-matrix and tableau paths read lowercase as its
+  Pauli, so `z` gave opposite answers on different paths. Anything else is now
+  refused at construction and at evaluation, and by
+  `StabilizerState::expectation_pauli`.
+- **A non-Hermitian observable is refused wherever a real expectation value is
+  returned.** Every path used to return the real part of a complex expectation,
+  and QAOA's and MA-QAOA's cost layers rotated by the real part of each
+  coefficient. Coefficients must be real once repeated labels are merged, so
+  `(1 + i)Z + (1 - i)Z` is still accepted. QAOA also refuses a non-Hermitian
+  mixer, as MA-QAOA already did. `to_matrix()` still takes any coefficients.
+- **`DensityMatrix::expectation_value` checks its dense operator.** It never
+  checked the operator's size, so a short vector was read past its end, nor
+  its Hermiticity.
+- **`Estimator::run_batch` and `gradient` pass on an evaluation's exception.**
+  An exception leaving their OpenMP loop called `std::terminate`. Each
+  parameter set's exception is kept and the lowest-indexed one is rethrown.
+- **An NLopt method that refuses a request says why.** BOBYQA needs every box
+  interval at least twice the initial step wide, and its refusal surfaced as
+  "the optimiser produced no finite objective value". A refusal before any
+  evaluation is now `std::invalid_argument` naming the entry point and the
+  method, followed by NLopt's own reason; any other failure code that early is
+  `std::runtime_error` with the same text.
+- **The initial parameter draw excludes its upper bound.** On a range where the
+  bound is large against the width, the top engine word rounded onto `hi`.
+  That one word now gives the largest double below `hi`. No range an algorithm
+  draws from reaches it, so no seeded run changes.
+- **MA-QAOA's qubit-indexed gammas follow the lowest active qubit.** The layout
+  was inferred by comparing the gamma count with the term count, so a cost
+  with exactly as many terms as qubits (any ring MaxCut) silently used one
+  gamma per term. The mode is now read from the options. Seeded MA-QAOA
+  results change for such costs.
+- **An all-identity cost term takes no MA-QAOA gamma.** An Ising offset drives
+  no gate, yet under orbit sharing and term-indexed gammas it took a parameter
+  that moved nothing. A cost with and without its offset now has the same
+  parameter count and builds the same circuit.
+- **`IsingHamiltonian::to_sparse_pauli_op` returns the zero operator** when
+  every coefficient is zero, where it returned an operator with no terms, and
+  keeps a nonzero offset on a zero-qubit model.
+
+### Changed
+
+- **BREAKING: `MPSState::apply_two_qubit_gate` takes its matrix LSB-first.**
+  Bit 0 of the row and column index is the first qubit argument, as in
+  `gates::apply_unitary` and `DensityMatrix::apply_gate` and as the project's
+  matrix convention states. It read the first argument as the high bit, so a
+  gate ported from another backend ran with its two qubits exchanged. A caller
+  who wrote matrices for the old order must swap bits 0 and 1 of both indices.
+  Circuits run through `MPSSimulator` are unaffected.
+- **An operator's terms must share one width**, refused by the constructor,
+  `from_list`, `operator+` and `simplify`. An operator with no terms is refused
+  by every evaluation, and `simplify()` returns the zero operator at the
+  input's width when every term cancels, so `H - H` evaluates to 0.
+- **QASM 2 reads one statement per line** and refuses a line holding two.
+- **Docs.** `docs/api/operators.md` gains the width, alphabet and Hermiticity
+  rules; the QASM, estimator, observation, simulator, QAOA, MA-QAOA and VQE
+  pages describe the new refusals; both Ising pages stated the Pauli string
+  convention as MSB-first, and it is LSB-first.
+
+### Tests
+
+- **Six new files, 67 tests.** `test_v11292_observable_width.cpp` (26): the
+  width rule on every evaluating path, construction, `simplify`, the Ising
+  zero operator, QAOA and MA-QAOA operands, `run_batch` and `gradient`
+  propagation and the observer's preflight. `test_v11292_qasm_operands.cpp`
+  (20): register bounds, undeclared and suffix-sharing names, keywords inside
+  identifiers, barriers, comments, one statement per line and every literal
+  overflow, in both parsers. `test_v11292_pauli_rules.cpp` (12): the alphabet
+  and Hermiticity rules. `test_v11292_maqaoa_gammas.cpp` (4): qubit-indexed
+  dispatch on a ring and offsets in every mode.
+  `test_v11292_mps_two_qubit_order.cpp` (2): an asymmetric gate on every
+  ordered qubit pair against the statevector. `test_v11292_optimizer_seam.cpp`
+  (3): NLopt's reason reaching the caller, MA-QAOA's BOBYQA refusal on both
+  paths, and a degenerate draw range.
+- **Existing tests brought to the new rules.** The MPS test helpers that built
+  matrices for the old order are rewritten to apply the same gate in the new
+  one. `R1211BackfillLadder`'s CNOT was already written LSB-first, so its
+  control had sat on a qubit still in |0> and the "GHZ ladder" tests ran on a
+  product state; they now build the ladder they describe.
+  `MAQAOA5QubitTest` built its five-qubit Hamiltonians with four-character
+  terms, so the circuit applied a different cost from the one its energy
+  measured; its strings now name the terms its comments give.
+  `R1121Operators.SimplifyAtolPruningBoundary` expects the zero operator after
+  full cancellation.
+
+### Results
+
+Six configurations, none failing (CachyOS Linux, native):
+
+| Compiler | Target | Options | Tests | Passed | Skipped | Time |
+|---|---|---|---:|---:|---:|---:|
+| Clang 22.1.8 | native | none (the documented build) | 3363 | 3355 | 8 | 17.5 s |
+| Clang 22.1.8 | native | harvest | 3363 | 3362 | 1 | 17.9 s |
+| Clang 22.1.8 | x86-64-v3 | harvest | 3363 | 3362 | 1 | 16.3 s |
+| GCC 14.3.1 | native | harvest | 3363 | 3362 | 1 | 20.7 s |
+| GCC 14.3.1 | x86-64-v3 | harvest | 3363 | 3362 | 1 | 19.3 s |
+| Clang 20.1.8 | native | harvest | 3363 | 3362 | 1 | 18.2 s |
+
+3363 tests across 295 suites. The documented build skips the seven
+theta-harvest tests and the large register-size margin test; the harvest legs
+skip the margin test alone.
+
 ## [1.1.29.1] - 2026-09-25
 
 The test release for 1.1.29.0. It adds 141 tests in eight suites covering

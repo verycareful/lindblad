@@ -422,9 +422,12 @@ whichever of those two channels your backend uses:
   often each happened to fire.
 - A supplied initial state that cannot be produced fails the run, whatever
   `response` says.
-- An amplitude index outside the register, or an `EntropyObserver` region that
+- An amplitude index outside the register, an `EntropyObserver` region that
   names a qubit twice, names a qubit outside the register, or names every qubit,
-  fails the run. These are decided before any state is touched.
+  and an `ExpectationObserver` observable that has no terms, a term whose
+  width is not the register's, or that is not Hermitian (the rules in
+  [operators.md](operators.md#width-rule)) fail the run. These are decided
+  before any state is touched.
 - `StateView`'s typed accessors throw when the backend holds a different
   representation. They never convert, so reading through one always costs a
   pointer dereference and a conversion is always explicit.

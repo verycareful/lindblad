@@ -172,8 +172,26 @@ instead of naming a setting that could not help.
 ### Import — `from_qasm2()`
 
 - Implemented in `src/qasm/qasm2_parser.cpp` as a two-pass line-oriented parser
+- Reads one statement per line. A `// comment` is stripped first, and a line
+  still holding a second statement after that (`x q[0]; h q[1];`) throws
+  rather than parsing the first statement and dropping the second. Gate
+  definitions, whose bodies hold several statements, are exempt.
+- A statement keyword (`OPENQASM`, `include`, `qreg`, `creg`, `gate`,
+  `measure`, `reset`, `barrier`) is recognised only as the first whole token
+  of the line, so a register or gate whose name begins with or contains one
+  (`resets`, `myqreg`, `gatefoo`) is read as the ordinary name it is
 - Discovers all `qreg name[N];` and `creg name[N];` declarations in the first
   pass; assigns global qubit/classical indices in declaration order
+- Every operand names a declared register, matched as a whole name rather
+  than as a substring, and every index lies inside its register: `x q[3];`
+  on a two-qubit `q` throws instead of landing on the next register's qubit,
+  which the circuit's own bounds check could not tell from a legitimate one.
+  An undeclared register throws on gate, measure, reset and barrier operands
+  alike.
+- Every integer (register sizes, indices, the `if` value) follows OpenQASM
+  2.0's form: `0`, or digits with no leading zero, and no sign. `q[01]`,
+  `q[+1]` and `q[-1]` throw, as does a value too large for an `int`.
+  Whitespace inside the brackets (`q[ 1 ]`) is allowed.
 - Supports `gate name(params) qargs { body }` user definitions with recursive
   inlining and parameter substitution (including `pi` expressions)
 - Body-parameter arithmetic (`a/2`, `2*a`, `a+pi`, `a-pi/2`, ...) binds
@@ -196,11 +214,18 @@ instead of naming a setting that could not help.
   silently dropped (pre-R.1.12 behaviour lost all measurements of
   register-form files)
 - `barrier` honours its operand list (`barrier q[0], r;` mixes indexed bits
-  and whole registers); a bare `barrier;` covers the full register
+  and whole registers); a bare `barrier;` covers the full register. An
+  operand naming no declared `qreg` throws rather than widening the barrier
+  to the full register.
 - `if (creg == v) qop;` is read when `creg` is one bit wide, which is the
   only case where OpenQASM 2.0's register-wide comparison says the same thing
   as `Instruction::condition_clbit` / `condition_value`, and the only form
-  `to_qasm2()` writes. `v` must be `0` or `1`. The condition lands on every
+  `to_qasm2()` writes. `v` must be written exactly `0` or `1`: an empty value
+  (`if (c == )`), a spelling the grammar forbids (`01`, `+1`, `-0`) and any
+  other value throw. The guarded statement must be a quantum operation (a
+  gate call, `measure` or `reset`), so `if (c == 1) barrier q;` throws; the
+  grammar admits nothing else there, and `to_qasm2()` never writes a
+  conditioned barrier. The condition lands on every
   instruction the guarded statement produces, so a conditioned custom `gate`
   is conditioned as a whole. A register wider than one bit throws
   `std::runtime_error` naming the register and its width, as the QASM 3
@@ -376,6 +401,16 @@ number for:
   (e.g. `ctrl @ rxx`)
 - Multi-bit classical register conditioning (`if (c == 3) ...` where `c` is
   more than one bit)
+- A condition value other than `0` or `1`, in both the `c[i]` and the
+  one-bit `c` forms. Such a condition could never hold, and the complementary
+  `else` would run only when the bit is 0 rather than always. Leading zeros
+  are a valid decimal literal here, so `01` is `1`.
+- An index outside its register, for qubit operands, classical bits and the
+  `c[i]` of a condition: `x q[3];` on a two-qubit `q` would otherwise land on
+  the next register's qubit
+- An integer literal too large for an `int` (register sizes, indices,
+  `ctrl(n)`, `pow(n)`, condition values), refused like any other malformed
+  input rather than escaping as `std::out_of_range`
 - Timing and control-flow constructs declared out of scope for R.1.9.0:
   `for`, `while`, `def`, `delay`, `stretch`, `box`, `cal`, `defcal`,
   `duration`

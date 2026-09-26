@@ -8,6 +8,7 @@
 // Commercial License Agreement with the Author.
 
 #include "lindblad/primitives.hpp"
+#include "lindblad/detail/pauli_rules.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/transpiler.hpp"
@@ -17,6 +18,7 @@
 #endif
 
 #include <cmath>
+#include <exception>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -69,7 +71,7 @@ double parity_expectation(
         int parity = 0;
         for (int q = 0; q < n; ++q) {
             const char p = pauli[static_cast<size_t>(q)];
-            if (p == 'I' || p == 'i') continue;
+            if (p == 'I') continue;
             const int pos = n - 1 - q;
             if (pos >= 0 && pos < static_cast<int>(bits.size()) && bits[pos] == '1')
                 parity ^= 1;
@@ -80,13 +82,15 @@ double parity_expectation(
     return total == 0 ? 0.0 : static_cast<double>(pos_count) / static_cast<double>(total);
 }
 
-// Uppercase Pauli, mapping I/i->I etc.; throws on unknown characters.
+// The Pauli at one position. run_single has already refused any character
+// other than I, X, Y and Z (detail::check_pauli_label), so the default is a
+// guard, not a path.
 char norm_pauli(char c, const std::string& ctx) {
     switch (c) {
-        case 'I': case 'i': return 'I';
-        case 'X': case 'x': return 'X';
-        case 'Y': case 'y': return 'Y';
-        case 'Z': case 'z': return 'Z';
+        case 'I': return 'I';
+        case 'X': return 'X';
+        case 'Y': return 'Y';
+        case 'Z': return 'Z';
         default:
             throw std::invalid_argument(
                 std::string("Estimator: unknown Pauli character '") + c +
@@ -109,15 +113,14 @@ double sampled_expectation_value(
     const int n = circuit.n_qubits;
     double total = 0.0;
 
+    // The basis loops below index term.pauli[q] for every q < n.
+    detail::check_observable(observable, n, "Estimator", "circuit");
+
     // Split off identity terms (exact, no sampling) and normalise the rest.
     std::vector<size_t> nonid;
     nonid.reserve(observable.terms.size());
     for (size_t i = 0; i < observable.terms.size(); ++i) {
         const auto& term = observable.terms[i];
-        if (static_cast<int>(term.pauli.size()) != n)
-            throw std::invalid_argument(
-                "Estimator: Pauli string length " + std::to_string(term.pauli.size()) +
-                " does not match circuit n_qubits=" + std::to_string(n));
         bool is_id = true;
         for (char c : term.pauli) { if (norm_pauli(c, term.pauli) != 'I') { is_id = false; break; } }
         if (is_id) total += term.coeff.real;
@@ -193,9 +196,24 @@ std::vector<double> Estimator::run_batch(
     std::vector<double> results(n);
 
     // run_single is thread-safe: all state is local (bound_circuit, sim, result).
+    //
+    // An exception may not leave an OpenMP region: one that escapes the loop
+    // body calls std::terminate, so a refusal run_single would raise on its own
+    // (a mismatched observable, a measured circuit at shots == 0) would end the
+    // process. Each index keeps its own exception, and the lowest-indexed one
+    // is rethrown after the region, so which error the caller sees does not
+    // depend on thread scheduling.
+    std::vector<std::exception_ptr> errors(n);
     #pragma omp parallel for schedule(dynamic, 1)
     for (int i = 0; i < static_cast<int>(n); ++i) {
-        results[i] = run_single(circuit, observable, parameter_values[i]);
+        try {
+            results[i] = run_single(circuit, observable, parameter_values[i]);
+        } catch (...) {
+            errors[static_cast<size_t>(i)] = std::current_exception();
+        }
+    }
+    for (const std::exception_ptr& error : errors) {
+        if (error) std::rethrow_exception(error);
     }
 
     return results;
@@ -223,6 +241,11 @@ double Estimator::run_single(
     const SparsePauliOp& observable,
     const std::vector<double>& parameters
 ) {
+    // One width rule for all three modes, checked before any transpile or
+    // simulation is paid for. Each path checks again against the state it
+    // actually evaluates on.
+    detail::check_observable(observable, circuit.n_qubits, "Estimator", "circuit");
+
     // Transpile with caching. The cache key is based on the UNBOUND circuit
     // structure (gate types + qubit indices, ignoring parameter values), so the
     // same transpiled layout is reused across all parameter evaluations.

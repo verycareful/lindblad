@@ -9,7 +9,9 @@
 
 #include "lindblad/algorithms.hpp"
 #include "lindblad/detail/optimizer.hpp"
+#include "lindblad/detail/pauli_rules.hpp"
 #include "lindblad/gates.hpp"
+#include "lindblad/validation.hpp"
 
 #include <cmath>
 #include <limits>
@@ -59,11 +61,40 @@ static double computational_basis_cost(
 // QAOA
 // =============================================================================
 
+// The circuit builder reads term.pauli[q] for every q below the cost
+// Hamiltonian's width, on the mixer's terms as well as the cost's, so the cost
+// must have terms and one width, and a supplied mixer must have that width
+// too. A mixer with no terms is the default transverse field and has none.
+// The cost layer, like the mixer's, uses each coefficient's real part, so the
+// cost must be Hermitian as well (detail/pauli_rules.hpp).
+//
+// The mixer rotation uses the real part of each coefficient, so a term with
+// an imaginary part is refused rather than rounded: a mixer that is not
+// Hermitian has no unitary exp(-i*beta*B), and the real part alone would
+// apply a different mixer under the caller's name.
+static void validate_operators(const SparsePauliOp& cost, const SparsePauliOp& mixer,
+                               const char* where) {
+    const int nq = detail::required_pauli_width(cost.terms, where);
+    detail::check_hermitian(cost, where);
+    if (mixer.terms.empty()) return;
+    detail::check_observable(mixer, nq, where, "cost Hamiltonian");
+    for (std::size_t t = 0; t < mixer.terms.size(); ++t) {
+        const auto& term = mixer.terms[t];
+        if (std::abs(term.coeff.imag) > DEFAULT_PHYSICAL_ATOL) {
+            throw std::invalid_argument(
+                std::string(where) + ": mixer term " + std::to_string(t) + " ('" +
+                term.pauli + "') has a non-zero imaginary coefficient, so the "
+                "mixer is not Hermitian and exp(-i*beta*B) is not unitary");
+        }
+    }
+}
+
 QAOA::Result QAOA::optimize(
     const SparsePauliOp& cost_hamiltonian,
     const SparsePauliOp& mixer_hamiltonian_in
 ) {
     static constexpr const char* kWhere = "QAOA::optimize";
+    validate_operators(cost_hamiltonian, mixer_hamiltonian_in, kWhere);
 
     Result result;
 
@@ -146,6 +177,7 @@ QuantumCircuit QAOA::build_circuit(
     const SparsePauliOp& mixer_hamiltonian,
     const std::vector<double>& params
 ) const {
+    validate_operators(cost_hamiltonian, mixer_hamiltonian, "QAOA::build_circuit");
     int nq = cost_hamiltonian.n_qubits();
     QuantumCircuit qc(nq);
 

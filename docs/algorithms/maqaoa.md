@@ -116,7 +116,7 @@ The most important fields are:
 - `layerwise`: enable layer-by-layer optimization
 - `progressive`: keep earlier parameters free during layerwise refinement
 - `orbit_assignments`: symmetry-reduction map for orbit-based parameter sharing; `orbits_by_power` generates these by sorting values then grouping within a tolerance — sort-first prevents insertion-order artifacts where near-equal values land in different orbits
-- `term_indexed_gammas`: choose between qubit-indexed and term-indexed gamma layout
+- `term_indexed_gammas`: choose between qubit-indexed and term-indexed gamma layout. All-identity cost terms (a constant offset) take no gamma in either layout, nor under orbit sharing
 - `mixer_weights`: physics-informed mixer scaling
 - `initial_thetas`: per-qubit initial state preparation angles
 - `beta_base`: baseline beta scale for PI-MA-QAOA

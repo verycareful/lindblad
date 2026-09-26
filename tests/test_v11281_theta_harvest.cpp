@@ -404,8 +404,9 @@ TEST(V11281ThetaHarvest, LibraryBlockIsTheOneTheSvdReceives) {
     // (0, 1) split is 2 x 26 and no cap in use can produce that shape. The
     // expected block is computed here from the documented layout: contract
     // the two site tensors into theta[l*2 + p1, p2*br + r], then apply the
-    // gate with U indexed (po1*2 + po2, pi1*2 + pi2), po1 belonging to the
-    // left site. A harvest that wrote the pre-gate block, the transpose, or a
+    // gate with U indexed (po2*2 + po1, pi2*2 + pi1), po1 belonging to the
+    // left site: apply_two_qubit_gate takes the project's LSB-first order, so
+    // the left site (the first operand) is bit 0. A harvest that wrote the pre-gate block, the transpose, or a
     // different index order fails against this.
     ScopedTempCwd cwd;
     const int bond = 13;
@@ -445,7 +446,7 @@ TEST(V11281ThetaHarvest, LibraryBlockIsTheOneTheSvdReceives) {
                     for (int m = 0; m < bm; ++m) sum += T1(l, p1, m) * T2(m, p2, r);
                     theta[static_cast<std::size_t>(l * 2 + p1) * cols + (p2 * br + r)] = sum;
                 }
-    // theta_new[l*2+po1, po2*br+r] = sum_{pi1,pi2} U[po1*2+po2, pi1*2+pi2] theta[l*2+pi1, pi2*br+r]
+    // theta_new[l*2+po1, po2*br+r] = sum_{pi1,pi2} U[po2*2+po1, pi2*2+pi1] theta[l*2+pi1, pi2*br+r]
     std::vector<Complex128> expected(theta.size(), Complex128(0.0, 0.0));
     for (int l = 0; l < bl; ++l)
         for (int po1 = 0; po1 < 2; ++po1)
@@ -454,7 +455,7 @@ TEST(V11281ThetaHarvest, LibraryBlockIsTheOneTheSvdReceives) {
                     Complex128 sum(0.0, 0.0);
                     for (int pi1 = 0; pi1 < 2; ++pi1)
                         for (int pi2 = 0; pi2 < 2; ++pi2)
-                            sum += U[static_cast<std::size_t>((po1 * 2 + po2) * 4 + (pi1 * 2 + pi2))] *
+                            sum += U[static_cast<std::size_t>((po2 * 2 + po1) * 4 + (pi2 * 2 + pi1))] *
                                    theta[static_cast<std::size_t>(l * 2 + pi1) * cols + (pi2 * br + r)];
                     expected[static_cast<std::size_t>(l * 2 + po1) * cols + (po2 * br + r)] = sum;
                 }

@@ -70,7 +70,12 @@ Returns the number of qubits implied by `h.size()`.
 
 - Returns a `SparsePauliOp` containing the Ising Hamiltonian terms
 - Includes the constant offset as an identity term when `offset != 0.0`
-- Uses the MSB-first Pauli string convention: qubit `i` maps to position `n - 1 - i`
+- With every coefficient and the offset zero (an edgeless graph with no
+  field), returns `SparsePauliOp::zero(n_qubits())`: the zero operator keeps
+  its width, where an operator with no terms has none and is refused by
+  every evaluation
+- Uses the project's LSB-first Pauli string convention: qubit `i` maps to
+  string position `i`, so `h[i]` becomes a `Z` at `pauli[i]`
 
 ### `evaluate(const std::string& bitstring)`
 

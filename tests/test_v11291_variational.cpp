@@ -574,12 +574,13 @@ TEST(V11291Variational, VqeAMismatchedHamiltonianSurfacesTheEstimatorsError) {
     }
 }
 
-// ---- Red in this release: a Pauli term wider than the state ----------------
+// ---- A Pauli term wider than the state -------------------------------------
 //
-// Both use a Z-only term. A term with X or Y beyond the last qubit makes the
-// exact expectation index past the amplitude arrays, and undefined behaviour
-// inside the suite could take the whole run down with it; a Z beyond the state
-// reaches the same missing check without reading out of bounds.
+// Both use a Z-only term. Without the width check, a term with X or Y beyond
+// the last qubit makes the exact expectation index past the amplitude arrays,
+// and undefined behaviour inside the suite could take the whole run down with
+// it; a Z beyond the state reaches the same check without reading out of
+// bounds.
 
 TEST(V11291Variational, AnExactExpectationRefusesATermWiderThanTheState) {
     Statevector sv(2);
@@ -883,7 +884,7 @@ TEST(V11291Variational, MaqaoaParametersStayInsideTheDocumentedBoxOnBothPaths) {
     }
 }
 
-// ---- Red in this release -----------------------------------------------------
+// ---- A BOBYQA step too wide for the box ------------------------------------
 
 TEST(V11291Variational, QaoaBobyqaWithAStepTooWideForTheBoxIsAnInvalidArgument) {
     // BOBYQA opens with points one step either side of the start, so it needs
@@ -953,8 +954,8 @@ TEST(V11291UniformDraw, TheHighestWordStaysBelowHiOnTheRangesTheAlgorithmsUse) {
 }
 
 TEST(V11291UniformDraw, TheHighestWordStaysBelowHiOnEveryOrderedRange) {
-    // Red in this release. On these ranges hi is large against the width, so
-    // the exact value of the top draw lies within half a spacing of hi and the
+    // On these ranges hi is large against the width, so the exact value of
+    // the top draw lies within half a spacing of hi and the
     // single correct rounding lands ON hi: the premise below shows it with the
     // integer reference. The draw is documented as [lo, hi), so the top word
     // must give a value below hi, and never one below the next word down, so

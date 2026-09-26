@@ -115,7 +115,14 @@ public:
 
     // Measurement probabilities
     std::vector<double> probabilities() const;
+    // Tr(rho O) for a dense row-major O. Throws std::invalid_argument unless O
+    // has dim * dim entries and is Hermitian to within DEFAULT_PHYSICAL_ATOL
+    // entrywise: the trace of a non-Hermitian O is complex, and this returns
+    // a real number.
     double expectation_value(const std::vector<Complex128>& hermitian_op) const;
+    // Tr(rho H). Throws std::invalid_argument unless `hamiltonian` has at least
+    // one term, every term is exactly n_qubits wide and written with I, X, Y
+    // and Z, and the operator is Hermitian (the rules in operators.hpp).
     double expectation_value_sparse(const SparsePauliOp& hamiltonian) const;
 
     // Element access

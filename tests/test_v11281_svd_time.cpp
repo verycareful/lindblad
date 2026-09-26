@@ -80,13 +80,14 @@ QuantumCircuit per_shot_circuit() {
 }
 
 // CX as MPSState::apply_two_qubit_gate takes it: rows and columns index
-// (q1, q2) with q1 the high bit, so with q1 as control it swaps |10> and |11>.
+// (q1, q2) with q1 the low bit, so with q1 as control it exchanges basis
+// states 1 and 3.
 std::array<Complex128, 16> cx_matrix() {
     std::array<Complex128, 16> u{};
     u[0 * 4 + 0] = Complex128(1.0, 0.0);
-    u[1 * 4 + 1] = Complex128(1.0, 0.0);
-    u[2 * 4 + 3] = Complex128(1.0, 0.0);
-    u[3 * 4 + 2] = Complex128(1.0, 0.0);
+    u[1 * 4 + 3] = Complex128(1.0, 0.0);
+    u[2 * 4 + 2] = Complex128(1.0, 0.0);
+    u[3 * 4 + 1] = Complex128(1.0, 0.0);
     return u;
 }
 

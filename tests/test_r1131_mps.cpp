@@ -48,13 +48,14 @@ std::array<Complex128, 4> hadamard() {
 // A CNOT as a 4x4 (any valid two-qubit unitary triggers svd_truncate).
 std::array<Complex128, 16> cnot() {
     std::array<Complex128, 16> U{};
-    // basis order per apply_two_qubit_gate (LSB = first operand): identity on
-    // |00>,|01>, swap |10><->|11>. Exact orientation is irrelevant to the SVD
-    // path being exercised — only that it is a genuine 2-qubit unitary.
-    U[0]  = Complex128(1, 0);
-    U[5]  = Complex128(1, 0);
-    U[11] = Complex128(1, 0);
-    U[14] = Complex128(1, 0);
+    // Basis order per apply_two_qubit_gate (LSB = first operand): the control
+    // is the first operand, so basis states 1 and 3 exchange. Exact orientation
+    // is irrelevant to the SVD path being exercised, only that it is a genuine
+    // 2-qubit unitary.
+    U[0 * 4 + 0] = Complex128(1, 0);
+    U[1 * 4 + 3] = Complex128(1, 0);
+    U[2 * 4 + 2] = Complex128(1, 0);
+    U[3 * 4 + 1] = Complex128(1, 0);
     return U;
 }
 

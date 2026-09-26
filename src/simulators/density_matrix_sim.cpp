@@ -15,6 +15,7 @@
 
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/circuit.hpp"
+#include "lindblad/detail/pauli_rules.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/noise.hpp"
@@ -539,7 +540,30 @@ std::vector<double> DensityMatrix::probabilities() const {
 }
 
 double DensityMatrix::expectation_value(const std::vector<Complex128>& hermitian_op) const {
-    // Tr(rho * O)
+    // Tr(rho * O). The loop reads dim * dim entries of the operator, and it
+    // returns only the real part, which is the whole trace exactly when O is
+    // Hermitian; both are checked first, at the same O(dim^2) cost as the
+    // trace itself.
+    if (hermitian_op.size() != dim * dim) {
+        throw std::invalid_argument(
+            "DensityMatrix::expectation_value: the operator has " +
+            std::to_string(hermitian_op.size()) + " entries; a " +
+            std::to_string(n_qubits) + " qubit state needs " + std::to_string(dim * dim));
+    }
+    for (size_t i = 0; i < dim; ++i) {
+        for (size_t j = i; j < dim; ++j) {
+            const Complex128 diff = hermitian_op[i * dim + j] - hermitian_op[j * dim + i].conj();
+            if (std::abs(diff.real) > DEFAULT_PHYSICAL_ATOL ||
+                std::abs(diff.imag) > DEFAULT_PHYSICAL_ATOL) {
+                throw std::invalid_argument(
+                    "DensityMatrix::expectation_value: the operator is not Hermitian "
+                    "(entry (" + std::to_string(i) + ", " + std::to_string(j) +
+                    ") differs from the conjugate of (" + std::to_string(j) + ", " +
+                    std::to_string(i) + ")). Its expectation value is complex, and "
+                    "this returns a real number");
+            }
+        }
+    }
     double result = 0.0;
     for (size_t i = 0; i < dim; ++i)
         for (size_t j = 0; j < dim; ++j)
@@ -548,10 +572,11 @@ double DensityMatrix::expectation_value(const std::vector<Complex128>& hermitian
 }
 
 double DensityMatrix::expectation_value_sparse(const SparsePauliOp& hamiltonian) const {
-    const int nq = hamiltonian.n_qubits();
-    if (nq != n_qubits) {
-        throw std::invalid_argument("Hamiltonian qubit count mismatch");
-    }
+    // Every term, not only the first: the loop below reads term.pauli[q] for
+    // q < n_qubits, which runs past a shorter term's string.
+    detail::check_observable(hamiltonian, n_qubits,
+                                   "DensityMatrix::expectation_value_sparse");
+    const int nq = n_qubits;
 
     // Tr(ρH) = Σ_terms coeff · Tr(ρ · P_term)
     // For each Pauli string, P[k, row] ≠ 0 only when k = row ⊕ flip_mask
@@ -569,13 +594,13 @@ double DensityMatrix::expectation_value_sparse(const SparsePauliOp& hamiltonian)
         int y_count = 0;
         for (int q = 0; q < nq; ++q) {
             const char p = term.pauli[q];
-            if (p == 'X' || p == 'x') {
+            if (p == 'X') {
                 flip_mask |= (1ULL << q);
-            } else if (p == 'Y' || p == 'y') {
+            } else if (p == 'Y') {
                 flip_mask |= (1ULL << q);
                 sign_mask |= (1ULL << q);
                 ++y_count;
-            } else if (p == 'Z' || p == 'z') {
+            } else if (p == 'Z') {
                 sign_mask |= (1ULL << q);
             }
         }

@@ -26,7 +26,6 @@ namespace lindblad {
 
 SparsePauliOp IsingHamiltonian::to_sparse_pauli_op() const {
     int n = n_qubits();
-    if (n == 0) return SparsePauliOp();
 
     std::vector<PauliString> terms;
 
@@ -55,6 +54,10 @@ SparsePauliOp IsingHamiltonian::to_sparse_pauli_op() const {
         }
     }
 
+    // Every coefficient zero (an edgeless graph, say) is the zero operator on
+    // n qubits. It keeps the register width, which an operator with no terms
+    // does not have, so it stays evaluable.
+    if (terms.empty()) return SparsePauliOp::zero(n);
     return SparsePauliOp(terms);
 }
 

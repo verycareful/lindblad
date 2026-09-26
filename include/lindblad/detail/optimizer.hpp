@@ -62,9 +62,23 @@ inline std::mt19937_64 seeded_rng(std::uint64_t seed) {
 // double (exact), scaled by 2^-53 (exact), then one correctly rounded
 // std::fma. A compiler is not permitted to contract, split or reassociate
 // any of it.
+//
+// The upper bound is excluded on every ordered range (lo < hi). The top word
+// gives u = 1 - 2^-53, and where hi is large against the width the exact
+// value of that draw lies within half a spacing of hi, so the one correct
+// rounding lands ON hi: on [1, 2) the exact value is 2 - 2^-53, halfway
+// between 2 - 2^-52 and 2, and ties-to-even takes it to 2. A result equal to
+// hi is therefore moved to std::nextafter(hi, lo), the largest double the
+// half-open range holds. That keeps the draw monotone in the word: every
+// other word already gives a value at or below that one. The test is `==`
+// rather than `>=` because an ordered range cannot round past hi, and `>=`
+// would fold a reversed range (lo > hi) onto a single value. A symmetric range
+// [-h, h) never reaches the branch, since its top draw h(1 - 2^-52) sits a
+// full spacing below h.
 inline double uniform_in(std::mt19937_64& rng, double lo, double hi) {
     const double u = static_cast<double>(rng() >> 11) * 0x1p-53;
-    return std::fma(hi - lo, u, lo);
+    const double r = std::fma(hi - lo, u, lo);
+    return r == hi ? std::nextafter(hi, lo) : r;
 }
 
 // =============================================================================
@@ -149,6 +163,15 @@ using Objective = std::function<double(std::span<const double>)>;
 // empty x0, a non-positive evaluation cap, a non-positive initial step, a
 // negative tolerance, bounds of the wrong size or a bound the start point
 // violates. The message names `where`.
+//
+// An NLopt method can also refuse a request the seam accepted, before it
+// evaluates anything: BOBYQA needs every box interval at least twice the
+// initial step wide, so a step above 2pi fails QAOA's [-2pi, 2pi] box. That
+// refusal (NLOPT_INVALID_ARGS) is the caller's arguments too and throws
+// std::invalid_argument, naming `where` and the method, with NLopt's own
+// reason after the colon. Any other NLopt failure code returned before the
+// first evaluation throws std::runtime_error with the same text: nothing ran,
+// so there is no point to report.
 //
 // A non-finite objective value (checked by bit pattern, see is_finite_strict)
 // ends the run: the outcome carries the best finite point seen so far,

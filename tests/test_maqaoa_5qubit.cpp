@@ -23,8 +23,8 @@ TEST(MAQAOA5QubitTest, SimpleIsing5Qubit) {
     
     std::vector<PauliString> terms;
     terms.push_back(PauliString("ZZIII", Complex128(0.5, 0.0)));    // Z0*Z1
-    terms.push_back(PauliString("IZZI", Complex128(0.5, 0.0)));    // Z1*Z2
-    terms.push_back(PauliString("IIZZ", Complex128(0.5, 0.0)));    // Z2*Z3
+    terms.push_back(PauliString("IZZII", Complex128(0.5, 0.0)));   // Z1*Z2
+    terms.push_back(PauliString("IIZZI", Complex128(0.5, 0.0)));   // Z2*Z3
     terms.push_back(PauliString("IIIZZ", Complex128(0.5, 0.0)));   // Z3*Z4
     
     SparsePauliOp cost(terms);
@@ -53,7 +53,7 @@ TEST(MAQAOA5QubitTest, MultiLayerMA_QAOA) {
     // 5-qubit MaxCut style problem with more coupling
     std::vector<PauliString> terms;
     terms.push_back(PauliString("ZZIII", Complex128(1.0, 0.0)));
-    terms.push_back(PauliString("IZZI", Complex128(1.0, 0.0)));
+    terms.push_back(PauliString("IZZII", Complex128(1.0, 0.0)));
     terms.push_back(PauliString("IIZZI", Complex128(1.0, 0.0)));
     terms.push_back(PauliString("IIIZZ", Complex128(1.0, 0.0)));
     

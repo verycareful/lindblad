@@ -141,6 +141,14 @@ public:
     // exp(-i*beta*c_k*P_k): exact for commuting terms (e.g. the default X
     // mixer), a first-order Trotter step otherwise. Multi-qubit mixer terms
     // use the same CX-chain Pauli-rotation recipe as the cost unitary.
+    //
+    // Rejected with std::invalid_argument here and in build_circuit alike: a
+    // cost Hamiltonian with no terms, with terms of different widths, or that
+    // is not Hermitian, a mixer term whose width differs from the cost
+    // Hamiltonian's, and a mixer term whose coefficient has a non-zero
+    // imaginary part (an operator that is not Hermitian has no unitary
+    // exp(-i*t*H), and taking the real part would silently apply something
+    // else). An empty mixer selects the default transverse field.
     Result optimize(
         const SparsePauliOp& cost_hamiltonian,
         const SparsePauliOp& mixer_hamiltonian = {}
@@ -187,14 +195,16 @@ public:
         // orbit_assignments[q] = orbit index (0-based). Empty = no symmetry reduction.
         // Orbits reduce the mixer parameter count from n_qubits to n_distinct_orbits.
         // Cost-term orbit sharing is automatic: terms with the same sorted tuple of
-        // qubit orbits share a single gamma parameter.
+        // qubit orbits share a single gamma parameter. An all-identity term (a
+        // constant offset) drives no gate and takes no gamma, in every mode.
         std::vector<int> orbit_assignments;
 
         // Gamma parameterisation convention.
         // false (default): qubit-indexed — N gammas per layer, gamma[i] drives
         //   all cost terms where qubit i is the lowest active qubit.
         //   Matches the Python/Qiskit baseline; 2N params per layer at N=20.
-        // true: term-indexed — one gamma per Hamiltonian term per layer.
+        // true: term-indexed: one gamma per Hamiltonian term per layer, not
+        //   counting all-identity terms, which drive no gate.
         //   More expressive but O(N^2) params (230/layer at N=20); use for ablation.
         bool term_indexed_gammas = false;
 
@@ -281,8 +291,10 @@ public:
     // supports. options.mixer_beta_dispatch decides which beta drives which
     // term.
     //
-    // A mixer term whose width differs from the cost Hamiltonian's, or whose
-    // coefficient has a non-zero imaginary part, is rejected with
+    // A cost Hamiltonian with no terms, with terms of different widths, or
+    // that is not Hermitian, a mixer term whose width differs from the cost
+    // Hamiltonian's, and a mixer term whose coefficient has a non-zero
+    // imaginary part are rejected with
     // std::invalid_argument here, in build_circuit and in num_parameters
     // alike: a mixer that is not Hermitian has no unitary exp(-i*beta*B), and
     // taking the real part would silently apply something else.

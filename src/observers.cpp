@@ -8,6 +8,7 @@
 // Commercial License Agreement with the Author.
 
 #include "lindblad/observers.hpp"
+#include "lindblad/detail/pauli_rules.hpp"
 
 #include "lindblad/statevector.hpp"
 #include "lindblad/detail/eigen_backend.hpp"
@@ -266,6 +267,14 @@ const std::vector<Complex128>& AmplitudeObserver::amplitudes(std::size_t k) cons
 // ExpectationObserver
 // =============================================================================
 
+bool ExpectationObserver::preflight(const PreflightContext& ctx) {
+    // The observable was fixed at construction and the register when the
+    // circuit was written, so a width that disagrees is wrong before anything
+    // runs. Every firing still checks against the state it is handed.
+    detail::check_observable(observable_, ctx.n_qubits, "ExpectationObserver");
+    return Observer::preflight(ctx);
+}
+
 void ExpectationObserver::observe(const ObservationContext& ctx) {
     double value = 0.0;
 
@@ -283,13 +292,9 @@ void ExpectationObserver::observe(const ObservationContext& ctx) {
             // the whole observable costs O(terms * n^2) and no amplitude is
             // ever built.
             const StabilizerState& tableau = ctx.state.stabilizer();
+            detail::check_observable(observable_, tableau.n_qubits,
+                                           "ExpectationObserver");
             for (const PauliString& term : observable_.terms) {
-                if (static_cast<int>(term.pauli.size()) != tableau.n_qubits) {
-                    throw std::invalid_argument(
-                        "ExpectationObserver: term '" + term.pauli + "' covers " +
-                        std::to_string(term.pauli.size()) + " qubits, but the "
-                        "state has " + std::to_string(tableau.n_qubits));
-                }
                 value += term.coeff.real *
                          static_cast<double>(tableau.expectation_pauli(term.pauli));
             }

@@ -386,7 +386,17 @@ double DensityMatrix::expectation_value(const std::vector<Complex128>& hermitian
 }
 ```
 
+It throws `std::invalid_argument` unless the operator has `dim * dim` entries
+and is Hermitian to within `DEFAULT_PHYSICAL_ATOL` entrywise: the trace of a
+non-Hermitian operator is complex, and the function returns a real number.
+Both checks cost O(dim^2), the same as the trace.
+
 **SparsePauliOp expectation** (specialized for sparse Pauli strings):
+
+`expectation_value_sparse` applies the operator rules in
+[operators.md](operators.md#width-rule): at least one term, every term exactly
+`n_qubits` wide and written with `I`, `X`, `Y` and `Z`, and a Hermitian
+operator.
 
 Extracts diagonal terms of Pauli strings using bit masks; computes traces without full matrix multiplication:
 
@@ -893,9 +903,11 @@ thrown away. The qudit layer's `svd_cutoff` means the same thing.
 - **2-qubit UNITARY**: contracts the 4x4 matrix into the two-site tensor via
   `apply_two_qubit_gate`, followed by a truncated SVD bounded by `max_bond_dim`
   and `cutoff`. Non-adjacent qubit pairs are handled by the existing swap
-  network. The dispatch swaps bits 0 and 1 of the matrix row/column indices to
-  bridge `apply_unitary`'s LSB-at-first-arg convention with
-  `apply_two_qubit_gate`'s MSB-at-first-arg convention.
+  network. `apply_two_qubit_gate` takes its matrix in the project convention,
+  as `apply_unitary` does: bit 0 of the row and column index is the first
+  qubit argument. The circuit's matrix is therefore passed as it stands, and
+  the primitive bit-reverses it once into the MSB-first order its two-site
+  contraction reads.
 - **3+ qubit UNITARY**: falls back to the statevector path —
   `to_statevector()` → `gates::apply_unitary` → `rebuild_from_statevector`. The
   rebuild is a sequential SVD, one truncated split per bond, and the weight each

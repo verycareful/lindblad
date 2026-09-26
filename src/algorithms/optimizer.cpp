@@ -286,6 +286,22 @@ OptimizerOutcome minimize_nlopt(const OptimizerSpec& spec, const Objective& obje
 
     if (tracker.pending) std::rethrow_exception(tracker.pending);
 
+    // A failure code with no evaluation behind it is NLopt refusing the request
+    // itself: BOBYQA, for one, returns NLOPT_INVALID_ARGS when a box interval is
+    // narrower than twice the initial step. Nothing ran, so finish() would only
+    // report that no finite value was produced and bury the actual reason, which
+    // NLopt leaves in errmsg ("insufficient space between the bounds: ..."). An
+    // unset errmsg falls back to the code's own name.
+    if (res < 0 && tracker.evaluations == 0) {
+        const char* reason = nlopt_get_errmsg(h.opt);
+        const std::string msg = std::string(where) + ": NLopt " +
+                                std::string(optimizer_name(spec.backend)) +
+                                " refused the request before any evaluation: " +
+                                (reason != nullptr ? reason : nlopt_result_to_string(res));
+        if (res == NLOPT_INVALID_ARGS) throw std::invalid_argument(msg);
+        throw std::runtime_error(msg);
+    }
+
     const bool on_tolerance = res == NLOPT_SUCCESS || res == NLOPT_STOPVAL_REACHED ||
                               res == NLOPT_FTOL_REACHED || res == NLOPT_XTOL_REACHED;
     const bool cap = res == NLOPT_MAXEVAL_REACHED;

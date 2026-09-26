@@ -63,14 +63,19 @@ private:
 
 public:
 
-    // Core: single circuit, single observable, multiple parameter sets
+    // Core: single circuit, single observable, multiple parameter sets.
+    // Evaluated in parallel; whatever run_single throws for any set reaches the
+    // caller, the one for the lowest-indexed set when several fail.
     std::vector<double> run_batch(
         const QuantumCircuit& circuit,
         const SparsePauliOp& observable,
         const std::vector<std::vector<double>>& parameter_values
     );
 
-    // Single evaluation
+    // Single evaluation. Throws std::invalid_argument unless `observable` has
+    // at least one term, every term is exactly circuit.n_qubits wide and
+    // written with I, X, Y and Z, and the observable is Hermitian, on every
+    // mode (the rules in operators.hpp).
     double run_single(
         const QuantumCircuit& circuit,
         const SparsePauliOp& observable,

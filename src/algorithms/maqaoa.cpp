@@ -9,6 +9,7 @@
 
 #include "lindblad/algorithms.hpp"
 #include "lindblad/detail/optimizer.hpp"
+#include "lindblad/detail/pauli_rules.hpp"
 #include "lindblad/gates.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
@@ -71,48 +72,56 @@ std::vector<int> orbits_by_power(
 // MA-QAOA: Multi-Angle QAOA
 // =============================================================================
 
-// Returns the number of distinct cost-term orbit groups for a Hamiltonian.
-// Two terms are in the same orbit if their sorted tuple of active-qubit orbit
-// indices is identical (orbit-equivalent support).
-static int count_cost_orbits(
-    const SparsePauliOp& cost_hamiltonian,
-    const std::vector<int>& qubit_orbits
-) {
-    int nq = cost_hamiltonian.n_qubits();
-    std::map<std::vector<int>, int> seen;
-    int count = 0;
-    for (const auto& term : cost_hamiltonian.terms) {
-        std::vector<int> key;
-        for (int q = 0; q < nq; ++q) {
-            if (term.pauli[q] != 'I') {
-                key.push_back(qubit_orbits[q]);
-            }
-        }
-        std::sort(key.begin(), key.end());
-        if (!seen.count(key)) { seen[key] = count++; }
-    }
-    return count;
-}
+// Which gamma drives each cost term, for one layer, and how many gammas a layer
+// carries. The mode is read from the options, never inferred from the counts:
+//   orbits        - terms whose sorted tuples of qubit orbits are equal share
+//                   one gamma, numbered in order of first appearance;
+//   term-indexed  - one gamma per term, in term order;
+//   qubit-indexed - gamma q drives every term whose lowest active qubit is q,
+//                   so a layer always carries n_qubits of them (the default).
+// A term with no active qubit (all identity, such as an Ising offset) drives no
+// gate, so in every mode it takes no gamma (-1) and adds nothing to the count:
+// a gamma that moves nothing would be a dead dimension for the optimiser and a
+// meaningless entry in optimal_params.
+struct CostGammaLayout {
+    std::vector<int> term_gamma;  // one per cost term; -1 for an all-identity term
+    int n_gammas = 0;
+};
 
-// Maps each cost term to its orbit index (position in the sorted unique list).
-static std::vector<int> cost_term_orbit_map(
+static CostGammaLayout build_cost_gamma_layout(
     const SparsePauliOp& cost_hamiltonian,
-    const std::vector<int>& qubit_orbits
+    bool use_orbits,
+    const std::vector<int>& qubit_orbits,
+    bool term_indexed
 ) {
-    int nq = cost_hamiltonian.n_qubits();
+    const int nq = cost_hamiltonian.n_qubits();
+    CostGammaLayout layout;
+    layout.term_gamma.assign(cost_hamiltonian.terms.size(), -1);
     std::map<std::vector<int>, int> seen;
-    int count = 0;
-    std::vector<int> result;
-    for (const auto& term : cost_hamiltonian.terms) {
-        std::vector<int> key;
+    for (std::size_t t = 0; t < cost_hamiltonian.terms.size(); ++t) {
+        const auto& term = cost_hamiltonian.terms[t];
+        std::vector<int> active;
         for (int q = 0; q < nq; ++q) {
-            if (term.pauli[q] != 'I') key.push_back(qubit_orbits[q]);
+            if (term.pauli[q] != 'I') active.push_back(q);
         }
-        std::sort(key.begin(), key.end());
-        if (!seen.count(key)) seen[key] = count++;
-        result.push_back(seen[key]);
+        if (active.empty()) continue;
+
+        if (use_orbits) {
+            std::vector<int> key;
+            key.reserve(active.size());
+            for (int q : active) key.push_back(qubit_orbits[q]);
+            std::sort(key.begin(), key.end());
+            const auto [it, inserted] = seen.emplace(std::move(key), layout.n_gammas);
+            if (inserted) ++layout.n_gammas;
+            layout.term_gamma[t] = it->second;
+        } else if (term_indexed) {
+            layout.term_gamma[t] = layout.n_gammas++;
+        } else {
+            layout.term_gamma[t] = active[0];
+        }
     }
-    return result;
+    if (!use_orbits && !term_indexed) layout.n_gammas = nq;
+    return layout;
 }
 
 // Classical energy of a computational-basis bitstring under the diagonal
@@ -200,6 +209,18 @@ static void validate_mixer(const SparsePauliOp& mixer, int nq, const char* ctx) 
                 "mixer is not Hermitian and exp(-i*beta*B) is not unitary");
         }
     }
+}
+
+// The cost Hamiltonian fixes the register every other operand is checked
+// against, so it must have terms, one width and a valid alphabet, and the cost
+// layer uses each coefficient's real part, so it must be Hermitian
+// (detail/pauli_rules.hpp).
+static void validate_operators(const SparsePauliOp& cost, const SparsePauliOp& mixer,
+                               const char* ctx) {
+    const int nq = detail::required_pauli_width(cost.terms, ctx);
+    detail::check_hermitian(cost, ctx);
+    (void)detail::uniform_pauli_width(mixer.terms, ctx);
+    validate_mixer(mixer, nq, ctx);
 }
 
 // Beta slots for a custom mixer. A slot is the RANK of the term's dispatch key
@@ -316,7 +337,7 @@ static void append_mixer_term(QuantumCircuit& qc, const PauliString& term,
 // sv is reset to |0...0> then |+...+>, then all p layers are applied in-place.
 //
 // Preconditions:
-//   term_orbit_map  — empty when orbit mode is off
+//   term_gamma: one entry per cost term, from build_cost_gamma_layout
 //   n_cost_params_per_layer and n_mixer_orbits precomputed at optimize() entry
 //   mixer_layout built for `mixer`; ignored when the mixer is empty
 //
@@ -333,7 +354,7 @@ static void evolve_into(
     const MixerLayout& mixer_layout,
     const std::vector<double>& params,
     int p,
-    const std::vector<int>& term_orbit_map,
+    const std::vector<int>& term_gamma,
     int n_cost_params_per_layer,
     int n_mixer_orbits,
     const std::vector<int>& orbit_assignments,
@@ -374,18 +395,8 @@ static void evolve_into(
             const auto& aq = precomp_aq[t];
             if (aq.empty()) continue;
 
-            // Gamma dispatch: orbit-indexed → orbit map; term-indexed → t;
-            // qubit-indexed (default) → aq[0] (lowest active qubit)
-            int gamma_idx;
-            if (use_orbits) {
-                gamma_idx = term_orbit_map[t];
-            } else if (n_cost_params_per_layer == cost_terms) {
-                gamma_idx = t;
-            } else {
-                gamma_idx = aq[0];
-            }
-
-            const double gamma = layer_gammas[gamma_idx];
+            // term_gamma was built for the mode in force (build_cost_gamma_layout).
+            const double gamma = layer_gammas[static_cast<std::size_t>(term_gamma[t])];
             const double angle = 2.0 * gamma * term.coeff.real;
 
             if (aq.size() == 1 && term.pauli[aq[0]] == 'Z') {
@@ -458,7 +469,7 @@ struct MAQAOACallbackData {
     const SparsePauliOp* cost_hamiltonian;
     const SparsePauliOp* mixer_hamiltonian;
     const MixerLayout* mixer_layout;
-    const std::vector<int>* term_orbit_map;
+    const std::vector<int>* term_gamma;
     int n_cost_params_per_layer;
     int n_mixer_orbits;
     const MAQAOA* maqaoa;
@@ -502,7 +513,7 @@ static double maqaoa_objective(MAQAOACallbackData* cb, std::span<const double> x
     evolve_into(*cb->sv, *cb->cost_hamiltonian, *cb->mixer_hamiltonian,
                 *cb->mixer_layout, cb->params_buf,
                 cb->maqaoa->options.p,
-                *cb->term_orbit_map, cb->n_cost_params_per_layer,
+                *cb->term_gamma, cb->n_cost_params_per_layer,
                 cb->n_mixer_orbits,
                 cb->maqaoa->options.orbit_assignments,
                 *cb->active_qubits,
@@ -530,7 +541,7 @@ struct LayerCBData {
     std::vector<double>  all_params;         // [frozen | free] — full-run parameter vector
     int                  free_start;         // index of first free parameter
     int                  p_total;            // active layers in this optimisation stage
-    const std::vector<int>* term_orbit_map;
+    const std::vector<int>* term_gamma;
     int                  n_cost_params_per_layer;
     int                  n_mixer_orbits;
     const std::vector<int>* orbit_assignments;
@@ -571,7 +582,7 @@ static double layer_objective(LayerCBData* d, std::span<const double> x) {
     }
     evolve_into(*d->sv, *d->cost_hamiltonian, *d->mixer_hamiltonian,
                 *d->mixer_layout, d->all_params, d->p_total,
-                *d->term_orbit_map, d->n_cost_params_per_layer,
+                *d->term_gamma, d->n_cost_params_per_layer,
                 d->n_mixer_orbits, *d->orbit_assignments,
                 *d->active_qubits,
                 d->initial_thetas);
@@ -598,22 +609,18 @@ static double layer_objective(LayerCBData* d, std::span<const double> x) {
 int MAQAOA::num_parameters(const SparsePauliOp& cost_hamiltonian,
                            const SparsePauliOp& mixer_hamiltonian) const {
     int nq = cost_hamiltonian.n_qubits();
-    validate_mixer(mixer_hamiltonian, nq, "MAQAOA::num_parameters");
+    validate_operators(cost_hamiltonian, mixer_hamiltonian, "MAQAOA::num_parameters");
 
     const bool use_orbits = (!options.orbit_assignments.empty() &&
                              static_cast<int>(options.orbit_assignments.size()) == nq);
 
-    int cost_params, mixer_params;
+    const int cost_params = build_cost_gamma_layout(cost_hamiltonian, use_orbits,
+                                                    options.orbit_assignments,
+                                                    options.term_indexed_gammas).n_gammas;
+    int mixer_params = nq;
     if (use_orbits) {
-        cost_params  = count_cost_orbits(cost_hamiltonian, options.orbit_assignments);
         mixer_params = *std::max_element(options.orbit_assignments.begin(),
                                           options.orbit_assignments.end()) + 1;
-    } else if (options.term_indexed_gammas) {
-        cost_params  = static_cast<int>(cost_hamiltonian.terms.size());
-        mixer_params = nq;
-    } else {
-        cost_params  = nq;
-        mixer_params = nq;
     }
 
     // A custom mixer replaces the beta count entirely: the RX-per-qubit count
@@ -641,27 +648,21 @@ MAQAOA::Result MAQAOA::optimize(
 
     const int nq = cost_hamiltonian.n_qubits();
 
-    validate_mixer(mixer_hamiltonian_in, nq, "MAQAOA::optimize");
+    validate_operators(cost_hamiltonian, mixer_hamiltonian_in, "MAQAOA::optimize");
     SparsePauliOp mixer = mixer_hamiltonian_in;
 
     // Precompute orbit data once for the entire run (Change 6)
     const bool use_orbits = (!options.orbit_assignments.empty() &&
                              static_cast<int>(options.orbit_assignments.size()) == nq);
-    std::vector<int> term_orbit_map_cached;
-    int n_cost_params_per_layer;
-    int n_mixer_orbits;
-
+    const CostGammaLayout gamma_layout = build_cost_gamma_layout(
+        cost_hamiltonian, use_orbits, options.orbit_assignments,
+        options.term_indexed_gammas);
+    const std::vector<int>& term_gamma_cached = gamma_layout.term_gamma;
+    const int n_cost_params_per_layer = gamma_layout.n_gammas;
+    int n_mixer_orbits = nq;
     if (use_orbits) {
-        term_orbit_map_cached   = cost_term_orbit_map(cost_hamiltonian, options.orbit_assignments);
-        n_cost_params_per_layer = count_cost_orbits(cost_hamiltonian, options.orbit_assignments);
-        n_mixer_orbits          = *std::max_element(options.orbit_assignments.begin(),
-                                                     options.orbit_assignments.end()) + 1;
-    } else if (options.term_indexed_gammas) {
-        n_cost_params_per_layer = static_cast<int>(cost_hamiltonian.terms.size());
-        n_mixer_orbits          = nq;
-    } else {
-        n_cost_params_per_layer = nq;
-        n_mixer_orbits          = nq;
+        n_mixer_orbits = *std::max_element(options.orbit_assignments.begin(),
+                                           options.orbit_assignments.end()) + 1;
     }
 
     // The mixer's own beta layout, built once: every optimiser evaluation
@@ -767,7 +768,7 @@ MAQAOA::Result MAQAOA::optimize(
                 all_params,       // copy: frozen prefix + this layer's init (Change 7)
                 free_start,
                 layer + 1,
-                &term_orbit_map_cached,
+                &term_gamma_cached,
                 n_cost_params_per_layer,
                 n_mixer_orbits,
                 &options.orbit_assignments,
@@ -837,7 +838,7 @@ MAQAOA::Result MAQAOA::optimize(
         } else {
             evolve_into(inner_sv, cost_hamiltonian, mixer, mixer_layout,
                         all_params, options.p,
-                        term_orbit_map_cached, n_cost_params_per_layer,
+                        term_gamma_cached, n_cost_params_per_layer,
                         n_mixer_orbits, options.orbit_assignments,
                         active_qubits_per_term, options.initial_thetas);
             result.optimal_value = cost_hamiltonian.expectation_value(inner_sv);
@@ -884,7 +885,7 @@ MAQAOA::Result MAQAOA::optimize(
 
         MAQAOACallbackData cb_data{
             &cost_hamiltonian, &mixer, &mixer_layout,
-            &term_orbit_map_cached,
+            &term_gamma_cached,
             n_cost_params_per_layer, n_mixer_orbits,
             this, &inner_sv, {}, 0,
             0.0,     // best_val: meaningless until best_val_valid is set
@@ -916,7 +917,7 @@ MAQAOA::Result MAQAOA::optimize(
         } else {
             evolve_into(inner_sv, cost_hamiltonian, mixer, mixer_layout,
                         params, options.p,
-                        term_orbit_map_cached, n_cost_params_per_layer,
+                        term_gamma_cached, n_cost_params_per_layer,
                         n_mixer_orbits, options.orbit_assignments,
                         active_qubits_per_term, options.initial_thetas);
             result.counts = inner_sv.sample_counts(sampler.options.shots, sampler.options.seed);
@@ -959,7 +960,7 @@ QuantumCircuit MAQAOA::build_circuit(
     const std::vector<double>& params
 ) const {
     int nq = cost_hamiltonian.n_qubits();
-    validate_mixer(mixer_hamiltonian, nq, "MAQAOA::build_circuit");
+    validate_operators(cost_hamiltonian, mixer_hamiltonian, "MAQAOA::build_circuit");
     QuantumCircuit qc(nq);
 
     if (!options.initial_thetas.empty() &&
@@ -977,10 +978,11 @@ QuantumCircuit MAQAOA::build_circuit(
     // Determine orbit mode
     const bool use_orbits = (!options.orbit_assignments.empty() &&
                              static_cast<int>(options.orbit_assignments.size()) == nq);
-    std::vector<int> term_orbit_map;
+    const CostGammaLayout gamma_layout = build_cost_gamma_layout(
+        cost_hamiltonian, use_orbits, options.orbit_assignments,
+        options.term_indexed_gammas);
     int n_mixer_orbits = nq;
     if (use_orbits) {
-        term_orbit_map = cost_term_orbit_map(cost_hamiltonian, options.orbit_assignments);
         n_mixer_orbits = *std::max_element(options.orbit_assignments.begin(),
                                             options.orbit_assignments.end()) + 1;
     }
@@ -995,14 +997,7 @@ QuantumCircuit MAQAOA::build_circuit(
 
     for (int layer = 0; layer < options.p; ++layer) {
         // Cost unitary
-        int n_cost_params;
-        if (use_orbits) {
-            n_cost_params = count_cost_orbits(cost_hamiltonian, options.orbit_assignments);
-        } else if (options.term_indexed_gammas) {
-            n_cost_params = cost_terms;
-        } else {
-            n_cost_params = nq;
-        }
+        const int n_cost_params = gamma_layout.n_gammas;
 
         std::vector<double> layer_gammas(n_cost_params);
         for (int i = 0; i < n_cost_params; ++i) {
@@ -1019,16 +1014,8 @@ QuantumCircuit MAQAOA::build_circuit(
             }
             if (active_qubits.empty()) continue;
 
-            int gamma_idx;
-            if (use_orbits) {
-                gamma_idx = term_orbit_map[t];
-            } else if (n_cost_params == cost_terms) {
-                gamma_idx = t;
-            } else {
-                gamma_idx = active_qubits[0];
-            }
-
-            double gamma = layer_gammas[gamma_idx];
+            double gamma =
+                layer_gammas[static_cast<std::size_t>(gamma_layout.term_gamma[t])];
             double angle = 2.0 * gamma * term.coeff.real;
 
             if (active_qubits.size() == 1 && term.pauli[active_qubits[0]] == 'Z') {

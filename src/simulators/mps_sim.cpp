@@ -315,6 +315,21 @@ void MPSState::apply_swap_adjacent(int q) {
 // Uses SWAP chain: move q1 and q2 adjacent, apply gate, swap back.
 // =============================================================================
 
+// Exchanges which operand owns bit 0 and which owns bit 1 of a 4x4 gate's
+// index, on rows and columns alike. The exchange is its own inverse, so it
+// converts in either direction between the project's LSB-first matrices
+// (bit 0 = first operand, as gates::apply_unitary reads them) and the
+// MSB-first order the two-site contraction and gate4x4's builders use.
+static std::array<Complex128, 16> exchange_operand_bits(
+    const std::array<Complex128, 16>& U) {
+    const auto swap01 = [](int idx) { return ((idx & 1) << 1) | ((idx >> 1) & 1); };
+    std::array<Complex128, 16> out{};
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c)
+            out[r * 4 + c] = U[swap01(r) * 4 + swap01(c)];
+    return out;
+}
+
 void MPSState::apply_two_qubit_gate(
     const std::array<Complex128, 16>& U_in, int q1, int q2,
     ValidationOptions validation
@@ -326,6 +341,15 @@ void MPSState::apply_two_qubit_gate(
     const std::array<Complex128, 16>& U = detail::check_unitary_fixing(
         U_in, 4, validation, "MPSState::apply_two_qubit_gate", U_fixed);
 
+    // The caller's matrix is LSB-first (q1 is bit 0), the contraction reads
+    // MSB-first. Exchanging the two bits permutes rows and columns alike, so
+    // it preserves unitarity and the check above holds for what is applied.
+    apply_two_qubit_gate_msb(exchange_operand_bits(U), q1, q2);
+}
+
+void MPSState::apply_two_qubit_gate_msb(
+    const std::array<Complex128, 16>& U, int q1, int q2
+) {
     // Ensure q1 < q2
     bool swapped = (q1 > q2);
     if (swapped) {
@@ -338,7 +362,7 @@ void MPSState::apply_two_qubit_gate(
                 for (int pi1 = 0; pi1 < 2; ++pi1)
                     for (int pi2 = 0; pi2 < 2; ++pi2)
                         U_swapped[(po1*2+po2)*4+(pi1*2+pi2)] = U[(po2*2+po1)*4+(pi2*2+pi1)];
-        apply_two_qubit_gate(U_swapped, q1, q2, {Validation::Ignore});
+        apply_two_qubit_gate_msb(U_swapped, q1, q2);
         return;
     }
 
@@ -1189,21 +1213,10 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
         if (inst.qubits.size() == 2) {
             if (inst.matrix.size() != 16)
                 throw std::runtime_error("MPS UNITARY: 2-qubit matrix must have 16 entries");
-            // Convention bridge. apply_unitary indexes its matrix with
-            // bit 0 (LSB) = targets[0] state, bit 1 = targets[1] state.
-            // MPSState::apply_two_qubit_gate indexes its 4x4 with
-            // bit 1 (MSB) = first qubit arg, bit 0 = second qubit arg
-            // (matching the SV/DM 2q-gate convention used elsewhere in MPS).
-            // Swap bits 0 and 1 of both row and column to translate.
-            auto swap01 = [](int idx) {
-                return ((idx & 1) << 1) | ((idx >> 1) & 1);
-            };
+            // inst.matrix is qubits[0]-is-LSB, which is apply_two_qubit_gate's
+            // own convention, so it is handed over as it stands.
             std::array<Complex128, 16> U{};
-            for (int r = 0; r < 4; ++r) {
-                for (int c = 0; c < 4; ++c) {
-                    U[r * 4 + c] = inst.matrix[swap01(r) * 4 + swap01(c)];
-                }
-            }
+            std::copy(inst.matrix.begin(), inst.matrix.end(), U.begin());
             mps.apply_two_qubit_gate(U, inst.qubits[0], inst.qubits[1],
                                      {Validation::Ignore});
             return;
@@ -1230,7 +1243,9 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
         mps.apply_single_qubit_gate(U, inst.qubits[0], {Validation::Ignore});
 
     } else if (inst.qubits.size() == 2) {
-        auto U = gate4x4(inst);
+        // gate4x4 builds in its MSB-first frame (first operand = bit 1);
+        // apply_two_qubit_gate takes the project's LSB-first order.
+        const auto U = exchange_operand_bits(gate4x4(inst));
         mps.apply_two_qubit_gate(U, inst.qubits[0], inst.qubits[1],
                                  {Validation::Ignore});
 
@@ -1254,8 +1269,12 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
             Complex128(1,0), Complex128(0,0),
             Complex128(0,0), Complex128(s2, -s2)
         };
+        // CX with its control on the first operand, which is bit 0 of the
+        // index in the project's LSB-first order: the control set flips the
+        // target, so basis states 1 and 3 exchange.
         std::array<Complex128, 16> CX_g{};
-        CX_g[0] = CX_g[5] = CX_g[11] = CX_g[14] = Complex128(1,0);
+        CX_g[0 * 4 + 0] = CX_g[1 * 4 + 3] = CX_g[2 * 4 + 2] = CX_g[3 * 4 + 1] =
+            Complex128(1, 0);
 
         // CCX decomposition: standard 6-CNOT Toffoli
         auto apply_ccx = [&](int c1, int c2, int tgt) {

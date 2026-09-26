@@ -52,7 +52,7 @@ Fields:
 - `eigenvalue`: minimum energy found. Always finite: when the minimiser
   returns without a finite value, the best finite energy actually evaluated
   is returned instead, and if the objective never produced one the call
-  throws `std::runtime_error`
+  throws `std::runtime_error`. An NLopt method that refuses the request before evaluating anything throws `std::invalid_argument` naming the method, with NLopt's own reason after the colon
 - `optimal_parameters`: the parameters at that energy
 - `num_iterations`: objective evaluations made, which is also
   `energy_history.size()`
@@ -82,7 +82,7 @@ Behavior:
 
 Preconditions:
 
-- The ansatz must have the same qubit count as the Hamiltonian
+- Every term of the Hamiltonian is exactly the ansatz's qubit count wide, and the Hamiltonian has at least one term. Otherwise the estimator throws `std::invalid_argument` on the first evaluation (the width rule in [operators.md](operators.md#width-rule))
 - The ansatz must expose the expected number of parameters if you rely on automatic initialization
 
 ## Ansatz Generators

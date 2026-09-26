@@ -251,6 +251,10 @@ void apply_2qudit_adjacent(int q, const std::vector<Complex128>& U);  // acts on
 void apply_2qudit(int q0, int q1, const std::vector<Complex128>& U);  // any q0 ≠ q1
 ```
 
+Both two-qudit calls follow the project LSB-first convention: the first qudit
+(`q`, or `q0`) is the least significant digit of `U`'s index, so the row is
+`out_{q+1}*d + out_q` for the adjacent form, as in `QuditStatevector::apply_2qudit`.
+
 Non-adjacent two-qudit gates (`apply_2qudit`) are handled via a SWAP chain:
 the sites are brought adjacent, the gate is applied, and the SWAPs are reversed.
 

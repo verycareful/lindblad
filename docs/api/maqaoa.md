@@ -19,12 +19,16 @@ Fields and defaults (from the header):
 - `max_iterations = 200`: cap on objective evaluations, per layer under `layerwise` and for the whole run otherwise (one evaluation per iteration for every method here). Reaching it ends the run with `converged = false`
 - `convergence_threshold = 1e-6`: relative `x` tolerance at which the minimiser declares convergence
 - `optimizer = "COBYLA"`: which minimiser runs the classical loop. `"COBYLA"` is FLOP's; `"NLOPT_COBYLA"`, `"NELDER_MEAD"` and `"BOBYQA"` are NLopt's. An unknown name warns and runs the default
-- `initial_step = 0.3`: first trial displacement along each parameter axis, in radians
+- `initial_step = 0.3`: first trial displacement along each parameter axis, in radians. BOBYQA needs every parameter interval at least twice the step wide, so with the `[-2*pi, 2*pi]` box a step above `2*pi` makes it refuse the request before evaluating anything; that throws `std::invalid_argument` naming `MAQAOA::optimize` and the method, with NLopt's own reason after the colon, on the layerwise path as on the joint one
 - `layerwise = false`: enable layer-by-layer optimization
 - `progressive = false`: keep earlier layers free when layerwise
 - `seed = 0`: seed for the initial parameter perturbation; `0` draws from `std::random_device`. The draw is bit-identical across compilers for a given seed
 - `orbit_assignments`: optional orbit indices per qubit
-- `term_indexed_gammas = false`: use term-indexed gammas when true
+- `term_indexed_gammas = false`: one gamma per cost term when true. When false
+  (qubit-indexed), gamma `q` drives every cost term whose lowest active qubit is
+  `q`, so a layer carries `n_qubits` gammas whatever the term count. The mode is
+  read from this option alone; a cost with exactly `n_qubits` terms is still
+  qubit-indexed unless it is set.
 - `mixer_weights`: optional PI-MA-QAOA weights
 - `mixer_beta_dispatch = MixerBetaDispatch::LowestActiveQubit`: which beta drives
   which term of a custom mixer
@@ -123,6 +127,10 @@ Behavior:
 - Orbit mode: `p * (n_cost_orbits + n_mixer_orbits)`
 - Term-indexed mode: `p * (n_terms + n_qubits)`
 - Default mode: `p * (n_qubits + n_qubits)`
+- An all-identity cost term (a constant offset, which every Ising-derived cost
+  carries) drives no gate, so it takes no gamma in any mode: `n_terms` and
+  `n_cost_orbits` count only terms with an active qubit, and a cost with and
+  without its offset has the same count and builds the same circuit
 - A non-empty `mixer_hamiltonian` replaces the beta half of the count with the
   number of beta slots its dispatch reaches, leaving the gamma half unchanged
 
@@ -155,6 +163,7 @@ Behavior (verified against `src/algorithms/maqaoa.cpp`):
   `exp(-i·β·c_k·P_k)`, with `options.mixer_beta_dispatch` deciding which
   beta drives which term
 - Parameter layout per layer: `[gammas..., betas...]`
+- Throws `std::invalid_argument`, here, in `build_circuit` and in `num_parameters` alike, for a cost Hamiltonian with no terms, with terms of different widths, or that is not Hermitian (the cost layer rotates by each coefficient's real part), for a mixer term whose width is not the cost Hamiltonian's, and for a mixer term with a non-zero imaginary coefficient
 - Uses the minimiser `options.optimizer` names with bounds `[-2*pi, 2*pi]` on every parameter and first step `options.initial_step`
 - If `estimator.options.noise_model` is non-ideal, evaluates with `DensityMatrixSimulator`
 - If ideal, uses direct statevector evolution (`evolve_into`) instead of rebuilding circuits

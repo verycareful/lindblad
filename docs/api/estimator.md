@@ -75,6 +75,9 @@ Behavior:
 - Evaluates each parameter vector with `run_single`
 - Parallelized with OpenMP when enabled
 - Returns one expectation value per parameter vector
+- Whatever `run_single` throws for any parameter vector reaches the caller.
+  When several fail, the exception for the lowest-indexed vector is the one
+  thrown, so the result does not depend on thread scheduling.
 
 ## `run_single`
 
@@ -115,7 +118,16 @@ Behavior (verified against the implementation):
 
 Preconditions:
 
-- The circuit and observable must target the same number of qubits
+- Every term of the observable is exactly `circuit.n_qubits` wide, and the
+  observable has at least one term (the width rule in
+  [operators.md](operators.md#width-rule)). A wider or narrower term, or an
+  observable with no terms, throws `std::invalid_argument` on all three modes
+  alike, before any transpilation or simulation. The message names the term
+  and both widths.
+- The observable is written with `I`, `X`, `Y` and `Z` and is Hermitian (its
+  coefficients real once repeated labels are merged). A non-Hermitian
+  observable has a complex expectation value, so it is refused rather than
+  reduced to its real part.
 - Parameter ordering must match the circuit parameter name order
 
 ## `gradient`
@@ -134,7 +146,8 @@ Behavior:
 
 - Uses the parameter-shift rule with a shift of `pi/2`
 - Builds `2 * parameters.size()` shifted vectors
-- Evaluates them with a single `run_batch` call
+- Evaluates them with a single `run_batch` call, so a refusal from
+  `run_single` reaches the caller as it does there
 - Returns a gradient vector of the same length as `parameters`
 
 ## Example

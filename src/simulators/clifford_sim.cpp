@@ -8,6 +8,7 @@
 // Commercial License Agreement with the Author.
 
 #include "lindblad/simulators/clifford_sim.hpp"
+#include "lindblad/detail/pauli_rules.hpp"
 #include "lindblad/circuit.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/detail/validate.hpp"
@@ -469,6 +470,8 @@ int StabilizerState::expectation_pauli(const std::string& pauli) const {
     if (static_cast<int>(pauli.size()) != N) {
         throw std::invalid_argument("Pauli string length must match n_qubits");
     }
+    // Any other character would read as identity below.
+    detail::check_pauli_label(pauli, "StabilizerState::expectation_pauli");
 
     // Build the target Pauli's X and Z bits.
     // Phase exponent mod 4: 0=+1, 1=+i, 2=-1, 3=-i.
@@ -477,9 +480,9 @@ int StabilizerState::expectation_pauli(const std::string& pauli) const {
     int p_phase = 0;
     for (int i = 0; i < N; ++i) {
         const char c = pauli[i];
-        if      (c == 'X' || c == 'x') { px[i] = true; }
-        else if (c == 'Y' || c == 'y') { px[i] = true; pz[i] = true; }
-        else if (c == 'Z' || c == 'z') { pz[i] = true; }
+        if      (c == 'X') { px[i] = true; }
+        else if (c == 'Y') { px[i] = true; pz[i] = true; }
+        else if (c == 'Z') { pz[i] = true; }
     }
 
     // Check if P commutes with each stabilizer.

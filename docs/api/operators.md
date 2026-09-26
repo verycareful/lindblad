@@ -34,14 +34,61 @@ Key API:
 
 Represents a sum of Pauli strings.
 
-Key API:
+### Width rule
 
-- `simplify(atol)`: merges identical Pauli labels and drops tiny coefficients
-  (`coeff.norm_sq() > atol * atol`)
+A Pauli string names one Pauli per qubit and carries no qubit labels, so its
+length is the register it acts on. Two things follow, and both are enforced:
+
+- Every term of one operator has the same length. The vector constructor,
+  `from_list`, `operator+` and `simplify` refuse terms of different lengths.
+- An operator evaluated against a state has exactly the state's qubit count.
+  A longer term would name qubits the state does not have, and a shorter one
+  would leave qubits it never mentions, so both are refused.
+  `expectation_value`, `expectation_value_batch`, `to_matrix`,
+  `DensityMatrix::expectation_value_sparse`, `Estimator` and
+  `ExpectationObserver` all apply the rule.
+
+`terms` is a public vector, so an operator can still be assembled term by term
+into a mixed width. The evaluation checks do not rely on construction having
+caught it.
+
+An operator with no terms has no width, and every evaluation refuses it. The
+zero operator on n qubits is `zero(n)`, a single all-identity term with
+coefficient 0. `simplify` returns that when every term cancels, so `H - H`
+(written `H + H * -1.0`) evaluates to 0 rather than being refused. A
+default-constructed operator remains the way to build one term by term, and
+QAOA and MA-QAOA read a mixer with no terms as "use the default mixer".
+
+### Alphabet and Hermiticity
+
+A Pauli string is written with `I`, `X`, `Y` and `Z`, uppercase. Any other
+character, a lowercase letter included, is refused by the `PauliString`
+constructor and again at every evaluation, since `pauli` is a public member.
+`StabilizerState::expectation_pauli` applies the same rule to the string it is
+given.
+
+Every evaluation returns a real number, so it refuses an operator that is not
+Hermitian. A sum of Pauli strings is Hermitian exactly when every coefficient
+is real once repeated labels are merged, so `(1 + i)Z + (1 - i)Z` is accepted
+(it is `2Z`) and `Z + iX` is refused. Imaginary parts within
+`DEFAULT_PHYSICAL_ATOL` count as real. `to_matrix` returns the matrix itself
+and accepts any coefficients.
+
+Every refusal is `std::invalid_argument` and names the call that refused.
+
+### Key API
+
+- `SparsePauliOp()`: an operator with no terms
+- `SparsePauliOp(terms)`: throws when the terms differ in length
+- `simplify(atol)`: merges identical Pauli labels and drops coefficients with
+  magnitude at most `atol`. When nothing survives, the result is the zero
+  operator at the input's width, one all-identity term with coefficient 0.
+  An operator with no terms simplifies to one with no terms.
 - `compose(other)`: pairwise composition followed by `simplify`
 - `adjoint()`: adjoint of each term
 - `tensor(other)`: concatenates Pauli labels and multiplies coefficients
-- `operator+`: concatenates terms then `simplify`
+- `operator+`: concatenates terms then `simplify`; throws when both operands
+  have terms of different widths. An operand with no terms adds nothing.
 - `operator*`: scales coefficients
 - `to_matrix()`: builds the dense $2^n \times 2^n$ matrix; uses the action
   $P|j\rangle = i^{\#Y} \cdot (-1)^{\text{popcount}(j \wedge z\_\text{mask})}
@@ -49,16 +96,32 @@ Key API:
   term (not $O(4^n)$ tensor-product chains); the $i^{\#Y}$ factor is a
   per-term constant folded into the coefficient ($Y = iXZ$), so Hermitian
   operators yield Hermitian matrices and `to_matrix` agrees with
-  `expectation_value` and composes homomorphically
-- `expectation_value(statevector)`: computes ⟨psi|H|psi⟩ without cloning
-- `expectation_value_batch(states)`: batch version with shared mask precompute
-- `n_qubits()`: number of qubits in the first term (0 if empty)
-- `from_list(label_coeff)` / `identity(n)` / `zero(n)` helpers
+  `expectation_value` and composes homomorphically. Throws for an operator
+  with no terms or with terms of different widths.
+- `expectation_value(statevector)`: computes ⟨psi|H|psi⟩ without cloning.
+  Throws unless every term is exactly `statevector.n_qubits` wide.
+- `expectation_value_batch(states)`: batch version with shared mask
+  precompute. Takes pointers to `Statevector` instances, checks every state
+  against the width rule before evaluating any, and refuses an operator with
+  no terms even when `states` is empty.
+- `n_qubits()`: number of qubits in the first term, and 0 for an operator with
+  no terms (which has no width)
+- `from_list(label_coeff)`: throws when the labels differ in length
+- `identity(n)` / `zero(n)`: the identity and the zero operator on `n` qubits,
+  each a single all-identity term with coefficient 1 or 0
 
-Notes:
+### Exceptions
 
-- `n_qubits()` does not validate that all terms have equal length
-- `expectation_value_batch` expects pointers to `Statevector` instances
+- `std::invalid_argument` from the constructor, `from_list`, `operator+` and
+  `simplify` for terms of different widths
+- `std::invalid_argument` from `PauliString` for a character other than `I`,
+  `X`, `Y` or `Z`
+- `std::invalid_argument` from every evaluation (`expectation_value`,
+  `expectation_value_batch`, `to_matrix`) for an operator with no terms, for
+  terms of different widths, for a term whose width is not the state's, and for
+  a character outside the alphabet
+- `std::invalid_argument` from `expectation_value` and
+  `expectation_value_batch` for an operator that is not Hermitian
 
 ## `Operator`
 
@@ -120,6 +183,10 @@ int main() {
 Relevant tests live in:
 
 - [tests/test_operators.cpp](../../tests/test_operators.cpp)
+- [tests/test_v11292_observable_width.cpp](../../tests/test_v11292_observable_width.cpp):
+  the width rule on every path that evaluates or builds an operator
+- [tests/test_v11292_pauli_rules.cpp](../../tests/test_v11292_pauli_rules.cpp):
+  the alphabet and Hermiticity rules
 
 ## Related Pages
 

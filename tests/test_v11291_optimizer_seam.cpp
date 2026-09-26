@@ -578,8 +578,8 @@ TEST(V11291OptimizerSeam, FlopFitsItsOpeningStepsIntoABoxNarrowerThanTheStep) {
 }
 
 TEST(V11291OptimizerSeam, BobyqaRefusingABoxTooNarrowForItsStepIsAnInvalidArgument) {
-    // Red in this release. BOBYQA needs every interval at least twice the step
-    // wide and refuses before evaluating anything. The caller's arguments are
+    // BOBYQA needs every interval at least twice the step wide and refuses
+    // before evaluating anything. The caller's arguments are
     // the cause, so the refusal is an invalid_argument naming the entry point
     // and the method, raised with the objective never called.
     OptimizerSpec s = spec_for(OptimizerBackend::NloptBobyqa, 100, 1.5);

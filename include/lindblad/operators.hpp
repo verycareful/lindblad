@@ -44,8 +44,9 @@ struct PauliString {
     Complex128 coeff;
 
     PauliString() : coeff(1.0, 0.0) {}
-    PauliString(const std::string& p, Complex128 c = Complex128(1.0, 0.0))
-        : pauli(p), coeff(c) {}
+    // Throws std::invalid_argument for any character other than I, X, Y or Z,
+    // uppercase (lowercase included), as Qiskit's labels do.
+    PauliString(const std::string& p, Complex128 c = Complex128(1.0, 0.0));
 
     int n_qubits() const { return static_cast<int>(pauli.size()); }
     PauliString compose(const PauliString& other) const;
@@ -56,14 +57,43 @@ struct PauliString {
 // =============================================================================
 // SparsePauliOp — sum of Pauli strings
 // =============================================================================
+// Width rule. A Pauli string names one Pauli per qubit and carries no qubit
+// labels, so its length is the register it acts on: every term of one operator
+// has the same length, and an operator evaluated against a state has exactly
+// the state's qubit count. Construction (the vector constructor, from_list,
+// operator+, simplify) refuses terms of different lengths, and every
+// evaluation (expectation_value, expectation_value_batch, to_matrix,
+// DensityMatrix::expectation_value_sparse, Estimator, ExpectationObserver)
+// refuses a term whose length is not the state's. Both refusals are
+// std::invalid_argument. `terms` is a public vector, so the evaluation check
+// stands on its own rather than trusting construction.
+//
+// A term is written with I, X, Y and Z, uppercase; any other character is
+// refused on construction and again at evaluation, as a width is.
+//
+// Every evaluation returns a real number, so it refuses an operator that is
+// not Hermitian: one whose coefficients, once repeated labels are merged, are
+// not all real to within DEFAULT_PHYSICAL_ATOL. to_matrix() returns the
+// matrix itself and accepts any coefficients.
+//
+// An operator with no terms has no width, and every evaluation refuses it.
+// The zero operator on n qubits is zero(n), one all-identity term with
+// coefficient 0; simplify() returns that when every term cancels, so H - H
+// evaluates to 0. A default-constructed operator is still the way to build
+// one term by term, and QAOA and MA-QAOA read a mixer with no terms as "use
+// the default mixer".
 
 class SparsePauliOp {
 public:
     std::vector<PauliString> terms;
 
     SparsePauliOp() = default;
-    explicit SparsePauliOp(const std::vector<PauliString>& terms) : terms(terms) {}
+    // Throws std::invalid_argument when the terms differ in length.
+    explicit SparsePauliOp(const std::vector<PauliString>& terms);
 
+    // Merges terms with the same label and drops those whose coefficient has
+    // magnitude at most atol. When nothing survives, the result is the zero
+    // operator at the input's width rather than an operator with no terms.
     SparsePauliOp simplify(double atol = 1e-8) const;
     SparsePauliOp compose(const SparsePauliOp& other) const;
     SparsePauliOp adjoint() const;
@@ -81,6 +111,8 @@ public:
         const std::vector<const Statevector*>& states
     ) const;
 
+    // The width of the first term, and 0 for an operator with no terms (which
+    // has no width; see the width rule above).
     int n_qubits() const;
     size_t size() const { return terms.size(); }
 

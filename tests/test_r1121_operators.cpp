@@ -197,17 +197,25 @@ TEST(R1121Operators, SimplifyMergesDuplicatesAndPrunesSmall) {
 }
 
 TEST(R1121Operators, SimplifyAtolPruningBoundary) {
-    // A term with |coeff| just below atol is pruned; just above is kept.
+    // A term with |coeff| just below atol is pruned; just above is kept. When
+    // nothing survives, what is left is the zero operator at the same width:
+    // one all-identity term with coefficient 0.
     const double atol = 1e-6;
     auto below = SparsePauliOp::from_list({{"X", Complex128(0.5e-6, 0.0)}}).simplify(atol);
-    EXPECT_EQ(below.size(), 0u) << "coeff below atol pruned";
+    ASSERT_EQ(below.size(), 1u) << "coeff below atol pruned, leaving the zero operator";
+    EXPECT_EQ(below.terms[0].pauli, "I");
+    EXPECT_EQ(below.terms[0].coeff.real, 0.0);
     auto above = SparsePauliOp::from_list({{"X", Complex128(2e-6, 0.0)}}).simplify(atol);
-    EXPECT_EQ(above.size(), 1u) << "coeff above atol kept";
+    ASSERT_EQ(above.size(), 1u) << "coeff above atol kept";
+    EXPECT_EQ(above.terms[0].pauli, "X");
 
     // Complex coefficients that cancel to zero are pruned after merge.
     auto cancel = SparsePauliOp::from_list(
         {{"Z", Complex128(1.0, 1.0)}, {"Z", Complex128(-1.0, -1.0)}}).simplify();
-    EXPECT_EQ(cancel.size(), 0u) << "Z and -Z cancel and prune";
+    ASSERT_EQ(cancel.size(), 1u) << "Z and -Z cancel, leaving the zero operator";
+    EXPECT_EQ(cancel.terms[0].pauli, "I");
+    EXPECT_EQ(cancel.terms[0].coeff.real, 0.0);
+    EXPECT_EQ(cancel.terms[0].coeff.imag, 0.0);
 }
 
 TEST(R1121Operators, ComposeThenSimplifyCancelsCrossTerms) {

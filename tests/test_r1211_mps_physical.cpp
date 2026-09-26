@@ -94,16 +94,14 @@ std::array<Complex128, 16> bad_2q() {
 
 // good_2q with one basis image deleted, chosen so the loss is observable.
 //
-// Which column to delete depends on the operand layout, and the MPS layer does
-// not use the circuit layer's. Here the FIRST operand is the HIGH bit of the
-// matrix index (row = po1*2 + po2, as the operand-swap block in mps_sim.cpp
-// spells out), so after H on qubit 0 the amplitude sits on matrix indices 0 and
-// 2, not 0 and 1. Deleting the image of column 2 destroys half the norm;
-// deleting column 1 or 3 would be just as non-unitary and entirely invisible on
-// this state.
+// Which column to delete depends on the operand layout. The FIRST operand is
+// the LOW bit of the matrix index (the project's qubits[0]-is-LSB convention),
+// so after H on qubit 0 the amplitude sits on matrix indices 0 and 1. Deleting
+// the image of column 1 destroys half the norm; deleting column 2 or 3 would be
+// just as non-unitary and entirely invisible on this state.
 std::array<Complex128, 16> truncating_2q() {
     auto m = good_2q();
-    m[2 * 4 + 2] = Complex128(0.0, 0.0);
+    m[3 * 4 + 1] = Complex128(0.0, 0.0);
     return m;
 }
 

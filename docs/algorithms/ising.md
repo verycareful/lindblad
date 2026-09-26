@@ -96,7 +96,11 @@ Typical consumers include:
 ### `to_sparse_pauli_op()`
 
 - Converts the Ising model into a `SparsePauliOp`
-- Uses the project’s MSB-first Pauli string convention
+- Uses the project's LSB-first Pauli string convention: qubit `i` is string
+  position `i`, so the Pauli string reads in the opposite direction from the
+  MSB-first bitstrings `evaluate` takes
+- With every coefficient and the offset zero, returns
+  `SparsePauliOp::zero(n_qubits())`, which keeps the register width
 
 ### `evaluate(const std::string& bitstring)`
 

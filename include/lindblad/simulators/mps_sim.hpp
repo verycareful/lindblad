@@ -87,6 +87,12 @@ public:
     // Gate application via SVD.
     // validation = policy and tolerance for the unitarity of U. Both matrices
     // are fixed-size, so the check is 8 or 64 complex multiplies.
+    //
+    // apply_two_qubit_gate takes U in the project matrix convention
+    // (docs/Architecture.md "Conventions", as gates::apply_unitary reads it):
+    // bit 0 of the row and column index is the state of q1 and bit 1 the state
+    // of q2, so q1 is the least significant. A CX with its control on q1 is
+    // therefore nonzero at (0,0), (1,3), (2,2) and (3,1).
     void apply_single_qubit_gate(
         const std::array<Complex128, 4>& U, int qubit,
         ValidationOptions validation = {}
@@ -267,7 +273,14 @@ private:
         int& new_rank
     );
 
-    // Adjacent two-qubit gate application (internal)
+    // apply_two_qubit_gate with U already in the MSB-first order the two-site
+    // contraction reads (bit 1 = q1, bit 0 = q2): orders the pair, runs the
+    // SWAP chain, applies. The public entry converts to this order once.
+    void apply_two_qubit_gate_msb(
+        const std::array<Complex128, 16>& U, int q1, int q2
+    );
+
+    // Adjacent two-qubit gate application (internal, MSB-first as above)
     void apply_two_qubit_gate_adjacent(
         const std::array<Complex128, 16>& U, int q1
     );

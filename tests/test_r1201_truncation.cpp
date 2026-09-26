@@ -81,27 +81,21 @@ std::array<Complex128, 4> h2x2() {
 
 // CNOT with the control on the FIRST operand and the target on the second.
 //
-// MPSState::apply_two_qubit_gate is a RAW BACKEND PRIMITIVE, and its matrix
-// index is MSB-first in the operands: the contraction is documented as
-// `row = l*2 + p1, col = p2*br + r` and the operand-reorder step spells it
-// `U'[po1*2 + po2, pi1*2 + pi2]`, so for apply_two_qubit_gate(U, qa, qb) the
-// index is (bit at qa)*2 + (bit at qb) — qa is the HIGH bit.
+// MPSState::apply_two_qubit_gate takes its matrix in the project convention,
+// qubits[0]-is-LSB, as the circuit-level API does: for
+// apply_two_qubit_gate(U, qa, qb) the index is (bit at qb)*2 + (bit at qa),
+// so qa is the LOW bit. Getting this backwards puts the control on the wrong
+// qubit, which for |+0> yields a PRODUCT state: every spectrum in this file
+// would then be rank 1 and the suite would quietly stop testing truncation at
+// all.
 //
-// That is NOT the qubits[0]-is-LSB layout the circuit-level API uses, and the
-// difference is deliberate: the frozen conventions say backends with MSB-first
-// internals bridge by bit reversal, and warn in as many words never to hand a
-// raw matrix to a backend assuming MSB order. Getting this backwards puts the
-// control on the wrong qubit, which for |+0> yields a PRODUCT state — every
-// spectrum in this file would then be rank 1 and the suite would quietly stop
-// testing truncation at all.
-//
-// Map with index = qa*2 + qb: 00->00, 01->01, 10->11, 11->10.
+// Map with index = qb*2 + qa: 00->00, 01->11, 10->10, 11->01.
 std::array<Complex128, 16> cnot_control_first_operand() {
     std::array<Complex128, 16> U{};
     U[0 * 4 + 0] = Complex128(1, 0);
-    U[1 * 4 + 1] = Complex128(1, 0);
-    U[3 * 4 + 2] = Complex128(1, 0);
-    U[2 * 4 + 3] = Complex128(1, 0);
+    U[3 * 4 + 1] = Complex128(1, 0);
+    U[2 * 4 + 2] = Complex128(1, 0);
+    U[1 * 4 + 3] = Complex128(1, 0);
     return U;
 }
 

@@ -9,10 +9,14 @@
 
 #include "lindblad/circuit.hpp"
 
+#include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <sstream>
 #include <stdexcept>
 #include <regex>
+#include <string_view>
+#include <system_error>
 #include <unordered_map>
 
 namespace lindblad {
@@ -41,8 +45,8 @@ public:
         std::string gate_def_accum;
 
         while (std::getline(stream, line)) {
-            line = trim(line);
-            if (line.empty() || line[0] == '/' || line.substr(0, 2) == "//") continue;
+            line = strip_comment(line);
+            if (line.empty()) continue;
 
             // Accumulate multi-line gate definitions
             if (in_gate_def) {
@@ -54,7 +58,7 @@ public:
                 continue;
             }
 
-            if (line.substr(0, 4) == "gate") {
+            if (starts_with_keyword(line, "gate")) {
                 gate_def_accum = line;
                 if (line.find('}') != std::string::npos) {
                     parse_gate_definition(gate_def_accum, gate_defs);
@@ -64,22 +68,28 @@ public:
                 continue;
             }
 
-            if (line.find("qreg") != std::string::npos) {
-                auto bracket_pos = line.find('[');
-                auto close_pos = line.find(']');
+            if (starts_with_keyword(line, "qreg")) {
+                const std::string decl = single_statement(line);
+                auto bracket_pos = decl.find('[');
+                auto close_pos = decl.find(']');
                 if (bracket_pos != std::string::npos && close_pos != std::string::npos) {
-                    std::string reg_name = trim(line.substr(5, bracket_pos - 5));
-                    int reg_size = std::stoi(line.substr(bracket_pos + 1, close_pos - bracket_pos - 1));
+                    std::string reg_name = trim(decl.substr(5, bracket_pos - 5));
+                    int reg_size = require_nninteger(
+                        trim(decl.substr(bracket_pos + 1, close_pos - bracket_pos - 1)),
+                        "qreg size");
                     qreg_offsets[reg_name] = n_qubits;
                     qreg_sizes[reg_name] = reg_size;
                     n_qubits += reg_size;
                 }
-            } else if (line.find("creg") != std::string::npos) {
-                auto bracket_pos = line.find('[');
-                auto close_pos = line.find(']');
+            } else if (starts_with_keyword(line, "creg")) {
+                const std::string decl = single_statement(line);
+                auto bracket_pos = decl.find('[');
+                auto close_pos = decl.find(']');
                 if (bracket_pos != std::string::npos && close_pos != std::string::npos) {
-                    std::string reg_name = trim(line.substr(5, bracket_pos - 5));
-                    int reg_size = std::stoi(line.substr(bracket_pos + 1, close_pos - bracket_pos - 1));
+                    std::string reg_name = trim(decl.substr(5, bracket_pos - 5));
+                    int reg_size = require_nninteger(
+                        trim(decl.substr(bracket_pos + 1, close_pos - bracket_pos - 1)),
+                        "creg size");
                     creg_offsets[reg_name] = n_clbits;
                     creg_sizes[reg_name] = reg_size;
                     n_clbits += reg_size;
@@ -117,27 +127,24 @@ public:
 
         while (std::getline(stream, line)) {
             apply_pending_condition();
-            line = trim(line);
-            if (line.empty() || line[0] == '/' || line.substr(0, 2) == "//") continue;
-            if (line.find("OPENQASM") != std::string::npos) continue;
-            if (line.find("include") != std::string::npos) continue;
-            if (line.find("qreg") != std::string::npos) continue;
-            if (line.find("creg") != std::string::npos) continue;
+            line = strip_comment(line);
+            if (line.empty()) continue;
+            if (starts_with_keyword(line, "OPENQASM")) continue;
+            if (starts_with_keyword(line, "include")) continue;
+            if (starts_with_keyword(line, "qreg")) continue;
+            if (starts_with_keyword(line, "creg")) continue;
 
             // Skip gate definition blocks in second pass
             if (in_gate_def) {
                 if (line.find('}') != std::string::npos) in_gate_def = false;
                 continue;
             }
-            if (line.substr(0, 4) == "gate") {
+            if (starts_with_keyword(line, "gate")) {
                 if (line.find('}') == std::string::npos) in_gate_def = true;
                 continue;
             }
 
-            // Remove semicolon
-            if (!line.empty() && line.back() == ';') {
-                line.pop_back();
-            }
+            line = single_statement(line);
 
             // Classical condition: `if (creg == value) qop`. OpenQASM 2.0 has
             // only the register-wide form, and Instruction carries a single
@@ -178,14 +185,16 @@ public:
                         "; only a one-bit register maps to a single-bit condition. "
                         "Use OpenQASM 3 for a register-wide comparison.");
                 }
-                std::size_t consumed = 0;
-                int value = 0;
-                try {
-                    value = std::stoi(val, &consumed);
-                } catch (const std::exception&) {
-                    consumed = 0;
+                // The value is an OpenQASM 2.0 integer, so `01`, `+1` and `-0`
+                // are refused by spelling before 2 is refused by range. An
+                // empty value is refused first: reading it as 0 would turn a
+                // typo into a condition the author never wrote.
+                if (val.empty()) {
+                    throw std::runtime_error(
+                        "QASM2Parser: condition `if (" + reg + " == )` has no value");
                 }
-                if (consumed != val.size() || (value != 0 && value != 1)) {
+                const int value = require_nninteger(val, "condition value");
+                if (value != 0 && value != 1) {
                     throw std::runtime_error(
                         "QASM2Parser: condition value '" + val +
                         "' is not 0 or 1, the only values a one-bit register takes");
@@ -198,6 +207,15 @@ public:
                         "QASM2Parser: condition `if (" + reg + " == " + val +
                         ")` guards no instruction");
                 }
+                // The grammar admits only a quantum operation after `if`: a
+                // gate call, measure or reset. A barrier is a directive, and
+                // to_qasm2() never writes one under a condition.
+                if (starts_with_keyword(line, "barrier")) {
+                    throw std::runtime_error(
+                        "QASM2Parser: condition `if (" + reg + " == " + val +
+                        ")` guards a barrier; OpenQASM 2.0 admits only a gate call, "
+                        "measure or reset after `if`");
+                }
             }
 
             // Parse gate name and arguments
@@ -209,15 +227,15 @@ public:
             // standard whole-register form `measure q -> c;` (expanded to one
             // measurement per bit). Unresolvable operands THROW: silently
             // dropping a measurement corrupts the imported circuit.
-            if (line.find("measure") != std::string::npos) {
+            if (starts_with_keyword(line, "measure")) {
                 auto arrow = line.find("->");
                 if (arrow == std::string::npos)
                     throw std::runtime_error(
                         "QASM2Parser: malformed measure statement: " + line);
                 const std::string lhs = line.substr(0, arrow);
                 const std::string rhs = line.substr(arrow + 2);
-                int q = resolve_reg_index(lhs, qreg_offsets);
-                int c = resolve_reg_index(rhs, creg_offsets);
+                int q = resolve_reg_index(lhs, qreg_offsets, qreg_sizes, "qreg");
+                int c = resolve_reg_index(rhs, creg_offsets, creg_sizes, "creg");
                 if (q >= 0 && c >= 0) {
                     qc.measure(q, c);
                     continue;
@@ -239,8 +257,8 @@ public:
             }
 
             // Reset: indexed `reset q[i];` or whole-register `reset q;`.
-            if (line.find("reset") != std::string::npos) {
-                int q = resolve_reg_index(line, qreg_offsets);
+            if (starts_with_keyword(line, "reset")) {
+                int q = resolve_reg_index(line, qreg_offsets, qreg_sizes, "qreg");
                 if (q >= 0) {
                     qc.reset(q);
                     continue;
@@ -254,37 +272,34 @@ public:
                     "QASM2Parser: could not resolve reset operand in: " + line);
             }
 
-            // Barrier: honour the operand list (`barrier q[0], r;`); a bare
-            // `barrier;` or an unresolvable list falls back to full register.
-            if (line.find("barrier") != std::string::npos) {
-                std::string operand_str =
-                    trim(line.substr(line.find("barrier") + 7));
+            // Barrier: honour the operand list (`barrier q[0], r;`). A bare
+            // `barrier;` covers the full register, which is what to_qasm2()
+            // writes for a barrier with no operands. An operand naming no
+            // declared qreg is refused: widening it to the full register
+            // would put a barrier on qubits the author never named.
+            if (starts_with_keyword(line, "barrier")) {
+                const std::string operand_str = trim(line.substr(7));
                 std::vector<int> bq;
-                bool ok = !operand_str.empty();
-                if (ok) {
-                    std::istringstream ops(operand_str);
-                    std::string tok;
-                    while (std::getline(ops, tok, ',')) {
-                        tok = trim(tok);
-                        if (tok.empty()) continue;
-                        int q = resolve_reg_index(tok, qreg_offsets);
-                        if (q >= 0) {
-                            bq.push_back(q);
-                            continue;
-                        }
-                        int q_off = 0, q_size = 0;
-                        if (resolve_reg_whole(tok, qreg_offsets, qreg_sizes,
-                                              q_off, q_size)) {
-                            for (int i = 0; i < q_size; ++i)
-                                bq.push_back(q_off + i);
-                        } else {
-                            ok = false;
-                            break;
-                        }
+                std::istringstream ops(operand_str);
+                std::string tok;
+                while (std::getline(ops, tok, ',')) {
+                    tok = trim(tok);
+                    if (tok.empty()) continue;
+                    int q = resolve_reg_index(tok, qreg_offsets, qreg_sizes, "qreg");
+                    if (q >= 0) {
+                        bq.push_back(q);
+                        continue;
                     }
+                    int q_off = 0, q_size = 0;
+                    if (!resolve_reg_whole(tok, qreg_offsets, qreg_sizes, q_off, q_size)) {
+                        throw std::runtime_error(
+                            "QASM2Parser: barrier operand '" + tok +
+                            "' is not a declared qreg");
+                    }
+                    for (int i = 0; i < q_size; ++i) bq.push_back(q_off + i);
                 }
-                if (ok && !bq.empty()) qc.barrier(bq);
-                else qc.barrier();
+                if (bq.empty()) qc.barrier();
+                else qc.barrier(bq);
                 continue;
             }
 
@@ -298,14 +313,14 @@ public:
                 params = parse_params(param_str);
 
                 std::string qubit_str = line.substr(paren_close + 1);
-                qubits = parse_qubits_mapped(qubit_str, qreg_offsets);
+                qubits = parse_qubits_mapped(qubit_str, qreg_offsets, qreg_sizes);
             } else {
                 // No parameters
                 auto space_pos = line.find(' ');
                 if (space_pos != std::string::npos) {
                     gate_name = line.substr(0, space_pos);
                     std::string qubit_str = line.substr(space_pos + 1);
-                    qubits = parse_qubits_mapped(qubit_str, qreg_offsets);
+                    qubits = parse_qubits_mapped(qubit_str, qreg_offsets, qreg_sizes);
                 } else {
                     continue;
                 }
@@ -577,21 +592,108 @@ private:
         return result;
     }
 
-    // Find reg[idx] in `s` using the offset map; returns global qubit/clbit index.
-    static int resolve_reg_index(
-        const std::string& s,
-        const std::unordered_map<std::string, int>& offsets
-    ) {
-        for (const auto& [name, offset] : offsets) {
-            std::string pat = name + "[";
-            auto pos = s.find(pat);
-            if (pos == std::string::npos) continue;
-            auto bracket = pos + pat.size();
-            auto close = s.find(']', bracket);
-            if (close == std::string::npos) continue;
-            return offset + std::stoi(s.substr(bracket, close - bracket));
+    // True when `c` can continue an identifier.
+    static bool is_ident_char(char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    }
+
+    // True when `line` opens with the keyword `kw` as a whole token, so a
+    // register or gate whose name merely begins with a keyword ("resets",
+    // "gatefoo", "qregs") is never read as that statement.
+    static bool starts_with_keyword(const std::string& line, std::string_view kw) {
+        return line.compare(0, kw.size(), kw) == 0 &&
+               (line.size() == kw.size() || !is_ident_char(line[kw.size()]));
+    }
+
+    // The line with any `// comment` removed, trimmed. OpenQASM 2.0 has only
+    // line comments. The one statement holding a string, `include`, is skipped
+    // whole in both passes, so cutting at the first "//" never splits a
+    // statement that is parsed.
+    static std::string strip_comment(const std::string& line) {
+        return trim(line.substr(0, line.find("//")));
+    }
+
+    // One statement with its terminating ';' removed. The parser reads a line
+    // as one statement, so a second ';' means a second statement it would not
+    // parse, and it is refused rather than dropped.
+    static std::string single_statement(const std::string& line) {
+        std::string stmt = line;
+        if (!stmt.empty() && stmt.back() == ';') stmt.pop_back();
+        if (stmt.find(';') != std::string::npos) {
+            throw std::runtime_error(
+                "QASM2Parser: '" + line + "' holds more than one statement; this "
+                "parser reads one statement per line");
         }
-        return -1;
+        return stmt;
+    }
+
+    // OpenQASM 2.0's nninteger, the only integer its grammar has: "0", or a
+    // non-zero digit followed by digits, with no sign. `text` must already be
+    // trimmed. Anything else throws naming `what`, and so does a value too
+    // large for an int.
+    static int require_nninteger(const std::string& text, const std::string& what) {
+        const bool digits_only =
+            !text.empty() &&
+            std::all_of(text.begin(), text.end(), [](char c) { return c >= '0' && c <= '9'; });
+        if (!digits_only || (text.size() > 1 && text[0] == '0')) {
+            throw std::runtime_error(
+                "QASM2Parser: " + what + " '" + text + "' is not an OpenQASM 2.0 "
+                "integer (0, or digits with no leading zero, and no sign)");
+        }
+        int value = 0;
+        const char* const end = text.data() + text.size();
+        const auto [stop, ec] = std::from_chars(text.data(), end, value);
+        if (ec != std::errc() || stop != end) {
+            throw std::runtime_error(
+                "QASM2Parser: " + what + " '" + text + "' does not fit an int");
+        }
+        return value;
+    }
+
+    // Global index of `name[index_text]`. Throws when `name` is not a declared
+    // register of this kind, when the index is not an OpenQASM 2.0 integer, and
+    // when it lies outside the register: offset + index would otherwise land on
+    // a bit of the next register, which QuantumCircuit's own bounds check cannot
+    // tell from a legitimate one.
+    static int indexed_operand(const std::string& name, const std::string& index_text,
+                               const std::unordered_map<std::string, int>& offsets,
+                               const std::unordered_map<std::string, int>& sizes,
+                               const char* kind) {
+        const auto it = offsets.find(name);
+        if (it == offsets.end()) {
+            throw std::runtime_error("QASM2Parser: '" + name + "' is not a declared " +
+                                     kind);
+        }
+        const int index = require_nninteger(trim(index_text), std::string(kind) + " index");
+        const int size = sizes.at(name);
+        if (index >= size) {
+            throw std::runtime_error(
+                "QASM2Parser: index " + std::to_string(index) + " is out of range for " +
+                kind + " '" + name + "' of size " + std::to_string(size));
+        }
+        return it->second + index;
+    }
+
+    // The indexed operand in `s`, which may still carry its statement keyword
+    // ("measure q[0] ", "reset q[1]"): the identifier directly before the first
+    // '[', whitespace between them allowed, then the index up to ']'. Returns
+    // -1 when `s` has no '[', so the caller can try the whole-register form.
+    static int resolve_reg_index(const std::string& s,
+                                 const std::unordered_map<std::string, int>& offsets,
+                                 const std::unordered_map<std::string, int>& sizes,
+                                 const char* kind) {
+        const auto open = s.find('[');
+        if (open == std::string::npos) return -1;
+        const auto close = s.find(']', open);
+        if (close == std::string::npos) {
+            throw std::runtime_error("QASM2Parser: unterminated index in '" + trim(s) + "'");
+        }
+        std::size_t end = open;
+        while (end > 0 && (s[end - 1] == ' ' || s[end - 1] == '\t')) --end;
+        std::size_t start = end;
+        while (start > 0 && is_ident_char(s[start - 1])) --start;
+        return indexed_operand(s.substr(start, end - start),
+                               s.substr(open + 1, close - open - 1), offsets, sizes, kind);
     }
 
     // Resolve a BARE register reference (no [index]) inside `s`: matches a
@@ -625,12 +727,14 @@ private:
         return false;
     }
 
-    // Parse "reg[i], reg[j], ..." using register offset map for global indices.
+    // Parse "reg[i], reg[j], ..." into global qubit indices. Each indexed token
+    // is exactly `name[index]`: the name is looked up whole and nothing may
+    // follow the ']'.
     static std::vector<int> parse_qubits_mapped(
         const std::string& s,
-        const std::unordered_map<std::string, int>& offsets
+        const std::unordered_map<std::string, int>& offsets,
+        const std::unordered_map<std::string, int>& sizes
     ) {
-        if (offsets.empty()) return parse_qubits(s);
         std::vector<int> qubits;
         std::istringstream ss(s);
         std::string token;
@@ -639,23 +743,15 @@ private:
             auto bracket = token.find('[');
             if (bracket == std::string::npos) continue;
             auto close = token.find(']', bracket);
-            if (close == std::string::npos) continue;
-            std::string reg_name = trim(token.substr(0, bracket));
-            int idx = std::stoi(token.substr(bracket + 1, close - bracket - 1));
-            auto it = offsets.find(reg_name);
-            int offset = (it != offsets.end()) ? it->second : 0;
-            qubits.push_back(offset + idx);
+            if (close == std::string::npos || close + 1 != token.size()) {
+                throw std::runtime_error("QASM2Parser: malformed qubit operand '" + token +
+                                         "'");
+            }
+            qubits.push_back(indexed_operand(trim(token.substr(0, bracket)),
+                                             token.substr(bracket + 1, close - bracket - 1),
+                                             offsets, sizes, "qreg"));
         }
         return qubits;
-    }
-
-    static int extract_qubit(const std::string& line, const std::string& reg_name) {
-        auto pos = line.find(reg_name + "[");
-        if (pos == std::string::npos) return -1;
-        auto bracket = pos + reg_name.size() + 1;
-        auto close = line.find(']', bracket);
-        if (close == std::string::npos) return -1;
-        return std::stoi(line.substr(bracket, close - bracket));
     }
 
     // Evaluate a single parameter token that may contain 'pi' expressions.
@@ -725,20 +821,6 @@ private:
             }
         }
         return params;
-    }
-
-    static std::vector<int> parse_qubits(const std::string& s) {
-        std::vector<int> qubits;
-        size_t pos = 0;
-        while (pos < s.size()) {
-            auto bracket = s.find('[', pos);
-            if (bracket == std::string::npos) break;
-            auto close = s.find(']', bracket);
-            if (close == std::string::npos) break;
-            qubits.push_back(std::stoi(s.substr(bracket + 1, close - bracket - 1)));
-            pos = close + 1;
-        }
-        return qubits;
     }
 
     // Try to apply a built-in gate. Returns true if recognized.

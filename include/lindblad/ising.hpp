@@ -37,7 +37,9 @@ struct IsingHamiltonian {
     // Convert to SparsePauliOp for use with Estimator / VQE / QAOA.
     // Pauli string ordering (project LSB-first convention, see
     // docs/Architecture.md "Conventions"): qubit i maps to string position i,
-    // so h[i] becomes a 'Z' at pauli[i].
+    // so h[i] becomes a 'Z' at pauli[i]. With every coefficient zero the
+    // result is SparsePauliOp::zero(n_qubits()), never an operator with no
+    // terms.
     SparsePauliOp to_sparse_pauli_op() const;
 
     // Evaluate energy for a given bitstring (x ∈ {0,1}^n, MSB first).

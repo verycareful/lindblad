@@ -282,7 +282,7 @@ TEST(V11291QasmConditions, AMalformedGuardIsRefused) {
     }
 }
 
-// ---- Red in this release: the parser accepts these today ------------------
+// ---- Inputs the grammar forbids, refused -----------------------------------
 
 TEST(V11291QasmConditions, Qasm2AnEmptyValueIsRefused) {
     // Nothing between `==` and `)` is not a value, and reading it as 0 turns a

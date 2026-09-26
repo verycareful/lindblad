@@ -19,7 +19,7 @@ Fields and defaults (from the header):
 - `max_iterations = 100`: cap on objective evaluations (one circuit run through the estimator each; one per iteration for every method here). Reaching it ends the run with `converged = false`
 - `convergence_threshold = 1e-6`: relative `x` tolerance at which the minimiser declares convergence
 - `optimizer = "COBYLA"`: which minimiser runs the classical loop. `"COBYLA"` is FLOP's; `"NLOPT_COBYLA"`, `"NELDER_MEAD"` and `"BOBYQA"` are NLopt's. An unknown name warns and runs the default
-- `initial_step = 0.3`: first trial displacement along each parameter axis, in radians
+- `initial_step = 0.3`: first trial displacement along each parameter axis, in radians. BOBYQA needs every parameter interval at least twice the step wide, so with the `[-2*pi, 2*pi]` box a step above `2*pi` makes it refuse the request before evaluating anything; that throws `std::invalid_argument` naming `QAOA::optimize` and the method, with NLopt's own reason after the colon
 - `seed = 0`: seed for the initial parameter perturbation and the final sampling; `0` draws from `std::random_device`. The draw is bit-identical across compilers for a given seed
 - `initial_thetas`: optional per-qubit `Ry(theta)` initialization (empty uses H)
 
@@ -49,6 +49,7 @@ Result optimize(
 Behavior (verified against `src/algorithms/qaoa.cpp`):
 
 - If `mixer_hamiltonian` is empty, constructs a default mixer $\sum_i X_i$
+- Throws `std::invalid_argument`, here and in `build_circuit` alike, for a cost Hamiltonian with no terms, with terms of different widths, or that is not Hermitian (the cost layer, like the mixer's, rotates by each coefficient's real part), for a mixer term whose width is not the cost Hamiltonian's, and for a mixer term with a non-zero imaginary coefficient: the mixer rotation uses the real part only, and a mixer that is not Hermitian has no unitary `exp(-i*beta*B)`, so the real part alone would run a different mixer under the caller's name
 - Parameter count is `2 * p`
 - Initializes parameters in `[-0.05, 0.05]` with RNG seeded by `options.seed`
 - Uses the minimiser `options.optimizer` names (default FLOP COBYLA); bounds `[-2*pi, 2*pi]` on every parameter, first step `options.initial_step`

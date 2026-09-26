@@ -182,6 +182,12 @@ set(LINDBLAD_TEST_SOURCES
     test_v11291_clifford_ising.cpp
     test_v11291_qasm_conditions.cpp
     test_v11291_scheduling.cpp
+    test_v11292_observable_width.cpp
+    test_v11292_qasm_operands.cpp
+    test_v11292_optimizer_seam.cpp
+    test_v11292_mps_two_qubit_order.cpp
+    test_v11292_pauli_rules.cpp
+    test_v11292_maqaoa_gammas.cpp
 )
 
 # The R.1.16.0 diagnostic's strict leg. This flag governs the file's OWN

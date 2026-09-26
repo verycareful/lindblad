@@ -8,14 +8,17 @@
 // Commercial License Agreement with the Author.
 
 #include "lindblad/operators.hpp"
+#include "lindblad/detail/pauli_rules.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/gates.hpp"
+#include "lindblad/validation.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 
 namespace lindblad {
@@ -23,6 +26,10 @@ namespace lindblad {
 // =============================================================================
 // PauliString
 // =============================================================================
+
+PauliString::PauliString(const std::string& p, Complex128 c) : pauli(p), coeff(c) {
+    detail::check_pauli_label(pauli, "PauliString");
+}
 
 PauliString PauliString::compose(const PauliString& other) const {
     if (pauli.size() != other.pauli.size()) {
@@ -74,10 +81,108 @@ bool PauliString::commutes_with(const PauliString& other) const {
 }
 
 // =============================================================================
+// Pauli rules (detail/pauli_rules.hpp)
+// =============================================================================
+
+namespace detail {
+
+void check_pauli_label(const std::string& label, const char* where) {
+    for (std::size_t q = 0; q < label.size(); ++q) {
+        const char c = label[q];
+        if (c != 'I' && c != 'X' && c != 'Y' && c != 'Z') {
+            throw std::invalid_argument(
+                std::string(where) + ": '" + std::string(1, c) + "' at position " +
+                std::to_string(q) + " of '" + label + "' is not a Pauli; a Pauli "
+                "string is written with I, X, Y and Z, uppercase");
+        }
+    }
+}
+
+int uniform_pauli_width(const std::vector<PauliString>& terms, const char* where) {
+    for (const PauliString& term : terms) check_pauli_label(term.pauli, where);
+    if (terms.empty()) return -1;
+    const int width = terms[0].n_qubits();
+    for (std::size_t i = 1; i < terms.size(); ++i) {
+        if (terms[i].n_qubits() != width) {
+            throw std::invalid_argument(
+                std::string(where) + ": term " + std::to_string(i) + " ('" +
+                terms[i].pauli + "') is " + std::to_string(terms[i].n_qubits()) +
+                " qubits wide but term 0 ('" + terms[0].pauli + "') is " +
+                std::to_string(width) + "; every term of one operator covers the "
+                "same qubits");
+        }
+    }
+    return width;
+}
+
+int required_pauli_width(const std::vector<PauliString>& terms, const char* where) {
+    const int width = uniform_pauli_width(terms, where);
+    if (width < 0) {
+        throw std::invalid_argument(
+            std::string(where) + ": the operator has no terms, so it has no width; "
+            "the zero operator on n qubits is SparsePauliOp::zero(n)");
+    }
+    return width;
+}
+
+void check_hermitian(const SparsePauliOp& op, const char* where) {
+    // Real term by term is the common case and needs no merging.
+    bool all_real = true;
+    for (const PauliString& term : op.terms) {
+        if (std::abs(term.coeff.imag) > DEFAULT_PHYSICAL_ATOL) {
+            all_real = false;
+            break;
+        }
+    }
+    if (all_real) return;
+
+    // Imaginary parts on repeated labels can cancel, so only the merged sum
+    // decides.
+    std::unordered_map<std::string, Complex128> merged;
+    for (const PauliString& term : op.terms) merged[term.pauli] += term.coeff;
+    for (const PauliString& term : op.terms) {
+        const Complex128 total = merged[term.pauli];
+        if (std::abs(total.imag) > DEFAULT_PHYSICAL_ATOL) {
+            throw std::invalid_argument(
+                std::string(where) + ": the operator is not Hermitian: label '" +
+                term.pauli + "' has coefficient " + std::to_string(total.real) +
+                (total.imag < 0.0 ? " - " : " + ") +
+                std::to_string(std::abs(total.imag)) +
+                "i once repeated labels are merged. Its expectation value is "
+                "complex, and this returns a real number");
+        }
+    }
+}
+
+void check_observable(const SparsePauliOp& op, int n_qubits, const char* where,
+                      const char* against) {
+    (void)required_pauli_width(op.terms, where);
+    for (std::size_t i = 0; i < op.terms.size(); ++i) {
+        const int width = op.terms[i].n_qubits();
+        if (width != n_qubits) {
+            throw std::invalid_argument(
+                std::string(where) + ": term " + std::to_string(i) + " ('" +
+                op.terms[i].pauli + "') is " + std::to_string(width) +
+                " qubits wide, which does not match the " + std::to_string(n_qubits) +
+                " qubit " + against + "; a term names exactly one Pauli per qubit");
+        }
+    }
+    check_hermitian(op, where);
+}
+
+}  // namespace detail
+
+// =============================================================================
 // SparsePauliOp
 // =============================================================================
 
+SparsePauliOp::SparsePauliOp(const std::vector<PauliString>& terms) : terms(terms) {
+    (void)detail::uniform_pauli_width(this->terms, "SparsePauliOp");
+}
+
 SparsePauliOp SparsePauliOp::simplify(double atol) const {
+    const int width = detail::uniform_pauli_width(terms, "SparsePauliOp::simplify");
+
     std::unordered_map<std::string, Complex128> merged;
     for (const auto& term : terms) {
         merged[term.pauli] += term.coeff;
@@ -88,6 +193,16 @@ SparsePauliOp SparsePauliOp::simplify(double atol) const {
         if (coeff.norm_sq() > atol * atol) {
             result.terms.push_back({label, coeff});
         }
+    }
+
+    // Everything cancelled: the result is the zero operator, which keeps the
+    // width the terms had. Returning no terms would lose it, and an operator
+    // with no terms is refused wherever a width is needed, so H - H must stay
+    // evaluable as 0. An operator that had no terms to begin with has no width
+    // to keep and stays empty.
+    if (result.terms.empty() && width >= 0) {
+        result.terms.push_back({std::string(static_cast<std::size_t>(width), 'I'),
+                                Complex128(0.0, 0.0)});
     }
     return result;
 }
@@ -121,6 +236,17 @@ SparsePauliOp SparsePauliOp::tensor(const SparsePauliOp& other) const {
 }
 
 SparsePauliOp SparsePauliOp::operator+(const SparsePauliOp& other) const {
+    // An operand with no terms has no width and adds nothing, so only two
+    // operands that both have terms can disagree.
+    const int lhs = detail::uniform_pauli_width(terms, "SparsePauliOp::operator+");
+    const int rhs = detail::uniform_pauli_width(other.terms, "SparsePauliOp::operator+");
+    if (lhs >= 0 && rhs >= 0 && lhs != rhs) {
+        throw std::invalid_argument(
+            "SparsePauliOp::operator+: the left operand is " + std::to_string(lhs) +
+            " qubits wide and the right is " + std::to_string(rhs) +
+            "; a sum acts on one register");
+    }
+
     SparsePauliOp result;
     result.terms = terms;
     result.terms.insert(result.terms.end(), other.terms.begin(), other.terms.end());
@@ -136,7 +262,9 @@ SparsePauliOp SparsePauliOp::operator*(double scalar) const {
 }
 
 std::vector<Complex128> SparsePauliOp::to_matrix() const {
-    int nq = n_qubits();
+    // Every term's mask indexes a dim x dim matrix, so a term wider than the
+    // first would write past it.
+    const int nq = detail::required_pauli_width(terms, "SparsePauliOp::to_matrix");
     size_t dim = 1ULL << nq;
     std::vector<Complex128> matrix(dim * dim, Complex128(0.0, 0.0));
 
@@ -201,6 +329,11 @@ double SparsePauliOp::expectation_value(const Statevector& sv) const {
     // positions). The phase is determined by Z and Y parities.
     //
     // This traverses the statevector once per term with no heap allocation.
+    //
+    // The masks come from each term's own string, so the width check is what
+    // keeps j = k ^ x_mask inside the amplitude arrays.
+    detail::check_observable(*this, sv.n_qubits, "SparsePauliOp::expectation_value");
+
     double result = 0.0;
     const double* rp = sv.real_parts;
     const double* ip = sv.imag_parts;
@@ -265,9 +398,18 @@ double SparsePauliOp::expectation_value(const Statevector& sv) const {
 std::vector<double> SparsePauliOp::expectation_value_batch(
     const std::vector<const Statevector*>& states
 ) const {
+    // Checked before the batch size, so an operator with no terms is refused
+    // even when there is nothing to evaluate it on, and every state is checked
+    // before any of them is evaluated.
+    (void)detail::required_pauli_width(terms, "SparsePauliOp::expectation_value_batch");
+    for (const Statevector* state : states) {
+        detail::check_observable(*this, state->n_qubits,
+                                       "SparsePauliOp::expectation_value_batch");
+    }
+
     const size_t M = states.size();
     std::vector<double> results(M, 0.0);
-    if (M == 0 || terms.empty()) return results;
+    if (M == 0) return results;
 
     // Precompute masks once for all terms — shared across states.
     struct TermMasks { uint64_t x_mask, z_mask, y_mask; Complex128 coeff; };
@@ -339,6 +481,7 @@ SparsePauliOp SparsePauliOp::from_list(
     for (const auto& [label, coeff] : label_coeff) {
         result.terms.push_back({label, coeff});
     }
+    (void)detail::uniform_pauli_width(result.terms, "SparsePauliOp::from_list");
     return result;
 }
 

@@ -178,6 +178,10 @@ public:
     explicit ExpectationObserver(SparsePauliOp observable, std::string label = {})
         : BundleWriter(std::move(label)), observable_(std::move(observable)) {}
 
+    // An observable with no terms, a term that is not exactly the register's
+    // width, or one that is not Hermitian is a caller mistake and throws
+    // std::invalid_argument here, before the run (the rules in operators.hpp).
+    bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
 
     const std::vector<double>& values() const { return values_; }

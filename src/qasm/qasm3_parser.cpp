@@ -45,6 +45,8 @@
 #include "lindblad/types.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -52,6 +54,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -608,6 +611,56 @@ private:
             " (near '" + std::string(peek().text) + "')");
     }
 
+    // The value of an INT token. The lexer makes an INT only from decimal
+    // digits, so the one way the conversion fails is a value too large for an
+    // int, and that is refused like any other malformed input rather than
+    // escaping as std::out_of_range, which is not a runtime_error.
+    int int_literal(const Token& t, std::string_view what) const {
+        int value = 0;
+        const char* const first = t.text.data();
+        const char* const last = first + t.text.size();
+        const auto [stop, ec] = std::from_chars(first, last, value);
+        if (ec != std::errc() || stop != last) {
+            fail(std::string(what) + " '" + std::string(t.text) + "' does not fit an int");
+        }
+        return value;
+    }
+
+    // `index` must name a bit of the register it indexes: offset + index would
+    // otherwise land on a bit of the next register, which QuantumCircuit's own
+    // bounds check cannot tell from a legitimate one.
+    void check_register_index(int index, int size, const std::string& reg,
+                              std::string_view kind) const {
+        if (index >= size) {
+            fail("index " + std::to_string(index) + " is out of range for " +
+                 std::string(kind) + " register '" + reg + "' of size " +
+                 std::to_string(size));
+        }
+    }
+
+    // The value of an INT or FLOAT token used as an angle. std::stod throws
+    // std::out_of_range when the value lies outside double's range (1e999, or
+    // 1e-400 below the smallest subnormal), and that is refused here like any
+    // other malformed input.
+    double number_literal(const Token& t) const {
+        try {
+            return std::stod(std::string(t.text));
+        } catch (const std::out_of_range&) {
+            fail("numeric literal '" + std::string(t.text) + "' is outside the range of a double");
+        }
+    }
+
+    // `pow(n) @` modifiers multiply. The running product is checked rather than
+    // left to overflow int, which is undefined behaviour.
+    int multiply_pow(int acc, int sign, int n) const {
+        const long long next = static_cast<long long>(acc) * sign * n;
+        if (next > INT_MAX || next < INT_MIN) {
+            fail("pow modifiers multiply to " + std::to_string(next) +
+                 ", which does not fit an int");
+        }
+        return static_cast<int>(next);
+    }
+
     // ====================== Entry ======================
 
     QuantumCircuit run() {
@@ -669,7 +722,7 @@ private:
                 int size = 1;
                 if (accept(TT::LBRACKET)) {
                     auto& it = expect(TT::INT, "qubit register size");
-                    size = std::stoi(std::string(it.text));
+                    size = int_literal(it, "qubit register size");
                     expect(TT::RBRACKET, "']'");
                 }
                 auto& name_tok = expect(TT::IDENT, "register name");
@@ -677,7 +730,7 @@ private:
                 // QASM 2 `qreg name[N]` form: bracket after name.
                 if (accept(TT::LBRACKET)) {
                     auto& it = expect(TT::INT, "qubit register size");
-                    size = std::stoi(std::string(it.text));
+                    size = int_literal(it, "qubit register size");
                     expect(TT::RBRACKET, "']'");
                 }
                 qreg_offsets_[name] = n_qubits_;
@@ -692,14 +745,14 @@ private:
                 int size = 1;
                 if (accept(TT::LBRACKET)) {
                     auto& it = expect(TT::INT, "bit register size");
-                    size = std::stoi(std::string(it.text));
+                    size = int_literal(it, "bit register size");
                     expect(TT::RBRACKET, "']'");
                 }
                 auto& name_tok = expect(TT::IDENT, "register name");
                 std::string name(name_tok.text);
                 if (accept(TT::LBRACKET)) {
                     auto& it = expect(TT::INT, "bit register size");
-                    size = std::stoi(std::string(it.text));
+                    size = int_literal(it, "bit register size");
                     expect(TT::RBRACKET, "']'");
                 }
                 creg_offsets_[name] = n_clbits_;
@@ -853,7 +906,7 @@ private:
         int count = 1;
         if (accept(TT::LPAREN)) {
             auto& n = expect(TT::INT, "integer control count");
-            count = std::stoi(std::string(n.text));
+            count = int_literal(n, "control count");
             if (count < 1) {
                 fail("ctrl(" + std::to_string(count) + "): control count must be >= 1");
             }
@@ -879,7 +932,7 @@ private:
                 if (accept(TT::MINUS)) sign = -1;
                 else (void)accept(TT::PLUS);
                 auto& n = expect(TT::INT, "integer exponent");
-                pc.pow_exp *= sign * std::stoi(std::string(n.text));
+                pc.pow_exp = multiply_pow(pc.pow_exp, sign, int_literal(n, "pow exponent"));
                 expect(TT::RPAREN, "')'");
                 expect(TT::AT, "'@'");
                 continue;
@@ -977,11 +1030,11 @@ private:
         const Token& t = peek();
         if (t.type == TT::INT) {
             ++pos_;
-            return ParamExpr::make_literal(std::stod(std::string(t.text)));
+            return ParamExpr::make_literal(number_literal(t));
         }
         if (t.type == TT::FLOAT) {
             ++pos_;
-            return ParamExpr::make_literal(std::stod(std::string(t.text)));
+            return ParamExpr::make_literal(number_literal(t));
         }
         if (t.type == TT::IDENT || (t.type == TT::KEYWORD && t.text == "pi")) {
             ++pos_;
@@ -1027,7 +1080,8 @@ private:
             return offset;
         }
         auto& idx = expect(TT::INT, "qubit index");
-        int i = std::stoi(std::string(idx.text));
+        const int i = int_literal(idx, "qubit index");
+        check_register_index(i, qreg_sizes_.at(name), name, "qubit");
         expect(TT::RBRACKET, "']'");
         return offset + i;
     }
@@ -1048,7 +1102,8 @@ private:
             return offset;
         }
         auto& idx = expect(TT::INT, "classical bit index");
-        int i = std::stoi(std::string(idx.text));
+        const int i = int_literal(idx, "classical bit index");
+        check_register_index(i, creg_sizes_.at(name), name, "bit");
         expect(TT::RBRACKET, "']'");
         return offset + i;
     }
@@ -1131,10 +1186,11 @@ private:
         int bit_global;
         if (accept(TT::LBRACKET)) {
             auto& idx = expect(TT::INT, "classical bit index");
-            int i = std::stoi(std::string(idx.text));
-            expect(TT::RBRACKET, "']'");
+            const int i = int_literal(idx, "classical bit index");
             auto it = creg_offsets_.find(reg_name);
             if (it == creg_offsets_.end()) fail("unknown classical register '" + reg_name + "'");
+            check_register_index(i, creg_sizes_.at(reg_name), reg_name, "bit");
+            expect(TT::RBRACKET, "']'");
             bit_global = it->second + i;
         } else {
             // `if (c == V)` — supported only when c is single-bit.
@@ -1148,7 +1204,16 @@ private:
         }
         expect(TT::EQEQ, "'=='");
         auto& v = expect(TT::INT, "condition value");
-        int val = std::stoi(std::string(v.text));
+        const int val = int_literal(v, "condition value");
+        // One bit holds only 0 or 1. Any other value is a condition that can
+        // never hold, and the `else` below, which takes the value to be 0 or 1,
+        // would then run only when the bit is 0 where the source's else runs
+        // always. Leading zeros are a valid decimal literal here (01 is 1); the
+        // value is what is checked, not the spelling.
+        if (val != 0 && val != 1) {
+            fail("condition value " + std::to_string(val) +
+                 " is not 0 or 1, the only values a single bit takes");
+        }
         expect(TT::RPAREN, "')'");
 
         int saved_clbit = cond_clbit_;
@@ -1202,7 +1267,7 @@ private:
                 if (accept(TT::MINUS)) sign = -1;
                 else (void)accept(TT::PLUS);
                 auto& n = expect(TT::INT, "integer exponent");
-                pow_exp *= sign * std::stoi(std::string(n.text));
+                pow_exp = multiply_pow(pow_exp, sign, int_literal(n, "pow exponent"));
                 expect(TT::RPAREN, "')'");
                 expect(TT::AT, "'@'");
                 continue;

@@ -129,7 +129,9 @@ public:
     // elimination runs there.
     OutcomeSlab outcome_slab(Elimination method = Elimination::Plain) const;
 
-    // Expectation of Pauli string (+1, -1, or 0)
+    // Expectation of Pauli string (+1, -1, or 0). pauli[q] acts on qubit q.
+    // Throws std::invalid_argument unless the string is n_qubits long and
+    // written with I, X, Y and Z, uppercase.
     int expectation_pauli(const std::string& pauli) const;
 
     // Entanglement entropy across a cut, in bits, without leaving the tableau.
