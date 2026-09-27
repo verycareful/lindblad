@@ -93,5 +93,29 @@ bool svd_thin(const std::complex<double>* data, int rows, int cols,
 bool eigh(const std::complex<double>* data, int n, MatrixOrder order,
           double* evals_out, std::complex<double>* evecs_out);
 
+// -----------------------------------------------------------------------------
+// qr_thin
+// -----------------------------------------------------------------------------
+// Thin QR of a rows x cols complex matrix by Householder reflections. With
+// k = min(rows, cols):
+//
+//   Q_out  rows x k, column-major, orthonormal columns
+//   R_out  k x cols, column-major, upper trapezoidal
+//
+// so that the input equals Q_out * R_out. Every output buffer must hold its
+// full size before the call.
+//
+// Householder QR is backward stable and has no iteration to fail, so a finite
+// input always factorises; a non-finite one propagates into both factors
+// rather than being reported. Returns false only for an empty shape.
+//
+// An LQ needs no entry of its own. A row-major buffer read column-major is the
+// transpose, so passing a row-major M as a column-major M^T gives M^T = QR,
+// hence M = R^T Q^T, where Q^T has orthonormal rows because Q has orthonormal
+// columns. Both transposed factors are then the output buffers read row-major.
+bool qr_thin(const std::complex<double>* data, int rows, int cols,
+             MatrixOrder order, std::complex<double>* Q_out,
+             std::complex<double>* R_out);
+
 }  // namespace detail
 }  // namespace lindblad

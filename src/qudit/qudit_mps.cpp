@@ -11,8 +11,9 @@
 
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
+#include "lindblad/detail/eigen_backend.hpp"
 
-#include <Eigen/SVD>
+#include <Eigen/Core>
 
 #include <algorithm>
 #include <chrono>
@@ -36,6 +37,24 @@ static inline std::complex<double> to_std(const Complex128& c) noexcept {
 static inline Complex128 from_std(const std::complex<double>& z) noexcept {
     return Complex128(z.real(), z.imag());
 }
+
+// Complex128 is layout-identical to std::complex<double>, so site data is
+// handed to the QR and mapped for products in place.
+static inline std::complex<double>* as_std(Complex128* p) noexcept {
+    return reinterpret_cast<std::complex<double>*>(p);
+}
+static inline const std::complex<double>* as_std(const Complex128* p) noexcept {
+    return reinterpret_cast<const std::complex<double>*>(p);
+}
+
+using RowMajorC = Eigen::Matrix<std::complex<double>, Eigen::Dynamic,
+                                Eigen::Dynamic, Eigen::RowMajor>;
+using ColMajorC = Eigen::Matrix<std::complex<double>, Eigen::Dynamic,
+                                Eigen::Dynamic, Eigen::ColMajor>;
+
+// Below this a marginal is treated as zero: sampling falls back to its
+// degenerate rule and renormalisation is skipped rather than dividing by noise.
+static constexpr double MARGINAL_FLOOR = 1e-30;
 
 // One-time note when either Jacobi kernel is selected on the qudit MPS. The
 // latch is per layer, so this fires even when a qubit MPS in the same process
@@ -149,8 +168,8 @@ size_t QuditMPS::ipow(size_t base, int exp) noexcept {
 // Eigen matrices are column-major and Complex128 is layout-identical to
 // std::complex<double>, so the block is mapped in place rather than copied.
 detail::SvdTruncation QuditMPS::truncate_block(const detail::DenseMatrix& M,
-                                               const char* ctx) {
-    ++svd_calls;
+                                               const char* ctx,
+                                               detail::FidelityLedger& ledger) {
     if (svd_method == SVDMethod::Jacobi || svd_method == SVDMethod::EigenJacobi)
         warn_jacobi_slower_once_qudit(svd_method);
     // Bracketing the whole ladder, rescue included, as the qubit layer does.
@@ -164,15 +183,21 @@ detail::SvdTruncation QuditMPS::truncate_block(const detail::DenseMatrix& M,
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - svd_t0).count());
 
-    // Counted past the throw, so this reports rescues that SUCCEEDED: a failed
+    // Counted once the ladder has returned, so every figure covers splits that
+    // completed and the rescue counts report rescues that SUCCEEDED: a failed
     // rescue does not return. The Gram route's floor-rejected weight is booked
     // beside the truncation total, never inside it.
+    ++svd_calls;
     if (r.used_jacobi_rescue) ++jacobi_rescues;
     if (r.used_gram_fallback) ++gram_fallbacks;
     floor_rejected += r.floor_rejected_weight;
     total_truncation_error += r.discarded_weight;
     max_verify_resid_excess =
         std::max(max_verify_resid_excess, r.residual_excess);
+
+    double kept = 0.0;
+    for (int i = 0; i < r.rank; ++i) kept += r.S(i) * r.S(i);
+    ledger.record(kept, r.discarded_weight);
     return r;
 }
 
@@ -187,12 +212,16 @@ QuditMPS::QuditMPS(int n_qudits_, int d_, int max_bond_dim_, double svd_cutoff_)
     if (max_bond_dim_ < 1)
         throw std::invalid_argument("QuditMPS: max_bond_dim must be >= 1");
 
-    tensors.reserve(static_cast<size_t>(n_qudits_));
+    tensors_.reserve(static_cast<size_t>(n_qudits_));
     for (int q = 0; q < n_qudits_; ++q) {
         MPSSiteTensor T(d_, 1, 1);
         T.at(0, 0, 0) = Complex128(1.0, 0.0);  // |0> on every site
-        tensors.push_back(std::move(T));
+        tensors_.push_back(std::move(T));
     }
+    // A bond-1 unit vector is orthonormal both ways, so any single site could
+    // be named the centre of |0...0>; site 0 is where sampling starts.
+    span_lo = 0;
+    span_hi = 0;
 }
 
 QuditMPS::QuditMPS(const QuditStatevector& sv,
@@ -202,8 +231,22 @@ QuditMPS::QuditMPS(const QuditStatevector& sv,
 {
     if (max_bond_dim_ < 1)
         throw std::invalid_argument("QuditMPS: max_bond_dim must be >= 1");
+    rebuild_from(sv);
+}
 
-    tensors.reserve(static_cast<size_t>(n_qudits));
+void QuditMPS::rebuild_from(const QuditStatevector& sv) {
+    if (sv.n_qudits != n_qudits || sv.d != d) {
+        throw std::invalid_argument(
+            "QuditMPS: the amplitudes cover " + std::to_string(sv.n_qudits) +
+            " qudits of dimension " + std::to_string(sv.d) + ", this chain " +
+            std::to_string(n_qudits) + " of dimension " + std::to_string(d));
+    }
+
+    // Built beside the chain rather than into it, so a throw part way through
+    // the sweep leaves the chain and its fidelity figures as they were.
+    std::vector<MPSSiteTensor> sites;
+    sites.reserve(static_cast<size_t>(n_qudits));
+    detail::FidelityLedger ledger = fidelity;
 
     // Pack the amplitudes into a dense complex matrix.
     //
@@ -231,8 +274,11 @@ QuditMPS::QuditMPS(const QuditStatevector& sv,
                                      static_cast<size_t>(d)]);
 
     for (int q = 0; q < n_qudits - 1; ++q) {
+        // Canonical by construction: every site before this one is an
+        // isometry and the residual is the whole remainder of the state, so
+        // the discarded fraction is a fraction of the state.
         const detail::SvdTruncation split =
-            truncate_block(M, "QuditMPS statevector decomposition");
+            truncate_block(M, "QuditMPS statevector decomposition", ledger);
         const detail::DenseMatrix& U = split.U;
         const detail::DenseMatrix& V = split.V;
         const detail::RealVector& S = split.S;
@@ -253,7 +299,7 @@ QuditMPS::QuditMPS(const QuditStatevector& sv,
                 for (int alpha = 0; alpha < chi; ++alpha)
                     Tq.at(sigma, aL, alpha) =
                         from_std(U(aL * d + sigma, alpha));
-        tensors.push_back(std::move(Tq));
+        sites.push_back(std::move(Tq));
 
         // Build residual M' = diag(S_truncated) * V^dagger_truncated
         // Vt rows are indexed by the singular values; we keep top `chi`.
@@ -297,8 +343,191 @@ QuditMPS::QuditMPS(const QuditStatevector& sv,
         for (int sigma = 0; sigma < d; ++sigma)
             for (int aL = 0; aL < chi_L; ++aL)
                 Tlast.at(sigma, aL, 0) = from_std(M(aL * d + sigma, 0));
-        tensors.push_back(std::move(Tlast));
+        sites.push_back(std::move(Tlast));
     }
+
+    // Sites 0..n-2 are the sweep's isometries, so the centre is the last site.
+    tensors_ = std::move(sites);
+    span_lo = n_qudits - 1;
+    span_hi = n_qudits - 1;
+    fidelity = ledger;
+}
+
+// =============================================================================
+// set_tensors / canonicalize - replacing the chain and moving its centre
+// =============================================================================
+
+void QuditMPS::set_tensors(std::vector<MPSSiteTensor> sites) {
+    const char* ctx = "QuditMPS::set_tensors";
+    const auto fail = [ctx](const std::string& what) {
+        throw std::invalid_argument(std::string(ctx) + ": " + what);
+    };
+    if (static_cast<int>(sites.size()) != n_qudits) {
+        fail("expected " + std::to_string(n_qudits) + " site tensors, got " +
+             std::to_string(sites.size()));
+    }
+    for (int q = 0; q < n_qudits; ++q) {
+        const MPSSiteTensor& t = sites[static_cast<size_t>(q)];
+        const std::string site = "site " + std::to_string(q);
+        if (t.d != d) {
+            fail(site + " has physical dimension " + std::to_string(t.d) +
+                 " where the chain's is " + std::to_string(d));
+        }
+        if (t.chi_L < 1 || t.chi_R < 1) {
+            fail(site + " has a bond below 1 (" + std::to_string(t.chi_L) +
+                 ", " + std::to_string(t.chi_R) + ")");
+        }
+        if (q == 0 && t.chi_L != 1) fail("the left end bond must be 1");
+        if (q == n_qudits - 1 && t.chi_R != 1) {
+            fail("the right end bond must be 1");
+        }
+        if (q > 0 && sites[static_cast<size_t>(q - 1)].chi_R != t.chi_L) {
+            fail(site + " has left bond " + std::to_string(t.chi_L) +
+                 " where its neighbour's right bond is " +
+                 std::to_string(sites[static_cast<size_t>(q - 1)].chi_R));
+        }
+        const size_t expected = static_cast<size_t>(t.d) *
+                                static_cast<size_t>(t.chi_L) *
+                                static_cast<size_t>(t.chi_R);
+        if (t.data.size() != expected) {
+            fail(site + " holds " + std::to_string(t.data.size()) +
+                 " entries where its shape needs " + std::to_string(expected));
+        }
+        for (const Complex128& c : t.data) {
+            if (!is_finite_strict(c.real) || !is_finite_strict(c.imag)) {
+                fail(site + " holds a non-finite entry");
+            }
+        }
+    }
+
+    tensors_ = std::move(sites);
+    span_lo = 0;
+    span_hi = n_qudits - 1;
+    fidelity.reset();
+}
+
+void QuditMPS::canonicalize(int site) {
+    detail::check_qudit(site, n_qudits, "QuditMPS::canonicalize");
+    focus(site, site);
+}
+
+// =============================================================================
+// Moving the orthogonality centre
+// =============================================================================
+//
+// A site's data, [sigma][aL][aR], is row-major as its (d chi_L) x chi_R left
+// matrix, so the rightward step hands it to the QR in place. As a
+// chi_L x (d chi_R) right matrix it is d separate chi_L x chi_R blocks, so the
+// leftward step assembles that matrix first and the rightward step multiplies
+// R into the neighbour block by block.
+
+void QuditMPS::shift_right(int q) {
+    MPSSiteTensor& A = tensors_[static_cast<size_t>(q)];
+    MPSSiteTensor& B = tensors_[static_cast<size_t>(q + 1)];
+    const int rows = d * A.chi_L;
+    const int chi = A.chi_R;
+    const int k = std::min(rows, chi);
+
+    std::vector<std::complex<double>> Q(static_cast<size_t>(rows) * k);
+    std::vector<std::complex<double>> R(static_cast<size_t>(k) * chi);
+    detail::qr_thin(as_std(A.data.data()), rows, chi,
+                    detail::MatrixOrder::RowMajor, Q.data(), R.data());
+
+    MPSSiteTensor A_new(d, A.chi_L, k);
+    Eigen::Map<RowMajorC>(as_std(A_new.data.data()), rows, k) =
+        Eigen::Map<const ColMajorC>(Q.data(), rows, k);
+
+    const int chi_R = B.chi_R;
+    const size_t in_block = static_cast<size_t>(chi) * chi_R;
+    const size_t out_block = static_cast<size_t>(k) * chi_R;
+    const Eigen::Map<const ColMajorC> Rm(R.data(), k, chi);
+    MPSSiteTensor B_new(d, k, chi_R);
+    for (int sigma = 0; sigma < d; ++sigma) {
+        Eigen::Map<RowMajorC>(as_std(B_new.data.data()) + sigma * out_block, k,
+                              chi_R) =
+            Rm * Eigen::Map<const RowMajorC>(
+                     as_std(B.data.data()) + sigma * in_block, chi, chi_R);
+    }
+
+    A = std::move(A_new);
+    B = std::move(B_new);
+}
+
+void QuditMPS::shift_left(int q) {
+    MPSSiteTensor& A = tensors_[static_cast<size_t>(q - 1)];
+    MPSSiteTensor& B = tensors_[static_cast<size_t>(q)];
+    const int chi = B.chi_L;
+    const int chi_R = B.chi_R;
+    const int cols = d * chi_R;
+    const int k = std::min(chi, cols);
+
+    // B as its chi x (d chi_R) right matrix, row-major, column sigma*chi_R + aR.
+    std::vector<std::complex<double>> Mb(static_cast<size_t>(chi) * cols);
+    for (int sigma = 0; sigma < d; ++sigma)
+        for (int aL = 0; aL < chi; ++aL)
+            for (int aR = 0; aR < chi_R; ++aR)
+                Mb[static_cast<size_t>(aL) * cols + sigma * chi_R + aR] =
+                    to_std(B.at(sigma, aL, aR));
+
+    // Read column-major that buffer is the transpose, so this factorises
+    // B^T = Q R, hence B = R^T Q^T (see detail::qr_thin).
+    std::vector<std::complex<double>> Q(static_cast<size_t>(cols) * k);
+    std::vector<std::complex<double>> R(static_cast<size_t>(k) * chi);
+    detail::qr_thin(Mb.data(), cols, chi, detail::MatrixOrder::ColMajor,
+                    Q.data(), R.data());
+
+    // Q^T is the column-major Q buffer read row-major: row alpha, column
+    // sigma*chi_R + aR.
+    MPSSiteTensor B_new(d, k, chi_R);
+    for (int sigma = 0; sigma < d; ++sigma)
+        for (int alpha = 0; alpha < k; ++alpha)
+            for (int aR = 0; aR < chi_R; ++aR)
+                B_new.at(sigma, alpha, aR) = from_std(
+                    Q[static_cast<size_t>(alpha) * cols + sigma * chi_R + aR]);
+
+    // L = R^T, chi x k, is the column-major R buffer read row-major, and A's
+    // left matrix multiplies it in place.
+    const int rows = d * A.chi_L;
+    MPSSiteTensor A_new(d, A.chi_L, k);
+    Eigen::Map<RowMajorC>(as_std(A_new.data.data()), rows, k) =
+        Eigen::Map<const RowMajorC>(as_std(A.data.data()), rows, chi) *
+        Eigen::Map<const RowMajorC>(R.data(), chi, k);
+
+    A = std::move(A_new);
+    B = std::move(B_new);
+}
+
+void QuditMPS::focus(int a, int b) {
+    while (span_lo < a) {
+        shift_right(span_lo);
+        ++span_lo;
+        span_hi = std::max(span_hi, span_lo);
+    }
+    while (span_hi > b) {
+        shift_left(span_hi);
+        --span_hi;
+        span_lo = std::min(span_lo, span_hi);
+    }
+}
+
+bool QuditMPS::split_needs_centre(int q) const {
+    if (canonical_form == CanonicalForm::Always) return true;
+    if (svd_cutoff > MPS_DEFAULT_CUTOFF) return true;
+    const MPSSiteTensor& A = tensors_[static_cast<size_t>(q)];
+    const MPSSiteTensor& B = tensors_[static_cast<size_t>(q + 1)];
+    return std::min(d * A.chi_L, d * B.chi_R) > max_bond_dim;
+}
+
+std::vector<double> QuditMPS::centre_marginals(int site) const {
+    const MPSSiteTensor& T = tensors_[static_cast<size_t>(site)];
+    const size_t block = static_cast<size_t>(T.chi_L) * T.chi_R;
+    std::vector<double> p(static_cast<size_t>(d), 0.0);
+    for (int sigma = 0; sigma < d; ++sigma)
+        for (size_t i = 0; i < block; ++i) {
+            const Complex128& c = T.data[sigma * block + i];
+            p[static_cast<size_t>(sigma)] += c.real * c.real + c.imag * c.imag;
+        }
+    return p;
 }
 
 // =============================================================================
@@ -313,7 +542,7 @@ QuditStatevector QuditMPS::to_statevector() const {
     size_t dim_so_far = 1;
 
     for (int q = 0; q < n_qudits; ++q) {
-        const auto& T = tensors[static_cast<size_t>(q)];
+        const auto& T = tensors_[static_cast<size_t>(q)];
         const int chi_L = T.chi_L;
         const int chi_R = T.chi_R;
         const size_t new_dim = dim_so_far * static_cast<size_t>(d);
@@ -350,15 +579,25 @@ QuditStatevector QuditMPS::to_statevector() const {
 // =============================================================================
 
 double QuditMPS::norm_sq() const {
-    // Left-to-right transfer matrix contraction:
+    // Left-to-right transfer matrix contraction over the open span:
     //   E_{q+1}[aR', aR] = sum_{sigma, aL', aL} conj(A_q[sigma,aL',aR']) *
     //                                              E_q[aL', aL] * A_q[sigma,aL,aR]
-    // Boundary: E_0 = [[1]] (1x1).
-    Eigen::MatrixXcd E(1, 1);
-    E(0, 0) = std::complex<double>(1.0, 0.0);
+    // The sites left of the span are left-orthonormal, so E arrives at its
+    // first site as the identity; the sites right of it are right-orthonormal,
+    // so what waits past its last site is the identity too, and closing on it
+    // is a trace. A single-site span is that site's squared Frobenius norm.
+    if (span_lo == span_hi) {
+        double sum = 0.0;
+        for (const Complex128& c : tensors_[static_cast<size_t>(span_lo)].data)
+            sum += c.real * c.real + c.imag * c.imag;
+        return sum;
+    }
 
-    for (int q = 0; q < n_qudits; ++q) {
-        const auto& T = tensors[static_cast<size_t>(q)];
+    const int chi_first = tensors_[static_cast<size_t>(span_lo)].chi_L;
+    Eigen::MatrixXcd E = Eigen::MatrixXcd::Identity(chi_first, chi_first);
+
+    for (int q = span_lo; q <= span_hi; ++q) {
+        const auto& T = tensors_[static_cast<size_t>(q)];
         const int chi_L = T.chi_L;
         const int chi_R = T.chi_R;
 
@@ -392,8 +631,7 @@ double QuditMPS::norm_sq() const {
         E = std::move(E_new);
     }
 
-    // Final E is 1x1 (since chi_R[n-1] = 1).
-    return E(0, 0).real();
+    return E.trace().real();
 }
 
 void QuditMPS::normalize() {
@@ -409,8 +647,8 @@ void QuditMPS::normalize() {
             "non-finite");
     }
     const double inv = 1.0 / n;
-    auto& T0 = tensors[0];
-    for (auto& v : T0.data) { v.real *= inv; v.imag *= inv; }
+    auto& T = tensors_[static_cast<size_t>(span_lo)];
+    for (auto& v : T.data) { v.real *= inv; v.imag *= inv; }
 }
 
 // norm_sq() is the measurement, as in the qubit MPS, and for the same reason:
@@ -447,7 +685,7 @@ void QuditMPS::apply_1qudit(int q, const std::vector<Complex128>& U_in,
         U_in, static_cast<size_t>(d), validation, "QuditMPS::apply_1qudit",
         U_fixed);
 
-    auto& T = tensors[static_cast<size_t>(q)];
+    auto& T = tensors_[static_cast<size_t>(q)];
     const int chi_L = T.chi_L;
     const int chi_R = T.chi_R;
 
@@ -477,8 +715,8 @@ void QuditMPS::apply_1qudit(int q, const std::vector<Complex128>& U_in,
 // =============================================================================
 
 detail::DenseMatrix QuditMPS::contract_two_sites(int q) const {
-    const auto& T0 = tensors[static_cast<size_t>(q)];
-    const auto& T1 = tensors[static_cast<size_t>(q + 1)];
+    const auto& T0 = tensors_[static_cast<size_t>(q)];
+    const auto& T1 = tensors_[static_cast<size_t>(q + 1)];
     const int chi_L = T0.chi_L;
     const int chi_M = T0.chi_R;  // = T1.chi_L
     const int chi_R = T1.chi_R;
@@ -504,33 +742,38 @@ detail::DenseMatrix QuditMPS::contract_two_sites(int q) const {
 }
 
 // =============================================================================
-// split_two_sites — SVD-truncate Theta into tensors[q] and tensors[q+1]
+// split_two_sites - SVD-truncate Theta into tensors[q] and tensors[q+1]
 // Theta shape: (d*chi_L) x (d*chi_R).
 // =============================================================================
 
-void QuditMPS::split_two_sites(int q, const detail::DenseMatrix& Theta) {
-    const int chi_L = tensors[static_cast<size_t>(q)].chi_L;
-    const int chi_R = tensors[static_cast<size_t>(q + 1)].chi_R;
+void QuditMPS::split_two_sites(int q, const detail::DenseMatrix& Theta,
+                               Absorb absorb) {
+    const int chi_L = tensors_[static_cast<size_t>(q)].chi_L;
+    const int chi_R = tensors_[static_cast<size_t>(q + 1)].chi_R;
 
     if (Theta.rows() != d * chi_L || Theta.cols() != d * chi_R)
         throw std::runtime_error("split_two_sites: shape mismatch");
 
     const detail::SvdTruncation split =
-        truncate_block(Theta, "QuditMPS two-site split");
+        truncate_block(Theta, "QuditMPS two-site split", fidelity);
     const detail::DenseMatrix& U = split.U;
     const detail::DenseMatrix& V = split.V;
     const detail::RealVector& S = split.S;
     const int chi = split.rank;
+    const bool right = (absorb == Absorb::Right);
 
-    // Left tensor: shape (d, chi_L, chi) from leftmost chi columns of U.
+    // Left tensor: shape (d, chi_L, chi) from leftmost chi columns of U, times
+    // S when the singular values go left.
     MPSSiteTensor Tq(d, chi_L, chi);
     for (int sigma = 0; sigma < d; ++sigma)
         for (int aL = 0; aL < chi_L; ++aL)
-            for (int alpha = 0; alpha < chi; ++alpha)
-                Tq.at(sigma, aL, alpha) =
-                    from_std(U(sigma * chi_L + aL, alpha));
+            for (int alpha = 0; alpha < chi; ++alpha) {
+                const std::complex<double> u = U(sigma * chi_L + aL, alpha);
+                Tq.at(sigma, aL, alpha) = from_std(right ? u : u * S(alpha));
+            }
 
-    // Right tensor: shape (d, chi, chi_R) absorbing S into V^dagger.
+    // Right tensor: shape (d, chi, chi_R) from V^dagger, times S when the
+    // singular values go right.
     //   right[sigma_{q+1}, alpha, aR] = S(alpha) * conj(V(sigma_{q+1}*chi_R + aR, alpha))
     MPSSiteTensor Tq1(d, chi, chi_R);
     for (int sigma = 0; sigma < d; ++sigma)
@@ -538,16 +781,26 @@ void QuditMPS::split_two_sites(int q, const detail::DenseMatrix& Theta) {
             for (int aR = 0; aR < chi_R; ++aR) {
                 const std::complex<double> vt =
                     std::conj(V(sigma * chi_R + aR, alpha));
-                Tq1.at(sigma, alpha, aR) =
-                    from_std(std::complex<double>(S(alpha), 0.0) * vt);
+                Tq1.at(sigma, alpha, aR) = from_std(right ? S(alpha) * vt : vt);
             }
 
-    tensors[static_cast<size_t>(q)]     = std::move(Tq);
-    tensors[static_cast<size_t>(q + 1)] = std::move(Tq1);
+    tensors_[static_cast<size_t>(q)]     = std::move(Tq);
+    tensors_[static_cast<size_t>(q + 1)] = std::move(Tq1);
+
+    // As MPSState: the site holding S is always in the span afterwards, and
+    // the site holding an isometry drops out of it when no site beyond it, on
+    // its own side, was in the span.
+    if (right) {
+        if (span_lo >= q) span_lo = q + 1;
+        span_hi = std::max(span_hi, q + 1);
+    } else {
+        if (span_hi <= q + 1) span_hi = q;
+        span_lo = std::min(span_lo, q);
+    }
 }
 
 // =============================================================================
-// apply_2qudit_adjacent — d^2 x d^2 gate on sites (q, q+1)
+// apply_2qudit_adjacent - d^2 x d^2 gate on sites (q, q+1)
 // =============================================================================
 
 void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U_in,
@@ -561,9 +814,20 @@ void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U_in,
     const std::vector<Complex128>& U = detail::check_unitary_fixing(
         U_in, d2, validation, "QuditMPS::apply_2qudit_adjacent", U_fixed);
 
+    gate_adjacent(q, U, Absorb::Right);
+}
+
+void QuditMPS::gate_adjacent(int q, const std::vector<Complex128>& U,
+                             Absorb absorb) {
+    const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
+
+    // Before the contraction, because moving the centre rewrites the two
+    // sites being contracted.
+    if (split_needs_centre(q)) focus(q, q + 1);
+
     detail::DenseMatrix Theta = contract_two_sites(q);
-    const int chi_L = tensors[static_cast<size_t>(q)].chi_L;
-    const int chi_R = tensors[static_cast<size_t>(q + 1)].chi_R;
+    const int chi_L = tensors_[static_cast<size_t>(q)].chi_L;
+    const int chi_R = tensors_[static_cast<size_t>(q + 1)].chi_R;
 
     // Matrix index convention (project LSB-first, docs/Architecture.md
     // "Conventions"): the FIRST site of the pair is the LEAST significant
@@ -599,14 +863,14 @@ void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U_in,
         }
     }
 
-    split_two_sites(q, Theta_new);
+    split_two_sites(q, Theta_new, absorb);
 }
 
 // =============================================================================
-// apply_swap — SWAP gate between adjacent qudits (q, q+1)
+// apply_swap - SWAP gate between adjacent qudits (q, q+1)
 // =============================================================================
 
-void QuditMPS::apply_swap(int q) {
+void QuditMPS::apply_swap(int q, Absorb absorb) {
     const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
     std::vector<Complex128> swap_mat(d2 * d2, Complex128(0.0, 0.0));
     // swap[(out_{q+1}*d + out_q)*d^2 + (in_{q+1}*d + in_q)]
@@ -622,11 +886,11 @@ void QuditMPS::apply_swap(int q) {
             swap_mat[row * d2 + col] = Complex128(1.0, 0.0);
         }
     }
-    apply_2qudit_adjacent(q, swap_mat, {Validation::Ignore});
+    gate_adjacent(q, swap_mat, absorb);
 }
 
 // =============================================================================
-// apply_2qudit — arbitrary pair (q0, q1); SWAP chain for non-adjacent pairs
+// apply_2qudit - arbitrary pair (q0, q1); SWAP chain for non-adjacent pairs
 // =============================================================================
 
 void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U_in,
@@ -670,7 +934,7 @@ void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U_in,
     }
 
     if (q1 == q0 + 1) {
-        apply_2qudit_adjacent(q0, U, {Validation::Ignore});
+        gate_adjacent(q0, U, Absorb::Right);
         return;
     }
 
@@ -678,17 +942,21 @@ void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U_in,
     // After this sequence the physical leg originally at q0 sits at position q1 - 1
     // and the leg originally at q1 stays at position q1.  The gate then acts on
     // adjacent sites (q1 - 1, q1) and we undo the swaps to restore the order.
+    //
+    // Each split sends its singular values toward the block the chain touches
+    // next, so when splits move the centre the next one finds it already in
+    // place: rightward on the way in, leftward from the gate on the way back.
     for (int i = q0; i < q1 - 1; ++i)
-        apply_swap(i);
+        apply_swap(i, Absorb::Right);
 
-    apply_2qudit_adjacent(q1 - 1, U, {Validation::Ignore});
+    gate_adjacent(q1 - 1, U, Absorb::Left);
 
     for (int i = q1 - 2; i >= q0; --i)
-        apply_swap(i);
+        apply_swap(i, Absorb::Left);
 }
 
 // =============================================================================
-// apply_phase_oracle / apply_function_oracle — fallback via statevector
+// apply_phase_oracle / apply_function_oracle - fallback via statevector
 // =============================================================================
 
 void QuditMPS::apply_phase_oracle(
@@ -696,7 +964,7 @@ void QuditMPS::apply_phase_oracle(
 {
     auto sv = to_statevector();
     sv.apply_phase_oracle(phase_fn);
-    *this = QuditMPS(sv, max_bond_dim, svd_cutoff);
+    rebuild_from(sv);
 }
 
 void QuditMPS::apply_function_oracle(int n_query, int n_output,
@@ -722,62 +990,56 @@ void QuditMPS::apply_function_oracle(int n_query, int n_output,
         return result;
     };
     sv.apply_function_oracle(n_query, n_output, f_digits);
-    *this = QuditMPS(sv, max_bond_dim, svd_cutoff);
+    rebuild_from(sv);
 }
 
-// Sequential environment sampling. Contracting the whole MPS to a dense d^n
-// statevector and sampling that would defeat MPS compactness for wide
-// registers, so this precomputes the right environments once
-// (build_right_envs, O(n·chi^3)) and samples left-to-right read-only,
-// carrying the left environment incrementally — O(n·chi^3) total, memory
-// bounded by the bond dimension. Mirrors the qubit-layer mps_sample.
+// =============================================================================
+// measure - sample from the chain centred on qudit 0
+// =============================================================================
+// With the centre on qudit 0 every other site is right-orthonormal, so the
+// environment right of any qudit is the identity, and the sample needs only a
+// row vector v on the bond left of the current qudit, carrying the digits
+// drawn so far:
+//
+//   w_s = v · A_q[s],   P(s | digits so far) = |w_s|² / Σ_s' |w_s'|²,
+//   then v <- w_sel / |w_sel|.
+//
+// O(n·d·chi²), memory bounded by the bond dimension, and the chain is not
+// collapsed. Mirrors the qubit layer's terminal sampler.
+
 std::vector<int> QuditMPS::measure(uint64_t seed) {
     std::mt19937_64 rng(seed == 0
         ? static_cast<uint64_t>(std::random_device{}())
         : seed);
     std::uniform_real_distribution<double> dist(0.0, 1.0);
 
-    // right_envs[q] sized chi_L(q) x chi_L(q); right_envs[n] = [[1]].
-    const auto right_envs = build_right_envs();
+    focus(0, 0);
 
     std::vector<int> digits(static_cast<size_t>(n_qudits), 0);
-    Eigen::MatrixXcd left(1, 1);
-    left(0, 0) = std::complex<double>(1.0, 0.0);
+    std::vector<std::complex<double>> v{std::complex<double>(1.0, 0.0)};
+    std::vector<std::vector<std::complex<double>>> w(static_cast<size_t>(d));
 
     for (int q = 0; q < n_qudits; ++q) {
-        const auto& T = tensors[static_cast<size_t>(q)];
+        const auto& T = tensors_[static_cast<size_t>(q)];
         const int cl = T.chi_L, cr = T.chi_R;
-        const detail::DenseMatrix& R = right_envs[static_cast<size_t>(q + 1)];  // cr x cr
 
-        // prob[sigma] = Re Σ_{l1,l2} left[l1,l2] · B_sigma[l1,l2],
-        //   B_sigma[l1,l2] = Σ_{r1,r2} T[sigma,l1,r1] R[r1,r2] conj(T[sigma,l2,r2]).
-        // Two-stage O(chi^3): A = T_sigma·R, then contract with conj(T_sigma).
         std::vector<double> probs(static_cast<size_t>(d), 0.0);
         for (int s = 0; s < d; ++s) {
-            Eigen::MatrixXcd A(cl, cr);
-            for (int l1 = 0; l1 < cl; ++l1)
-                for (int r2 = 0; r2 < cr; ++r2) {
-                    std::complex<double> a(0.0, 0.0);
-                    for (int r1 = 0; r1 < cr; ++r1)
-                        a += to_std(T.at(s, l1, r1)) * R(r1, r2);
-                    A(l1, r2) = a;
-                }
-            std::complex<double> acc(0.0, 0.0);
-            for (int l1 = 0; l1 < cl; ++l1)
-                for (int l2 = 0; l2 < cl; ++l2) {
-                    std::complex<double> b(0.0, 0.0);
-                    for (int r2 = 0; r2 < cr; ++r2)
-                        b += A(l1, r2) * std::conj(to_std(T.at(s, l2, r2)));
-                    acc += left(l1, l2) * b;
-                }
-            probs[static_cast<size_t>(s)] = acc.real();
+            auto& ws = w[static_cast<size_t>(s)];
+            ws.assign(static_cast<size_t>(cr), std::complex<double>(0.0, 0.0));
+            for (int l = 0; l < cl; ++l) {
+                const std::complex<double> vl = v[static_cast<size_t>(l)];
+                for (int r = 0; r < cr; ++r)
+                    ws[static_cast<size_t>(r)] += vl * to_std(T.at(s, l, r));
+            }
+            for (const auto& z : ws) probs[static_cast<size_t>(s)] += std::norm(z);
         }
 
         double total = 0.0;
-        for (double& x : probs) { if (x < 0.0) x = 0.0; total += x; }
+        for (double x : probs) total += x;
 
         int sel;
-        if (total < 1e-30) {
+        if (total < MARGINAL_FLOOR) {
             sel = 0;  // degenerate marginal: pick digit 0
         } else {
             const double roll = dist(rng) * total;
@@ -791,31 +1053,55 @@ std::vector<int> QuditMPS::measure(uint64_t seed) {
         digits[static_cast<size_t>(q)] = sel;
 
         const double p_out = probs[static_cast<size_t>(sel)];
-        const double inv_p = (p_out > 1e-30) ? 1.0 / p_out : 1.0;
-
-        // new_left[m1,m2] = inv_p · Σ_{l1,l2} left[l1,l2] T[sel,l1,m1] conj(T[sel,l2,m2]).
-        //   C[l2,m1] = Σ_l1 left[l1,l2] T[sel,l1,m1]
-        //   new_left[m1,m2] = Σ_l2 C[l2,m1] conj(T[sel,l2,m2]) · inv_p
-        Eigen::MatrixXcd C(cl, cr);
-        for (int l2 = 0; l2 < cl; ++l2)
-            for (int m1 = 0; m1 < cr; ++m1) {
-                std::complex<double> a(0.0, 0.0);
-                for (int l1 = 0; l1 < cl; ++l1)
-                    a += left(l1, l2) * to_std(T.at(sel, l1, m1));
-                C(l2, m1) = a;
-            }
-        Eigen::MatrixXcd new_left(cr, cr);
-        for (int m1 = 0; m1 < cr; ++m1)
-            for (int m2 = 0; m2 < cr; ++m2) {
-                std::complex<double> a(0.0, 0.0);
-                for (int l2 = 0; l2 < cl; ++l2)
-                    a += C(l2, m1) * std::conj(to_std(T.at(sel, l2, m2)));
-                new_left(m1, m2) = a * inv_p;
-            }
-        left = std::move(new_left);
+        const double inv = (p_out > MARGINAL_FLOOR) ? 1.0 / std::sqrt(p_out) : 1.0;
+        v = w[static_cast<size_t>(sel)];
+        for (auto& z : v) z *= inv;
     }
 
     return digits;
+}
+
+// =============================================================================
+// measure_qudit - measure one qudit at the centre and collapse onto it
+// =============================================================================
+
+int QuditMPS::measure_qudit(int q, std::mt19937_64& rng) {
+    detail::check_qudit(q, n_qudits, "QuditMPS::measure_qudit");
+    focus(q, q);
+
+    // At the centre the slice norms ARE the raw marginals, summing to the
+    // state's norm². One uniform is drawn whatever the marginals, so the
+    // generator advances the same way on every call.
+    const std::vector<double> probs = centre_marginals(q);
+    double total = 0.0;
+    for (double x : probs) total += x;
+    const double roll = std::uniform_real_distribution<double>(0.0, 1.0)(rng);
+
+    int sel = 0;
+    if (total >= MARGINAL_FLOOR) {
+        const double target = roll * total;
+        double c = 0.0;
+        sel = d - 1;
+        for (int s = 0; s < d; ++s) {
+            c += probs[static_cast<size_t>(s)];
+            if (target <= c) { sel = s; break; }
+        }
+    }
+
+    // Collapse: every other digit's slice is zeroed and the chosen one divided
+    // by the square root of its raw marginal, leaving unit norm.
+    MPSSiteTensor& T = tensors_[static_cast<size_t>(q)];
+    const size_t block = static_cast<size_t>(T.chi_L) * T.chi_R;
+    const double p_sel = probs[static_cast<size_t>(sel)];
+    const double inv = (p_sel > MARGINAL_FLOOR) ? 1.0 / std::sqrt(p_sel) : 1.0;
+    for (int s = 0; s < d; ++s)
+        for (size_t i = 0; i < block; ++i) {
+            Complex128& c = T.data[static_cast<size_t>(s) * block + i];
+            if (s == sel) { c.real *= inv; c.imag *= inv; }
+            else          { c = Complex128(0.0, 0.0); }
+        }
+    fidelity.invalidate();
+    return sel;
 }
 
 // =============================================================================
@@ -823,13 +1109,16 @@ std::vector<int> QuditMPS::measure(uint64_t seed) {
 // =============================================================================
 
 void QuditMPS::left_canonicalize() {
+    // From site 0, every split below has only isometries to its left and
+    // right-orthonormal sites to its right: canonical gauge throughout.
+    focus(0, 0);
     for (int q = 0; q < n_qudits - 1; ++q) {
-        auto& Tq = tensors[static_cast<size_t>(q)];
+        auto& Tq = tensors_[static_cast<size_t>(q)];
         // M = as_left_matrix has shape (d * chi_L, chi_R).
         const detail::DenseMatrix M = Tq.as_left_matrix();
 
         const detail::SvdTruncation split =
-            truncate_block(M, "QuditMPS left canonicalisation");
+            truncate_block(M, "QuditMPS left canonicalisation", fidelity);
         const detail::DenseMatrix& U = split.U;
         const detail::DenseMatrix& V = split.V;
         const detail::RealVector& S = split.S;
@@ -843,13 +1132,13 @@ void QuditMPS::left_canonicalize() {
                 for (int alpha = 0; alpha < chi; ++alpha)
                     Tnew.at(sigma, aL, alpha) =
                         from_std(U(sigma * chi_L + aL, alpha));
-        tensors[static_cast<size_t>(q)] = std::move(Tnew);
+        tensors_[static_cast<size_t>(q)] = std::move(Tnew);
 
         // Absorb S * V^dagger into tensors[q+1].
         //   tensors[q+1] new chi_L = chi (replacing the old chi_R of tensors[q]).
         //   absorb: A_{q+1}_new[sigma, alpha, aR] = sum_{aL_old} (S*Vt)(alpha, aL_old) *
         //                                          A_{q+1}_old[sigma, aL_old, aR]
-        auto& Tq1 = tensors[static_cast<size_t>(q + 1)];
+        auto& Tq1 = tensors_[static_cast<size_t>(q + 1)];
         const int aL_old_dim = Tq1.chi_L;
         const int aR_dim     = Tq1.chi_R;
         if (V.rows() != static_cast<Eigen::Index>(aL_old_dim))
@@ -874,18 +1163,22 @@ void QuditMPS::left_canonicalize() {
                 }
             }
         }
-        tensors[static_cast<size_t>(q + 1)] = std::move(Tq1_new);
+        tensors_[static_cast<size_t>(q + 1)] = std::move(Tq1_new);
+        span_lo = span_hi = q + 1;
     }
 }
 
 void QuditMPS::right_canonicalize() {
+    // The mirror image: from the last site, every split has right-orthonormal
+    // sites to its right and left-orthonormal ones to its left.
+    focus(n_qudits - 1, n_qudits - 1);
     for (int q = n_qudits - 1; q > 0; --q) {
-        auto& Tq = tensors[static_cast<size_t>(q)];
+        auto& Tq = tensors_[static_cast<size_t>(q)];
         // M = as_right_matrix has shape (chi_L, d * chi_R).
         const detail::DenseMatrix M = Tq.as_right_matrix();
 
         const detail::SvdTruncation split =
-            truncate_block(M, "QuditMPS right canonicalisation");
+            truncate_block(M, "QuditMPS right canonicalisation", fidelity);
         const detail::DenseMatrix& U = split.U;
         const detail::DenseMatrix& V = split.V;
         const detail::RealVector& S = split.S;
@@ -900,13 +1193,13 @@ void QuditMPS::right_canonicalize() {
                 for (int aR = 0; aR < chi_R; ++aR)
                     Tnew.at(sigma, alpha, aR) =
                         from_std(std::conj(V(sigma * chi_R + aR, alpha)));
-        tensors[static_cast<size_t>(q)] = std::move(Tnew);
+        tensors_[static_cast<size_t>(q)] = std::move(Tnew);
 
         // Absorb U * S into tensors[q-1].
         //   tensors[q-1] new chi_R = chi.
         //   A_{q-1}_new[sigma, aL, alpha] = sum_{aR_old} A_{q-1}_old[sigma, aL, aR_old] *
         //                                                (U*S)(aR_old, alpha)
-        auto& Tqm1 = tensors[static_cast<size_t>(q - 1)];
+        auto& Tqm1 = tensors_[static_cast<size_t>(q - 1)];
         const int aL_dim     = Tqm1.chi_L;
         const int aR_old_dim = Tqm1.chi_R;
         if (U.rows() != static_cast<Eigen::Index>(aR_old_dim))
@@ -930,50 +1223,9 @@ void QuditMPS::right_canonicalize() {
                 }
             }
         }
-        tensors[static_cast<size_t>(q - 1)] = std::move(Tqm1_new);
+        tensors_[static_cast<size_t>(q - 1)] = std::move(Tqm1_new);
+        span_lo = span_hi = q - 1;
     }
-}
-
-// =============================================================================
-// build_right_envs — diagnostic helper (unused by the public API)
-// Returns the right environments E_q s.t. E_n = [[1]] and
-//   E_q[aL', aL] = sum_{sigma, aR', aR} A_q[sigma, aL', aR']
-//                                       * E_{q+1}[aR', aR]
-//                                       * conj(A_q[sigma, aL, aR])
-// is the network of all sites from q..n-1 traced over their physical legs.
-// =============================================================================
-
-std::vector<detail::DenseMatrix> QuditMPS::build_right_envs() const {
-    std::vector<detail::DenseMatrix> envs(static_cast<size_t>(n_qudits + 1));
-    envs[static_cast<size_t>(n_qudits)] = detail::DenseMatrix(1, 1);
-    envs[static_cast<size_t>(n_qudits)](0, 0) = std::complex<double>(1.0, 0.0);
-
-    for (int q = n_qudits - 1; q >= 0; --q) {
-        const auto& T = tensors[static_cast<size_t>(q)];
-        const int chi_L = T.chi_L;
-        const int chi_R = T.chi_R;
-        const auto& E_next = envs[static_cast<size_t>(q + 1)];
-
-        detail::DenseMatrix E_new(chi_L, chi_L);
-        for (int aLp = 0; aLp < chi_L; ++aLp) {
-            for (int aL = 0; aL < chi_L; ++aL) {
-                std::complex<double> acc(0.0, 0.0);
-                for (int sigma = 0; sigma < d; ++sigma) {
-                    for (int aRp = 0; aRp < chi_R; ++aRp) {
-                        for (int aR = 0; aR < chi_R; ++aR) {
-                            acc += to_std(T.at(sigma, aLp, aRp)) *
-                                   E_next(aRp, aR) *
-                                   std::conj(to_std(T.at(sigma, aL, aR)));
-                        }
-                    }
-                }
-                E_new(aLp, aL) = acc;
-            }
-        }
-        envs[static_cast<size_t>(q)] = std::move(E_new);
-    }
-
-    return envs;
 }
 
 } // namespace lindblad

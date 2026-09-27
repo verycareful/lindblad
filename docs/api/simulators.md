@@ -76,8 +76,9 @@ strategies:
 - **Mid-circuit measurement or feedforward** with `shots > 0`: per-shot trajectories. The circuit is re-executed from `|0...0⟩` once per shot; each MEASURE collapse is drawn independently, conditions are evaluated against the per-shot classical register.
 - **shots == 0**: a single seeded trajectory. Classical conditions are honoured and MEASURE outcomes are recorded along the way; `final_state` is one reproducible trajectory. (`eval_expectation` instead THROWS for measure/conditional circuits: the exact expectation of one random trajectory is undefined; estimate from counts with `shots > 0`.)
 
-The collapse renormalisation in the MPS simulator divides by the
-environment-contracted outcome marginal (valid for non-canonical tensors);
+The MPS simulator collapses a qubit at the chain's orthogonality centre, where
+the outcome's marginal is a read of one site and dividing that site by the
+marginal's square root restores unit norm (see [Canonical Form](#canonical-form));
 sampled MPS bitstrings use the project key convention (qubit 0 rightmost) at
 every register width.
 
@@ -589,6 +590,14 @@ auto slab = state.outcome_slab();
 
 Approximate simulation of arbitrary circuits using Matrix Product State (MPS) representation, enabling simulation of larger systems at the cost of controlled truncation error.
 
+```cpp
+#include "lindblad/simulators/mps_sim.hpp"  // MPSSimulator, MPSState, MPSTensor
+```
+
+Everything is in namespace `lindblad`. `CanonicalForm`, `SVDMethod` and
+`MPS_DEFAULT_CUTOFF` are declared in `lindblad/types.hpp`, which this header
+includes.
+
 ### State Representation: MPSState
 
 An MPS decomposes an $n$-qubit state as:
@@ -611,22 +620,40 @@ struct MPSTensor {
 };
 
 class MPSState {
-    std::vector<MPSTensor> tensors;
+public:
+    int n_qubits;
     int max_bond_dim;    // chi parameter
     double cutoff;       // max fraction of weight truncation may discard
     SVDMethod svd_method = SVDMethod::BDC;     // bond-split kernel
     bool svd_rescue = true;                    // descend the ladder on a rejected factorisation
+    CanonicalForm canonical_form = CanonicalForm::Always;  // when a split moves the centre first
+
+    MPSState(int n_qubits, int max_bond_dim = 64,
+             double cutoff = MPS_DEFAULT_CUTOFF);
+
+    const std::vector<MPSTensor>& tensors() const;   // read-only
+    void set_tensors(std::vector<MPSTensor> sites);  // validated replacement
+    std::pair<int, int> open_span() const;
+    void canonicalize(int site);
+    // gates, norm, measurement, profile: below
 };
 ```
 
+The site tensors are private. Reading them through `tensors()` is free;
+replacing the chain goes through `set_tensors()`, because every operation relies
+on the chain's open span (next section) and a direct write would falsify it.
+
 **Norm and normalization**:
 
-- `norm_sq()` contracts the transfer matrix along the chain, $O(n \cdot \chi^3)$.
-  There is no flat amplitude array to sweep, so this is the only way to read the
-  norm without materialising the state
-- `normalize()` rescales the first site tensor, which is exact because the norm
-  is multilinear in the tensors. It throws when there is no norm to divide out,
-  a zero or non-finite state, rather than returning the state unchanged
+- `norm_sq()` contracts the transfer matrix over the open span only, since the
+  sites outside it contract to the identity: at a single-site centre it is that
+  site's squared Frobenius norm, $O(\chi^2)$, and with the span open over the
+  whole chain $O(n \cdot \chi^3)$. There is no flat amplitude array to sweep,
+  so this is the only way to read the norm without materialising the state
+- `normalize()` rescales the first site of the open span, which is exact because
+  the norm is multilinear in the tensors; a site outside the span would lose its
+  orthonormality if it were scaled. It throws when there is no norm to divide
+  out, a zero or non-finite state, rather than returning the state unchanged
 - `is_normalized(atol)` answers without repairing or throwing
 - `check_normalized(validation)` applies a policy, with `Repair::Attempt`
   renormalizing. Under `Ignore` with `Repair::None` the contraction does not run
@@ -686,8 +713,8 @@ shape and the kernel that failed, so a run rescued on every bond reads as one.
 
 `svd_rescue = false` forbids the descent: the first rejected factorisation
 throws, for a caller who would rather stop than accept a tensor from a kernel
-they did not name. `MPSSimulator` carries the same two fields and copies them
-onto every chain it builds.
+they did not name. `MPSSimulator` carries the same two fields, and
+`canonical_form`, and copies all three onto every chain it builds.
 
 That identity is an equality for a true truncated SVD, so the allowance above
 the discarded weight is only the backward error a stable SVD is entitled to.
@@ -713,23 +740,19 @@ directions the weight budget or the bond cap rejected, and is committed only
 after verification. The verification costs roughly one extra rank-slice matrix
 multiply per two-qubit gate.
 
-`truncation_error()` is a within-run tally, and two properties bound how it can
-be read. It accumulates across every split, so it grows with the number of
-splits a run performs and two runs are comparable only when they perform the
-same ones. Each term is an absolute weight against the two-site block being
-split rather than a fraction of it, and gate application does not maintain
-canonical form, so that block's Frobenius norm is neither the state norm nor
-fixed across a run: it drifts as singular values are absorbed into the left
-tensor. A single term is therefore not bounded by 1, and a total well above 1 is
-ordinary on a deep circuit at a low bond cap.
+`truncation_error()` accumulates across every split, so it grows with the
+number of splits a run performs and two runs are comparable only when they
+perform the same ones. Each term is the absolute weight its split threw away. A
+split taken in canonical gauge discards that weight from the state, whose norm
+its block then carries, so on a chain with no collapse, no normalisation and no
+absorbed profile the total equals how far `norm_sq()` has fallen since the chain
+was built, to rounding. Under `CanonicalForm::Auto` the splits that run in place
+contribute weight at their blocks' rounding level instead.
 
-The consequence is sharper than a missing unit: the totals do not order bond
-caps. Once truncation is heavy, a low cap shrinks the blocks it goes on to
-split, so its later terms are small in absolute size, while a high cap keeps
-larger blocks and reports larger discards while losing less of the state. Deep
-enough, and the reported total rises as the bond cap rises. To compare one cap
-against another, use the bond profile or a downstream fidelity rather than this
-figure.
+It is a weight, not a fidelity. How close the chain is to the state an
+untruncated run would hold is what `fidelity_estimate()` and
+`fidelity_lower_bound()` report (see [Fidelity Figures](#fidelity-figures)), and
+those are the figures to compare one bond cap against another with.
 
 The reconstruction residual that decides whether a factorisation is accepted is
 computed in a translation unit compiled under strict IEEE floating-point, whichever
@@ -853,7 +876,9 @@ split, through the kernel `svd_method` selects, and advances every counter.
 
 **Complexity**:
 - **Space**: $O(n \cdot \chi^2)$ where $\chi$ = max bond dimension (typically 16–256)
-- **Time per gate**: $O(\chi^4)$ for single-qubit, $O(\chi^6)$ for two-qubit
+- **Time per gate**: $O(\chi^2)$ for single-qubit, $O(\chi^3)$ for two-qubit (the
+  contraction and the SVD of a $2\chi \times 2\chi$ block), plus $O(\chi^3)$ per
+  step whenever the orthogonality centre moves first
 - **Accuracy**: Controlled by $\chi$ and `cutoff`; larger $\chi$ = more accurate
 
 **Truncation rule**. `cutoff` is the maximum fraction of total weight
@@ -870,29 +895,171 @@ than a quota: where a spectrum has a clean gap between real content and
 numerical noise, nothing extra is discarded and the retained bond dimension is
 unchanged.
 
-The default `1e-16` bounds truncation error at the order of the reconstruction
-error an SVD already carries, so nothing the factorisation actually resolved is
-thrown away. The qudit layer's `svd_cutoff` means the same thing.
+The default, `MPS_DEFAULT_CUTOFF` (`1e-16`, in `lindblad/types.hpp`), sits at
+the relative accuracy to which a double-precision sum of weights is known. At
+that value a split removes exact rank deficiency and weight its block's own
+total cannot distinguish from rounding, and does not compress; a caller who
+wants compression raises it. The qudit layer's `svd_cutoff` means the same thing
+and has the same default.
+
+### Canonical Form
+
+A bond split truncates on the singular values of a two-site block, and those
+are the state's Schmidt coefficients only when the chain is in mixed canonical
+form centred on the block: every site to its left left-orthonormal, every site
+to its right right-orthonormal. In any other gauge the block's spectrum is
+weighted by the rest of the chain, so a cap or a cutoff applied to it keeps and
+drops the wrong directions, and the weight it reports discarding is not a
+fraction of the state.
+
+**The open span**. Each chain keeps two site indices, reported by `open_span()`
+as `{lo, hi}`:
+
+- every site left of `lo` is left-orthonormal: reshaped as a
+  $(2\chi_L) \times \chi_R$ matrix $A$, $A^\dagger A = I$
+- every site right of `hi` is right-orthonormal: reshaped as a
+  $\chi_L \times (2\chi_R)$ matrix $A$, $A A^\dagger = I$
+- the sites in between carry no guarantee
+
+`{c, c}` is mixed canonical form centred on `c`: the whole norm sits in site
+`c`, and a two-site block at `c` holds the Schmidt coefficients at its bond. A
+new chain is `|0...0>` with its centre on site 0.
+
+**Moving the centre**. The centre moves by a thin QR of a site (rightward, the
+$R$ factor multiplied into the next site) or a thin LQ (leftward, the $L$ factor
+multiplied into the previous one). Both are exact and never truncate, so moving
+the centre changes the gauge and never the state, and neither touches the
+truncation total, the fidelity figures or the SVD counters. A bond wider than
+the rank its neighbouring site can carry is trimmed to that rank on the way,
+which is also lossless.
+
+```cpp
+void canonicalize(int site);           // centre to `site`; open_span() becomes {site, site}
+std::pair<int, int> open_span() const;
+```
+
+**When a split moves the centre first**. `canonical_form`, shared with the
+qudit MPS and declared in `lindblad/types.hpp`:
+
+- `CanonicalForm::Always` (default): before every split, so every truncation
+  acts on Schmidt coefficients and the bond dimensions do not depend on whether
+  the cap is binding
+- `CanonicalForm::Auto`: only before a split that can discard real weight,
+  meaning one whose block's rank bound $\min(2\chi_L, 2\chi_R)$ exceeds
+  `max_bond_dim` so the cap can bind, and every split once `cutoff` is above
+  `MPS_DEFAULT_CUTOFF`. Any other split runs where the chain stands and skips
+  the QR steps. Its truncation is still sound, since it drops only exact rank
+  deficiency (the same in every gauge) and weight below the resolution of its
+  block's total, but it keeps too much: a direction that is rounding noise in
+  the state can carry real weight in a block weighted by an uncentred
+  environment, and survives the cutoff there
+
+That surplus is why `Always` is the default. The bonds `Auto` keeps grow wider
+than the state needs, and the extra rank costs more in every later split than
+the QR steps saved. On a 16-qubit brickwork at a cap that truncates nothing,
+`Auto` ends with a middle bond of 256 where `Always` ends with 143, at the same
+fidelity to $10^{-14}$, and takes 1.9x as long. Where the cap binds (the
+24-qubit brickwork at $\chi$ = 8 to 64) the two agree to within a few percent.
+`Auto` stays selectable for a workload that measures otherwise.
+
+Either way, a split sends its singular values toward the block the chain
+touches next, so a SWAP chain finds the centre already in place at each step.
+
+Measurement, reset and terminal sampling move the centre under both policies,
+because each reads one site's marginals and that is a local read only at the
+centre. Reads that do not move it (`probabilities_single`, `norm_sq`, the bond
+spectrum behind the entropy observer) contract only the open span, so they are
+cheapest with the centre where they look.
+
+**Replacing the chain**.
+
+```cpp
+const std::vector<MPSTensor>& tensors() const;
+void set_tensors(std::vector<MPSTensor> sites);
+```
+
+`set_tensors` validates before replacing anything: the count must equal
+`n_qubits`, every bond must be at least 1 with the two outer ones exactly 1,
+neighbouring bonds must agree, each data array must hold
+`bond_left * 2 * bond_right` entries, and every entry must be finite. It throws
+`std::invalid_argument` naming the first violation and leaves the state as it
+was. Nothing is assumed about a chain built by hand, so the open span becomes
+the whole chain, and the first operation that needs the centre pays the QR
+steps to find it. The fidelity figures reset to exact, since the chain handed in
+is what later truncation is measured against; assigning a whole `MPSState`
+instead keeps them. The SVD counters and `truncation_error()` are untouched.
+
+### Fidelity Figures
+
+```cpp
+std::optional<double> fidelity_estimate() const;
+std::optional<double> fidelity_lower_bound() const;
+```
+
+Both answer how close the chain is to the state an untruncated run would hold,
+as a fidelity $|\langle \text{exact} | \text{chain} \rangle|^2$ between the two
+normalised states. Each split $k$ contributes its discarded fraction
+$\varepsilon_k = \text{discarded}_k / (\text{kept}_k + \text{discarded}_k)$,
+which for a split in canonical gauge is the fraction of the state it removed.
+
+- `fidelity_estimate()` is $\prod_k (1 - \varepsilon_k)$, the standard figure
+  (Zhou, Stoudenmire and Waintal, Phys. Rev. X 10, 041038, 2020), accurate in
+  practice. It is **not a bound**: the true fidelity can lie on either side of
+  it. Two rotations by $a$, each followed by a truncation back onto $|0\rangle$,
+  keep $\cos^2 a$ per split, so the product is $\cos^4 a \approx 1 - 2a^2$,
+  while the true fidelity is $\cos^2 2a \approx 1 - 4a^2$
+- `fidelity_lower_bound()` is $\max(0, 1 - \Delta^2/2)^2$ with
+  $\Delta = \sum_k \delta_k$ and $\delta_k = \sqrt{2 - 2\sqrt{1 - \varepsilon_k}}$,
+  the exact distance a split moves the normalised state. Gates between splits
+  are unitary and move both states alike, so by the triangle inequality the
+  exact and truncated states are within $\Delta$. When every split is canonical
+  the true fidelity cannot fall below the bound (the last rule below covers
+  `CanonicalForm::Auto`). On the example above it is $1 - 4a^2$ to leading order
+
+Rules:
+
+- Both read 1 on a new chain and after `set_tensors()`. Both describe normalised
+  states, so `normalize()` changes neither
+- Both are **empty** once a measurement or reset has collapsed the chain
+  (`measure_qubit`, `measure_sequential`, or a MEASURE or RESET in a run), and
+  stay empty: projection renormalises the exact and the truncated state by
+  different factors, so neither figure describes the pair afterwards. On the
+  per-shot path of `MPSSimulator::run` the returned chain has collapsed, so both
+  are empty there
+- `rebuild_from_statevector` counts its splits like any other; they are
+  canonical by construction
+- `absorb_profile` does not fold them: they describe the returned tensors' own
+  history, where `truncation_error()` describes the run's splits
+- A split `CanonicalForm::Auto` runs in place contributes its fraction of the
+  block rather than of the state; by the rule above that fraction is at most
+  `MPS_DEFAULT_CUTOFF`. Under `CanonicalForm::Always` every split is canonical
+  and the bound is rigorous throughout
 
 ### Gate Application via SVD
 
-**Single-qubit gate on site $i$**:
-1. Apply gate matrix to physical index of $M_i$
-2. Reshape to matrix form `(bond_left, bond_right × 2)`
-3. Absorb into a neighboring bond (left or right)
+**Single-qubit gate on site $i$**: the 2x2 matrix is contracted into the
+physical index of $M_i$. No SVD and no bond change, and the open span is left as
+it is, because a unitary on the physical index preserves both
+orthonormalities.
 
 **Two-qubit gate on sites $(i, i+1)$** (adjacent):
-1. Contract tensors: `M_i @ bond @ M_{i+1}` → rank-4 tensor. In R.1.13 (audit
-   F-6) this contraction is a single zero-copy Eigen GEMM: the MPSTensor data is
-   already contiguous row-major in the needed $(\text{bond}_L \cdot 2) \times \chi$
-   and $\chi \times (2 \cdot \text{bond}_R)$ shapes.
-2. Apply $U$ gate to physical indices
-3. Reshape to matrix and perform SVD (backend per `svd_method`): $U = L \cdot S \cdot R^\dagger$
-4. Truncate singular values: keep only $\chi$ largest with sum $\geq (1 - \text{cutoff})$
-5. Absorb $L \cdot S$ into $M_i$; absorb $R^\dagger$ into $M_{i+1}$
-6. Update bond dimension and track truncation error
 
-**Non-adjacent gates**: Apply SWAPs to move gates adjacent, then apply gate, then SWAP back
+1. When `canonical_form` calls for it (see [Canonical Form](#canonical-form)),
+   move the orthogonality centre onto the pair first
+2. Contract tensors: `M_i @ bond @ M_{i+1}` → rank-4 tensor. The contraction is
+   a single zero-copy Eigen GEMM: the MPSTensor data is already contiguous
+   row-major in the needed $(\text{bond}_L \cdot 2) \times \chi$ and
+   $\chi \times (2 \cdot \text{bond}_R)$ shapes.
+3. Apply $U$ gate to physical indices
+4. Reshape to matrix and perform SVD (backend per `svd_method`): $U = L \cdot S \cdot R^\dagger$
+5. Truncate singular values: keep only $\chi$ largest with sum $\geq (1 - \text{cutoff})$
+6. Absorb $S$ toward the block the chain touches next and keep the isometry on
+   the other side: $M_i = L$, $M_{i+1} = S R^\dagger$ by default, and the mirror
+   image inside a SWAP chain moving left. The site holding $S$ joins the open
+   span, and the isometry leaves it when nothing beyond it was in the span
+7. Update bond dimension, the truncation total and the fidelity figures
+
+**Non-adjacent gates**: Apply SWAPs to move gates adjacent, then apply gate, then SWAP back. Each split sends its singular values toward the next block, so when splits move the centre it is already in place at each step.
 
 **Arbitrary `UNITARY` gates** (R.1.10.7 — direct tensor dispatch for 1q and 2q):
 
@@ -922,32 +1089,82 @@ thrown away. The qudit layer's `svd_cutoff` means the same thing.
 
 ### Measurement
 
-**Sequential measurement** (physically realistic):
-1. Measure qubit 0 by contracting boundary from left
-2. Condition state on outcome; collapse corresponding MPS branch
-3. Project boundary to next qubit and repeat for qubit 1, 2, ...
-4. $O(N \cdot \chi^3)$ time for full bitstring
+Every measurement reads a qubit at the orthogonality centre, where its raw
+marginals $\langle\psi|P_k|\psi\rangle$ are the squared norms of its site's two
+physical slices.
 
-**Complexity**: $O(n \cdot \chi^3)$ per shot (not $O(2^n)$ like statevector)
+**One qubit**.
 
-**Sampling (R.1.13, audit F-3/F-4)**: the right environments are invariant
-across shots, so the terminal-sampling path computes them ONCE and samples each
-shot read-only (the left environment is carried incrementally and each site's
-outcome slice is read from the unmodified tensors, scaled by $1/p$). There is no
-per-shot MPS copy and no environment rebuild, and every contraction is the
-two-stage $O(\chi^3)$ form (the previous per-shot path rebuilt environments and
-deep-copied the whole MPS, with $O(\chi^4)$ contractions).
+```cpp
+int MPSState::measure_qubit(int qubit, std::mt19937_64& rng);
+```
 
-### Statevector Crossover
+Moves the centre to `qubit`, draws one uniform from `rng`, and collapses the
+chain onto the outcome (returned as 0 or 1): the other slice is zeroed and the
+site divided by the square root of the outcome's marginal, which leaves the
+state with unit norm and `open_span()` at `{qubit, qubit}`. A MEASURE in a run
+and the first half of a RESET are this call. Throws `std::out_of_range` for a
+qubit outside the register. The fidelity figures become empty.
 
-`MPSSimulator::run` uses two named thresholds:
+**Sequential measurement** (`measure_sequential(rng)`), physically realistic:
 
-- `MPS_SV_CROSSOVER = 18`: circuits with `n_qubits ≤ 18` sample via full statevector conversion (faster)
-- `MPS_SV_MAX_QUBITS = 25`: `to_statevector()` throws for `n_qubits > 25` (memory guard, ~512 MB at that size)
+1. Move the centre to qubit 0
+2. Measure it as above, collapsing the chain onto the outcome
+3. Step the centre one site right by a QR and repeat for qubit 1, 2, ...
+
+A full bitstring costs $O(N \cdot \chi^3)$ with no environments, draws one
+uniform per qubit, and is returned with qubit 0 as the rightmost character.
+
+**Terminal sampling**. With the centre on qubit 0, every other site is
+right-orthonormal, so the environment right of any qubit is the identity and a
+shot needs only a row vector $v$ on the bond left of the current qubit: $w_p =
+v A_q[p]$, the outcome drawn from $|w_0|^2$ and $|w_1|^2$, then $v \leftarrow
+w_{\text{out}} / |w_{\text{out}}|$. When the run samples this way (see
+[Choosing the Sampling Path](#choosing-the-sampling-path)), it moves the centre
+of the returned chain to qubit 0 once (a gauge change: the state is unchanged)
+and samples every shot read-only from it at $O(N \cdot \chi^2)$ per shot, with
+nothing precomputed and nothing copied.
+
+### Choosing the Sampling Path
+
+Terminal sampling has two paths that draw from the same distribution, the
+chain's own, so `MPSSimulator::run` picks whichever is cheaper for the chain it
+holds and the shots requested. Both costs follow from the bond profile, so the
+choice is made before either runs:
+
+- **Dense**: contract the chain into $2^n$ amplitudes once
+  (`to_statevector()`), then draw every shot from them at almost no cost. The
+  contraction costs about $\sum_q 2^{q+1} \chi_L(q) \chi_R(q)$
+  multiply-accumulates.
+- **MPS sampler**: the vector walk above, about $\sum_q \chi_L(q) \chi_R(q)$
+  units of work per shot.
+
+The dense path is chosen when its contraction costs no more than
+`shots` walks, with one unit of walk weighted at 1.8 multiply-accumulates (the
+measured ratio: 2.1 ns against 1.2 ns, medians over brickwork circuits at
+$n$ = 14 to 24 and $\chi$ = 8 to 64). Small registers at high shot counts go
+dense; wide registers and low shot counts go through the sampler. On an
+8-layer brickwork at $\chi$ = 64 the break-even is about 400 shots at 16
+qubits and about 3900 at 20.
+
+The dense path also allocates the $2^n$ amplitudes, where the sampler's memory
+follows the bond dimension, so it is taken only while those amplitudes (16
+bytes each) fit in one last-level cache instance, as reported by
+`hw::llc_bytes()` (4 MiB when detection reports none). On a part with 32 MiB of
+L3 per instance that allows $n \le 21$. Wider registers always use the
+sampler, whatever the shot count.
+
+`MPS_SV_MAX_QUBITS = 25` is the separate hard limit on `to_statevector()`: it
+throws above 25 qubits (about 512 MB at that size), and every dense fallback in
+this backend stops there.
 
 ### Measurement Normalization
 
-After `measure_sequential` projects a qubit, the remaining MPS tensors are renormalized by dividing by `sqrt(prob)` where `prob` is the boundary-contraction probability of the observed outcome — **not** the local Frobenius norm (which differs for non-canonical MPS and would not give correct conditional probabilities).
+A collapse happens at the centre, where the site carries the state's whole norm.
+The squared norm of the kept slice is therefore the outcome's raw marginal, and
+dividing that one site by its square root renormalises the whole state. Every
+later qubit's marginals are then conditional on the outcomes before it, because
+the chain has already collapsed onto them.
 
 ### Conversion to Exact Statevector
 
@@ -964,11 +1181,31 @@ Statevector MPSState::to_statevector() const {
 ### Workflow
 
 ```cpp
-MPSSimulator sim(32, 1024);  // n_qubits=32, max_bond_dim=1024
+#include "lindblad/simulators/mps_sim.hpp"
 
-// MPS is allocated internally
-auto result = sim.run(large_circuit, 100);  // 100 shots
+#include <cstdio>
+
+using namespace lindblad;
+
+// `circuit` is any QuantumCircuit ending in terminal measurements.
+MPSSimulator sim;  // canonical_form = Always, svd_method = BDC
+auto result = sim.run(circuit, /*max_bond_dim=*/64, /*shots=*/1024, /*seed=*/42);
+
+// result.counts holds the bitstrings (qubit 0 rightmost). The chain behind
+// them is result.final_state; what the bond cap cost it, as fidelities against
+// the untruncated state, is empty only when a mid-circuit measurement collapsed
+// the chain.
+const MPSState& chain = result.final_state;
+if (const auto bound = chain.fidelity_lower_bound()) {
+    std::printf("fidelity >= %.6f (estimate %.6f), max bond %d\n", *bound,
+                *chain.fidelity_estimate(), chain.current_max_bond_dim());
+}
 ```
+
+`MPSSimulator` has only its default constructor: the chain is built inside
+`run()`, and the register width comes from the circuit. Note the argument
+order, `run(circuit, max_bond_dim, shots, seed)`, which differs from the other
+simulators' `run(circuit, shots, seed)`.
 
 ### Use Cases
 
@@ -1007,7 +1244,7 @@ auto result = sim.run(large_circuit, 100);  // 100 shots
     dimension where `StatevectorSimulator::run(circuit, shots, seed)` takes the
     shot count
 - **cutoff**: the fraction of total singular weight ($\sum \sigma^2$) a bond
-  split may discard; default `1e-16` on `MPSState`
+  split may discard; default `MPS_DEFAULT_CUTOFF` (`1e-16`) on `MPSState`
   - A weight fraction, not a magnitude threshold: no bare singular value is
     compared against it, so the same state carries the same bond dimension on
     every CPU
@@ -1021,6 +1258,10 @@ auto result = sim.run(large_circuit, 100);  // 100 shots
   rung rejects may descend the rescue ladder, one warning per rung (identical
   warnings collapse into a repeat count); `false`
   turns the first rejection into a `std::runtime_error`
+- **canonical_form** (`CanonicalForm`, default `Always`): which bond splits
+  first move the orthogonality centre onto their block; `Auto` moves it only
+  where truncation can bind (see [Canonical Form](#canonical-form)). Set on `MPSSimulator` for
+  `run()` or on an `MPSState` driven directly
 
 ## Simulator Selection Guide
 

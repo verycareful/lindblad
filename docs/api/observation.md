@@ -231,9 +231,9 @@ state that cannot be produced throws under every setting.
 A state handed to the MPS backend is factorised at that run's bond cap, so one
 needing more bond dimension than the cap allows is truncated rather than
 refused. That is what running it at that cap means, and the discarded weight is
-what `truncation_error()` reports. That figure is a within-run tally whose terms
-are absolute rather than fractional, so it does not measure how much of the
-state a given cap cost; see the truncation section of the simulators page.
+what `truncation_error()` reports. How much of the state that cost, as a
+fraction, is what the chain's `fidelity_estimate()` and `fidelity_lower_bound()`
+report; see Fidelity Figures on the simulators page.
 
 ## Anchors
 
@@ -343,7 +343,7 @@ The method differs per backend by more than a constant:
 | Backend | Method | Cost |
 |---|---|---|
 | Clifford | GF(2) rank of the generators restricted to the region | `O(n * |A|^2)` bit operations, no amplitudes |
-| MPS | spectrum of the two environment Gram matrices | `O(n * chi^3)` |
+| MPS | spectrum of the two environment Gram matrices, over the open span | `O(n * chi^3)`, `O(chi^3)` at the centre |
 | statevector | reduced matrix of the smaller side, then an eigensolve | proportional to `2^n` times the smaller side |
 | density matrix | partial trace, then an eigensolve | proportional to the region and its complement |
 
@@ -352,7 +352,9 @@ state's reduced state is maximally mixed on its support: the spectrum is flat,
 so every Renyi order agrees with the von Neumann value.
 
 The MPS route reads the bond directly only when the cut splits the chain in one
-place, meaning the region is a prefix or a suffix. Any other bipartition has no
+place, meaning the region is a prefix or a suffix. Sites outside the chain's
+open span are orthonormal and contribute identities, so each Gram matrix
+contracts only the span's sites on its side of the cut. Any other bipartition has no
 single bond to read and falls back to dense amplitudes, charged through the
 knobs like every other conversion.
 

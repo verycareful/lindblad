@@ -125,7 +125,7 @@ std::size_t StateView::state_bytes() const {
         case StateForm::MPS: {
             const auto& mps = *static_cast<const MPSState*>(state_);
             std::size_t bytes = 0;
-            for (const auto& tensor : mps.tensors) {
+            for (const auto& tensor : mps.tensors()) {
                 bytes += tensor.data.size() * sizeof(Complex128);
             }
             return bytes;

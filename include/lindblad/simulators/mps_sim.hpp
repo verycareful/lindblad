@@ -12,18 +12,26 @@
 #include "lindblad/observation.hpp"
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
+#include "lindblad/detail/fidelity_ledger.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <random>
+#include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace lindblad {
 
 class Statevector;
 class QuantumCircuit;
+
+namespace detail {
+struct SvdTruncation;
+}
 
 // =============================================================================
 // MPSTensor — tensor for one qubit site
@@ -48,12 +56,29 @@ struct MPSTensor {
     }
 };
 
-// SVDMethod (BDC default, Jacobi selectable) is declared in types.hpp so the
-// qubit and qudit MPS layers share one enum.
+// SVDMethod (BDC default, Jacobi selectable), CanonicalForm and
+// MPS_DEFAULT_CUTOFF are declared in types.hpp so the qubit and qudit MPS
+// layers share them.
 
 // =============================================================================
 // MPSState — Matrix Product State
 // =============================================================================
+//
+// Canonical form. The chain keeps an OPEN SPAN [lo, hi] of sites, reported by
+// open_span(): every site left of lo is left-orthonormal (reshaped as a
+// (2 chi_L) x chi_R matrix, A†A = I), every site right of hi is
+// right-orthonormal (reshaped as chi_L x (2 chi_R), AA† = I), and the sites
+// inside the span carry no guarantee. lo == hi == c is mixed canonical form
+// centred on c: the state's whole norm sits in site c, and a two-site block at
+// c holds the state's Schmidt coefficients at its bond.
+//
+// Every operation maintains the span, which is why the tensors are private.
+// Reading them is free (tensors()); replacing them goes through set_tensors(),
+// which assumes nothing about a chain built by hand. The centre moves by QR
+// (rightward) and LQ (leftward) steps, which are exact and never truncate, so
+// moving it changes the gauge and never the state. Whether a bond split moves
+// it onto its block first is canonical_form's to decide (CanonicalForm in
+// types.hpp); measurement, reset and sampling always do.
 
 class MPSState {
 public:
@@ -76,13 +101,50 @@ public:
     // caller who would rather stop than accept a tensor from a kernel they did
     // not name.
     bool svd_rescue = true;
-    std::vector<MPSTensor> tensors;
+    // Which bond splits first move the orthogonality centre onto their block.
+    // Always by default; the two policies and what each costs are with the
+    // enum in types.hpp.
+    CanonicalForm canonical_form = CanonicalForm::Always;
 
 public:
-    // cutoff defaults to 1e-16: truncation error is then bounded at the order
-    // of the reconstruction error an SVD already carries (~1.1e-16 relative),
-    // so nothing the factorisation actually resolved is thrown away.
-    MPSState(int n_qubits, int max_bond_dim = 64, double cutoff = 1e-16);
+    // cutoff defaults to MPS_DEFAULT_CUTOFF (types.hpp), at which a split
+    // removes rank deficiency and rounding-level weight but does not compress.
+    // The new chain is |0...0>, bond dimension 1 throughout, with its centre on
+    // site 0.
+    MPSState(int n_qubits, int max_bond_dim = 64,
+             double cutoff = MPS_DEFAULT_CUTOFF);
+
+    // The site tensors, left to right, one per qubit. Read-only, so reading
+    // them cannot disturb the open span the chain's operations rely on.
+    const std::vector<MPSTensor>& tensors() const noexcept { return tensors_; }
+
+    // Replace the chain with `sites`, one tensor per qubit, qubit 0 first.
+    //
+    // Validated before anything is replaced: the count must equal n_qubits,
+    // every bond must be at least 1 with the two outer ones exactly 1,
+    // neighbouring bonds must agree, each data array must hold
+    // bond_left * 2 * bond_right entries, and every entry must be finite.
+    // Throws std::invalid_argument naming the first violation, leaving the
+    // state as it was.
+    //
+    // Nothing is assumed about a chain built by hand, so the open span becomes
+    // the whole chain, and the first operation that needs the centre pays the
+    // QR steps to find it. The fidelity figures reset to exact: the chain
+    // handed in is what later truncation is measured against. Assigning a whole
+    // MPSState instead keeps them. The profile counters and truncation_error()
+    // are untouched, because they describe splits this object performed.
+    void set_tensors(std::vector<MPSTensor> sites);
+
+    // The open span {lo, hi} described above the class. {c, c} is mixed
+    // canonical form centred on c. A chain with no qubits reports {0, -1}.
+    std::pair<int, int> open_span() const noexcept { return {span_lo, span_hi}; }
+
+    // Move the orthogonality centre to `site`, leaving open_span() equal to
+    // {site, site}. A gauge change made of QR and LQ steps: the state, the
+    // profile counters and the fidelity figures are unchanged. A bond wider
+    // than the rank its neighbouring site can carry is trimmed to that rank
+    // on the way, which is lossless.
+    void canonicalize(int site);
 
     // Gate application via SVD.
     // validation = policy and tolerance for the unitarity of U. Both matrices
@@ -93,6 +155,15 @@ public:
     // bit 0 of the row and column index is the state of q1 and bit 1 the state
     // of q2, so q1 is the least significant. A CX with its control on q1 is
     // therefore nonzero at (0,0), (1,3), (2,2) and (3,1).
+    //
+    // A single-qubit gate leaves open_span() as it is: a unitary acting on the
+    // physical index preserves both orthonormalities. (A matrix accepted under
+    // Validation::Ignore that is not unitary breaks that, as it breaks the
+    // state's norm.) A two-qubit gate on an adjacent pair contracts the pair,
+    // applies U and splits the block by truncated SVD, moving the centre onto
+    // the pair first when canonical_form calls for it. A non-adjacent pair is
+    // brought together by a SWAP chain whose splits follow the same rule, each
+    // leaving the centre where the next one starts.
     void apply_single_qubit_gate(
         const std::array<Complex128, 4>& U, int qubit,
         ValidationOptions validation = {}
@@ -105,40 +176,62 @@ public:
     // Truncation info
     //
     // Total weight (sum of sigma²) discarded across every split so far, each
-    // term taken in the scale of the block that split. Two properties bound
-    // what the total can answer.
+    // term the absolute weight its split threw away.
     //
     // It ACCUMULATES, so it grows with the number of splits a run performs, and
     // two runs are comparable only when they perform the same ones.
     //
-    // Each term is an ABSOLUTE weight against its two-site block rather than a
-    // fraction of it. Gate application does not maintain canonical form, so
-    // that block's Frobenius norm is neither the state norm nor fixed across a
-    // run: it drifts as singular values are absorbed into the left tensor. A
-    // single term is therefore not bounded by 1, and a total well above 1 is
-    // ordinary on a deep circuit.
+    // A split in canonical gauge discards that weight from the STATE, whose
+    // norm its block then carries. On a chain with no collapse, no
+    // normalisation and no absorbed profile, the total therefore equals how far
+    // norm_sq() has fallen since the chain was built, to rounding. Under
+    // CanonicalForm::Auto the splits that run in place contribute weight at
+    // their blocks' rounding level instead.
     //
-    // The consequence is sharper than a missing unit: the totals do not ORDER
-    // bond caps. Once truncation is heavy, a low cap shrinks the blocks it goes
-    // on to split and its later terms are small in absolute size, while a high
-    // cap keeps larger blocks and reports larger discards while losing less of
-    // the state. Deep enough, and the reported total RISES with the bond cap.
-    //
-    // Read it as a within-run tally of what the splits dropped. To compare one
-    // bond cap against another, use the bond profile or a downstream fidelity.
+    // It is a weight, not a fidelity. For how close the chain is to the state
+    // an untruncated run would hold, read fidelity_estimate() and
+    // fidelity_lower_bound().
     double truncation_error() const { return total_truncation_error; }
     int current_max_bond_dim() const;
 
-    // ⟨ψ|ψ⟩, by transfer-matrix contraction along the chain. There is no flat
-    // amplitude array to sweep here, so this costs O(n·chi³) rather than the
-    // O(2^n) a dense state would, and it is the only way to read the norm
-    // without materialising the state.
+    // How close the chain is to the state an untruncated run would hold, as a
+    // fidelity |⟨exact|chain⟩|² between the two normalised states.
+    //
+    // fidelity_estimate() is prod_k (1 - eps_k) over each split's discarded
+    // fraction, the standard figure, and it is NOT a bound: the true fidelity
+    // can lie on either side of it. fidelity_lower_bound() is a floor the true
+    // fidelity cannot fall below. The derivation, the example separating the
+    // two, and what CanonicalForm::Auto costs them are in
+    // detail/fidelity_ledger.hpp.
+    //
+    // Both read 1 on a new chain and after set_tensors(). Both are EMPTY once a
+    // measurement or reset has collapsed the chain (measure_qubit,
+    // measure_sequential, or a MEASURE or RESET in a run) and stay empty:
+    // projection renormalises the exact and the truncated state by different
+    // factors. rebuild_from_statevector's splits count like any other.
+    // absorb_profile does not fold them, because they describe these tensors'
+    // own history rather than a run's splits.
+    std::optional<double> fidelity_estimate() const noexcept {
+        return fidelity.estimate();
+    }
+    std::optional<double> fidelity_lower_bound() const noexcept {
+        return fidelity.lower_bound();
+    }
+
+    // ⟨ψ|ψ⟩. Sites outside the open span are orthonormal and contract to the
+    // identity, so only the span is contracted: at a single-site centre this
+    // is that site's Frobenius norm, O(chi²), and with the span open over the
+    // whole chain O(n·chi³). There is no flat amplitude array to sweep here,
+    // and this is the only way to read the norm without materialising the
+    // state.
     double norm_sq() const;
 
-    // Rescale tensors[0] so ⟨ψ|ψ⟩ == 1. One site carries the whole factor,
-    // which is exact: the norm is multilinear in the tensors, so scaling any
-    // single one scales the state. Throws when there is no norm to divide out,
-    // a zero or non-finite state, rather than returning it unchanged.
+    // Rescale one site so ⟨ψ|ψ⟩ == 1: the first site of the open span, since
+    // scaling a site outside it would break that site's orthonormality. One
+    // site carrying the whole factor is exact: the norm is multilinear in the
+    // tensors, so scaling any single one scales the state. Throws when there
+    // is no norm to divide out, a zero or non-finite state, rather than
+    // returning it unchanged.
     void normalize();
 
     // True when the norm is 1 to within atol. A predicate: it answers, it does not
@@ -227,11 +320,27 @@ public:
     void absorb_profile(const MPSState& other);
 
     // Measurements and expectation values
+    //
+    // The marginals ⟨ψ|P_k|ψ⟩ of `qubit` for k = 0, 1, RAW: they sum to
+    // norm_sq(), which is 1 only on a normalised state. Reads the chain without
+    // moving the centre, contracting only the stretch of the open span on each
+    // side of the qubit, so with the centre on the qubit it is a read of that
+    // one site.
     std::vector<double> probabilities_single(int qubit) const;
 
-    // Sequential measurement: sample a full bitstring respecting correlations.
-    // Measures qubit 0, conditions on outcome, propagates boundary, repeats.
-    // O(N * chi^3) per shot. Modifies internal state (projects measured qubits).
+    // Measure `qubit` in the computational basis and collapse the chain onto
+    // the outcome, returned as 0 or 1. The centre moves to the qubit first, so
+    // its marginals are local and the collapse renormalises that site alone;
+    // afterwards the state has unit norm and open_span() is {qubit, qubit}.
+    // Draws one uniform from `rng`. The fidelity figures become empty.
+    int measure_qubit(int qubit, std::mt19937_64& rng);
+
+    // Sequential measurement: sample a full bitstring respecting correlations,
+    // and collapse the chain onto it. The centre moves to qubit 0, then each
+    // qubit in turn is measured at the centre, collapsed, and the centre
+    // stepped right by one QR, O(N * chi^3) per call with no environments.
+    // Qubit 0 is the rightmost character. Draws one uniform per qubit. The
+    // fidelity figures become empty.
     std::string measure_sequential(std::mt19937_64& rng);
 
     // Convert to exact statevector (expensive, for small N only)
@@ -248,13 +357,24 @@ public:
     // The counters ACCUMULATE rather than reset. truncation_error() describes
     // everything this state has discarded, not merely what the last split
     // discarded, so a chain rebuilt part way through a run still carries what
-    // the gates before it cost. Rebuilding into a fresh MPSState is how a caller
-    // asks for a clean total.
+    // the gates before it cost. The fidelity figures accumulate the same way,
+    // which is right when `sv` is this chain's own state with a gate applied,
+    // as on every dense fallback. Rebuilding into a fresh MPSState is how a
+    // caller asks for a clean total and exact figures.
+    //
+    // The sweep leaves sites 0..n-2 left-orthonormal, so the centre ends on
+    // the last site, and each of its splits is taken in canonical gauge.
     //
     // Throws when `sv` does not cover the same number of qubits as this state.
     void rebuild_from_statevector(const Statevector& sv);
 
 private:
+    std::vector<MPSTensor> tensors_;
+    // The open span; see the class comment. {0, -1} when there are no sites.
+    int span_lo = 0;
+    int span_hi = 0;
+    detail::FidelityLedger fidelity;
+
     double total_truncation_error = 0.0;
     std::size_t jacobi_rescues = 0;
     std::size_t gram_fallbacks = 0;
@@ -262,6 +382,16 @@ private:
     std::size_t svd_calls = 0;
     std::uint64_t svd_nanos = 0;
     double max_verify_resid_excess = 0.0;
+
+    // Which site of a split receives the singular values. Right leaves the
+    // left site left-orthonormal and the centre on the right site; Left is the
+    // mirror image. A SWAP chain passes the direction its next block lies in,
+    // so each split leaves the centre where the next one needs it.
+    enum class Absorb { Left, Right };
+
+    // Folds one split's outcome into the profile counters. Every split this
+    // class performs reports through here, so no route can count differently.
+    void account_split(const detail::SvdTruncation& split, std::uint64_t nanos);
 
     // SVD helper
     void svd_truncate(
@@ -273,6 +403,31 @@ private:
         int& new_rank
     );
 
+    // Whether the split of the block at (q, q+1) moves the centre onto the
+    // block first: the CanonicalForm rule, read against the current bonds.
+    bool split_needs_centre(int q) const;
+
+    // One step of the centre. shift_right(q): thin QR of site q as a
+    // (2 chi_L) x chi_R matrix, site q becomes Q and R multiplies into site
+    // q+1. shift_left(q): thin LQ of site q as chi_L x (2 chi_R), site q
+    // becomes Q and L multiplies into site q-1. Exact, never truncating, and
+    // outside every counter.
+    void shift_right(int q);
+    void shift_left(int q);
+
+    // Narrow the open span into [a, b] by the fewest steps: raise lo to a,
+    // lower hi to b. When one end passes the other, the site that received the
+    // last factor is the whole span.
+    void focus(int a, int b);
+
+    // Local marginals of the centre site, which must be `site`: the squared
+    // norms of its two physical slices.
+    std::array<double, 2> centre_marginals(int site) const;
+
+    // Collapse the centre site onto `outcome`, renormalising by the outcome's
+    // raw marginal `p_outcome` so the state leaves with unit norm.
+    void collapse_centre(int site, int outcome, double p_outcome);
+
     // apply_two_qubit_gate with U already in the MSB-first order the two-site
     // contraction reads (bit 1 = q1, bit 0 = q2): orders the pair, runs the
     // SWAP chain, applies. The public entry converts to this order once.
@@ -282,11 +437,12 @@ private:
 
     // Adjacent two-qubit gate application (internal, MSB-first as above)
     void apply_two_qubit_gate_adjacent(
-        const std::array<Complex128, 16>& U, int q1
+        const std::array<Complex128, 16>& U, int q1,
+        Absorb absorb = Absorb::Right
     );
 
     // Adjacent SWAP gate (internal)
-    void apply_swap_adjacent(int q);
+    void apply_swap_adjacent(int q, Absorb absorb);
 };
 
 // =============================================================================
@@ -295,14 +451,16 @@ private:
 
 class MPSSimulator {
 public:
-    // Factorisation every bond split of a run uses, and whether a rejected one
-    // may be rescued, both copied onto the chain this simulator builds. Without
-    // them the choice is reachable only by driving MPSState directly, since
+    // Factorisation every bond split of a run uses, whether a rejected one may
+    // be rescued, and which splits first move the orthogonality centre onto
+    // their block, all copied onto every chain this simulator builds. Without
+    // them the choices are reachable only by driving MPSState directly, since
     // run() constructs its own chain and a chain built inside a call cannot be
-    // configured from outside it. Meaning of each: MPSState::svd_method and
-    // MPSState::svd_rescue.
+    // configured from outside it. Meaning of each: MPSState::svd_method,
+    // MPSState::svd_rescue and MPSState::canonical_form.
     SVDMethod svd_method = SVDMethod::BDC;
     bool svd_rescue = true;
+    CanonicalForm canonical_form = CanonicalForm::Always;
 
     struct Result {
         MPSState final_state;

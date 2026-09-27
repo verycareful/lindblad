@@ -51,7 +51,7 @@ Simulator classes and state representations:
 - **StatevectorSimulator**: Exact pure-state simulation, $O(2^n)$ space, optimal for 5–25 qubits
 - **DensityMatrixSimulator** + **DensityMatrix**: Mixed-state with Kraus noise, $O(4^n)$ space, noisy circuits up to ~10 qubits
 - **CliffordSimulator** + **StabilizerState**: Polynomial-time Clifford circuits via stabilizer tableau, unbounded system size
-- **MPSSimulator** + **MPSState**: Approximate large-system simulation, $O(n\chi^2)$ space, tunable bond dimension $\chi$
+- **MPSSimulator** + **MPSState**: Approximate large-system simulation, $O(n\chi^2)$ space, tunable bond dimension $\chi$; kept in canonical form (`CanonicalForm` in `lindblad/types.hpp`) so truncation acts on Schmidt coefficients, with a fidelity estimate and lower bound on the result
 
 All simulators follow common interface: `Result run(circuit, params)`
 

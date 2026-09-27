@@ -89,6 +89,22 @@ bool eigh_run(const std::complex<double>* data, int n, double* evals_out,
     return true;
 }
 
+template <typename PlainT>
+void qr_run(const std::complex<double>* data, int rows, int cols,
+            std::complex<double>* Q_out, std::complex<double>* R_out) {
+    const Eigen::Map<const PlainT> mat(data, rows, cols);
+    const int k = std::min(rows, cols);
+    // One instantiation, over the column-major type, whichever order the input
+    // arrived in: the solver copies its input into its own storage anyway.
+    const Eigen::HouseholderQR<ColMajorC> qr(mat);
+    // The thin Q is the reflector product applied to the first k columns of
+    // the identity, which never forms the full rows x rows factor.
+    Eigen::Map<ColMajorC>(Q_out, rows, k) =
+        qr.householderQ() * ColMajorC::Identity(rows, k);
+    Eigen::Map<ColMajorC>(R_out, k, cols) =
+        qr.matrixQR().topRows(k).triangularView<Eigen::Upper>();
+}
+
 }  // namespace
 
 bool svd_thin(const std::complex<double>* data, int rows, int cols,
@@ -120,6 +136,18 @@ bool eigh(const std::complex<double>* data, int n, MatrixOrder order,
     return (order == MatrixOrder::RowMajor)
                ? eigh_run<RowMajorC>(data, n, evals_out, evecs_out)
                : eigh_run<ColMajorC>(data, n, evals_out, evecs_out);
+}
+
+bool qr_thin(const std::complex<double>* data, int rows, int cols,
+             MatrixOrder order, std::complex<double>* Q_out,
+             std::complex<double>* R_out) {
+    if (rows <= 0 || cols <= 0) return false;
+    if (order == MatrixOrder::RowMajor) {
+        qr_run<RowMajorC>(data, rows, cols, Q_out, R_out);
+    } else {
+        qr_run<ColMajorC>(data, rows, cols, Q_out, R_out);
+    }
+    return true;
 }
 
 }  // namespace detail

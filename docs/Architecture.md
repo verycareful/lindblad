@@ -133,6 +133,29 @@ sampled from a single forward pass (counts keyed by the qubit-to-clbit map).
 4^n - 1 non-identity Paulis. `thermal_relaxation` decays coherences by
 exactly `exp(-t/T2)`.
 
+### MPS canonical form (both layers)
+
+`MPSState` and `QuditMPS` each keep an open span `[lo, hi]` of sites: every
+site left of `lo` is left-orthonormal, every site right of `hi` is
+right-orthonormal, and `lo == hi` is mixed canonical form centred on that site.
+Every operation on either layer maintains it, which is why both keep their site
+tensors private (read through `tensors()`, replaced through a validated
+`set_tensors()`).
+
+- The orthogonality centre moves only by exact QR and LQ steps. They never
+  truncate and never touch the truncation total, the fidelity figures or the
+  SVD counters.
+- A bond split moves the centre onto its block first when the chain's
+  `CanonicalForm` policy calls for it: under `Always` (the default) for every
+  split, under `Auto` only when the bond cap can bind or the cutoff is above
+  `MPS_DEFAULT_CUTOFF`. Only then are the block's singular values the state's
+  Schmidt coefficients.
+- Anything that reads a single site's marginals (measurement, reset, sampling)
+  moves the centre to that site first, and anything that reads without moving
+  it contracts only the open span, treating the sites outside it as identities.
+- The QR joins the SVDs and the eigensolver in `detail::eigen_backend`, the one
+  translation unit that instantiates Eigen decompositions.
+
 ## Layered View
 
 ```text

@@ -208,7 +208,7 @@ post-measurement pure state, and returns per-qudit digits.
 ## `QuditMPS`
 
 ```cpp
-#include "lindblad/qudit/qudit_mps.hpp"
+#include "lindblad/qudit/qudit_mps.hpp"  // QuditMPS, MPSSiteTensor; namespace lindblad
 ```
 
 Matrix Product State representation. Each site tensor `A_q` has shape
@@ -218,30 +218,75 @@ discarding the smallest singular values while the discarded weight
 $\sum \sigma^2$ stays within `svd_cutoff` of the total. Same rule and same
 meaning as `MPSState::cutoff` in the qubit layer.
 
+The chain keeps the qubit layer's canonical-form invariant: an open span of
+sites outside which every site is orthonormal, an orthogonality centre moved by
+exact QR and LQ steps, and a `canonical_form` policy deciding which splits move
+the centre onto their block first. The rank bound the `Auto` policy reads is
+$\min(d\chi_L, d\chi_R)$. The full description is under Canonical Form in the
+[simulators reference](simulators.md#canonical-form).
+
 ### Constructors
 
 ```cpp
-QuditMPS(int n_qudits, int d,
-         int max_bond_dim = 64, double svd_cutoff = 1e-16);   // |0…0⟩
-explicit QuditMPS(const QuditStatevector& sv,
-                  int max_bond_dim = 64, double svd_cutoff = 1e-16);
+QuditMPS(int n_qudits, int d, int max_bond_dim = 64,
+         double svd_cutoff = MPS_DEFAULT_CUTOFF);   // |0…0⟩, centre on site 0
+explicit QuditMPS(const QuditStatevector& sv, int max_bond_dim = 64,
+                  double svd_cutoff = MPS_DEFAULT_CUTOFF);
 ```
 
 The statevector constructor performs a sequential left-to-right SVD
 decomposition, building an exact MPS representation (up to the truncation
-parameters).
+parameters). It leaves every site but the last left-orthonormal, so the centre
+ends on the last site, and its splits count towards the new object's SVD
+counters and fidelity figures. `MPS_DEFAULT_CUTOFF` (`1e-16`) is declared in
+`lindblad/types.hpp`.
 
 ### Public fields
 
-| Field | Type | Description |
-|---|---|---|
-| `n_qudits` | `int` | number of sites |
-| `d` | `int` | local dimension |
-| `max_bond_dim` | `int` | maximum retained singular values per bond |
-| `svd_cutoff` | `double` | max fraction of total weight truncation may discard |
-| `svd_method` | `SVDMethod` | Bond-split kernel: default `BDC` (autonne's divide and conquer); `Jacobi` (autonne), `EigenBDC` and `EigenJacobi` are selectable. Either Jacobi emits a one-time note that it is the slower algorithm. Same meaning as the qubit `MPSState::svd_method`; declared in `lindblad/types.hpp`. |
-| `svd_rescue` | `bool` | `true` (default): a factorisation the verify rung rejects descends the rescue ladder (autonne `Jacobi`, then the Gram route), one warning per rung (identical warnings collapse into a repeat count). `false`: the first rejection throws. |
-| `tensors` | `std::vector<MPSSiteTensor>` | site tensors |
+- `n_qudits` (`int`): number of sites
+- `d` (`int`): local dimension
+- `max_bond_dim` (`int`): maximum retained singular values per bond
+- `svd_cutoff` (`double`): maximum fraction of total weight a split may
+  discard; default `MPS_DEFAULT_CUTOFF`
+- `svd_method` (`SVDMethod`, default `BDC`, autonne's divide and conquer): the
+  bond-split kernel. `Jacobi` (autonne), `EigenBDC` and `EigenJacobi` are
+  selectable, and either Jacobi emits a one-time note that it is the slower
+  algorithm. Same meaning as the qubit `MPSState::svd_method`; declared in
+  `lindblad/types.hpp`
+- `svd_rescue` (`bool`, default `true`): whether a factorisation the verify
+  rung rejects descends the rescue ladder (autonne `Jacobi`, then the Gram
+  route), one warning per rung (identical warnings collapse into a repeat
+  count). `false` makes the first rejection throw
+- `canonical_form` (`CanonicalForm`, default `Always`): every bond split moves
+  the orthogonality centre onto its block first. `Auto` moves it only when the
+  bond cap can bind or the cutoff is above `MPS_DEFAULT_CUTOFF`, which skips QR
+  steps but can keep wider bonds than the state needs. Same meaning as the qubit
+  `MPSState::canonical_form`; declared in `lindblad/types.hpp`
+
+### Chain access and canonical form
+
+```cpp
+const std::vector<MPSSiteTensor>& tensors() const;   // read-only
+void set_tensors(std::vector<MPSSiteTensor> sites);
+std::pair<int, int> open_span() const;
+void canonicalize(int site);
+```
+
+The site tensors are private, because every operation relies on the open span
+and a direct write would falsify it. `set_tensors` validates before replacing
+anything: the count must equal `n_qudits`, every site must have physical
+dimension `d`, every bond must be at least 1 with the two outer ones exactly 1,
+neighbouring bonds must agree, each data array must hold `d * chi_L * chi_R`
+entries, and every entry must be finite. It throws `std::invalid_argument`
+naming the first violation and leaves the state as it was. Afterwards the open
+span is the whole chain and the fidelity figures read exact; the SVD counters
+and `truncation_error()` are untouched.
+
+`open_span()` returns `{lo, hi}`: every site left of `lo` is left-orthonormal,
+every site right of `hi` right-orthonormal, and `{c, c}` is mixed canonical form
+centred on `c`. `canonicalize(site)` moves the centre there by QR and LQ steps,
+a gauge change that leaves the state, the counters and the fidelity figures as
+they were. Throws `std::out_of_range` for a site outside the chain.
 
 ### Gate and oracle API
 
@@ -257,6 +302,10 @@ Both two-qudit calls follow the project LSB-first convention: the first qudit
 
 Non-adjacent two-qudit gates (`apply_2qudit`) are handled via a SWAP chain:
 the sites are brought adjacent, the gate is applied, and the SWAPs are reversed.
+Each split sends its singular values toward the next block, so when splits move
+the centre it is already in place at each step. `apply_1qudit` leaves the open
+span as it is, since a unitary on the physical index preserves both
+orthonormalities.
 
 ```cpp
 void apply_phase_oracle(
@@ -266,7 +315,11 @@ void apply_function_oracle(int n_query, int n_output,
 ```
 
 Both oracles fall back to an exact dense statevector (via `to_statevector()`)
-and reconstruct the MPS. Use for small systems only; not efficient for large n.
+and reconstruct the MPS with this object's own settings (kernel, rescue choice,
+canonical-form policy, bond cap and cutoff). The reconstruction's splits count
+like any other, towards the SVD counters, `truncation_error()` and the fidelity
+figures, and the centre ends on the last site. Use for small systems only; not
+efficient for large n.
 
 The `apply_function_oracle` `f` maps the flat index of the query register to
 the flat addend for the output register (both as integers, not digit vectors).
@@ -274,7 +327,8 @@ the flat addend for the output register (both as integers, not digit vectors).
 ### Measurement, norm, and canonicalisation
 
 ```cpp
-std::vector<int> measure(uint64_t seed = 0);  // sequential environment sampling
+std::vector<int> measure(uint64_t seed = 0);          // sample, no collapse
+int measure_qudit(int q, std::mt19937_64& rng);       // measure one qudit, collapse
 double norm_sq() const;
 void normalize();
 bool is_normalized(double atol = DEFAULT_PHYSICAL_ATOL) const;
@@ -283,11 +337,13 @@ void left_canonicalize();
 void right_canonicalize();
 ```
 
-`norm_sq()` is a transfer-matrix contraction along the chain, `O(n · χ³)`, since
-there is no flat amplitude array to sweep. `normalize()` rescales the first site
-tensor, which is exact because the norm is multilinear in the tensors, and
-throws when there is no norm to divide out rather than returning the state
-unchanged.
+`norm_sq()` is a transfer-matrix contraction over the open span only, since the
+sites outside it contract to the identity: at a single-site centre it is that
+site's squared Frobenius norm, and with the span open over the whole chain
+`O(n · χ³)`. There is no flat amplitude array to sweep. `normalize()` rescales
+the first site of the open span, which is exact because the norm is
+multilinear in the tensors, and throws when there is no norm to divide out
+rather than returning the state unchanged.
 
 `is_normalized` answers without repairing or throwing. `check_normalized`
 applies a policy, with `Repair::Attempt` renormalizing in place. Under `Ignore`
@@ -295,17 +351,34 @@ with `Repair::None` neither the contraction nor anything else runs, which
 matters more here than on the dense classes because the measurement is the most
 expensive of any state type in the library.
 
-`measure` (R.1.13, audit F-5): precomputes the right environments once
-(`build_right_envs`, $O(n \cdot \chi^3)$) and samples left-to-right read-only,
-carrying the left environment incrementally. This replaced the previous path
-that contracted the whole MPS to a dense $d^n$ statevector before sampling, so
-measurement is now $O(n \cdot \chi^3)$ with memory bounded by the bond dimension.
-The phase/function oracles still use the dense `to_statevector()` fallback (a
-separate, documented limitation).
+`measure(seed)` samples one outcome without collapsing the state and returns a
+length-`n_qudits` vector of digits. It moves the centre to qudit 0, where every
+other site is right-orthonormal, then draws the digits left to right carrying a
+vector on the bond: `O(n · d · χ²)`, memory bounded by the bond dimension, and
+the state and the fidelity figures unchanged. `seed == 0` draws a seed from
+`std::random_device`. The phase/function oracles still use the dense
+`to_statevector()` fallback (a separate, documented limitation).
 
-### Ladder observability
+`measure_qudit(q, rng)` measures one qudit and collapses the chain onto the
+outcome, returned as a digit in `[0, d)`. The centre moves to the qudit first,
+so the marginals are the squared norms of its site's `d` physical slices, and
+the collapse zeroes the other slices and divides the chosen one by the square
+root of its marginal, leaving unit norm with `open_span()` at `{q, q}`. One
+uniform is drawn from `rng` on every call. The fidelity figures become empty.
+
+`left_canonicalize()` moves the centre to site 0 and then sweeps right by
+truncated SVD: each site becomes the left-orthonormal `U` and `S V†` is absorbed
+into its right neighbour, so the centre ends on the last site. Because the sweep
+starts from site 0, every split in it is taken in canonical gauge and truncates
+on the state's Schmidt coefficients. Each split counts like any other, towards
+the SVD counters, `truncation_error()` and the fidelity figures.
+`right_canonicalize()` is the mirror image, from the last site to site 0.
+
+### Fidelity and ladder observability
 
 ```cpp
+std::optional<double> fidelity_estimate() const;
+std::optional<double> fidelity_lower_bound() const;
 double truncation_error() const;
 std::size_t svd_call_count() const;
 std::size_t jacobi_rescue_count() const;
@@ -315,9 +388,13 @@ std::uint64_t svd_time_ns() const;
 double max_verify_residual_excess() const;
 ```
 
-The same figures the qubit `MPSState` exposes, with the same meanings (see the
-simulators reference): splits performed, how many were rescued on each rung,
-the Gram route's floor-rejected weight, nanoseconds spent in the whole ladder
+The same figures the qubit `MPSState` exposes, with the same meanings (see
+Fidelity Figures and the truncation text in the
+[simulators reference](simulators.md#fidelity-figures)): how close the chain is
+to the state an untruncated evolution would hold, as an estimate that is not a
+bound and a rigorous lower bound, both empty after any collapse; the truncation
+total; splits performed, how many were rescued on each rung, the Gram route's
+floor-rejected weight, nanoseconds spent in the whole ladder
 over those splits, and the worst factorisation error the verify rung accepted.
 `svd_time_ns()` brackets the ladder the way the qubit layer does, so the two
 layers' figures can be read against each other. A rescue warning needs no
@@ -358,7 +435,7 @@ otherwise.
 
 2n rows (n destabilizers [0, n) + n stabilizers [n, 2n)). Each row encodes:
 
-```
+```text
 τ^{phase[r]} · ∏_q X_q^{xbits[r][q]} · Z_q^{zbits[r][q]}
 ```
 

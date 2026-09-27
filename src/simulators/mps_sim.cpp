@@ -18,7 +18,9 @@
 // NaN inside null-space singular vectors and, worse, finite-but-wrong kept
 // vectors carrying no marker at all. Reproducers: tests/diag_r1160_matrices.hpp.
 // Non-adjacent two-qubit gates are handled via SWAP chains (correct MPS-native approach).
-// Single-qubit marginals use efficient left/right boundary contraction — O(N chi^3).
+// The chain tracks its open span (see mps_sim.hpp) and moves its orthogonality
+// centre by QR and LQ steps, so marginals, collapse, the norm and sampling read
+// the centre locally instead of contracting environments over the whole chain.
 
 #include "lindblad/simulators/mps_sim.hpp"
 #include "lindblad/statevector.hpp"
@@ -29,6 +31,7 @@
 #include "lindblad/detail/eigen_backend.hpp"
 #include "lindblad/detail/theta_harvest.hpp"
 #include "lindblad/gates.hpp"
+#include "lindblad/hw_info.hpp"
 
 #include <optional>
 #include <Eigen/Dense>
@@ -94,12 +97,209 @@ MPSState::MPSState(int n_qubits, int max_bond_dim, double cutoff)
     detail::check_require(max_bond_dim >= 1, "MPSState",
                           "max_bond_dim must be >= 1 (got " +
                               std::to_string(max_bond_dim) + ")");
-    tensors.resize(n_qubits);
+    tensors_.resize(n_qubits);
     for (int i = 0; i < n_qubits; ++i) {
-        tensors[i] = MPSTensor(1, 1);
-        tensors[i](0, 0, 0) = Complex128(1.0, 0.0);  // |0⟩ amplitude
-        tensors[i](0, 1, 0) = Complex128(0.0, 0.0);  // |1⟩ amplitude
+        tensors_[i] = MPSTensor(1, 1);
+        tensors_[i](0, 0, 0) = Complex128(1.0, 0.0);  // |0⟩ amplitude
+        tensors_[i](0, 1, 0) = Complex128(0.0, 0.0);  // |1⟩ amplitude
     }
+    // A bond-1 unit vector is orthonormal both ways, so any single site could
+    // be named the centre of |0...0>; site 0 is where sampling starts.
+    span_lo = 0;
+    span_hi = n_qubits > 0 ? 0 : -1;
+}
+
+// =============================================================================
+// set_tensors / canonicalize - replacing the chain and moving its centre
+// =============================================================================
+
+void MPSState::set_tensors(std::vector<MPSTensor> sites) {
+    const char* ctx = "MPSState::set_tensors";
+    const auto fail = [ctx](const std::string& what) {
+        throw std::invalid_argument(std::string(ctx) + ": " + what);
+    };
+    if (static_cast<int>(sites.size()) != n_qubits) {
+        fail("expected " + std::to_string(n_qubits) + " site tensors, got " +
+             std::to_string(sites.size()));
+    }
+    for (int q = 0; q < n_qubits; ++q) {
+        const MPSTensor& t = sites[static_cast<std::size_t>(q)];
+        const std::string site = "site " + std::to_string(q);
+        if (t.bond_left < 1 || t.bond_right < 1) {
+            fail(site + " has a bond below 1 (" + std::to_string(t.bond_left) +
+                 ", " + std::to_string(t.bond_right) + ")");
+        }
+        if (q == 0 && t.bond_left != 1) fail("the left end bond must be 1");
+        if (q == n_qubits - 1 && t.bond_right != 1) {
+            fail("the right end bond must be 1");
+        }
+        if (q > 0 &&
+            sites[static_cast<std::size_t>(q - 1)].bond_right != t.bond_left) {
+            fail(site + " has left bond " + std::to_string(t.bond_left) +
+                 " where its neighbour's right bond is " +
+                 std::to_string(sites[static_cast<std::size_t>(q - 1)].bond_right));
+        }
+        const std::size_t expected = static_cast<std::size_t>(t.bond_left) * 2 *
+                                     static_cast<std::size_t>(t.bond_right);
+        if (t.data.size() != expected) {
+            fail(site + " holds " + std::to_string(t.data.size()) +
+                 " entries where its bonds need " + std::to_string(expected));
+        }
+        for (const Complex128& c : t.data) {
+            if (!is_finite_strict(c.real) || !is_finite_strict(c.imag)) {
+                fail(site + " holds a non-finite entry");
+            }
+        }
+    }
+
+    tensors_ = std::move(sites);
+    span_lo = 0;
+    span_hi = n_qubits - 1;
+    fidelity.reset();
+}
+
+void MPSState::canonicalize(int site) {
+    detail::check_qubit(site, n_qubits, "MPSState::canonicalize");
+    focus(site, site);
+}
+
+// =============================================================================
+// Moving the orthogonality centre
+// =============================================================================
+//
+// Both steps go through the one QR in detail::eigen_backend and then multiply
+// the leftover factor into the neighbour. Complex128 is layout-identical to
+// std::complex<double>, so every site is mapped in place: a site's data is
+// row-major both as a (2 chi_L) x chi_R matrix and as a chi_L x (2 chi_R) one.
+
+namespace {
+
+using RowMajorC = Eigen::Matrix<std::complex<double>, Eigen::Dynamic,
+                                Eigen::Dynamic, Eigen::RowMajor>;
+using ColMajorC = Eigen::Matrix<std::complex<double>, Eigen::Dynamic,
+                                Eigen::Dynamic, Eigen::ColMajor>;
+
+std::complex<double>* as_std(Complex128* p) {
+    return reinterpret_cast<std::complex<double>*>(p);
+}
+const std::complex<double>* as_std(const Complex128* p) {
+    return reinterpret_cast<const std::complex<double>*>(p);
+}
+
+}  // namespace
+
+void MPSState::shift_right(int q) {
+    MPSTensor& A = tensors_[static_cast<std::size_t>(q)];
+    MPSTensor& B = tensors_[static_cast<std::size_t>(q + 1)];
+    const int rows = 2 * A.bond_left;
+    const int chi = A.bond_right;
+    const int k = std::min(rows, chi);
+
+    std::vector<std::complex<double>> Q(static_cast<std::size_t>(rows) * k);
+    std::vector<std::complex<double>> R(static_cast<std::size_t>(k) * chi);
+    detail::qr_thin(as_std(A.data.data()), rows, chi,
+                    detail::MatrixOrder::RowMajor, Q.data(), R.data());
+
+    MPSTensor A_new(A.bond_left, k);
+    Eigen::Map<RowMajorC>(as_std(A_new.data.data()), rows, k) =
+        Eigen::Map<const ColMajorC>(Q.data(), rows, k);
+
+    const int cols = 2 * B.bond_right;
+    MPSTensor B_new(k, B.bond_right);
+    Eigen::Map<RowMajorC>(as_std(B_new.data.data()), k, cols) =
+        Eigen::Map<const ColMajorC>(R.data(), k, chi) *
+        Eigen::Map<const RowMajorC>(as_std(B.data.data()), chi, cols);
+
+    A = std::move(A_new);
+    B = std::move(B_new);
+}
+
+void MPSState::shift_left(int q) {
+    MPSTensor& A = tensors_[static_cast<std::size_t>(q - 1)];
+    MPSTensor& B = tensors_[static_cast<std::size_t>(q)];
+    const int chi = B.bond_left;
+    const int cols = 2 * B.bond_right;
+    const int k = std::min(chi, cols);
+
+    // B's row-major chi x (2 chi_R) buffer, read column-major, is its
+    // transpose, so this factorises B^T = Q R and B = R^T Q^T (see qr_thin).
+    std::vector<std::complex<double>> Q(static_cast<std::size_t>(cols) * k);
+    std::vector<std::complex<double>> R(static_cast<std::size_t>(k) * chi);
+    detail::qr_thin(as_std(B.data.data()), cols, chi,
+                    detail::MatrixOrder::ColMajor, Q.data(), R.data());
+
+    // Q^T, k x (2 chi_R) row-major, is the column-major Q buffer as it stands.
+    MPSTensor B_new(k, B.bond_right);
+    std::copy(Q.begin(), Q.end(), as_std(B_new.data.data()));
+
+    // L = R^T, chi x k, is the column-major R buffer read row-major.
+    const int rows = 2 * A.bond_left;
+    MPSTensor A_new(A.bond_left, k);
+    Eigen::Map<RowMajorC>(as_std(A_new.data.data()), rows, k) =
+        Eigen::Map<const RowMajorC>(as_std(A.data.data()), rows, chi) *
+        Eigen::Map<const RowMajorC>(R.data(), chi, k);
+
+    A = std::move(A_new);
+    B = std::move(B_new);
+}
+
+void MPSState::focus(int a, int b) {
+    if (n_qubits == 0) return;
+    while (span_lo < a) {
+        shift_right(span_lo);
+        ++span_lo;
+        span_hi = std::max(span_hi, span_lo);
+    }
+    while (span_hi > b) {
+        shift_left(span_hi);
+        --span_hi;
+        span_lo = std::min(span_lo, span_hi);
+    }
+}
+
+bool MPSState::split_needs_centre(int q) const {
+    if (canonical_form == CanonicalForm::Always) return true;
+    if (cutoff > MPS_DEFAULT_CUTOFF) return true;
+    const MPSTensor& A = tensors_[static_cast<std::size_t>(q)];
+    const MPSTensor& B = tensors_[static_cast<std::size_t>(q + 1)];
+    return std::min(2 * A.bond_left, 2 * B.bond_right) > max_bond_dim;
+}
+
+// =============================================================================
+// Collapse at the centre
+// =============================================================================
+
+// Below this a marginal is treated as zero: sampling falls back to an even
+// split and renormalisation is skipped rather than dividing by noise.
+static constexpr double MARGINAL_FLOOR = 1e-30;
+
+void MPSState::collapse_centre(int site, int outcome, double p_outcome) {
+    MPSTensor& T = tensors_[static_cast<std::size_t>(site)];
+    const int other = 1 - outcome;
+    const double inv_norm =
+        (p_outcome > MARGINAL_FLOOR) ? 1.0 / std::sqrt(p_outcome) : 1.0;
+    for (int l = 0; l < T.bond_left; ++l)
+        for (int r = 0; r < T.bond_right; ++r) {
+            T(l, other, r) = Complex128(0.0, 0.0);
+            T(l, outcome, r).real *= inv_norm;
+            T(l, outcome, r).imag *= inv_norm;
+        }
+    fidelity.invalidate();
+}
+
+int MPSState::measure_qubit(int qubit, std::mt19937_64& rng) {
+    detail::check_qubit(qubit, n_qubits, "MPSState::measure_qubit");
+    focus(qubit, qubit);
+    // At the centre the site's slice norms ARE the raw marginals ⟨ψ|P_k|ψ⟩,
+    // summing to the state's norm², so sampling normalises by their sum and
+    // the collapse divides out the chosen one, leaving unit norm.
+    const std::array<double, 2> p = centre_marginals(qubit);
+    double total = p[0] + p[1];
+    if (total < MARGINAL_FLOOR) total = 1.0;
+    std::uniform_real_distribution<double> udist(0.0, 1.0);
+    const int outcome = (udist(rng) < p[0] / total) ? 0 : 1;
+    collapse_centre(qubit, outcome, p[static_cast<std::size_t>(outcome)]);
+    return outcome;
 }
 
 // =============================================================================
@@ -112,6 +312,30 @@ MPSState::MPSState(int n_qubits, int max_bond_dim, double cutoff)
 // stays here is this layer's storage convention and its own counters: the
 // blocks are row-major, the caller wants V-dagger rather than V, and the
 // running truncation error and rescue counts belong to this state object.
+
+// Called once the ladder has returned, so every figure covers splits that
+// completed and the rescue counts report rescues that SUCCEEDED: a failed
+// rescue does not return. The Gram route's floor-rejected weight is booked
+// beside the truncation total, never inside it.
+void MPSState::account_split(const detail::SvdTruncation& split,
+                             std::uint64_t nanos) {
+    ++svd_calls;
+    svd_nanos += nanos;
+    if (split.used_jacobi_rescue) ++jacobi_rescues;
+    if (split.used_gram_fallback) ++gram_fallbacks;
+    floor_rejected += split.floor_rejected_weight;
+    total_truncation_error += split.discarded_weight;
+    max_verify_resid_excess =
+        std::max(max_verify_resid_excess, split.residual_excess);
+}
+
+// Σ sigma² over the singular values a split kept.
+static double kept_weight(const detail::SvdTruncation& split) {
+    double kept = 0.0;
+    for (int i = 0; i < split.rank; ++i) kept += split.S(i) * split.S(i);
+    return kept;
+}
+
 void MPSState::svd_truncate(
     const std::vector<Complex128>& M,
     int rows, int cols,
@@ -120,7 +344,6 @@ void MPSState::svd_truncate(
     std::vector<Complex128>& Vt_out,
     int& new_rank
 ) {
-    ++svd_calls;
     if (is_jacobi(svd_method)) warn_jacobi_slower_once(svd_method);
 
     // Bracketing the ladder rather than the factorisation alone: the rung that
@@ -131,9 +354,10 @@ void MPSState::svd_truncate(
     const detail::SvdTruncation r = detail::svd_truncate_verified(
         M.data(), rows, cols, detail::MatrixOrder::RowMajor,
         max_bond_dim, cutoff, svd_method, svd_rescue, "MPS svd_truncate");
-    svd_nanos += static_cast<std::uint64_t>(
+    account_split(r, static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - svd_t0).count());
+            std::chrono::steady_clock::now() - svd_t0).count()));
+    fidelity.record(kept_weight(r), r.discarded_weight);
 
     const int k = r.rank;
     new_rank = k;
@@ -159,16 +383,6 @@ void MPSState::svd_truncate(
                 Complex128(z.real(), z.imag());
         }
     }
-
-    // Counted past the throw, so this reports rescues that SUCCEEDED: a failed
-    // rescue does not return. The Gram route's floor-rejected weight is booked
-    // beside the truncation total, never inside it.
-    if (r.used_jacobi_rescue) ++jacobi_rescues;
-    if (r.used_gram_fallback) ++gram_fallbacks;
-    floor_rejected += r.floor_rejected_weight;
-    total_truncation_error += r.discarded_weight;
-    max_verify_resid_excess =
-        std::max(max_verify_resid_excess, r.residual_excess);
 }
 
 // =============================================================================
@@ -184,7 +398,7 @@ void MPSState::apply_single_qubit_gate(
     std::array<Complex128, 4> U_fixed;
     const std::array<Complex128, 4>& U = detail::check_unitary_fixing(
         U_in, 2, validation, "MPSState::apply_single_qubit_gate", U_fixed);
-    auto& T = tensors[qubit];
+    auto& T = tensors_[qubit];
     MPSTensor result(T.bond_left, T.bond_right);
 
     for (int l = 0; l < T.bond_left; ++l) {
@@ -210,14 +424,18 @@ void MPSState::apply_single_qubit_gate(
 // =============================================================================
 
 void MPSState::apply_two_qubit_gate_adjacent(
-    const std::array<Complex128, 16>& U, int q1
+    const std::array<Complex128, 16>& U, int q1, Absorb absorb
 ) {
     int q2 = q1 + 1;
     detail::check_qubit(q1, n_qubits, "MPSState::apply_two_qubit_gate_adjacent");
     detail::check_qubit(q2, n_qubits, "MPSState::apply_two_qubit_gate_adjacent");
 
-    auto& T1 = tensors[q1];
-    auto& T2 = tensors[q2];
+    // Before the contraction, because moving the centre rewrites the two
+    // sites being contracted.
+    if (split_needs_centre(q1)) focus(q1, q2);
+
+    auto& T1 = tensors_[q1];
+    auto& T2 = tensors_[q2];
 
     int bl = T1.bond_left;
     int bm = T1.bond_right;  // = T2.bond_left
@@ -279,26 +497,45 @@ void MPSState::apply_two_qubit_gate_adjacent(
     int new_rank;
     svd_truncate(theta_new, rows, cols, U_mat, S_vals, Vt_mat, new_rank);
 
-    // T1'[l, p1, r] = U_mat[l*2+p1, r] * S[r]  (absorb S into T1)
+    // The singular values go to one side and the other side keeps its
+    // isometry: U is left-orthonormal as T1', V-dagger right-orthonormal as
+    // T2'. Absorb::Right gives T1' = U, T2' = S V-dagger; Absorb::Left gives
+    // T1' = U S, T2' = V-dagger.
+    const bool right = (absorb == Absorb::Right);
     T1 = MPSTensor(bl, new_rank);
     for (int l = 0; l < bl; ++l)
         for (int p1 = 0; p1 < 2; ++p1)
-            for (int r = 0; r < new_rank; ++r)
-                T1(l, p1, r) = U_mat[(l * 2 + p1) * new_rank + r] * Complex128(S_vals[r], 0.0);
+            for (int r = 0; r < new_rank; ++r) {
+                const Complex128 u = U_mat[(l * 2 + p1) * new_rank + r];
+                T1(l, p1, r) = right ? u : u * Complex128(S_vals[r], 0.0);
+            }
 
-    // T2'[l, p2, r] = Vt_mat[l, p2*br+r]
     T2 = MPSTensor(new_rank, br);
     for (int l = 0; l < new_rank; ++l)
         for (int p2 = 0; p2 < 2; ++p2)
-            for (int r = 0; r < br; ++r)
-                T2(l, p2, r) = Vt_mat[l * cols + p2 * br + r];
+            for (int r = 0; r < br; ++r) {
+                const Complex128 v = Vt_mat[l * cols + p2 * br + r];
+                T2(l, p2, r) = right ? Complex128(S_vals[l], 0.0) * v : v;
+            }
+
+    // The site holding S is always in the span afterwards. The site holding an
+    // isometry drops out of it when no site beyond it, on its own side, was in
+    // the span. After a split that moved the centre first the span was inside
+    // [q1, q2], so this leaves exactly the site holding S.
+    if (right) {
+        if (span_lo >= q1) span_lo = q2;
+        span_hi = std::max(span_hi, q2);
+    } else {
+        if (span_hi <= q2) span_hi = q1;
+        span_lo = std::min(span_lo, q1);
+    }
 }
 
 // =============================================================================
 // SWAP gate in MPS (swaps two adjacent tensors via SVD)
 // =============================================================================
 
-void MPSState::apply_swap_adjacent(int q) {
+void MPSState::apply_swap_adjacent(int q, Absorb absorb) {
     // Apply FSWAP (fermionic SWAP) as a 4x4 gate
     // SWAP: |00⟩→|00⟩, |01⟩→|10⟩, |10⟩→|01⟩, |11⟩→|11⟩
     // Row-major: SWAP[po1*2+po2, pi1*2+pi2]
@@ -307,7 +544,7 @@ void MPSState::apply_swap_adjacent(int q) {
     SWAP_gate[1*4+2] = Complex128(1, 0);  // |01⟩→|10⟩
     SWAP_gate[2*4+1] = Complex128(1, 0);  // |10⟩→|01⟩
     SWAP_gate[3*4+3] = Complex128(1, 0);  // |11⟩→|11⟩
-    apply_two_qubit_gate_adjacent(SWAP_gate, q);
+    apply_two_qubit_gate_adjacent(SWAP_gate, q, absorb);
 }
 
 // =============================================================================
@@ -368,16 +605,20 @@ void MPSState::apply_two_qubit_gate_msb(
 
     // Now q1 < q2. Move q2 next to q1 by SWAP chain from right.
     // After final SWAP chain: q2 is at position q1+1.
+    //
+    // Each split sends its singular values toward the block the chain touches
+    // next, so when splits move the centre the next one finds it already in
+    // place: leftward on the way in, rightward from the gate on the way back.
     for (int i = q2 - 1; i > q1; --i) {
-        apply_swap_adjacent(i);  // SWAP qubits at pos i and i+1
+        apply_swap_adjacent(i, Absorb::Left);  // SWAP qubits at pos i and i+1
     }
 
     // Apply the gate on (q1, q1+1)
-    apply_two_qubit_gate_adjacent(U, q1);
+    apply_two_qubit_gate_adjacent(U, q1, Absorb::Right);
 
     // Swap q2 back to its original position
     for (int i = q1 + 1; i < q2; ++i) {
-        apply_swap_adjacent(i);
+        apply_swap_adjacent(i, Absorb::Right);
     }
 }
 
@@ -387,7 +628,7 @@ void MPSState::apply_two_qubit_gate_msb(
 
 int MPSState::current_max_bond_dim() const {
     int max_chi = 0;
-    for (const auto& t : tensors) {
+    for (const auto& t : tensors_) {
         max_chi = std::max(max_chi, std::max(t.bond_left, t.bond_right));
     }
     return max_chi;
@@ -411,21 +652,33 @@ void MPSState::absorb_profile(const MPSState& other) {
         std::max(max_verify_resid_excess, other.max_verify_resid_excess);
 }
 
-// ⟨ψ|ψ⟩ by left-to-right transfer-matrix contraction:
+// ⟨ψ|ψ⟩ by left-to-right transfer-matrix contraction over the open span:
 //   E_{q+1}[aR', aR] = Σ_{phys, aL', aL} conj(A_q[aL', phys, aR'])
 //                                        · E_q[aL', aL] · A_q[aL, phys, aR]
-// with E_0 = [[1]]. The chain closes on a 1x1 because the final right bond is
-// 1, so the last entry IS the norm. Its imaginary part is zero by construction
-// (the contraction is ⟨ψ|ψ⟩) and is discarded rather than checked.
+// Every site left of the span is left-orthonormal, so the environment arriving
+// at its first site is the identity; every site right of it is
+// right-orthonormal, so the environment waiting past its last site is the
+// identity too, and closing on it is a trace. The imaginary part is zero by
+// construction (the contraction is ⟨ψ|ψ⟩) and is discarded rather than
+// checked.
 //
 // A_q is reshaped once per site into a (2·chi_L) x chi_R matrix so each step is
-// two matrix products rather than a five-deep index loop.
+// two matrix products rather than a five-deep index loop. A single-site span
+// needs none of it: the trace is that site's squared Frobenius norm.
 double MPSState::norm_sq() const {
-    Eigen::MatrixXcd E(1, 1);
-    E(0, 0) = std::complex<double>(1.0, 0.0);
+    if (n_qubits == 0) return 1.0;
+    if (span_lo == span_hi) {
+        double sum = 0.0;
+        for (const Complex128& c : tensors_[static_cast<size_t>(span_lo)].data)
+            sum += c.real * c.real + c.imag * c.imag;
+        return sum;
+    }
 
-    for (int q = 0; q < n_qubits; ++q) {
-        const MPSTensor& T = tensors[static_cast<size_t>(q)];
+    const int chi_first = tensors_[static_cast<size_t>(span_lo)].bond_left;
+    Eigen::MatrixXcd E = Eigen::MatrixXcd::Identity(chi_first, chi_first);
+
+    for (int q = span_lo; q <= span_hi; ++q) {
+        const MPSTensor& T = tensors_[static_cast<size_t>(q)];
         const int chi_L = T.bond_left;
         const int chi_R = T.bond_right;
 
@@ -448,7 +701,7 @@ double MPSState::norm_sq() const {
         E = A_left.adjoint() * tmp;
     }
 
-    return E(0, 0).real();
+    return E.trace().real();
 }
 
 void MPSState::normalize() {
@@ -461,8 +714,9 @@ void MPSState::normalize() {
             "MPSState::normalize: no norm to divide out; the state is zero or "
             "non-finite");
     }
+    if (n_qubits == 0) return;
     const double inv = 1.0 / n;
-    for (Complex128& c : tensors[0].data) {
+    for (Complex128& c : tensors_[static_cast<size_t>(span_lo)].data) {
         c.real *= inv;
         c.imag *= inv;
     }
@@ -492,221 +746,140 @@ void MPSState::check_normalized(ValidationOptions validation) {
 }
 
 // =============================================================================
-// probabilities_single — O(N chi^3) efficient boundary contraction
-// Computes P(0) and P(1) for a single qubit without expanding full statevector.
+// probabilities_single - marginals read through the open span
 // =============================================================================
+//
+// P(k) = Re Tr[ A_k† L A_k R^T ], where A_k is the qubit's site restricted to
+// physical index k (a chi_L x chi_R matrix), L the environment of every site
+// left of it and R of every site right of it, both indexed (bra, ket). A site
+// left of the open span is left-orthonormal and one right of it
+// right-orthonormal, and each contracts to the identity, so L is built only
+// from the span's sites left of the qubit and R only from its sites right of
+// it. With the centre on the qubit both are identities and this reads one site.
+
+namespace {
+
+// Site `t` restricted to physical index `phys`, as a chi_L x chi_R matrix.
+Eigen::MatrixXcd physical_slice(const MPSTensor& t, int phys) {
+    Eigen::MatrixXcd a(t.bond_left, t.bond_right);
+    for (int l = 0; l < t.bond_left; ++l)
+        for (int r = 0; r < t.bond_right; ++r) {
+            const Complex128& c = t(l, phys, r);
+            a(l, r) = std::complex<double>(c.real, c.imag);
+        }
+    return a;
+}
+
+// Environment arriving at the left bond of site `stop` from sites
+// first..stop-1, starting from the identity on the left bond of `first`:
+// E <- Σ_p A_p† E A_p per site.
+Eigen::MatrixXcd left_environment(const std::vector<MPSTensor>& t, int first,
+                                  int stop) {
+    const int chi = t[static_cast<size_t>(first)].bond_left;
+    Eigen::MatrixXcd E = Eigen::MatrixXcd::Identity(chi, chi);
+    for (int q = first; q < stop; ++q) {
+        const MPSTensor& site = t[static_cast<size_t>(q)];
+        Eigen::MatrixXcd next =
+            Eigen::MatrixXcd::Zero(site.bond_right, site.bond_right);
+        for (int p = 0; p < 2; ++p) {
+            const Eigen::MatrixXcd a = physical_slice(site, p);
+            next.noalias() += a.adjoint() * (E * a);
+        }
+        E = std::move(next);
+    }
+    return E;
+}
+
+// Environment arriving at the right bond of site `stop` from sites
+// first..stop+1, walking left from the identity on the right bond of
+// `first`: R <- Σ_p conj(A_p) R A_p^T per site.
+Eigen::MatrixXcd right_environment(const std::vector<MPSTensor>& t, int first,
+                                   int stop) {
+    const int chi = t[static_cast<size_t>(first)].bond_right;
+    Eigen::MatrixXcd R = Eigen::MatrixXcd::Identity(chi, chi);
+    for (int q = first; q > stop; --q) {
+        const MPSTensor& site = t[static_cast<size_t>(q)];
+        Eigen::MatrixXcd next =
+            Eigen::MatrixXcd::Zero(site.bond_left, site.bond_left);
+        for (int p = 0; p < 2; ++p) {
+            const Eigen::MatrixXcd a = physical_slice(site, p);
+            next.noalias() += a.conjugate() * (R * a.transpose());
+        }
+        R = std::move(next);
+    }
+    return R;
+}
+
+}  // namespace
 
 std::vector<double> MPSState::probabilities_single(int qubit) const {
     detail::check_qubit(qubit, n_qubits, "MPSState::probabilities_single");
 
-    // Left environment: left_env[m1, m2] tensored from sites 0..qubit-1
-    // Initialise: left_env = [[1]] (1x1 identity)
-    int chi_left = tensors[qubit].bond_left;
-    std::vector<Complex128> left_env(chi_left * chi_left, Complex128(0.0, 0.0));
-    {
-        // Build left boundary by contracting ⟨ψ|…|ψ⟩ from left
-        // Starting with 1x1
-        std::vector<Complex128> env(1, Complex128(1.0, 0.0));
-        int env_dim = 1;
-        for (int q = 0; q < qubit; ++q) {
-            const auto& T = tensors[q];
-            int bl = T.bond_left;
-            int br = T.bond_right;
-            std::vector<Complex128> new_env(br * br, Complex128(0.0, 0.0));
-            for (int m2 = 0; m2 < br; ++m2) {
-                for (int m1 = 0; m1 < br; ++m1) {
-                    Complex128 sum(0.0, 0.0);
-                    for (int p = 0; p < 2; ++p) {
-                        for (int l1 = 0; l1 < bl; ++l1) {
-                            for (int l2 = 0; l2 < bl; ++l2) {
-                                // env[l1,l2] * T[l1,p,m1] * conj(T[l2,p,m2])
-                                sum += env[l1 * env_dim + l2] *
-                                       T(l1, p, m1) * T(l2, p, m2).conj();
-                            }
-                        }
-                    }
-                    new_env[m1 * br + m2] = sum;  // note: env[m1,m2]
-                }
-            }
-            env = new_env;
-            env_dim = br;
-        }
-        left_env = env;
+    const bool left_is_identity = span_lo >= qubit;
+    const bool right_is_identity = span_hi <= qubit;
+    if (left_is_identity && right_is_identity) {
+        const std::array<double, 2> p = centre_marginals(qubit);
+        return {p[0], p[1]};
     }
 
-    // Right environment: right_env[m1, m2] tensored from sites qubit+1..N-1
-    int chi_right = tensors[qubit].bond_right;
-    std::vector<Complex128> right_env;
-    {
-        std::vector<Complex128> env(1, Complex128(1.0, 0.0));
-        int env_dim = 1;
-        for (int q = n_qubits - 1; q > qubit; --q) {
-            const auto& T = tensors[q];
-            int bl = T.bond_left;
-            int br = T.bond_right;
-            std::vector<Complex128> new_env(bl * bl, Complex128(0.0, 0.0));
-            for (int m1 = 0; m1 < bl; ++m1) {
-                for (int m2 = 0; m2 < bl; ++m2) {
-                    Complex128 sum(0.0, 0.0);
-                    for (int p = 0; p < 2; ++p) {
-                        for (int r1 = 0; r1 < br; ++r1) {
-                            for (int r2 = 0; r2 < br; ++r2) {
-                                sum += env[r1 * env_dim + r2] *
-                                       T(m1, p, r1) * T(m2, p, r2).conj();
-                            }
-                        }
-                    }
-                    new_env[m1 * bl + m2] = sum;
-                }
-            }
-            env = new_env;
-            env_dim = bl;
-        }
-        right_env = env;
-    }
+    const Eigen::MatrixXcd L =
+        left_environment(tensors_, std::min(span_lo, qubit), qubit);
+    const Eigen::MatrixXcd R =
+        right_environment(tensors_, std::max(span_hi, qubit), qubit);
 
-    // Contract for each physical index
-    const auto& Tq = tensors[qubit];
+    const MPSTensor& site = tensors_[static_cast<size_t>(qubit)];
     std::vector<double> probs(2, 0.0);
     for (int p = 0; p < 2; ++p) {
-        Complex128 sum(0.0, 0.0);
-        for (int l1 = 0; l1 < chi_left; ++l1) {
-            for (int l2 = 0; l2 < chi_left; ++l2) {
-                Complex128 lv = left_env[l1 * chi_left + l2];
-                for (int r1 = 0; r1 < chi_right; ++r1) {
-                    for (int r2 = 0; r2 < chi_right; ++r2) {
-                        Complex128 rv = right_env[r1 * chi_right + r2];
-                        sum += lv * Tq(l1, p, r1) * Tq(l2, p, r2).conj() * rv;
-                    }
-                }
-            }
-        }
-        probs[p] = sum.real;
+        const Eigen::MatrixXcd a = physical_slice(site, p);
+        probs[static_cast<size_t>(p)] =
+            (a.adjoint() * L * a * R.transpose()).trace().real();
     }
-
     return probs;
 }
 
+// Squared norms of the two physical slices of `site`. With every site to its
+// left left-orthonormal and every site to its right right-orthonormal these
+// ARE the raw marginals ⟨ψ|P_k|ψ⟩, which is the only way it is called.
+std::array<double, 2> MPSState::centre_marginals(int site) const {
+    const MPSTensor& T = tensors_[static_cast<std::size_t>(site)];
+    std::array<double, 2> p{0.0, 0.0};
+    for (int l = 0; l < T.bond_left; ++l)
+        for (int phys = 0; phys < 2; ++phys)
+            for (int r = 0; r < T.bond_right; ++r) {
+                const Complex128& c = T(l, phys, r);
+                p[static_cast<std::size_t>(phys)] +=
+                    c.real * c.real + c.imag * c.imag;
+            }
+    return p;
+}
+
 // =============================================================================
-// measure_sequential — correct correlated sampling via left-to-right projection
-// Precomputes all right environments O(N·chi^3) then processes left-to-right:
-//   1. Compute P(0) and P(1) using precomputed right_env + incremental left_env + tensor
-//   2. Sample outcome from this conditional distribution
-//   3. Project the local tensor onto the measured outcome (collapse)
-//   4. Renormalize; update left_env incrementally
-// O(N·chi^3) per shot — avoids the O(N^2·chi^3) cost of rebuilding environments per qubit.
+// measure_sequential - measure every qubit at the centre, left to right
 // =============================================================================
+// The centre starts on qubit 0. Each qubit's marginals are then its site's
+// slice norms, conditional on every outcome before it because the chain has
+// already collapsed onto those, and after the collapse one QR step carries the
+// centre to the next qubit. O(N·chi³) per call, with no environments.
 
 std::string MPSState::measure_sequential(std::mt19937_64& rng) {
-    std::string bits(n_qubits, '0');
+    std::string bits(static_cast<size_t>(n_qubits), '0');
+    if (n_qubits == 0) return bits;
+    focus(0, 0);
 
-    // === Precompute right environments O(N·chi^3) total ===
-    // right_envs[q] = density env for sites q..N-1, size bond_left[q] x bond_left[q].
-    // right_envs[N] = [[1]] (1x1 identity).
-    // Computed from original (unmodified) tensors — valid because we process left-to-right
-    // and tensors[q+1..N-1] are untouched when computing probs for qubit q.
-    std::vector<std::vector<Complex128>> right_envs(n_qubits + 1);
-    right_envs[n_qubits] = {Complex128(1.0, 0.0)};
-
-    for (int q = n_qubits - 1; q >= 0; --q) {
-        const auto& T = tensors[q];
-        const int bl = T.bond_left;
-        const int br = T.bond_right;
-
-        std::vector<Complex128> new_env(bl * bl, Complex128(0.0, 0.0));
-        for (int m1 = 0; m1 < bl; ++m1) {
-            for (int m2 = 0; m2 < bl; ++m2) {
-                Complex128 sum(0.0, 0.0);
-                for (int p = 0; p < 2; ++p) {
-                    for (int r1 = 0; r1 < br; ++r1) {
-                        for (int r2 = 0; r2 < br; ++r2) {
-                            sum += right_envs[q + 1][r1 * br + r2] *
-                                   T(m1, p, r1) * T(m2, p, r2).conj();
-                        }
-                    }
-                }
-                new_env[m1 * bl + m2] = sum;
-            }
-        }
-        right_envs[q] = std::move(new_env);
-    }
-
-    // === Sequential measurement with incremental left environment O(N·chi^3) total ===
-    // left_env starts as 1x1 identity; updated after each projection.
-    std::vector<Complex128> left_env = {Complex128(1.0, 0.0)};
-
+    std::uniform_real_distribution<double> dist(0.0, 1.0);
     for (int q = 0; q < n_qubits; ++q) {
-        auto& Tq = tensors[q];
-        const int chi_left  = Tq.bond_left;
-        const int chi_right = Tq.bond_right;
-
-        // Compute P(0) and P(1) using left_env, Tq, and precomputed right_envs[q+1]
-        std::vector<double> probs(2, 0.0);
-        for (int p = 0; p < 2; ++p) {
-            Complex128 sum(0.0, 0.0);
-            for (int l1 = 0; l1 < chi_left; ++l1) {
-                for (int l2 = 0; l2 < chi_left; ++l2) {
-                    const Complex128 lv = left_env[l1 * chi_left + l2];
-                    for (int r1 = 0; r1 < chi_right; ++r1) {
-                        for (int r2 = 0; r2 < chi_right; ++r2) {
-                            sum += lv * Tq(l1, p, r1) * Tq(l2, p, r2).conj() *
-                                   right_envs[q + 1][r1 * chi_right + r2];
-                        }
-                    }
-                }
-            }
-            probs[p] = sum.real;
-        }
-
-        double p0 = std::max(0.0, probs[0]);
-        double p1 = std::max(0.0, probs[1]);
-        double total = p0 + p1;
-        if (total < 1e-30) { p0 = p1 = 0.5; total = 1.0; }
-        p0 /= total;
-
-        std::uniform_real_distribution<double> dist(0.0, 1.0);
-        int outcome = (dist(rng) < p0) ? 0 : 1;
+        const std::array<double, 2> probs = centre_marginals(q);
+        double p0 = probs[0];
+        double total = probs[0] + probs[1];
+        if (total < MARGINAL_FLOOR) { p0 = 0.5; total = 1.0; }
+        const int outcome = (dist(rng) < p0 / total) ? 0 : 1;
         // Project bitstring convention: qubit 0 is the RIGHTMOST character
         // (matches Statevector::sample_counts and the per-shot paths).
-        bits[n_qubits - 1 - q] = outcome ? '1' : '0';
+        bits[static_cast<size_t>(n_qubits - 1 - q)] = outcome ? '1' : '0';
 
-        // Project: zero out the other physical index
-        const int other = 1 - outcome;
-        for (int l = 0; l < chi_left; ++l)
-            for (int r = 0; r < chi_right; ++r)
-                Tq(l, other, r) = Complex128(0.0, 0.0);
-
-        // Renormalize
-        const double prob_outcome = (outcome == 0) ? probs[0] : probs[1];
-        if (prob_outcome > 1e-30) {
-            const double inv_norm = 1.0 / std::sqrt(prob_outcome);
-            for (int l = 0; l < chi_left; ++l)
-                for (int r = 0; r < chi_right; ++r) {
-                    auto& v = Tq(l, outcome, r);
-                    v.real *= inv_norm;
-                    v.imag *= inv_norm;
-                }
-        }
-
-        // Incrementally update left environment O(chi^3):
-        // left_env_new[m1,m2] = sum_{l1,l2} left_env[l1,l2] * Tq[l1,o,m1] * conj(Tq[l2,o,m2])
-        // Only outcome physical index survives (other is zeroed above).
-        std::vector<Complex128> new_left(chi_right * chi_right, Complex128(0.0, 0.0));
-        for (int m1 = 0; m1 < chi_right; ++m1) {
-            for (int m2 = 0; m2 < chi_right; ++m2) {
-                Complex128 sum(0.0, 0.0);
-                for (int l1 = 0; l1 < chi_left; ++l1) {
-                    for (int l2 = 0; l2 < chi_left; ++l2) {
-                        sum += left_env[l1 * chi_left + l2] *
-                               Tq(l1, outcome, m1) * Tq(l2, outcome, m2).conj();
-                    }
-                }
-                new_left[m1 * chi_right + m2] = sum;
-            }
-        }
-        left_env = std::move(new_left);
+        collapse_centre(q, outcome, probs[static_cast<size_t>(outcome)]);
+        if (q + 1 < n_qubits) focus(q + 1, q + 1);
     }
-
     return bits;
 }
 
@@ -714,14 +887,10 @@ std::string MPSState::measure_sequential(std::mt19937_64& rng) {
 // to_statevector — full contraction for N <= 25 (used for small systems)
 // =============================================================================
 
-// Hard memory limit: 2^25 complex doubles ≈ 512 MB. Distinct from the
-// performance crossover (MPS_SV_CROSSOVER) used in MPSSimulator::run.
+// Hard memory limit: 2^25 complex doubles ≈ 512 MB. Every dense route this
+// backend takes stops here; terminal sampling stops earlier still (see
+// dense_sampling_is_cheaper).
 static constexpr int MPS_SV_MAX_QUBITS = 25;
-
-// Performance crossover: for N <= this value sequential MPS sampling
-// (O(shots * N * chi^3)) is slower than full statevector sampling
-// (O(N * chi^2 * 2^N)). Empirically ~18–20 for typical bond dimensions.
-static constexpr int MPS_SV_CROSSOVER = 18;
 
 Statevector MPSState::to_statevector() const {
     if (n_qubits > MPS_SV_MAX_QUBITS) {
@@ -739,7 +908,7 @@ Statevector MPSState::to_statevector() const {
     std::vector<Complex128> current(1, Complex128(1.0, 0.0));  // 1x1 identity
 
     for (int q = 0; q < n_qubits; ++q) {
-        const auto& T  = tensors[q];
+        const auto& T  = tensors_[q];
         const int bl   = T.bond_left;
         const int br   = T.bond_right;
         const int new_dim = dim_so_far * 2;
@@ -796,10 +965,13 @@ void MPSState::rebuild_from_statevector(const Statevector& sv) {
             std::to_string(sv.n_qubits) + " qubits, this chain " +
             std::to_string(n));
     }
+    if (n == 0) return;
 
     // Built beside this state rather than into it, so a throw part way through
-    // the sweep leaves the chain as it was rather than half rewritten.
+    // the sweep leaves the chain and its fidelity figures as they were rather
+    // than half rewritten.
     MPSState result(n, max_bond_dim, cutoff);
+    detail::FidelityLedger ledger = fidelity;
     size_t dim = 1ULL << n;
 
     int left_bond = 1;
@@ -850,20 +1022,17 @@ void MPSState::rebuild_from_statevector(const Statevector& sv) {
         // built it. That applies to the timing too: a dense fallback's rebuild
         // is bond-split work the run spent, so leaving it out would let a
         // circuit hide its most expensive splits behind a >2q gate.
-        ++svd_calls;
-        if (split.used_jacobi_rescue) ++jacobi_rescues;
-        if (split.used_gram_fallback) ++gram_fallbacks;
-        floor_rejected += split.floor_rejected_weight;
-        total_truncation_error += split.discarded_weight;
-        svd_nanos += svd_ns;
-        max_verify_resid_excess =
-            std::max(max_verify_resid_excess, split.residual_excess);
+        account_split(split, svd_ns);
+        // Canonical by construction: every site before this one is an
+        // isometry and the block is the whole remainder of the state, so the
+        // discarded fraction is a fraction of the state.
+        ledger.record(kept_weight(split), split.discarded_weight);
 
-        result.tensors[site] = MPSTensor(left_bond, k);
+        result.tensors_[site] = MPSTensor(left_bond, k);
         for (int alpha = 0; alpha < left_bond; ++alpha)
             for (int p = 0; p < 2; ++p)
                 for (int r = 0; r < k; ++r)
-                    result.tensors[site](alpha, p, r) = {
+                    result.tensors_[site](alpha, p, r) = {
                         split.U(alpha * 2 + p, r).real(),
                         split.U(alpha * 2 + p, r).imag()};
 
@@ -879,14 +1048,18 @@ void MPSState::rebuild_from_statevector(const Statevector& sv) {
         right_cols = half_cols;
     }
 
-    result.tensors[n - 1] = MPSTensor(left_bond, 1);
+    result.tensors_[n - 1] = MPSTensor(left_bond, 1);
     for (int alpha = 0; alpha < left_bond; ++alpha)
         for (int p = 0; p < 2; ++p)
-            result.tensors[n - 1](alpha, p, 0) = block[alpha * 2 + p];
+            result.tensors_[n - 1](alpha, p, 0) = block[alpha * 2 + p];
 
     // Only the tensors move across. The counters above were accumulated into
     // this object as the sweep ran, and taking result's would reset them.
-    tensors = std::move(result.tensors);
+    // Sites 0..n-2 are the sweep's isometries, so the centre is the last site.
+    tensors_ = std::move(result.tensors_);
+    span_lo = n - 1;
+    span_hi = n - 1;
+    fidelity = ledger;
 }
 
 // =============================================================================
@@ -1104,34 +1277,12 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
     using GT = Instruction::GateType;
 
     if (inst.type == GT::RESET) {
-        int qubit = inst.qubits[0];
-        // probabilities_single returns RAW marginals <psi|P_k|psi> (they sum
-        // to the state's norm^2, not necessarily 1); normalise for sampling.
-        auto probs = mps.probabilities_single(qubit);
-        const double p0_raw = std::max(0.0, probs[0]);
-        const double p1_raw = std::max(0.0, probs[1]);
-        double total = p0_raw + p1_raw;
-        if (total < 1e-30) total = 1.0;
-        std::uniform_real_distribution<double> udist(0.0, 1.0);
-        int outcome = (udist(rng) < p0_raw / total) ? 0 : 1;
-        int keep = outcome, zero_phys = 1 - outcome;
-        auto& T = mps.tensors[qubit];
-        for (int l = 0; l < T.bond_left; ++l)
-            for (int r = 0; r < T.bond_right; ++r)
-                T(l, zero_phys, r) = Complex128(0.0, 0.0);
-        // Renormalise by the environment-contracted marginal of the sampled
-        // outcome: the projected state's global norm^2 equals that marginal.
-        // The local Frobenius norm is only valid in canonical form, which gate
-        // application does not maintain.
-        const double p_raw = (outcome == 0) ? p0_raw : p1_raw;
-        const double inv_norm = (p_raw > 1e-30) ? 1.0 / std::sqrt(p_raw) : 1.0;
-        for (int l = 0; l < T.bond_left; ++l)
-            for (int r = 0; r < T.bond_right; ++r) {
-                T(l, keep, r).real *= inv_norm;
-                T(l, keep, r).imag *= inv_norm;
-            }
+        // Measure, then flip a 1 back to 0: the collapse is the same one a
+        // MEASURE performs, so a reset draws from the same distribution.
+        const int qubit = inst.qubits[0];
+        const int outcome = mps.measure_qubit(qubit, rng);
         if (outcome == 1) {
-            // Flipping the collapsed qubit to |1>. X is built here, so it
+            // Flipping the collapsed |1> back to |0>. X is built here, so it
             // carries Ignore like the other locally-built factors.
             const std::array<Complex128, 4> X_g = {
                 Complex128(0,0), Complex128(1,0),
@@ -1359,128 +1510,128 @@ static bool mps_measures_are_terminal(const QuantumCircuit& circuit) {
 }
 
 // =============================================================================
-// Hoisted read-only sequential sampling
+// Terminal sampling from a chain centred on qubit 0
 //
-// The right environments E_q (transfer-operator contraction of sites q..N-1)
-// are INVARIANT across shots and across the left-to-right projection, so they
-// are computed once. Each shot then samples read-only: the left environment is
-// carried incrementally and each site's outcome slice is read directly from the
-// (unmodified) tensors, scaled by 1/p_outcome — no per-shot MPS copy and no
-// environment rebuild. Every contraction is the two-stage O(chi^3) form (the
-// previous per-shot measure_sequential rebuilt O(N chi^3) environments AND
-// deep-copied the whole MPS per shot; its 4-index contractions were O(chi^4)).
+// With the centre on qubit 0 every other site is right-orthonormal, so the
+// environment right of any qubit is the identity, and a shot needs only a row
+// vector v on the bond left of the current qubit, carrying the outcomes so
+// far:
+//
+//   w_p = v · A_q[p],   P(p | outcomes so far) = |w_p|² / (|w_0|² + |w_1|²),
+//   then v <- w_out / |w_out|.
+//
+// O(N·chi²) per shot with nothing precomputed, and read-only: the chain is not
+// collapsed, so every shot samples the same state. Qubit 0 is the RIGHTMOST
+// character (matches measure_sequential and the statevector sampling paths).
 // =============================================================================
 
-// right_envs[q] = E_q sized (bond_left[q] x bond_left[q]); right_envs[N] = [[1]].
-static std::vector<std::vector<Complex128>> mps_right_envs(
-    const std::vector<MPSTensor>& tensors, int n
-) {
-    std::vector<std::vector<Complex128>> envs(static_cast<size_t>(n + 1));
-    envs[static_cast<size_t>(n)] = {Complex128(1.0, 0.0)};
-
-    for (int q = n - 1; q >= 0; --q) {
-        const auto& T = tensors[static_cast<size_t>(q)];
-        const int bl = T.bond_left, br = T.bond_right;
-        const auto& En = envs[static_cast<size_t>(q + 1)];  // br x br
-
-        std::vector<Complex128> out(static_cast<size_t>(bl) * bl, Complex128(0.0, 0.0));
-        // For each physical index p (two-stage O(chi^3)):
-        //   Y[m1, r2] = sum_r1 T[m1,p,r1] * En[r1,r2]
-        //   out[m1,m2] += sum_r2 Y[m1,r2] * conj(T[m2,p,r2])
-        std::vector<Complex128> Y(static_cast<size_t>(bl) * br);
-        for (int p = 0; p < 2; ++p) {
-            for (int m1 = 0; m1 < bl; ++m1)
-                for (int r2 = 0; r2 < br; ++r2) {
-                    Complex128 acc(0.0, 0.0);
-                    for (int r1 = 0; r1 < br; ++r1)
-                        acc += T(m1, p, r1) * En[static_cast<size_t>(r1) * br + r2];
-                    Y[static_cast<size_t>(m1) * br + r2] = acc;
-                }
-            for (int m1 = 0; m1 < bl; ++m1)
-                for (int m2 = 0; m2 < bl; ++m2) {
-                    Complex128 acc(0.0, 0.0);
-                    for (int r2 = 0; r2 < br; ++r2)
-                        acc += Y[static_cast<size_t>(m1) * br + r2] * T(m2, p, r2).conj();
-                    out[static_cast<size_t>(m1) * bl + m2] += acc;
-                }
-        }
-        envs[static_cast<size_t>(q)] = std::move(out);
+static std::string mps_sample(const MPSState& state, std::mt19937_64& rng) {
+    if (state.open_span() != std::pair<int, int>{0, 0}) {
+        throw std::logic_error(
+            "mps_sample: the chain must be centred on qubit 0, so that every "
+            "site right of it is right-orthonormal");
     }
-    return envs;
-}
-
-// Sample one full bitstring read-only, using precomputed right environments.
-// Convention: qubit 0 is the RIGHTMOST character (matches measure_sequential
-// and the statevector sampling paths).
-static std::string mps_sample(
-    const std::vector<MPSTensor>& tensors, int n,
-    const std::vector<std::vector<Complex128>>& right_envs,
-    std::mt19937_64& rng
-) {
+    const std::vector<MPSTensor>& tensors = state.tensors();
+    const int n = state.n_qubits;
     std::string bits(static_cast<size_t>(n), '0');
-    std::vector<Complex128> left = {Complex128(1.0, 0.0)};  // 1x1
     std::uniform_real_distribution<double> dist(0.0, 1.0);
 
+    std::vector<std::complex<double>> v{std::complex<double>(1.0, 0.0)};
+    std::array<std::vector<std::complex<double>>, 2> w;
     for (int q = 0; q < n; ++q) {
-        const auto& T = tensors[static_cast<size_t>(q)];
+        const MPSTensor& T = tensors[static_cast<size_t>(q)];
         const int cl = T.bond_left, cr = T.bond_right;
-        const auto& R = right_envs[static_cast<size_t>(q + 1)];  // cr x cr
 
-        double probs[2] = {0.0, 0.0};
+        std::array<double, 2> probs{0.0, 0.0};
         for (int p = 0; p < 2; ++p) {
-            // A[l1,r2] = sum_r1 T[l1,p,r1] R[r1,r2]
-            std::vector<Complex128> A(static_cast<size_t>(cl) * cr);
-            for (int l1 = 0; l1 < cl; ++l1)
-                for (int r2 = 0; r2 < cr; ++r2) {
-                    Complex128 acc(0.0, 0.0);
-                    for (int r1 = 0; r1 < cr; ++r1)
-                        acc += T(l1, p, r1) * R[static_cast<size_t>(r1) * cr + r2];
-                    A[static_cast<size_t>(l1) * cr + r2] = acc;
+            auto& wp = w[static_cast<size_t>(p)];
+            wp.assign(static_cast<size_t>(cr), std::complex<double>(0.0, 0.0));
+            for (int l = 0; l < cl; ++l) {
+                const std::complex<double> vl = v[static_cast<size_t>(l)];
+                for (int r = 0; r < cr; ++r) {
+                    const Complex128& c = T(l, p, r);
+                    wp[static_cast<size_t>(r)] +=
+                        vl * std::complex<double>(c.real, c.imag);
                 }
-            // B[l1,l2] = sum_r2 A[l1,r2] conj(T[l2,p,r2]);  prob = Re sum left[l1,l2] B[l1,l2]
-            Complex128 sum(0.0, 0.0);
-            for (int l1 = 0; l1 < cl; ++l1)
-                for (int l2 = 0; l2 < cl; ++l2) {
-                    Complex128 b(0.0, 0.0);
-                    for (int r2 = 0; r2 < cr; ++r2)
-                        b += A[static_cast<size_t>(l1) * cr + r2] * T(l2, p, r2).conj();
-                    sum += left[static_cast<size_t>(l1) * cl + l2] * b;
-                }
-            probs[p] = sum.real;
+            }
+            for (const auto& z : wp) probs[static_cast<size_t>(p)] += std::norm(z);
         }
 
-        double p0 = std::max(0.0, probs[0]);
-        double p1 = std::max(0.0, probs[1]);
-        double total = p0 + p1;
-        if (total < 1e-30) { p0 = p1 = 0.5; total = 1.0; }
+        double p0 = probs[0];
+        double total = probs[0] + probs[1];
+        if (total < MARGINAL_FLOOR) { p0 = 0.5; total = 1.0; }
         const int outcome = (dist(rng) < p0 / total) ? 0 : 1;
         bits[static_cast<size_t>(n - 1 - q)] = outcome ? '1' : '0';
 
-        const double p_out = (outcome == 0) ? probs[0] : probs[1];
-        const double inv_p = (p_out > 1e-30) ? 1.0 / p_out : 1.0;
-
-        // new_left[m1,m2] = (1/p_out) sum_{l1,l2} left[l1,l2] T[l1,out,m1] conj(T[l2,out,m2])
-        //   C[l2,m1] = sum_l1 left[l1,l2] T[l1,out,m1]
-        //   new_left[m1,m2] = sum_l2 C[l2,m1] conj(T[l2,out,m2]) * inv_p
-        std::vector<Complex128> C(static_cast<size_t>(cl) * cr, Complex128(0.0, 0.0));
-        for (int l2 = 0; l2 < cl; ++l2)
-            for (int m1 = 0; m1 < cr; ++m1) {
-                Complex128 acc(0.0, 0.0);
-                for (int l1 = 0; l1 < cl; ++l1)
-                    acc += left[static_cast<size_t>(l1) * cl + l2] * T(l1, outcome, m1);
-                C[static_cast<size_t>(l2) * cr + m1] = acc;
-            }
-        std::vector<Complex128> new_left(static_cast<size_t>(cr) * cr, Complex128(0.0, 0.0));
-        for (int m1 = 0; m1 < cr; ++m1)
-            for (int m2 = 0; m2 < cr; ++m2) {
-                Complex128 acc(0.0, 0.0);
-                for (int l2 = 0; l2 < cl; ++l2)
-                    acc += C[static_cast<size_t>(l2) * cr + m1] * T(l2, outcome, m2).conj();
-                new_left[static_cast<size_t>(m1) * cr + m2] = acc * inv_p;
-            }
-        left = std::move(new_left);
+        const double p_out = probs[static_cast<size_t>(outcome)];
+        const double inv = (p_out > MARGINAL_FLOOR) ? 1.0 / std::sqrt(p_out) : 1.0;
+        v = w[static_cast<size_t>(outcome)];
+        for (auto& z : v) z *= inv;
     }
     return bits;
+}
+
+// =============================================================================
+// Choosing the terminal-sampling path
+// =============================================================================
+//
+// Two paths sample the same distribution, the chain's own, so the choice is
+// cost alone. The dense path contracts the chain into amplitudes once and then
+// draws each shot for next to nothing. The MPS sampler above draws each shot by
+// walking the chain. Both costs follow from the bond profile, so the choice is
+// made before either runs:
+//
+//   dense ~ Σ_q 2^(q+1) chi_L(q) chi_R(q)             multiply-accumulates in
+//                                                    to_statevector's contraction
+//   mps   ~ shots x Σ_q chi_L(q) chi_R(q) x RATIO    the sampler's per-shot walk
+//
+// RATIO is the measured cost of one unit of sampler work against one dense
+// multiply-accumulate: 2.1 ns against 1.2 ns, medians over brickwork circuits at
+// n = 14 to 24 and chi = 8 to 64, where each model stayed within a factor of
+// two of its median across the grid. Only the ratio enters the rule, and both
+// sides are scalar complex loops over the same tensors.
+static constexpr double MPS_SAMPLER_COST_RATIO = 1.8;
+
+// The dense path also allocates 2^n amplitudes where the sampler's memory
+// follows the bond dimension, so it is taken only while those amplitudes fit
+// in one last-level cache instance (hw::llc_bytes(), per instance for the
+// reason given there). That caps the allocation sampling can cause at a size
+// the machine already holds as working memory, whatever the shot count. When
+// detection reports no cache, 4 MiB stands in, at the small end of current
+// last-level caches, so unknown hardware is not credited with more cache than
+// it is likely to have.
+static constexpr std::size_t MPS_DENSE_SAMPLING_LLC_FALLBACK = std::size_t(4) << 20;
+static constexpr std::size_t MPS_BYTES_PER_AMPLITUDE = sizeof(Complex128);
+
+// Widest register the dense path may take, detected once. Never above
+// MPS_SV_MAX_QUBITS.
+static int dense_sampling_max_qubits() {
+    static const int cached = [] {
+        std::size_t llc = hw::llc_bytes();
+        if (llc == 0) llc = MPS_DENSE_SAMPLING_LLC_FALLBACK;
+        int n = 0;
+        while (n < MPS_SV_MAX_QUBITS &&
+               (MPS_BYTES_PER_AMPLITUDE << (n + 1)) <= llc)
+            ++n;
+        return n;
+    }();
+    return cached;
+}
+
+static bool dense_sampling_is_cheaper(const MPSState& state, int shots) {
+    if (state.n_qubits > dense_sampling_max_qubits()) return false;
+    double dense = 0.0;
+    double walk = 0.0;
+    const std::vector<MPSTensor>& t = state.tensors();
+    for (int q = 0; q < state.n_qubits; ++q) {
+        const double w = static_cast<double>(t[static_cast<size_t>(q)].bond_left) *
+                         t[static_cast<size_t>(q)].bond_right;
+        walk += w;
+        dense += std::ldexp(w, q + 1);
+    }
+    // At or below: a chain with no sites has nothing to walk and one amplitude
+    // to sample, which only the dense path handles.
+    return dense <= MPS_SAMPLER_COST_RATIO * static_cast<double>(shots) * walk;
 }
 
 MPSSimulator::Result MPSSimulator::run(
@@ -1496,9 +1647,15 @@ MPSSimulator::Result MPSSimulator::run(
                           "max_bond_dim must be >= 1 (got " +
                               std::to_string(max_bond_dim) + ")");
     Result result(circuit_in.n_qubits);
-    result.final_state = MPSState(circuit_in.n_qubits, max_bond_dim);
-    result.final_state.svd_method = svd_method;
-    result.final_state.svd_rescue = svd_rescue;
+    // Every chain this run builds starts as a copy of this one, which is the
+    // one place the simulator's settings are copied onto a chain: the
+    // constructor carries the bond cap and the cutoff, and the rest are
+    // assigned here.
+    MPSState prototype(circuit_in.n_qubits, max_bond_dim);
+    prototype.svd_method = svd_method;
+    prototype.svd_rescue = svd_rescue;
+    prototype.canonical_form = canonical_form;
+    result.final_state = prototype;
 
     // Pre-flight: reject any out-of-range operand index up front (this backend
     // surfaces errors by throwing, consistent with its other run() guards).
@@ -1532,34 +1689,6 @@ MPSSimulator::Result MPSSimulator::run(
     const bool terminal_only =
         has_measure && !has_condition && mps_measures_are_terminal(circuit);
 
-    // Collapse one qubit to a sampled outcome. probabilities_single returns
-    // RAW marginals <psi|P_k|psi>; sampling normalises by their sum, and the
-    // post-projection state is renormalised by the sampled outcome's marginal
-    // (the projected global norm^2), NOT by the local tensor Frobenius norm,
-    // which is only valid in canonical form.
-    auto collapse_qubit = [&](MPSState& state, int qubit) -> int {
-        auto probs = state.probabilities_single(qubit);
-        const double p0_raw = std::max(0.0, probs[0]);
-        const double p1_raw = std::max(0.0, probs[1]);
-        double total = p0_raw + p1_raw;
-        if (total < 1e-30) total = 1.0;
-        std::uniform_real_distribution<double> udist(0.0, 1.0);
-        const int outcome = (udist(rng) < p0_raw / total) ? 0 : 1;
-        auto& T = state.tensors[qubit];
-        const int other = 1 - outcome;
-        for (int l = 0; l < T.bond_left; ++l)
-            for (int r = 0; r < T.bond_right; ++r)
-                T(l, other, r) = Complex128(0.0, 0.0);
-        const double p_raw = (outcome == 0) ? p0_raw : p1_raw;
-        const double inv_norm = (p_raw > 1e-30) ? 1.0 / std::sqrt(p_raw) : 1.0;
-        for (int l = 0; l < T.bond_left; ++l)
-            for (int r = 0; r < T.bond_right; ++r) {
-                T(l, outcome, r).real *= inv_norm;
-                T(l, outcome, r).imag *= inv_norm;
-            }
-        return outcome;
-    };
-
     // One trajectory: honours classical conditions, records MEASURE outcomes.
     // Anchors resolve against the circuit before any state is touched, so an
     // anchor that cannot fire stops the run here.
@@ -1586,7 +1715,7 @@ MPSSimulator::Result MPSSimulator::run(
             if (inst.type == GT::MEASURE) {
                 const int qubit = inst.qubits[0];
                 const int clbit = inst.clbits.empty() ? -1 : inst.clbits[0];
-                const int outcome = collapse_qubit(state, qubit);
+                const int outcome = state.measure_qubit(qubit, rng);
                 if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
                 continue;
             }
@@ -1609,12 +1738,7 @@ MPSSimulator::Result MPSSimulator::run(
         result.counts.clear();
         runner.begin_run(circuit.n_qubits, shots);
         for (int shot = 0; shot < shots; ++shot) {
-            MPSState trajectory(circuit.n_qubits, max_bond_dim);
-            // The constructor carries the bond cap and the cutoff but not the
-            // factorisation choice, so the selection is copied onto every
-            // chain that will split.
-            trajectory.svd_method = svd_method;
-            trajectory.svd_rescue = svd_rescue;
+            MPSState trajectory = prototype;
             detail::apply_initial_state(plan, trajectory);
             clreg.assign(n_clbits, 0);
             runner.begin_shot(shot, clreg);
@@ -1689,25 +1813,20 @@ MPSSimulator::Result MPSSimulator::run(
                 result.counts[key] += count;
             };
 
-            // Use full statevector contraction for small N (MPS_SV_CROSSOVER)
-            // where it outperforms sequential MPS sampling. MPS_SV_MAX_QUBITS
-            // is the hard memory limit for to_statevector() and is
-            // intentionally larger than the crossover.
-            const bool use_sv = circuit.n_qubits <= MPS_SV_CROSSOVER;
-            if (use_sv) {
+            // Whichever path is cheaper for this chain and shot count; both
+            // sample the same distribution (see dense_sampling_is_cheaper).
+            if (dense_sampling_is_cheaper(result.final_state, shots)) {
                 auto sv = result.final_state.to_statevector();
                 auto raw = sv.sample_counts(shots, seed);
                 for (const auto& [bits, cnt] : raw) record(bits, cnt);
             } else {
-                // Sequential MPS measurement: right environments are
-                // shot-invariant, so compute them ONCE and sample each shot
-                // read-only (no per-shot MPS copy, no environment rebuild).
-                // O(N * chi^3) per shot.
-                const auto right_envs =
-                    mps_right_envs(result.final_state.tensors, circuit.n_qubits);
+                // Sequential MPS sampling from the centre on qubit 0: moving
+                // it there is a gauge change, so the returned chain holds the
+                // same state, and each shot then carries a vector rather than
+                // an environment. O(N * chi^2) per shot.
+                result.final_state.canonicalize(0);
                 for (int s = 0; s < shots; ++s) {
-                    record(mps_sample(result.final_state.tensors,
-                                      circuit.n_qubits, right_envs, rng), 1);
+                    record(mps_sample(result.final_state, rng), 1);
                 }
             }
         }
@@ -1732,25 +1851,29 @@ MPSSimulator::Result MPSSimulator::run(
 
 namespace detail {
 
+// A |0...0> chain with every setting of `like`. Re-seeding builds a fresh
+// chain, and the constructor carries the bond cap and the weight cutoff but
+// not the settings that are assigned (the factorisation, the rescue choice,
+// the canonical-form policy). Every branch below that rebuilds a chain goes
+// through here, or a caller's choice would be silently replaced by the
+// default before the first gate is applied.
+static MPSState fresh_chain_like(const MPSState& like) {
+    MPSState chain(like.n_qubits, like.max_bond_dim, like.cutoff);
+    chain.svd_method = like.svd_method;
+    chain.svd_rescue = like.svd_rescue;
+    chain.canonical_form = like.canonical_form;
+    return chain;
+}
+
 void apply_initial_state(const RunPlan& plan, MPSState& mps) {
     const InitialState& initial = plan.initial;
     const int n = mps.n_qubits;
 
-    // Re-seeding builds a fresh chain, and the constructor carries the bond cap
-    // and the weight cutoff but not the factorisation choice, which is settled
-    // by assignment. Every branch below that rebuilds `mps` therefore has to
-    // put it back, or a caller's choice of backend is silently replaced by the
-    // default before the first gate is applied.
-    //
-    // Exception: a chain supplied as an MPS brings its own, which is the one
-    // case where the caller has already answered the question.
-    const SVDMethod method = mps.svd_method;
-    const bool rescue = mps.svd_rescue;
-
+    // A chain supplied as an MPS brings its own settings, which is the one
+    // case where the caller has already answered the question; every other
+    // branch keeps the ones `mps` arrived with.
     if (initial.is_default()) {
-        mps = MPSState(n, mps.max_bond_dim, mps.cutoff);
-        mps.svd_method = method;
-        mps.svd_rescue = rescue;
+        mps = fresh_chain_like(mps);
         return;
     }
 
@@ -1761,9 +1884,7 @@ void apply_initial_state(const RunPlan& plan, MPSState& mps) {
                 "InitialState::basis(" + std::to_string(index) +
                 ") is outside a " + std::to_string(n) + " qubit register");
         }
-        mps = MPSState(n, mps.max_bond_dim, mps.cutoff);
-        mps.svd_method = method;
-        mps.svd_rescue = rescue;
+        mps = fresh_chain_like(mps);
         // A product state costs nothing in bond dimension, so this is an X on
         // each set digit rather than a dense build and a factorisation.
         //
@@ -1820,12 +1941,11 @@ void apply_initial_state(const RunPlan& plan, MPSState& mps) {
             std::to_string(sv.n_qubits) + " qubits, the circuit " +
             std::to_string(n));
     }
-    // A fresh chain, so truncation_error() on the result reports what seeding
-    // cost and nothing else. rebuild_from_statevector accumulates by design,
-    // which is right mid-run and wrong for the state a run starts from.
-    mps = MPSState(n, mps.max_bond_dim, mps.cutoff);
-    mps.svd_method = method;
-    mps.svd_rescue = rescue;
+    // A fresh chain, so truncation_error() and the fidelity figures on the
+    // result report what seeding cost and nothing else.
+    // rebuild_from_statevector accumulates by design, which is right mid-run
+    // and wrong for the state a run starts from.
+    mps = fresh_chain_like(mps);
     mps.rebuild_from_statevector(sv);
 }
 

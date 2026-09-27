@@ -286,6 +286,62 @@ constexpr const char* to_string(SVDMethod m) noexcept {
     return "SVDMethod(?)";
 }
 
+// Default weight cutoff of both MPS layers: a bond split may discard at most
+// this fraction of its block's weight (Σ sigma²). It sits at the relative
+// accuracy to which a double-precision sum of weights is known, so at the
+// default a split removes exact rank deficiency and weight its block's own
+// total cannot distinguish from rounding, and does not compress. A caller who
+// wants compression raises the cutoff, and CanonicalForm::Auto reads any value
+// above this one as that request.
+inline constexpr double MPS_DEFAULT_CUTOFF = 1e-16;
+
+// =============================================================================
+// CanonicalForm - when an MPS restores canonical gauge before a bond split
+// =============================================================================
+// A bond split truncates on the singular values of a two-site block. Those are
+// the state's Schmidt coefficients only in mixed canonical form centred on the
+// block: every site to its left left-orthonormal, every site to its right
+// right-orthonormal. In any other gauge the block's spectrum is weighted by the
+// environments on either side, so a cap or a cutoff applied to it keeps and
+// drops the wrong directions, and the weight it reports discarding is not a
+// fraction of the state.
+//
+// Both MPS layers track which sites are orthonormal (MPSState::open_span) and
+// move the orthogonality centre with QR and LQ steps, which never truncate.
+// The policy decides which splits pay for that move.
+//
+//   Always = every split. The default.
+//   Auto   = only the splits that can discard real weight: those where the
+//            bond cap can bind, because the block's rank bound
+//            min(d chi_L, d chi_R) exceeds max_bond_dim, and every split once
+//            the cutoff is above MPS_DEFAULT_CUTOFF. Any other split runs where
+//            the chain stands and skips the QR steps. Its truncation is still
+//            sound, since it drops only exact rank deficiency (the same in
+//            every gauge) and weight below the resolution of its block's
+//            total, but it keeps too much: a direction that is rounding noise
+//            in the state can carry real weight in a block weighted by an
+//            uncentred environment, and survives the cutoff there.
+//
+// That surplus is why Always is the default. The bonds Auto keeps grow wider
+// than the state needs, and the extra rank costs more in every later split
+// than the QR steps it saved. On a 16-qubit brickwork at an exact cap, Auto
+// ends with a middle bond of 256 where Always ends with 143 at the same
+// fidelity, and runs 1.9x slower; where the cap binds, the two agree to within
+// a few percent. Auto stays selectable for a workload that measures otherwise.
+//
+// Measurement, reset and sampling move the centre under both policies: each
+// reads one site's marginals, which is a local read only at the centre.
+enum class CanonicalForm { Auto, Always };
+
+// The enumerator's name, for diagnostics.
+constexpr const char* to_string(CanonicalForm f) noexcept {
+    switch (f) {
+        case CanonicalForm::Auto:   return "Auto";
+        case CanonicalForm::Always: return "Always";
+    }
+    return "CanonicalForm(?)";
+}
+
 // Mathematical constants (PI, INV_SQRT2, ...) live in constants.hpp, included
 // at the top of this header, so every one of those names is visible to anything
 // including types.hpp.

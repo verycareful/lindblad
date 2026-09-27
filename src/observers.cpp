@@ -397,8 +397,8 @@ void BondDimensionObserver::observe(const ObservationContext& ctx) {
 
     const MPSState& mps = ctx.state.mps();
     std::vector<int> bonds;
-    bonds.reserve(mps.tensors.size());
-    for (const auto& tensor : mps.tensors) bonds.push_back(tensor.bond_right);
+    bonds.reserve(mps.tensors().size());
+    for (const auto& tensor : mps.tensors()) bonds.push_back(tensor.bond_right);
 
     values_.push_back(bonds);
     record(ctx, std::move(bonds));
@@ -653,11 +653,15 @@ std::vector<Cplx> matmul(const std::vector<Cplx>& a, const std::vector<Cplx>& b,
     return out;
 }
 
-// Reduced spectrum at an MPS bond, WITHOUT assuming canonical form, which gate
-// application here does not maintain.
+// Reduced spectrum at an MPS bond, read through the chain's open span.
 //
 // With |psi> = sum_m |L_m>|R_m>, the reduced state's nonzero spectrum is that
 // of G_R * conj(G_L), where G_L and G_R are the two environment Gram matrices.
+// A site left of the open span is left-orthonormal and one right of it
+// right-orthonormal, and each contracts to the identity, so each Gram starts
+// from the identity where the span begins or ends and contracts only the span's
+// sites on its side of the cut. With the centre next to the cut both Grams are
+// identities and the spectrum is read straight off the centre's weights.
 // The conjugate is load bearing: G_L is Hermitian, so the transpose the
 // derivation produces is a conjugation, and dropping it returns a plausible
 // wrong number rather than an obvious one.
@@ -666,10 +670,29 @@ std::vector<Cplx> matmul(const std::vector<Cplx>& a, const std::vector<Cplx>& b,
 // of the Hermitian A^(1/2) G_R A^(1/2) with A = conj(G_L), which is what keeps
 // this on the self-adjoint eigensolver.
 std::optional<std::vector<double>> mps_bond_spectrum(const MPSState& mps, int cut) {
-    std::vector<Cplx> gl{Cplx(1.0, 0.0)};
-    int gl_dim = 1;
-    for (int q = 0; q < cut; ++q) {
-        const MPSTensor& t = mps.tensors[static_cast<std::size_t>(q)];
+    const std::vector<MPSTensor>& tensors = mps.tensors();
+    const int n_sites = static_cast<int>(tensors.size());
+    // No sites: both sides of any cut are empty, and the one reduced state is
+    // the scalar 1.
+    if (n_sites == 0) return std::vector<double>{1.0};
+    const auto [span_lo, span_hi] = mps.open_span();
+
+    // The identity of dimension `dim`, row-major.
+    const auto identity = [](int dim) {
+        std::vector<Cplx> id(static_cast<std::size_t>(dim) * dim, Cplx(0.0, 0.0));
+        for (int i = 0; i < dim; ++i) id[static_cast<std::size_t>(i) * dim + i] = Cplx(1.0, 0.0);
+        return id;
+    };
+
+    // G_L from the identity on the left bond of the span's first site, or of
+    // the cut when the span starts at or right of it.
+    const int left_first = std::min(span_lo, cut);
+    int gl_dim = (left_first < n_sites)
+                     ? tensors[static_cast<std::size_t>(left_first)].bond_left
+                     : tensors[static_cast<std::size_t>(n_sites - 1)].bond_right;
+    std::vector<Cplx> gl = identity(gl_dim);
+    for (int q = left_first; q < cut; ++q) {
+        const MPSTensor& t = tensors[static_cast<std::size_t>(q)];
         const int br = t.bond_right;
         std::vector<Cplx> next(static_cast<std::size_t>(br) * br, Cplx(0.0, 0.0));
         for (int c = 0; c < br; ++c) {
@@ -694,10 +717,15 @@ std::optional<std::vector<double>> mps_bond_spectrum(const MPSState& mps, int cu
         gl_dim = br;
     }
 
-    std::vector<Cplx> gr{Cplx(1.0, 0.0)};
-    int gr_dim = 1;
-    for (int q = static_cast<int>(mps.tensors.size()) - 1; q >= cut; --q) {
-        const MPSTensor& t = mps.tensors[static_cast<std::size_t>(q)];
+    // G_R from the identity on the right bond of the span's last site, or of
+    // the site before the cut when the span ends left of it.
+    const int right_first = std::max(span_hi, cut - 1);
+    int gr_dim = (right_first >= 0)
+                     ? tensors[static_cast<std::size_t>(right_first)].bond_right
+                     : tensors[0].bond_left;
+    std::vector<Cplx> gr = identity(gr_dim);
+    for (int q = right_first; q >= cut; --q) {
+        const MPSTensor& t = tensors[static_cast<std::size_t>(q)];
         const int bl = t.bond_left;
         std::vector<Cplx> next(static_cast<std::size_t>(bl) * bl, Cplx(0.0, 0.0));
         for (int a = 0; a < bl; ++a) {
