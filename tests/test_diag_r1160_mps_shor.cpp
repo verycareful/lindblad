@@ -348,7 +348,7 @@ struct TensorScan {
 
 TensorScan scan_tensors(const MPSState& st) {
     TensorScan s;
-    for (const auto& t : st.tensors) {
+    for (const auto& t : st.tensors()) {
         s.chi = std::max({s.chi, t.bond_left, t.bond_right});
         for (const auto& c : t.data) {
             const double m = std::sqrt(c.real * c.real + c.imag * c.imag);
@@ -362,7 +362,7 @@ TensorScan scan_tensors(const MPSState& st) {
 void print_tensor_profile(const MPSState& st, const char* tag) {
     std::cout << "[bisect] tensor profile " << tag << ":\n";
     for (int q = 0; q < st.n_qubits; ++q) {
-        const auto& t = st.tensors[static_cast<size_t>(q)];
+        const auto& t = st.tensors()[static_cast<size_t>(q)];
         double mx = 0.0;
         bool bad = false;
         for (const auto& c : t.data) {
@@ -1018,21 +1018,32 @@ TEST(R1161MpsShor, Simon36JacobiReference) {
 }
 
 // svd_truncate's fail-loud contract: an MPS whose tensors already carry
-// non-finite data (injected via the public tensors member) must make the
-// next two-qubit gate THROW — never continue with a corrupt tensor. Both
-// the SVD path and the Gram fallback receive garbage, so the double-failure
-// branch is exercised.
+// non-finite data must make the next two-qubit gate THROW, never continue with
+// a corrupt tensor. Both the SVD path and the Gram fallback receive garbage,
+// so the double-failure branch is exercised.
+//
+// The poison goes in through the public gate path. set_tensors refuses a
+// non-finite entry, so the route is a single-qubit gate diag(NaN, 1) under
+// Validation::Ignore, which measures nothing and applies the matrix as given:
+// on |0> it writes NaN into the |0> amplitude of site 0, the entry a direct
+// write would have poisoned.
 TEST(R1161MpsShor, SvdTruncateThrowsOnUnrecoverableInput) {
     MPSState st(2, kBond);
     // The poison is built with quiet_nan_strict() so the marker does not depend
     // on std::numeric_limits<double>::quiet_NaN() being materialised (see the
-    // note on it in types.hpp). The ASSERT below is the guard that matters: a
-    // finite poison value means the TEST failed to construct its own input, and
-    // everything after it would report a library defect that is not there.
+    // note on it in types.hpp). The ASSERTs below are the guards that matter: a
+    // finite poison value, or a site the gate left finite, means the TEST
+    // failed to construct its own input, and everything after it would report
+    // a library defect that is not there.
     const double poison = quiet_nan_strict();
     ASSERT_FALSE(is_finite_strict(poison))
         << "the poison value is finite, so this test cannot test anything";
-    st.tensors[0].data[0] = Complex128(poison, 0.0);
+    const std::array<Complex128, 4> nan_gate = {
+        Complex128(poison, 0.0), Complex128(0.0, 0.0),
+        Complex128(0.0, 0.0), Complex128(1.0, 0.0)};
+    st.apply_single_qubit_gate(nan_gate, 0, {Validation::Ignore});
+    ASSERT_FALSE(is_finite_strict(st.tensors()[0].data[0].real))
+        << "the gate under Ignore did not carry the NaN into site 0";
 
     std::array<Complex128, 16> CZ{};
     CZ[0 * 4 + 0] = CZ[1 * 4 + 1] = CZ[2 * 4 + 2] = Complex128(1, 0);

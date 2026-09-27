@@ -115,7 +115,7 @@ TEST(DiagR1160StrictFP, LibraryGateApplicationStillCorruptsUnderItsOwnFlags) {
     auto res = sim.run(prefix, 64, /*shots=*/0, /*seed=*/42);
 
     bool corrupt = false;
-    for (const auto& t : res.final_state.tensors)
+    for (const auto& t : res.final_state.tensors())
         for (const auto& c : t.data)
             corrupt = corrupt || fp_bad(c.real) || fp_bad(c.imag);
     std::cout << "[svd:strict-TU/library-run] state corrupt after i<=26: "

@@ -9,15 +9,6 @@
 
 # Tests CMakeLists.txt
 
-# The commented-out sources below are excluded from the target because they
-# read or write an MPS chain's site tensors as a public data member. Both MPS
-# layers keep their tensors private, behind tensors() for reading and
-# set_tensors() for replacing the chain, because every operation relies on the
-# chain's canonical span and a direct write would falsify it. Eight of them
-# name the member directly; the other two reach it only through
-# `diag_r1160_matrices.hpp`, whose helpers read it. Uncommenting a line without
-# respelling those accesses breaks the build again.
-
 # Register all test source files
 set(LINDBLAD_TEST_SOURCES
     test_gates.cpp
@@ -101,9 +92,9 @@ set(LINDBLAD_TEST_SOURCES
     test_r1141_corpus.cpp
     test_r1141_corpus_semantics.cpp
     test_r1151_routing_regression.cpp
-    # test_diag_r1160_mps_shor.cpp
-    # test_diag_r1160_strictfp.cpp
-    # test_r1161_qudit_mps_stress.cpp
+    test_diag_r1160_mps_shor.cpp
+    test_diag_r1160_strictfp.cpp
+    test_r1161_qudit_mps_stress.cpp
     test_r1171_sv_fusion.cpp
     test_r1171_hw_info.cpp
     test_r1171_dm_superop.cpp
@@ -120,7 +111,7 @@ set(LINDBLAD_TEST_SOURCES
     test_r1201_constants_tu2.cpp
     test_r1201_strict_fp.cpp
     test_r1201_strict_fp_nofast.cpp
-    # test_r1201_truncation.cpp
+    test_r1201_truncation.cpp
     test_r1201_qaoa_validity.cpp
     test_r1211_validation_core.cpp
     test_r1211_warning_channel.cpp
@@ -141,16 +132,16 @@ set(LINDBLAD_TEST_SOURCES
     test_r1221_constants_rule.cpp
     test_r1222_kernel_policy_rule.cpp
     test_r1222_conditional_export.cpp
-    # test_v11231_normalization_policy.cpp
+    test_v11231_normalization_policy.cpp
     test_v11231_norm_sums.cpp
     test_v11231_tolerance_rules.cpp
     test_v11231_svd_ladder.cpp
     test_v11241_eigen_backend.cpp
     test_v11241_storage.cpp
     test_v11241_unitary_repair.cpp
-    # test_v11241_truncation.cpp
+    test_v11241_truncation.cpp
     test_v11241_seam_rules.cpp
-    # test_eigen_svd_pin.cpp
+    test_eigen_svd_pin.cpp
     test_v11242_repair_reach.cpp
     test_v11251_clifford_gates.cpp
     test_v11251_clifford_transpose.cpp
@@ -177,13 +168,13 @@ set(LINDBLAD_TEST_SOURCES
     test_v11271_validation_serialisation.cpp
     test_v11272_ignore_dispatch.cpp
     test_v11271_mixer_dispatch.cpp
-    # test_v11281_bond_saturation.cpp
+    test_v11281_bond_saturation.cpp
     test_v11281_svd_selection.cpp
     test_v11281_svd_time.cpp
-    # test_v11281_theta_harvest.cpp
+    test_v11281_theta_harvest.cpp
     test_v11282_profile_totals.cpp
     test_v11282_rebuild_kernel.cpp
-    # test_v11282_gram_floor.cpp
+    test_v11282_gram_floor.cpp
     test_V11283_algos.cpp
     test_v11291_optimizer_seam.cpp
     test_v11291_variational.cpp
@@ -197,6 +188,11 @@ set(LINDBLAD_TEST_SOURCES
     test_v11292_mps_two_qubit_order.cpp
     test_v11292_pauli_rules.cpp
     test_v11292_maqaoa_gammas.cpp
+    test_v11301_qr_seam.cpp
+    test_v11301_canonical_form.cpp
+    test_v11301_qudit_canonical_form.cpp
+    test_v11301_fidelity_figures.cpp
+    test_v11301_sampling.cpp
 )
 
 # The R.1.16.0 diagnostic's strict leg. This flag governs the file's OWN

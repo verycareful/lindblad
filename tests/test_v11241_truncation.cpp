@@ -307,7 +307,7 @@ TEST(V11241MpsFromSv, ATightCapTruncatesWithoutCollapsingToRankOne) {
 
     MPSSimulator sim;
     auto res = sim.run(qc, chi, /*shots=*/0, /*seed=*/7);
-    const auto& tensors = res.final_state.tensors;
+    const auto& tensors = res.final_state.tensors();
     ASSERT_EQ(static_cast<int>(tensors.size()), n);
 
     int widest = 0;

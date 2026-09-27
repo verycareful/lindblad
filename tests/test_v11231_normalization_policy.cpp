@@ -38,11 +38,13 @@
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace lindblad;
@@ -55,6 +57,16 @@ constexpr double kScale = 2.0;
 // The two states with no repair: nothing to divide out, and a norm that
 // poisons every amplitude it divides.
 const double kNaN = std::numeric_limits<double>::quiet_NaN();
+
+// An adapter that failed to build its non-finite state would hand every body
+// below a finite one, and the tests would then report on a state they never
+// saw. Adapters return a State rather than asserting, so the failure is thrown.
+void require_non_finite(const Complex128& entry) {
+    if (is_finite_strict(entry.real) && is_finite_strict(entry.imag)) {
+        throw std::logic_error(
+            "adapter: the gate under Ignore left the poisoned entry finite");
+    }
+}
 
 // -----------------------------------------------------------------------------
 // Warning capture
@@ -136,19 +148,32 @@ struct MpsAdapter {
     using State = MPSState;
     static const char* name() { return "MPSState"; }
 
+    // The chain is handed back through set_tensors, which accepts any finite
+    // entries, so a zero site is as valid a chain as a scaled one. Its open
+    // span is then the whole chain, and norm_sq() and normalize() work over
+    // both sites.
     static State scaled(double f) {
         State m(2);
-        for (Complex128& e : m.tensors[0].data) {
+        std::vector<MPSTensor> sites = m.tensors();
+        for (Complex128& e : sites[0].data) {
             e.real *= f;
             e.imag *= f;
         }
+        m.set_tensors(std::move(sites));
         return m;
     }
     static State off_normalization() { return scaled(kScale); }
     static State zero() { return scaled(0.0); }
+    // set_tensors refuses a non-finite entry, so the NaN goes in through a
+    // gate: diag(NaN, 1) under Ignore, which measures nothing, writes it into
+    // the |0> amplitude of site 0.
     static State non_finite() {
         State m(2);
-        m.tensors[0].data[0] = Complex128(kNaN, 0.0);
+        const std::array<Complex128, 4> nan_gate = {
+            Complex128(kNaN, 0.0), Complex128(0.0, 0.0),
+            Complex128(0.0, 0.0), Complex128(1.0, 0.0)};
+        m.apply_single_qubit_gate(nan_gate, 0, {Validation::Ignore});
+        require_non_finite(m.tensors()[0].data[0]);
         return m;
     }
 
@@ -200,19 +225,28 @@ struct QmpsAdapter {
     using State = QuditMPS;
     static const char* name() { return "QuditMPS"; }
 
+    // As MpsAdapter: scaled and zero chains go back through set_tensors, the
+    // NaN through a gate under Ignore, here diag(NaN, 1, 1) on qudit 0.
     static State scaled(double f) {
         State m(2, 3);
-        for (Complex128& e : m.tensors[0].data) {
+        std::vector<MPSSiteTensor> sites = m.tensors();
+        for (Complex128& e : sites[0].data) {
             e.real *= f;
             e.imag *= f;
         }
+        m.set_tensors(std::move(sites));
         return m;
     }
     static State off_normalization() { return scaled(kScale); }
     static State zero() { return scaled(0.0); }
     static State non_finite() {
         State m(2, 3);
-        m.tensors[0].data[0] = Complex128(kNaN, 0.0);
+        std::vector<Complex128> nan_gate(9, Complex128(0.0, 0.0));
+        nan_gate[0] = Complex128(kNaN, 0.0);
+        nan_gate[4] = Complex128(1.0, 0.0);
+        nan_gate[8] = Complex128(1.0, 0.0);
+        m.apply_1qudit(0, nan_gate, {Validation::Ignore});
+        require_non_finite(m.tensors()[0].data[0]);
         return m;
     }
 

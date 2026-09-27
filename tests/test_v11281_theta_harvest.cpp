@@ -66,6 +66,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace lindblad;
@@ -408,18 +409,34 @@ TEST(V11281ThetaHarvest, LibraryBlockIsTheOneTheSvdReceives) {
     // left site: apply_two_qubit_gate takes the project's LSB-first order, so
     // the left site (the first operand) is bit 0. A harvest that wrote the pre-gate block, the transpose, or a
     // different index order fails against this.
+    //
+    // The split runs in place under CanonicalForm::Auto: its rank bound
+    // min(2 * 1, 2 * 13) = 2 does not exceed the cap and the cutoff is the
+    // default, so the block is the product of the two sites as handed in.
+    // Under Always the split would first move the centre onto the pair,
+    // rewriting site 1 with an LQ factor from site 2, and the block would be
+    // a gauge transform of this one: a question about the centre rather than
+    // about the harvest, and one the canonical-form suites answer.
     ScopedTempCwd cwd;
     const int bond = 13;
     const int cap = 4;  // the split's rank is at most 2, so the cap never binds
     MPSState chain(3, cap);
-    chain.tensors[0] = MPSTensor(1, bond);
-    chain.tensors[1] = MPSTensor(bond, bond);
-    chain.tensors[2] = MPSTensor(bond, 1);
+    chain.canonical_form = CanonicalForm::Auto;
+    std::vector<MPSTensor> sites = {MPSTensor(1, bond), MPSTensor(bond, bond),
+                                    MPSTensor(bond, 1)};
     std::mt19937_64 rng(kSeed);
     std::uniform_real_distribution<double> unit(-1.0, 1.0);
-    for (auto& t : chain.tensors) {
-        for (auto& z : t.data) z = Complex128(unit(rng), unit(rng));
+    for (auto& t : sites) {
+        for (auto& z : t.data) {
+            // Named draws: argument evaluation order is unspecified.
+            const double re = unit(rng);
+            const double im = unit(rng);
+            z = Complex128(re, im);
+        }
     }
+    chain.set_tensors(std::move(sites));
+    ASSERT_EQ(chain.open_span(), (std::pair<int, int>{0, 2}))
+        << "a hand-built chain opens its span over every site";
     // The gate must have no symmetry the layout check could hide behind: a
     // transposed contraction applies U^T, and a swap of the two sites' roles
     // applies the role-swapped U. Both are asserted distinct from U here, so
@@ -429,12 +446,13 @@ TEST(V11281ThetaHarvest, LibraryBlockIsTheOneTheSvdReceives) {
     ASSERT_GT(max_abs_diff(U, transpose(U)), rounding) << "U is symmetric";
     ASSERT_GT(max_abs_diff(U, swap_roles(U)), rounding) << "U is symmetric under a role swap";
 
-    const int bl = chain.tensors[0].bond_left;   // 1
-    const int bm = chain.tensors[0].bond_right;  // 13
-    const int br = chain.tensors[1].bond_right;  // 13
+    // Copies, read before the gate: the split replaces both sites.
+    const MPSTensor T1 = chain.tensors()[0];
+    const MPSTensor T2 = chain.tensors()[1];
+    const int bl = T1.bond_left;   // 1
+    const int bm = T1.bond_right;  // 13
+    const int br = T2.bond_right;  // 13
     const int rows = bl * 2, cols = 2 * br;
-    const auto& T1 = chain.tensors[0];
-    const auto& T2 = chain.tensors[1];
 
     // theta[l*2+p1, p2*br+r] = sum_m T1(l,p1,m) T2(m,p2,r)
     std::vector<Complex128> theta(static_cast<std::size_t>(rows) * cols, Complex128(0.0, 0.0));

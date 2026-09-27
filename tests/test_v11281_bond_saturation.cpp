@@ -79,10 +79,11 @@ constexpr int kSweptCaps[] = {8, 16, 32, 64};
 // its right bond, so the profile is one shorter than the register.
 std::vector<int> bond_profile(const MPSState& state) {
     std::vector<int> bonds;
-    if (state.tensors.size() < 2) return bonds;
-    bonds.reserve(state.tensors.size() - 1);
-    for (std::size_t i = 0; i + 1 < state.tensors.size(); ++i) {
-        bonds.push_back(state.tensors[i].bond_right);
+    const std::vector<MPSTensor>& sites = state.tensors();
+    if (sites.size() < 2) return bonds;
+    bonds.reserve(sites.size() - 1);
+    for (std::size_t i = 0; i + 1 < sites.size(); ++i) {
+        bonds.push_back(sites[i].bond_right);
     }
     return bonds;
 }

@@ -4,6 +4,164 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.30.1] - 2026-09-27
+
+The test release for 1.1.30.0. It returns the ten test sources 1.1.30.0 took
+out of the build, 147 tests in 18 suites, with their reads and writes of the
+site tensors respelled to `tensors()` and `set_tensors()`, and adds 94 tests:
+92 in 19 new suites and two in existing ones. They cover canonical form on
+both MPS layers, the fidelity figures, measurement and sampling at the
+orthogonality centre, and the QR step the centre moves by. They found five
+defects, and ten tests ship red against them, listed under Known red.
+
+### Tests
+
+- **`test_v11301_canonical_form.cpp`**, 26 tests, the qubit layer. After every
+  operation that moves or keeps the open span (single- and two-qubit gates in
+  both operand orders, adjacent and routed through a SWAP chain,
+  `canonicalize`, `set_tensors`, `rebuild_from_statevector`, `normalize`, a
+  collapse, a run with MEASURE and RESET), every site left of the span is read
+  off as left-orthonormal and every site right of it as right-orthonormal, and
+  the state matches a dense reference. A capped split from a chain handed in
+  with a deliberately distorted gauge keeps exactly the projection of the
+  state onto its leading Schmidt directions, a split of the distorted block
+  itself is shown to land elsewhere, and the discarded weight and both
+  fidelity figures equal what the dense Schmidt spectrum predicts (#128).
+  `CanonicalForm::Always` focuses before every split; `Auto` splits in place
+  when the cap cannot bind, focuses at a cap one below the block's rank bound
+  and at any cutoff above `MPS_DEFAULT_CUTOFF`; the two agree in the exact
+  regime, and `Auto` keeps the wider bonds 1.1.30.0 measured on a 16-qubit
+  brickwork. `norm_sq()`, `probabilities_single()`, `normalize()` and the
+  entropy observer's bond spectrum are checked on every shape of open span.
+  `set_tensors()` refuses each malformed chain with a message naming the first
+  violation and leaves the chain untouched; a valid one opens the span over
+  every site, resets both figures to 1 and keeps the counters. The zero-qubit
+  chain is the scalar 1.
+
+- **`test_v11301_qudit_canonical_form.cpp`**, 19 tests, the qudit layer at
+  d = 3 and d = 4: the same checks with d in the rank bound, plus
+  `left_canonicalize()` and `right_canonicalize()` equal to the sequential SVD
+  of the dense state from either end, `measure()` changing nothing but the
+  gauge, and both oracles rebuilding in place with the object's own settings
+  and accumulating its counters and figures.
+
+- **`test_v11301_fidelity_figures.cpp`**, 20 tests. The shared ledger against
+  closed forms: one split, the two-rotation example that separates the
+  estimate from the floor, ten thousand splits at a fraction of 1e-20 still
+  moving the floor, the clamps, and the floor never above the estimate. On
+  both layers the figures survive a copy, a gauge change and normalisation,
+  reset on `set_tensors()`, extend on a rebuild, are not folded by
+  `absorb_profile()`, and are empty for good after any collapse, while a run
+  whose measurements are all terminal returns them unchanged. On runs whose cap
+  binds, under both policies, the floor stays below the true fidelity from a
+  dense reference, and `truncation_error()` equals both the fall in
+  `norm_sq()` and one minus the estimate. A two-qubit chain shows the estimate
+  above the truth in one case and below it in another.
+
+- **`test_v11301_sampling.cpp`**, 19 tests. The terminal sampling rule as
+  documented, observed through the returned chain's centre: the path flips
+  between one shot count and the next at the documented cost ratio, the dense
+  path stops at one last-level cache instance, and both key counts by the
+  measured clbits. Both paths match the chain's own distribution within a
+  derived statistical bound. `measure_qubit()`, `measure_sequential()` and
+  `measure_qudit()` are replayed draw for draw against the dense rule, with
+  the post-measurement state compared amplitude for amplitude and the engine
+  advanced by exactly the documented draws; RESET consumes the same draw as
+  MEASURE and clears the qubit.
+
+- **`test_v11301_qr_seam.cpp`**, 8 tests, on `detail::qr_thin`: reconstruction
+  and orthonormality for tall, wide and square inputs in both storage orders,
+  rank-deficient and zero ones included, an exactly upper trapezoidal R, both
+  orders factorising bit for bit alike, the LQ-by-transpose identity the
+  leftward centre step relies on, and a non-finite entry carried into the
+  factors rather than hidden.
+
+- **The ten returned sources.** The Shor poison block is now built at the
+  chain's centre, where the library factorises it, so its four singular values
+  are 1/2 rather than 1, derived from its rank; a new
+  `LibrarySvdPath.TheBuiltPoisonThetaIsTheCanonicalBlock` shows the block
+  carries the chain's norm and the state's Schmidt spectrum. The tests that
+  wrote a NaN into a site put it there through a gate under
+  `Validation::Ignore`, since `set_tensors()` refuses one. The qudit frontier
+  probe replaces its fixed fidelity floor with the chain's own floor, checked
+  against the dense state at every cap. The theta-harvest block is handed in
+  through `set_tensors()` under `CanonicalForm::Auto`, so the harvest still
+  sees the block as given. `MPS_DEFAULT_CUTOFF` is pinned to the documented
+  budget.
+
+- **The decomposition seam rule** counts `HouseholderQR` and its pivoting
+  variants, allows the fixed-size QR in the KAK diagnostic, and adds
+  `V11241SeamRules.NoConvenienceMemberInstantiatesADecomposition`, which
+  rejects `m.jacobiSvd()`, `m.householderQr()` and the other member spellings
+  that instantiate a decomposition without naming it.
+
+### Known red
+
+Ten tests fail deliberately, against five defects. The fixes are planned for
+the next patch release.
+
+- **The dense sampling path does not normalise a truncated chain** (one test).
+  Truncation removes weight without renormalising, and the MPS sampler divides
+  by the running total, but the dense path hands the chain's amplitudes to
+  `Statevector::sample_counts()`, which assumes unit norm and assigns whatever
+  weight is missing to the all-ones outcome. On the test's chain, which had
+  lost 22.6% of its weight, 90567 of 400500 shots (22.6%) landed on an outcome
+  of probability zero. The documentation says both paths draw from the same
+  distribution. `V11301Sampling.ATruncatedChainIsSampledAsItsOwnNormalisedState`.
+
+- **`QuditMPS::apply_2qudit()` judges a reversed pair twice** (one test). With
+  the operands in descending order it exchanges the matrix's digit roles and
+  calls itself with the default validation options, so a matrix the caller
+  accepted under `Ignore`, `Warn` or a wider tolerance is rejected by a policy
+  the caller never passed. The qubit layer does not re-validate.
+  `V11301QuditOperands.ReversedAndSwapRoutedOperandsAnswerToTheCallersPolicy`.
+
+- **A zero-qubit circuit is treated four different ways** (one test). The MPS
+  simulator runs one at zero shots and fails at sampling with a `Statevector`
+  error, the Clifford and density-matrix simulators run it, and the
+  statevector simulator refuses it with a message naming the state class.
+  Every simulator will refuse it up front, naming itself; a zero-qubit
+  `MPSState` stays a valid object.
+  `V11301SamplingPath.AZeroQubitRunIsRefusedUpFrontOnEveryBackend`.
+
+- **A RESET before terminal measurements is collapsed once for every shot**
+  (two tests). The statevector and MPS simulators sample terminal measurements
+  from one forward pass, and a RESET on a qubit entangled with a measured one
+  makes that pass random, so every shot repeats one outcome. The Clifford
+  simulator already samples such circuits shot by shot, and the density-matrix
+  simulator applies RESET as a channel. The code predates 1.1.30.0. The two
+  backends will sample any circuit containing a RESET per shot, simulating the
+  part before the first RESET once.
+  `V11301ResetSampling.TheMpsBackendCollapsesEveryShot` and
+  `TheStatevectorBackendCollapsesEveryShot`.
+
+- **A state with no norm is measured instead of refused** (five tests). A zero
+  or non-finite state has no distribution, yet every collapse and sampling
+  entry point returns an outcome for one, and they disagree: 1, 0, a coin flip
+  or the last basis state, depending on the class. Each will throw
+  `std::runtime_error`, the type every `normalize()` raises for the same state,
+  before drawing from the caller's engine. `V11301NoNorm.TheQubitChainRefusesEveryCollapse`,
+  `TheQuditChainRefusesEveryCollapseAndSample`, `AnMpsRunRefusesToSampleOrCollapseIt`,
+  `TheDenseStatesRefuseEverySample` and `DenseRunsReportTheRefusal`.
+
+### Results
+
+Six configurations, every leg failing exactly the ten tests listed under Known
+red and nothing else (CachyOS Linux, native):
+
+| Compiler | Target | Options | Tests | Passed | Skipped | Failed | Time |
+|---|---|---|---:|---:|---:|---:|---:|
+| Clang 22.1.8 | native | none (the documented build) | 3457 | 3439 | 8 | 10 | 16.8 s |
+| Clang 22.1.8 | native | harvest | 3457 | 3446 | 1 | 10 | 17.5 s |
+| Clang 22.1.8 | x86-64-v3 | harvest | 3457 | 3446 | 1 | 10 | 16.6 s |
+| GCC 14.3.1 | native | harvest | 3457 | 3446 | 1 | 10 | 17.8 s |
+| GCC 14.3.1 | x86-64-v3 | harvest | 3457 | 3446 | 1 | 10 | 19.2 s |
+| Clang 20.1.8 | native | harvest | 3457 | 3446 | 1 | 10 | 18.0 s |
+
+3457 tests across 314 suites. The documented build skips the seven
+theta-harvest tests and the large register-size margin test; the harvest legs
+skip the margin test alone.
+
 ## [1.1.30.0] - 2026-09-27
 
 Both matrix-product-state simulators keep their chains in canonical form, so

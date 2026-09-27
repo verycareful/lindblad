@@ -123,7 +123,7 @@ QuditMPS bell_qudit_at_cutoff(double svd_cutoff) {
 
 int qudit_max_bond(const QuditMPS& qm) {
     int chi = 1;
-    for (const auto& t : qm.tensors) {
+    for (const auto& t : qm.tensors()) {
         chi = std::max(chi, t.chi_L);
         chi = std::max(chi, t.chi_R);
     }
@@ -401,6 +401,12 @@ TEST(R1201Truncation, BothLayersDefaultToTheDocumentedBudget) {
     EXPECT_EQ(qubit_layer.cutoff, qudit_layer.svd_cutoff)
         << "the two layers must ship the same budget; the mirror convention "
            "requires them to answer the same question the same way";
+
+    // Both constructors default to the one named constant, and CanonicalForm's
+    // Auto rule reads a cutoff above it as a request for compression, so the
+    // constant itself must be the documented budget.
+    EXPECT_EQ(MPS_DEFAULT_CUTOFF, kDocumentedDefaultCutoff)
+        << "MPS_DEFAULT_CUTOFF no longer carries the documented budget";
 }
 
 // =============================================================================

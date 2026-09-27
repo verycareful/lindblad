@@ -72,13 +72,19 @@
 #include "poison_theta_r1151.hpp"
 #include "simon36_r1112.hpp"
 
+#include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/statevector.hpp"
+
 #include <Eigen/Dense>
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
+#include <cstddef>
 #include <iostream>
 #include <limits>
 #include <set>
+#include <utility>
 #include <vector>
 
 using namespace diag_r1160;
@@ -163,9 +169,17 @@ double simon36_sigma() {
 }
 
 // The 8x8: four orthonormal directions survive the gate, so the spectrum is
-// four ones over a four-dimensional null space and ||M||_F^2 == 4.
+// four equal values over a four-dimensional null space. The frozen literal
+// holds them at one each, so its ||M||_F^2 == 4.
 constexpr int kPoisonRank = 4;
 constexpr double kPoisonSigma = 1.0;
+
+// The built block is the canonical block at that point in the run, which
+// carries the state's unit norm: the four equal values share a weight of 1,
+// so each is 1/sqrt(4).
+double built_poison_sigma() {
+    return std::sqrt(1.0 / static_cast<double>(kPoisonRank));
+}
 
 }  // namespace
 
@@ -284,7 +298,7 @@ TEST(LibrarySvdPath, BuiltPoisonThetaJacobiIsCorrect) {
     ASSERT_EQ(M.cols(), 8);
 
     expect_healthy("built/jacobi/poison", run_svd_report(M, SVDMethod::EigenJacobi),
-                   /*n=*/8, kPoisonRank, kPoisonSigma);
+                   /*n=*/8, kPoisonRank, built_poison_sigma());
 }
 
 TEST(LibrarySvdPath, BuiltPoisonThetaBdcIsCorrect) {
@@ -292,7 +306,116 @@ TEST(LibrarySvdPath, BuiltPoisonThetaBdcIsCorrect) {
     ASSERT_FALSE(matrix_bad(M)) << "reproducer corrupt before any SVD ran";
 
     expect_healthy("built/bdc/poison", run_svd_report(M, SVDMethod::EigenBDC),
-                   /*n=*/8, kPoisonRank, kPoisonSigma);
+                   /*n=*/8, kPoisonRank, built_poison_sigma());
+}
+
+TEST(LibrarySvdPath, TheBuiltPoisonThetaIsTheCanonicalBlock) {
+    // What "the canonical block at that point" promises, checked two ways that
+    // do not depend on the SVD the other tests examine.
+    //
+    // First, the block carries the chain's whole norm. The sites left of 5 are
+    // left-orthonormal and those right of 6 right-orthonormal, so they contract
+    // to the identity and ||theta||_F^2 is <psi|psi>; the cp core is unitary
+    // and leaves it unchanged. A block read in any other gauge carries some
+    // other figure (the frozen literal's is 4).
+    const lindblad::MPSState chain = build_poison_chain();
+    EXPECT_EQ(chain.open_span(), (std::pair<int, int>{6, 6}))
+        << "the builder must leave the centre where the library's swap chain "
+           "leaves it";
+    const auto M = build_poison_theta();
+    ASSERT_FALSE(matrix_bad(M));
+    const double norm_sq = chain.norm_sq();
+    EXPECT_NEAR(M.squaredNorm(), norm_sq, backward_tol(8, norm_sq) * norm_sq)
+        << "the block does not carry the chain's norm, so it is not the "
+           "canonical block";
+
+    // Second, its spectrum is the state's Schmidt spectrum across the (5 | 6)
+    // cut, taken from a dense evolution of the same instructions: the prefix
+    // up to instruction 26, then that instruction's swap-down of (6, 7), and
+    // then its cp core on (5, 6), written out as the two gates they are.
+    const auto qc = poison_circuit();
+    lindblad::QuantumCircuit dense_qc(qc.n_qubits);
+    dense_qc.instructions.assign(qc.instructions.begin(),
+                                 qc.instructions.begin() + kPoisonInstruction);
+    dense_qc.swap(6, 7);
+    lindblad::Statevector sv(dense_qc.n_qubits);
+    sv.initialize_basis(0);
+    lindblad::StatevectorSimulator ssim;
+    for (const auto& inst : dense_qc.instructions) ssim.apply_instruction(sv, inst);
+
+    // The chain approximates the dense state only as closely as its splits
+    // allowed, and that distance is measured here, where both hold the state
+    // after the swap-down. For unit vectors at their best relative phase
+    // ||a - b||^2 is 2 (1 - |<a|b>|); 4 eps covers the rounding in forming it
+    // near 1. The cp core is unitary and acts alike on both, so the distance
+    // carries over to the states the spectra below are taken from.
+    const lindblad::Statevector mps_sv = chain.to_statevector();
+    std::complex<double> ov(0.0, 0.0);
+    double dense_sq = 0.0;
+    double mps_sq = 0.0;
+    for (std::size_t i = 0; i < sv.dim; ++i) {
+        const std::complex<double> a(sv.real_parts[i], sv.imag_parts[i]);
+        ov += std::conj(a) * std::complex<double>(mps_sv.real_parts[i],
+                                                  mps_sv.imag_parts[i]);
+        dense_sq += std::norm(a);
+        mps_sq += mps_sv.real_parts[i] * mps_sv.real_parts[i] +
+                  mps_sv.imag_parts[i] * mps_sv.imag_parts[i];
+    }
+    ASSERT_GT(dense_sq, 0.0);
+    ASSERT_GT(mps_sq, 0.0);
+    const double overlap = std::abs(ov) / std::sqrt(dense_sq * mps_sq);
+    const double distance =
+        std::sqrt(2.0 * std::max(0.0, 1.0 - overlap) + 4.0 * kEps);
+
+    lindblad::QuantumCircuit core(qc.n_qubits);
+    core.cp(qc.instructions[kPoisonInstruction].params[0], 5, 6);
+    for (const auto& inst : core.instructions) ssim.apply_instruction(sv, inst);
+
+    // Qubit q is bit q of the amplitude index, so qubits 0..5 are the low six
+    // bits: the row index of the reshaped state, the rest the column index.
+    constexpr int kLeftQubits = 6;
+    const int left_dim = 1 << kLeftQubits;
+    const int right_dim = static_cast<int>(sv.dim) / left_dim;
+    Eigen::MatrixXcd psi(left_dim, right_dim);
+    for (std::size_t i = 0; i < sv.dim; ++i) {
+        psi(static_cast<Eigen::Index>(i % static_cast<std::size_t>(left_dim)),
+            static_cast<Eigen::Index>(i / static_cast<std::size_t>(left_dim))) =
+            std::complex<double>(sv.real_parts[i], sv.imag_parts[i]);
+    }
+    Eigen::VectorXd s_dense, s_block;
+    Eigen::MatrixXcd Ud, Vd, Ub, Vb;
+    ASSERT_TRUE(seam_svd(psi, SVDMethod::EigenJacobi, s_dense, Ud, Vd));
+    ASSERT_TRUE(seam_svd(M, SVDMethod::EigenJacobi, s_block, Ub, Vb));
+
+    // Singular values are 1-Lipschitz in the Frobenius norm (Weyl), and the
+    // reshaped difference of two states has the Frobenius norm of the vector
+    // difference, so `distance` bounds every sigma difference below. The
+    // chain's own norm is divided out of the block, and the backward error of
+    // the two factorisations is added on top.
+    const double tol = distance + backward_tol(8, 1.0) +
+                       backward_tol(left_dim, 1.0);
+
+    const double block_scale = std::sqrt(norm_sq);
+    const Eigen::Index k = s_block.size();
+    ASSERT_LE(k, s_dense.size());
+    for (Eigen::Index i = 0; i < k; ++i) {
+        EXPECT_NEAR(s_block(i) / block_scale, s_dense(i) / std::sqrt(dense_sq), tol)
+            << "sigma[" << i << "] of the built block is not the state's Schmidt "
+               "coefficient across the (5 | 6) cut";
+    }
+    // Everything the block cannot hold must be absent from the state too, or
+    // the block is missing a direction rather than merely being small.
+    for (Eigen::Index i = k; i < s_dense.size(); ++i) {
+        EXPECT_LT(s_dense(i) / std::sqrt(dense_sq), tol)
+            << "the state has weight in Schmidt direction " << i
+            << " which an 8x8 block cannot carry";
+    }
+    for (Eigen::Index i = 0; i < k; ++i) {
+        const double expected = (i < kPoisonRank) ? built_poison_sigma() : 0.0;
+        EXPECT_NEAR(s_dense(i) / std::sqrt(dense_sq), expected, tol)
+            << "the dense Schmidt spectrum is not four equal values, so the "
+               "flat-spectrum premise of this reproducer no longer holds";
+    }
 }
 
 TEST(LibrarySvdPath, TheBuiltSimon36StillCarriesTheFrozenSpectrum) {

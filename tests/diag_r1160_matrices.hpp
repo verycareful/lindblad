@@ -22,13 +22,15 @@
 // in the tree, which leaves nothing to merge.
 //
 // Builders:
-//   build_poison_theta()  — the EXACT 8x8 complex matrix fed to
-//     MPSState::svd_truncate at the first NaN of the 13-qubit Shor run
-//     (instruction i=26, cp(5,7): after its swap-down, the adjacent cp core
-//     at sites (5,6); shapes bl=4, bm=4, br=4). Reconstructed through the
-//     library's own MPS evolution (clean up to that point, verified by the
-//     NanBisect probe), then contracted and gate-applied HERE, mirroring
-//     apply_two_qubit_gate_adjacent's theta construction.
+//   build_poison_chain() / build_poison_theta() - the 8x8 complex block
+//     MPSState::svd_truncate receives at instruction i=26 of the 13-qubit Shor
+//     run (cp(5,7): after its swap-down, the adjacent cp core at sites (5,6)).
+//     The chain is evolved through the library's own MPS path and centred on
+//     site 6, which is where the library's swap chain leaves it, so the block
+//     contracted and gate-applied HERE, mirroring
+//     apply_two_qubit_gate_adjacent's theta construction, is the canonical
+//     block at that point. It carries the state's unit norm, so its spectrum
+//     is the state's Schmidt spectrum across the (5 | 6) cut after the gate.
 //   build_bdcsvd_bug_matrix() — the 36x36 complex, rank-12, 12-fold
 //     degenerate matrix BDCSVD mishandles (R.1.11.2): qudit Simon post-oracle
 //     state at d=6, n=2, s={2,4}; dense-ctor site-0 peel (exact) leaves this
@@ -48,8 +50,10 @@
 #include <Eigen/Dense>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -114,10 +118,30 @@ inline bool seam_eigh(const Eigen::MatrixXcd& G, Eigen::VectorXd& evals,
 
 // --- Poison theta (13-qubit Shor, first-NaN SVD input) ----------------------
 
-inline Eigen::MatrixXcd build_poison_theta() {
-    using GT = lindblad::Instruction::GateType;
-    const auto qc = lindblad::algorithms::Shor::build_period_finding_circuit(
+// The Shor circuit the poison block comes from, and the instruction whose core
+// split receives it.
+inline lindblad::QuantumCircuit poison_circuit() {
+    return lindblad::algorithms::Shor::build_period_finding_circuit(
         2, 15, /*n_eval=*/9, /*n_target=*/4);
+}
+constexpr std::size_t kPoisonInstruction = 26;
+
+// The chain immediately before the cp core of instruction 26 splits, as the
+// library holds it: evolved to instruction 19 through MPSSimulator, the IQFT
+// instructions 19..25 applied through the public MPSState API with the same
+// matrices the simulator dispatch builds, then instruction 26's swap-down of
+// sites (6, 7), and the centre moved onto site 6.
+//
+// The last step is what makes this the library's block. The public
+// apply_two_qubit_gate(SW, 6, 7) sends the singular values right, into site 7,
+// while the library's swap chain for cp(5,7) sends them left, into site 6, so
+// its core split finds the centre already inside (5, 6). canonicalize(6) is
+// one LQ step on site 7 that moves them back into site 6. LQ is unique up to a
+// unitary diagonal on the bond, so the block below equals the library's up to
+// that diagonal on its right bond index, which leaves the spectrum unchanged.
+inline lindblad::MPSState build_poison_chain() {
+    using GT = lindblad::Instruction::GateType;
+    const auto qc = poison_circuit();
 
     // Evolve to just before instruction 26 through the library (verified
     // clean by the NanBisect probe), mirroring the simulator dispatch.
@@ -129,11 +153,9 @@ inline Eigen::MatrixXcd build_poison_theta() {
     lindblad::MPSState st = base.final_state;
 
     // The hand-applied gates below must use the SAME Hadamard amplitude the
-    // library used for the evolved prefix above, or the reconstructed theta is
-    // not the matrix svd_truncate actually saw. The literal previously here was
-    // one ULP below correctly-rounded 1/√2, which is exactly the divergence #70
-    // removed from the library — leaving it would have re-created it inside the
-    // reproducer. Short local alias, single-sourced value.
+    // library uses, or the reconstructed theta is not the matrix svd_truncate
+    // actually sees: INV_SQRT2 is the correctly rounded 1/√2 the simulator's
+    // own H carries (#70). Short local alias, single-sourced value.
     constexpr double s2 = lindblad::INV_SQRT2;
     const std::array<lindblad::Complex128, 4> H = {
         lindblad::Complex128(s2, 0), lindblad::Complex128(s2, 0),
@@ -147,7 +169,7 @@ inline Eigen::MatrixXcd build_poison_theta() {
     std::array<lindblad::Complex128, 16> SW{};
     SW[0] = SW[6] = SW[9] = SW[15] = lindblad::Complex128(1, 0);
 
-    for (size_t i = 19; i < 26; ++i) {
+    for (size_t i = 19; i < kPoisonInstruction; ++i) {
         const auto& inst = qc.instructions[i];
         if (inst.type == GT::H) {
             st.apply_single_qubit_gate(H, inst.qubits[0]);
@@ -159,11 +181,27 @@ inline Eigen::MatrixXcd build_poison_theta() {
         }
     }
     // Instruction 26 is cp(5,7): its internal swap chain first swaps sites
-    // (6,7) — clean per the probe — leaving the adjacent cp core at (5,6).
+    // (6,7), clean per the probe, leaving the adjacent cp core at (5,6).
     st.apply_two_qubit_gate(SW, 6, 7);
+    st.canonicalize(6);
+    return st;
+}
 
-    const auto& T1 = st.tensors[5];
-    const auto& T2 = st.tensors[6];
+// The gate instruction 26 applies at its core, in the MSB-first order the
+// two-site contraction reads. cp is diagonal and symmetric in its operands, so
+// the order does not change the matrix.
+inline std::array<lindblad::Complex128, 16> poison_gate() {
+    const double lam = poison_circuit().instructions[kPoisonInstruction].params[0];
+    std::array<lindblad::Complex128, 16> U{};
+    U[0] = U[5] = U[10] = lindblad::Complex128(1, 0);
+    U[15] = lindblad::Complex128(std::cos(lam), std::sin(lam));
+    return U;
+}
+
+inline Eigen::MatrixXcd build_poison_theta() {
+    const lindblad::MPSState st = build_poison_chain();
+    const auto& T1 = st.tensors()[5];
+    const auto& T2 = st.tensors()[6];
     const int bl = T1.bond_left, bm = T1.bond_right, br = T2.bond_right;
     const int rows = bl * 2, cols = 2 * br;
 
@@ -183,8 +221,7 @@ inline Eigen::MatrixXcd build_poison_theta() {
 
     // Apply the cp(5,7) gate (lambda from instruction 26) exactly as
     // apply_two_qubit_gate_adjacent does before its SVD.
-    const double lam = qc.instructions[26].params[0];
-    const auto G = cp(lam);
+    const auto G = poison_gate();
     Eigen::MatrixXcd theta_new = Eigen::MatrixXcd::Zero(rows, cols);
     for (int l = 0; l < bl; ++l)
         for (int po1 = 0; po1 < 2; ++po1)

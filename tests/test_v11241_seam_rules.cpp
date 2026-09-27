@@ -36,11 +36,18 @@
 // look. Anything not named below is a violation wherever it appears, including
 // in files that do not exist yet.
 //
-// Two entries are on that list deliberately. optimize_1q.cpp decomposes
-// Matrix2cd, Matrix4d and MatrixXd, which are different C++ types from the
-// backend's dynamic complex matrix and therefore mangle differently and cannot
-// merge with it. They carry no floating-point-model risk from the seam, so they
-// are permitted in place rather than routed through it.
+// The entries on that list are deliberate. optimize_1q.cpp decomposes
+// Matrix2cd, Matrix4d and MatrixXd, and test_r1214_kak_diagnostic.cpp
+// factorises a Matrix4cd by QR. Each is a different C++ type from the backend's
+// dynamic complex matrix and therefore mangles differently and cannot merge
+// with it. They carry no floating-point-model risk from the seam, so they are
+// permitted in place rather than routed through it.
+//
+// A decomposition can also be instantiated without its class name ever being
+// written, through the convenience members Eigen puts on every matrix
+// (m.jacobiSvd(), m.householderQr(), ...). The template scan cannot see those,
+// because the type they instantiate over is the caller's, so a second scan
+// rejects the spellings themselves anywhere outside the backend.
 
 #include <gtest/gtest.h>
 
@@ -55,9 +62,20 @@
 namespace {
 
 // The decompositions that matter. Every one is a class template whose
-// instantiation emits the algorithm itself.
+// instantiation emits the algorithm itself. The needle is matched as a
+// substring, so "HouseholderQR" also catches ColPivHouseholderQR and
+// FullPivHouseholderQR, and a hit reports the whole instantiation it found.
 const char* const kDecompositions[] = {"JacobiSVD", "BDCSVD",
-                                       "SelfAdjointEigenSolver"};
+                                       "SelfAdjointEigenSolver",
+                                       "HouseholderQR"};
+
+// The member functions that instantiate one of those, or a variant of one,
+// over the calling matrix's own type. `eigenvalues()` is not listed: it is
+// also the accessor on an existing solver object, which instantiates nothing,
+// and the two spellings cannot be told apart by text.
+const char* const kConvenienceSpellings[] = {
+    "jacobiSvd", "bdcSvd", "householderQr", "colPivHouseholderQr",
+    "fullPivHouseholderQr", "completeOrthogonalDecomposition", "operatorNorm"};
 
 // The single translation unit permitted to instantiate anything.
 const char* const kBackend = "src/eigen_backend.cpp";
@@ -74,6 +92,7 @@ const Allowed kAllowed[] = {
      "Eigen::Matrix2cd,Eigen::ComputeFullU|Eigen::ComputeFullV"},
     {"src/transpiler/optimisation/optimize_1q.cpp", "Eigen::Matrix4d"},
     {"src/transpiler/optimisation/optimize_1q.cpp", "Eigen::MatrixXd"},
+    {"tests/test_r1214_kak_diagnostic.cpp", "Eigen::Matrix4cd"},
 };
 
 struct Hit {
@@ -268,7 +287,8 @@ TEST(V11241SeamRules, OnlyTheBackendInstantiatesADecomposition) {
         << kBackend << ", across " << scanned
         << " files. Eigen's instantiations have vague linkage, so a second "
            "emitter lets the linker hand one translation unit's flags to "
-           "another's code. Call detail::svd_thin or detail::eigh instead."
+           "another's code. Call detail::svd_thin, detail::eigh or "
+           "detail::qr_thin instead."
         << report.str();
 }
 
@@ -298,4 +318,63 @@ TEST(V11241SeamRules, TheAllowListStillDescribesRealCode) {
                            << ", but nothing there instantiates it any more. "
                               "Remove the entry so the rule keeps its teeth.";
     }
+}
+
+TEST(V11241SeamRules, NoConvenienceMemberInstantiatesADecomposition) {
+    // A member call on a matrix (m.jacobiSvd(), m.householderQr()) instantiates
+    // the decomposition over m's type without naming the class, so the
+    // template scan above passes it. The spelling itself is the violation: a
+    // call is `.name` or `->name` followed by `(` or `<`, with nothing of the
+    // identifier continuing on either side.
+    const std::filesystem::path root(LINDBLAD_SOURCE_ROOT);
+    const char* dirs[] = {"src", "include", "tests", "apps", "benchmarks"};
+    const auto ident = [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    };
+
+    std::vector<Hit> hits;
+    int scanned = 0;
+    for (const char* d : dirs) {
+        const std::filesystem::path base = root / d;
+        if (!std::filesystem::exists(base)) continue;
+        for (const auto& e : std::filesystem::recursive_directory_iterator(base)) {
+            if (!e.is_regular_file()) continue;
+            const std::string ext = e.path().extension().string();
+            if (ext != ".cpp" && ext != ".hpp" && ext != ".h") continue;
+            ++scanned;
+            const std::string rel = relative_slashes(e.path(), root);
+            if (rel == kBackend) continue;
+            const std::string masked = mask(read(e.path()));
+            for (const char* name : kConvenienceSpellings) {
+                const std::string needle(name);
+                for (std::size_t pos = masked.find(needle); pos != std::string::npos;
+                     pos = masked.find(needle, pos + 1)) {
+                    const std::size_t end = pos + needle.size();
+                    if (pos == 0 || ident(masked[pos - 1])) continue;
+                    if (end >= masked.size() || ident(masked[end])) continue;
+                    const bool member =
+                        masked[pos - 1] == '.' ||
+                        (pos >= 2 && masked[pos - 1] == '>' && masked[pos - 2] == '-');
+                    const bool called = masked[end] == '(' || masked[end] == '<';
+                    if (!member || !called) continue;
+                    hits.push_back({rel, line_of(masked, pos),
+                                    masked.substr(pos, needle.size() + 1)});
+                }
+            }
+        }
+    }
+
+    ASSERT_GT(scanned, 0) << "no source files scanned, so a pass means nothing. "
+                             "LINDBLAD_SOURCE_ROOT is "
+                          << LINDBLAD_SOURCE_ROOT;
+
+    std::ostringstream report;
+    for (const Hit& h : hits) report << "\n  " << h.file << ":" << h.line << "  "
+                                     << h.text;
+    EXPECT_TRUE(hits.empty())
+        << hits.size() << " decomposition(s) instantiated through a convenience "
+        << "member outside " << kBackend << ". Each instantiates the algorithm "
+        << "over the caller's matrix type, a second emitter the template scan "
+        << "cannot see. Call detail::svd_thin, detail::eigh or detail::qr_thin "
+        << "instead." << report.str();
 }
