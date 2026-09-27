@@ -118,10 +118,10 @@ the next patch release.
 
 - **A zero-qubit circuit is treated four different ways** (one test). The MPS
   simulator runs one at zero shots and fails at sampling with a `Statevector`
-  error, the Clifford and density-matrix simulators run it, and the
-  statevector simulator refuses it with a message naming the state class.
-  Every simulator will refuse it up front, naming itself; a zero-qubit
-  `MPSState` stays a valid object.
+  error, the Clifford and density-matrix simulators run it, and only the
+  statevector simulator refuses it up front, with a message that does not
+  name the simulator. Every simulator will refuse it up front, naming itself;
+  a zero-qubit `MPSState` stays a valid object.
   `V11301SamplingPath.AZeroQubitRunIsRefusedUpFrontOnEveryBackend`.
 
 - **A RESET before terminal measurements is collapsed once for every shot**
