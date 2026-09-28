@@ -499,9 +499,10 @@ read them directly are out of this release's build.
 ### Known behaviour
 
 autonne's BDC still declines some blocks, each served by the ladder's Jacobi
-rung with a warning. The canonical gauge presents different blocks to the kernel
-than earlier releases did, so a different set is declined. On the brickwork
-benchmark family some 16x16 qubit blocks at χ = 8 are declined.
+rung with a warning. On the brickwork benchmark family the default
+`CanonicalForm::Always` meets none, and `CanonicalForm::Auto`, which splits in
+place where the bond cap cannot bind, meets some 16x16 qubit blocks at χ = 16,
+32 and 64.
 `R1171SvFusion.DenseCircuitEquivalence`, which met declined blocks on GCC in the
 previous release, meets none in this one. The other suites that met them are
 among the ten sources out of this build, so this release's run says nothing
