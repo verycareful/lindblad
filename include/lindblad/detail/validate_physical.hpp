@@ -504,5 +504,50 @@ inline bool normalization_repairable(double measure, const ValidationOptions& v,
     return false;
 }
 
+// Whether a gate matrix an MPS is about to apply is unitary to
+// DEFAULT_PHYSICAL_ATOL, for the chain's own records (see UncheckedGates in
+// types.hpp). `U` is the matrix that will actually be applied, the repaired one
+// when the policy repaired, of side `rows`; `v` is the policy it was judged
+// under. The answer is never reported: it decides only whether the chain keeps
+// trusting the site and its fidelity ledger.
+//
+// Throw with Repair::None has just measured this very matrix and accepted it,
+// so its deviation is within the caller's atol; an atol no wider than the
+// default settles the question without a second measurement. Ignore with
+// Repair::None measured nothing, and the chain's setting decides whether to
+// measure now. Every other case measures, which is at most one more residual on
+// a matrix of side 4 (d^2 on the qudit layer), beside a gate that contracts or
+// splits a whole site.
+inline bool gate_keeps_unitarity(const Complex128* U, std::size_t rows,
+                                 const ValidationOptions& v,
+                                 UncheckedGates unchecked) {
+    if (v.policy == Validation::Throw && v.repair == Repair::None &&
+        v.atol <= DEFAULT_PHYSICAL_ATOL)
+        return true;
+    if (measurement_unused(v) && unchecked == UncheckedGates::AssumeUnitary)
+        return true;
+    // A NaN deviation compares false, so a non-finite matrix is not unitary.
+    return unitarity_deviation(U, rows) <= DEFAULT_PHYSICAL_ATOL;
+}
+
+// Every collapse and every sampler draws from the state's own normalised
+// distribution, each outcome's weight divided by the total, which exists only
+// while there is a norm to divide out. A zero or non-finite state has none, so
+// each of them calls this BEFORE drawing, leaving the caller's engine as it
+// was, and raises the type normalize() raises on the same states.
+//
+// `measure` is what the class's own normalize() divides by, so the two refuse
+// on the same threshold (is_normalizable's): the norm, not its square, for a
+// state vector or a chain; the trace for a density matrix, passed signed, since
+// a negative trace is no distribution's total and clamping its diagonal at 0
+// could leave nothing to draw from.
+inline void require_norm_to_sample(double measure, const char* ctx) {
+    if (!is_normalizable(measure)) {
+        throw std::runtime_error(std::string(ctx) +
+                                 ": no norm to sample from; the state is zero "
+                                 "or non-finite");
+    }
+}
+
 } // namespace detail
 } // namespace lindblad

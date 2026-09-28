@@ -79,6 +79,22 @@ QuantumCircuit per_shot_circuit() {
     return qc;
 }
 
+// A split on each side of a mid-circuit measurement. The stretch before the
+// MEASURE (one_split_circuit's h, cx) is the same in every shot, so an
+// unobserved run performs it once and starts every trajectory from its
+// result; the h, cx after the MEASURE is performed by every trajectory. At a
+// cap of 1 each split keeps one of two equal Schmidt directions and discards
+// the other, whatever the collapse drew, so every trajectory discards the
+// same weight after the MEASURE.
+QuantumCircuit split_after_measure_circuit() {
+    QuantumCircuit qc(2, 2);
+    qc.h(0).cx(0, 1);
+    qc.measure(0, 0);
+    qc.h(0).cx(0, 1);
+    qc.measure(1, 1);
+    return qc;
+}
+
 // CX as MPSState::apply_two_qubit_gate takes it: rows and columns index
 // (q1, q2) with q1 the low bit, so with q1 as control it exchanges basis
 // states 1 and 3.
@@ -284,28 +300,35 @@ TEST(V11281SvdTime, TerminalOnlyPathCountsTheSinglePass) {
 // -----------------------------------------------------------------------------
 
 TEST(V11281SvdTime, PerShotPathCountsEverySplitOfEveryShot) {
+    // The run reports every split it performed: the shared stretch's once, and
+    // each trajectory's own. Both are read off runs of the stretch alone and
+    // of one whole trajectory.
     const int shots = 100;
-    const Profile one = profile_of_run(per_shot_circuit(), 4, kShots);
-    ASSERT_EQ(one.splits, 1u) << "the fixture is meant to split exactly once";
-    const Profile all = profile_of_run(per_shot_circuit(), 4, shots);
-    EXPECT_EQ(all.splits, static_cast<std::size_t>(shots) * one.splits)
+    const Profile start = profile_of_run(one_split_circuit(), 4, kShots);
+    const Profile one = profile_of_run(split_after_measure_circuit(), 4, kShots);
+    ASSERT_EQ(start.splits, 1u) << "the shared stretch is meant to split once";
+    ASSERT_EQ(one.splits, 2u) << "a trajectory is meant to split once more";
+    const Profile all = profile_of_run(split_after_measure_circuit(), 4, shots);
+    EXPECT_EQ(all.splits,
+              start.splits + static_cast<std::size_t>(shots) * (one.splits - start.splits))
         << "the per-shot path reports the last trajectory's splits rather than "
-           "the run's (#126)";
+           "the run's (#126), or counts the shared stretch once per shot";
 }
 
 TEST(V11281SvdTime, PerShotPathAccumulatesTime) {
-    // A thousand trajectories spend roughly a thousand times one trajectory's
-    // ladder time. The bar is a tenth of that, which is where a scheduling
+    // A thousand trajectories each perform one split after the shared
+    // stretch, so the run spends roughly five hundred times one trajectory's
+    // two-split ladder time. The bar is ten times, which is where a scheduling
     // stall inflating the single reading cannot reach, and where a last-shot
     // reading, being one trajectory's time, cannot reach either.
     const int shots = 1000;
     const int factor = 10;
     // One run first so the single reading is not the process's cold first
     // pass through the ladder.
-    profile_of_run(per_shot_circuit(), 4, kShots);
-    const Profile one = profile_of_run(per_shot_circuit(), 4, kShots);
+    profile_of_run(split_after_measure_circuit(), 4, kShots);
+    const Profile one = profile_of_run(split_after_measure_circuit(), 4, kShots);
     ASSERT_GT(one.nanos, 0u);
-    const Profile all = profile_of_run(per_shot_circuit(), 4, shots);
+    const Profile all = profile_of_run(split_after_measure_circuit(), 4, shots);
     ::testing::Test::RecordProperty("single_trajectory_ns", std::to_string(one.nanos));
     ::testing::Test::RecordProperty("thousand_trajectories_ns", std::to_string(all.nanos));
     EXPECT_GE(all.nanos, static_cast<std::uint64_t>(factor) * one.nanos)
@@ -314,18 +337,22 @@ TEST(V11281SvdTime, PerShotPathAccumulatesTime) {
 }
 
 TEST(V11281SvdTime, PerShotPathAccumulatesDiscardedWeight) {
-    // At a cap of 1 the Bell pair's split keeps one of two equal directions and
-    // discards the other, before any measurement is drawn, so every trajectory
-    // discards the same weight. N trajectories discard N times it, up to the
+    // At a cap of 1 each Bell pair's split keeps one of two equal directions
+    // and discards the other: the shared stretch's once, and every
+    // trajectory's after the MEASURE the same weight whatever it drew. The run
+    // discards the stretch's weight plus N times a trajectory's own, up to the
     // rounding of summing N equal terms.
     const int shots = 100;
-    const Profile one = profile_of_run(per_shot_circuit(), 1, kShots);
-    ASSERT_GT(one.discarded, 0.0) << "the fixture is meant to truncate";
-    const Profile all = profile_of_run(per_shot_circuit(), 1, shots);
+    const Profile start = profile_of_run(one_split_circuit(), 1, kShots);
+    const Profile one = profile_of_run(split_after_measure_circuit(), 1, kShots);
+    ASSERT_GT(start.discarded, 0.0) << "the shared stretch is meant to truncate";
+    ASSERT_GT(one.discarded, start.discarded) << "a trajectory is meant to truncate too";
+    const Profile all = profile_of_run(split_after_measure_circuit(), 1, shots);
     EXPECT_GT(all.discarded, one.discarded)
         << "the per-shot path reports the last trajectory's discarded weight "
            "rather than the run's (#126)";
-    const double expected = static_cast<double>(shots) * one.discarded;
+    const double expected = start.discarded +
+                            static_cast<double>(shots) * (one.discarded - start.discarded);
     EXPECT_NEAR(all.discarded, expected,
                 static_cast<double>(shots) * static_cast<double>(shots) * kEps * one.discarded);
 }

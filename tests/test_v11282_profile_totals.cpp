@@ -29,9 +29,11 @@
 //
 // The second group is the per-shot path through the public entry point: one
 // shot reports exactly what the zero-shot trajectory reports, the totals grow
-// with the shot count in the way each figure's own contract says, seeding
-// rebuilds are counted per shot alongside the gate splits, and the returned
-// tensors are a trajectory's end state rather than the accumulator's.
+// with the shot count in the way each figure's own contract says, the seeding
+// rebuild and the stretch before the first MEASURE are counted once, as an
+// unobserved run of several shots performs them, and each trajectory's own
+// splits per shot, and the returned tensors are a trajectory's end state
+// rather than the accumulator's.
 //
 // gram_fallback_count() rides on the same method and the same loop, and has no
 // deterministic trigger from the public API, so it is pinned through
@@ -98,6 +100,27 @@ QuantumCircuit per_shot_circuit() {
     return qc;
 }
 
+// The stretch per_shot_circuit shares across shots: everything before its
+// MEASURE. An unobserved run of more than one shot performs it once.
+QuantumCircuit per_shot_prefix() {
+    QuantumCircuit qc(2);
+    qc.h(0).cx(0, 1);
+    return qc;
+}
+
+// A split on each side of a mid-circuit measurement: the h, cx before the
+// MEASURE (per_shot_prefix) is shared, the h, cx after it is every
+// trajectory's own. At a cap of 1 each split discards one of two equal
+// Schmidt directions whatever the collapse drew.
+QuantumCircuit split_after_measure_circuit() {
+    QuantumCircuit qc(2, 2);
+    qc.h(0).cx(0, 1);
+    qc.measure(0, 0);
+    qc.h(0).cx(0, 1);
+    qc.measure(1, 1);
+    return qc;
+}
+
 // Three qubits, two gate splits per trajectory, on the per-shot path.
 QuantumCircuit per_shot_circuit_3q() {
     QuantumCircuit qc(3, 2);
@@ -106,6 +129,13 @@ QuantumCircuit per_shot_circuit_3q() {
     qc.x(0);
     qc.cx(1, 2);
     qc.measure(2, 1);
+    return qc;
+}
+
+// per_shot_circuit_3q's shared stretch: everything before its MEASURE.
+QuantumCircuit per_shot_prefix_3q() {
+    QuantumCircuit qc(3);
+    qc.h(0).cx(0, 1);
     return qc;
 }
 
@@ -318,18 +348,28 @@ TEST(V11282ProfileTotals, OneShotReportsExactlyOneTrajectory) {
 }
 
 TEST(V11282ProfileTotals, TotalsGrowWithTheShotCount) {
-    // At a cap of 1 every trajectory's one split discards the same weight
-    // before any measurement is drawn, so the totals are N times one shot's
-    // to the rounding of summing N equal terms. The first of N trajectories
-    // draws the same numbers as the one-shot run, so the worst residual over
-    // N shots is at least the one-shot reading.
-    const Profile one = profile_of(run_default(per_shot_circuit(), 1, 1).final_state);
-    ASSERT_EQ(one.splits, 1u);
-    ASSERT_GT(one.discarded, 0.0) << "the fixture is meant to truncate";
+    // The shared stretch is performed once and each trajectory's split after
+    // the MEASURE once per shot. At a cap of 1 every trajectory's own split
+    // discards the same weight whatever it drew, so the totals are the
+    // stretch's plus N times a trajectory's own, to the rounding of summing N
+    // equal terms. The first of N trajectories draws the same numbers as the
+    // one-shot run, so the worst residual over N shots is at least the
+    // one-shot reading.
+    const Profile start = profile_of(run_default(per_shot_prefix(), 1, kShots).final_state);
+    const Profile one =
+        profile_of(run_default(split_after_measure_circuit(), 1, 1).final_state);
+    ASSERT_EQ(start.splits, 1u);
+    ASSERT_EQ(one.splits, 2u);
+    ASSERT_GT(one.discarded, start.discarded) << "the fixture is meant to truncate";
     for (const int shots : {2, 4, 8, 32}) {
-        const Profile all = profile_of(run_default(per_shot_circuit(), 1, shots).final_state);
-        EXPECT_EQ(all.splits, static_cast<std::size_t>(shots) * one.splits) << shots;
-        EXPECT_NEAR(all.discarded, static_cast<double>(shots) * one.discarded,
+        const Profile all =
+            profile_of(run_default(split_after_measure_circuit(), 1, shots).final_state);
+        EXPECT_EQ(all.splits,
+                  start.splits + static_cast<std::size_t>(shots) * (one.splits - start.splits))
+            << shots;
+        EXPECT_NEAR(all.discarded,
+                    start.discarded +
+                        static_cast<double>(shots) * (one.discarded - start.discarded),
                     static_cast<double>(shots) * static_cast<double>(shots) *
                         kEps * one.discarded)
             << shots;
@@ -337,20 +377,25 @@ TEST(V11282ProfileTotals, TotalsGrowWithTheShotCount) {
     }
 }
 
-TEST(V11282ProfileTotals, SeedingRebuildsAreCountedPerShot) {
-    // A dense seed is factorised into every trajectory's chain before its
-    // gates run, so each shot pays n - 1 rebuild splits on top of its gate
-    // splits, and the run's total is N times that sum.
+TEST(V11282ProfileTotals, SeedingRebuildsAreCountedAsPerformed) {
+    // A dense seed is factorised into a chain before any gate runs. An
+    // unobserved run of several shots seeds once, runs the shared stretch on
+    // the seeded chain once, and starts every trajectory from the result, so
+    // the rebuild's n - 1 splits and the stretch's CX are counted once and each
+    // trajectory adds its own CX after the MEASURE.
     const int n = 3;
     const int shots = 7;
     RunPlan plan;
     plan.initial = InitialState::from(ramp_state(n));
     MPSSimulator sim;
+    const Profile start = profile_of(sim.run(per_shot_prefix_3q(), 4, kShots, kSeed, plan).final_state);
     const Profile one = profile_of(sim.run(per_shot_circuit_3q(), 4, kShots, kSeed, plan).final_state);
-    ASSERT_EQ(one.splits, static_cast<std::size_t>(n - 1) + 2u)
-        << "one trajectory is the rebuild's n - 1 splits plus two CX";
+    ASSERT_EQ(start.splits, static_cast<std::size_t>(n - 1) + 1u)
+        << "the start is the rebuild's n - 1 splits plus the shared CX";
+    ASSERT_EQ(one.splits, start.splits + 1u) << "one trajectory adds one CX";
     const Profile all = profile_of(sim.run(per_shot_circuit_3q(), 4, shots, kSeed, plan).final_state);
-    EXPECT_EQ(all.splits, static_cast<std::size_t>(shots) * one.splits);
+    EXPECT_EQ(all.splits,
+              start.splits + static_cast<std::size_t>(shots) * (one.splits - start.splits));
 }
 
 TEST(V11282ProfileTotals, ReturnedTensorsAreATrajectorysEndState) {
@@ -370,7 +415,11 @@ TEST(V11282ProfileTotals, ReturnedTensorsAreATrajectorysEndState) {
     EXPECT_NEAR(weight(1) + weight(2), 1.0, tol);
     EXPECT_TRUE(weight(1) < tol || weight(2) < tol)
         << "a trajectory ends in one basis state, not a superposition";
-    EXPECT_EQ(r.final_state.svd_call_count(), 16u);
+    // The shared stretch's split, performed once, and nothing after the
+    // MEASURE: per_shot_circuit's trajectories split no further.
+    const std::size_t start = run_default(per_shot_prefix(), 4, kShots).final_state.svd_call_count();
+    const std::size_t one = run_default(per_shot_circuit(), 4, kShots).final_state.svd_call_count();
+    EXPECT_EQ(r.final_state.svd_call_count(), start + 16u * (one - start));
 }
 
 TEST(V11282ProfileTotals, ReturnedChainIsTheLastTrajectoryInEveryRespect) {
@@ -391,7 +440,14 @@ TEST(V11282ProfileTotals, ReturnedChainIsTheLastTrajectoryInEveryRespect) {
     EXPECT_EQ(r.final_state.svd_method, SVDMethod::Jacobi);
     EXPECT_EQ(r.final_state.max_bond_dim, cap);
     EXPECT_EQ(r.final_state.cutoff, cutoff);
-    EXPECT_EQ(r.final_state.svd_call_count(), static_cast<std::size_t>(shots));
+    // The totals are the run's as performed: the shared stretch once, each
+    // trajectory's own after it.
+    const std::size_t start =
+        sim.run(per_shot_prefix(), 4, kShots, kSeed, plan).final_state.svd_call_count();
+    const std::size_t one =
+        sim.run(per_shot_circuit(), 4, kShots, kSeed, plan).final_state.svd_call_count();
+    EXPECT_EQ(r.final_state.svd_call_count(),
+              start + static_cast<std::size_t>(shots) * (one - start));
 }
 
 TEST(V11282ProfileTotals, TerminalOnlyAndZeroShotPathsAreUnchanged) {

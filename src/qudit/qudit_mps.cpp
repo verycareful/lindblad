@@ -10,6 +10,7 @@
 #include "lindblad/qudit/qudit_mps.hpp"
 
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/born_draw.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/detail/eigen_backend.hpp"
 
@@ -51,10 +52,6 @@ using RowMajorC = Eigen::Matrix<std::complex<double>, Eigen::Dynamic,
                                 Eigen::Dynamic, Eigen::RowMajor>;
 using ColMajorC = Eigen::Matrix<std::complex<double>, Eigen::Dynamic,
                                 Eigen::Dynamic, Eigen::ColMajor>;
-
-// Below this a marginal is treated as zero: sampling falls back to its
-// degenerate rule and renormalisation is skipped rather than dividing by noise.
-static constexpr double MARGINAL_FLOOR = 1e-30;
 
 // One-time note when either Jacobi kernel is selected on the qudit MPS. The
 // latch is per layer, so this fires even when a qubit MPS in the same process
@@ -707,6 +704,16 @@ void QuditMPS::apply_1qudit(int q, const std::vector<Complex128>& U_in,
                 T.at(s, aL, aR) = new_v[static_cast<size_t>(s)];
         }
     }
+
+    // As MPSState::gate_one_site: a site outside the open span is held
+    // orthonormal, and a matrix that is not unitary voids that, so the span
+    // widens over it; the fidelity bound does not survive the gate either.
+    if (!detail::gate_keeps_unitarity(U.data(), static_cast<size_t>(d),
+                                      validation, unchecked_gates)) {
+        if (q < span_lo) span_lo = q;
+        if (q > span_hi) span_hi = q;
+        fidelity.invalidate();
+    }
 }
 
 // =============================================================================
@@ -815,6 +822,10 @@ void QuditMPS::apply_2qudit_adjacent(int q, const std::vector<Complex128>& U_in,
         U_in, d2, validation, "QuditMPS::apply_2qudit_adjacent", U_fixed);
 
     gate_adjacent(q, U, Absorb::Right);
+    // The split restores the gauge whatever U was; the fidelity bound does
+    // not survive a gate that is not unitary.
+    if (!detail::gate_keeps_unitarity(U.data(), d2, validation, unchecked_gates))
+        fidelity.invalidate();
 }
 
 void QuditMPS::gate_adjacent(int q, const std::vector<Complex128>& U,
@@ -904,6 +915,15 @@ void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U_in,
     const std::vector<Complex128>& U = detail::check_unitary_fixing(
         U_in, d2, validation, "QuditMPS::apply_2qudit", U_fixed);
 
+    gate_pair(q0, q1, U);
+    // As apply_2qudit_adjacent: only the fidelity bound needs telling.
+    if (!detail::gate_keeps_unitarity(U.data(), d2, validation, unchecked_gates))
+        fidelity.invalidate();
+}
+
+void QuditMPS::gate_pair(int q0, int q1, const std::vector<Complex128>& U) {
+    const size_t d2 = static_cast<size_t>(d) * static_cast<size_t>(d);
+
     // Normalise so q0 < q1, exchanging the two digit roles of U if necessary
     // (valid in any fixed digit convention: it relabels which operand owns
     // which digit, here the LSB-first encoding of docs/Architecture.md).
@@ -929,7 +949,7 @@ void QuditMPS::apply_2qudit(int q0, int q1, const std::vector<Complex128>& U_in,
                             static_cast<size_t>(i0);
                         U_swapped[r_new * d2 + c_new] = U[r_old * d2 + c_old];
                     }
-        apply_2qudit(q0, q1, U_swapped);
+        gate_pair(q0, q1, U_swapped);
         return;
     }
 
@@ -1037,23 +1057,20 @@ std::vector<int> QuditMPS::measure(uint64_t seed) {
 
         double total = 0.0;
         for (double x : probs) total += x;
+        // With the centre on qudit 0 the first total is the chain's norm², so
+        // the refusal is taken there, before any draw; every later total is 1
+        // to rounding, v having been renormalised.
+        if (q == 0)
+            detail::require_norm_to_sample(std::sqrt(total), "QuditMPS::measure");
 
-        int sel;
-        if (total < MARGINAL_FLOOR) {
-            sel = 0;  // degenerate marginal: pick digit 0
-        } else {
-            const double roll = dist(rng) * total;
-            double c = 0.0;
-            sel = d - 1;
-            for (int s = 0; s < d; ++s) {
-                c += probs[static_cast<size_t>(s)];
-                if (roll <= c) { sel = s; break; }
-            }
-        }
+        // Never a digit of weight zero, so p_out is positive.
+        const int sel = static_cast<int>(detail::born_draw_linear(
+            static_cast<size_t>(d), total, dist(rng),
+            [&probs](size_t s) { return probs[s]; }));
         digits[static_cast<size_t>(q)] = sel;
 
         const double p_out = probs[static_cast<size_t>(sel)];
-        const double inv = (p_out > MARGINAL_FLOOR) ? 1.0 / std::sqrt(p_out) : 1.0;
+        const double inv = 1.0 / std::sqrt(p_out);
         v = w[static_cast<size_t>(sel)];
         for (auto& z : v) z *= inv;
     }
@@ -1070,30 +1087,26 @@ int QuditMPS::measure_qudit(int q, std::mt19937_64& rng) {
     focus(q, q);
 
     // At the centre the slice norms ARE the raw marginals, summing to the
-    // state's norm². One uniform is drawn whatever the marginals, so the
-    // generator advances the same way on every call.
+    // state's norm². A chain with no norm is refused before the draw; any other
+    // draws exactly one uniform, so the generator advances the same way on
+    // every call that measures.
     const std::vector<double> probs = centre_marginals(q);
     double total = 0.0;
     for (double x : probs) total += x;
+    detail::require_norm_to_sample(std::sqrt(total), "QuditMPS::measure_qudit");
     const double roll = std::uniform_real_distribution<double>(0.0, 1.0)(rng);
 
-    int sel = 0;
-    if (total >= MARGINAL_FLOOR) {
-        const double target = roll * total;
-        double c = 0.0;
-        sel = d - 1;
-        for (int s = 0; s < d; ++s) {
-            c += probs[static_cast<size_t>(s)];
-            if (target <= c) { sel = s; break; }
-        }
-    }
+    // Never a digit of weight zero, so p_sel below is positive.
+    const int sel = static_cast<int>(detail::born_draw_linear(
+        static_cast<size_t>(d), total, roll,
+        [&probs](size_t s) { return probs[s]; }));
 
     // Collapse: every other digit's slice is zeroed and the chosen one divided
     // by the square root of its raw marginal, leaving unit norm.
     MPSSiteTensor& T = tensors_[static_cast<size_t>(q)];
     const size_t block = static_cast<size_t>(T.chi_L) * T.chi_R;
     const double p_sel = probs[static_cast<size_t>(sel)];
-    const double inv = (p_sel > MARGINAL_FLOOR) ? 1.0 / std::sqrt(p_sel) : 1.0;
+    const double inv = 1.0 / std::sqrt(p_sel);
     for (int s = 0; s < d; ++s)
         for (size_t i = 0; i < block; ++i) {
             Complex128& c = T.data[static_cast<size_t>(s) * block + i];

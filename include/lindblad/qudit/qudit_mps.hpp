@@ -97,6 +97,10 @@ public:
     // Same meaning as MPSState::canonical_form; the enum is documented in
     // types.hpp.
     CanonicalForm canonical_form = CanonicalForm::Always;
+    // Whether a gate no policy measured is measured for this chain's own
+    // records anyway. Same meaning as MPSState::unchecked_gates; the enum is
+    // documented in types.hpp.
+    UncheckedGates unchecked_gates = UncheckedGates::Track;
 
     // Construct in state |0...0> with bond dim 1, centred on site 0.
     QuditMPS(int n_qudits, int d, int max_bond_dim = 64,
@@ -159,8 +163,15 @@ public:
     // --- Gate / oracle / measurement API ---------------------------------------
 
     // d x d unitary on qudit q.  Row-major: U[row*d + col]. Leaves open_span()
-    // as it is: a unitary on the physical index preserves both
-    // orthonormalities.
+    // as it is when U is unitary: a unitary on the physical index preserves
+    // both orthonormalities.
+    //
+    // Every gate below applies U exactly as given, whatever its unitarity.
+    // When U is not unitary to DEFAULT_PHYSICAL_ATOL (known from the policy's
+    // own measurement, or from one taken for the chain's records as
+    // unchecked_gates says), apply_1qudit on a site outside the open span
+    // widens the span over that site, and any gate empties the fidelity
+    // figures, as on MPSState. Nothing is reported.
     void apply_1qudit(int q, const std::vector<Complex128>& U,
                       ValidationOptions validation = {});
 
@@ -197,6 +208,11 @@ public:
     // vector on the bond, O(n·d·chi²). A gauge change only: the state and
     // the fidelity figures are unchanged. seed == 0 draws a seed from
     // std::random_device.
+    //
+    // Each digit is drawn from its marginals divided by their sum, the chain's
+    // own normalised distribution, and never lands on a digit of weight zero.
+    // A chain with no norm, zero or non-finite, is refused with
+    // std::runtime_error before the first draw.
     std::vector<int> measure(uint64_t seed = 0);
 
     // Measure qudit `q` in the computational basis and collapse the chain onto
@@ -204,6 +220,9 @@ public:
     // qudit first, so its marginals are local and the collapse renormalises
     // that site alone; afterwards the state has unit norm and open_span() is
     // {q, q}. Draws one uniform from `rng`. The fidelity figures become empty.
+    // The draw is from the chain's own normalised distribution, as measure()
+    // draws, and a chain with no norm is refused before it, leaving `rng` as
+    // it was.
     int measure_qudit(int q, std::mt19937_64& rng);
 
     // --- Canonicalisation ------------------------------------------------------
@@ -240,8 +259,8 @@ public:
     // How close the chain is to the state an untruncated evolution would hold:
     // an estimate that is not a bound, and a rigorous lower bound. Same
     // figures, same rules (1 on a new chain and after set_tensors(), empty
-    // after any collapse) as MPSState::fidelity_estimate() and
-    // MPSState::fidelity_lower_bound().
+    // after any collapse or any gate that is not unitary) as
+    // MPSState::fidelity_estimate() and MPSState::fidelity_lower_bound().
     std::optional<double> fidelity_estimate() const noexcept {
         return fidelity.estimate();
     }
@@ -322,6 +341,13 @@ private:
     // The adjacent two-qudit gate after validation: moves the centre when
     // split_needs_centre says so, contracts, applies U, splits.
     void gate_adjacent(int q, const std::vector<Complex128>& U, Absorb absorb);
+
+    // apply_2qudit after validation: distinct qudits in either order. A
+    // reversed pair exchanges the two digit roles of U, which permutes its
+    // rows and columns alike and so keeps what validation judged, then
+    // applies it to the ordered pair. Nothing here judges U again, so the
+    // caller's policy decides once and its repaired matrix is what lands.
+    void gate_pair(int q0, int q1, const std::vector<Complex128>& U);
 
     // SWAP the physical indices of sites (q, q+1), used to chain non-adjacent
     // gates into a sequence of adjacent operations.

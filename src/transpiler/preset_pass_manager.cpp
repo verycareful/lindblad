@@ -29,9 +29,10 @@
 //   stage 1  layout + routing   L0/L1: TrivialLayout → SabreSwap
 //                               L2/L3: SabreLayout → SabreSwap
 //   stage 2  optimisation       L0: none
-//                               L1: RemoveResetInZeroState → Optimize1qGates
-//                                   → CXCancellation
+//                               L1: Optimize1qGates → CXCancellation
 //                                   → RemoveDiagonalGatesBeforeMeasure
+//                               (RemoveResetInZeroState in no level: see
+//                               stage 2 below)
 //                               L2: L1 chain with CommutativeCancellation
 //                                   inserted before the diagonal removal
 //                               L3: L2 chain, then ConsolidateBlocks (KAK)
@@ -127,8 +128,12 @@ PassManager preset_pass_manager(
     pm.append(std::make_unique<SabreSwap>());
 
     // ---- Stage 2: optimisation ---------------------------------------------
+    // RemoveResetInZeroState is in no level. It takes every qubit to start at
+    // |0>, which a circuit run from a RunPlan initial state does not; the
+    // simulators recognise a RESET that cannot change the state themselves,
+    // knowing the state the run actually starts from, and a caller exporting
+    // for hardware composes the pass by hand.
     if (optimization_level >= 1) {
-        pm.append(std::make_unique<RemoveResetInZeroState>());
         pm.append(std::make_unique<Optimize1qGates>());
         pm.append(std::make_unique<CXCancellation>());
         if (optimization_level >= 2) {

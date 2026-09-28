@@ -18,7 +18,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #elif defined(__APPLE__)
+#include <mach/mach.h>
 #include <sys/sysctl.h>
+#include <unistd.h>
 #else
 #include <unistd.h>
 #endif
@@ -101,12 +103,53 @@ std::size_t detect_llc_bytes() {
 #endif
 }
 
+// =============================================================================
+// Available memory - one platform branch per OS, 0 on any failure
+// =============================================================================
+
+std::size_t detect_available_memory_bytes() {
+#if defined(_WIN32)
+    MEMORYSTATUSEX status;
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) return 0;
+    return static_cast<std::size_t>(status.ullAvailPhys);
+#elif defined(__APPLE__)
+    // Free pages plus inactive ones, which the kernel reclaims before it
+    // swaps: the nearest macOS figure to Linux's MemAvailable.
+    vm_statistics64_data_t stats;
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    if (host_statistics64(mach_host_self(), HOST_VM_INFO64,
+                          reinterpret_cast<host_info64_t>(&stats),
+                          &count) != KERN_SUCCESS)
+        return 0;
+    const long page = ::sysconf(_SC_PAGESIZE);
+    if (page <= 0) return 0;
+    return static_cast<std::size_t>(stats.free_count + stats.inactive_count) *
+           static_cast<std::size_t>(page);
+#else
+    // MemAvailable is the kernel's own estimate of what can be allocated
+    // without swapping, page cache it can drop included; MemFree alone would
+    // understate it on any machine that has been running a while.
+    std::ifstream meminfo("/proc/meminfo");
+    std::string key;
+    unsigned long long value = 0;
+    std::string unit;
+    while (meminfo >> key >> value) {
+        std::getline(meminfo, unit);
+        if (key == "MemAvailable:") return static_cast<std::size_t>(value) << 10;
+    }
+    return 0;
+#endif
+}
+
 }  // namespace
 
 std::size_t llc_bytes() {
     static const std::size_t cached = detect_llc_bytes();  // magic static: thread-safe
     return cached;
 }
+
+std::size_t available_memory_bytes() { return detect_available_memory_bytes(); }
 
 }  // namespace hw
 }  // namespace lindblad

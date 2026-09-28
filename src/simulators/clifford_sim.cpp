@@ -11,6 +11,7 @@
 #include "lindblad/detail/pauli_rules.hpp"
 #include "lindblad/circuit.hpp"
 #include "lindblad/statevector.hpp"
+#include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate.hpp"
 
 #include <optional>
@@ -1377,12 +1378,20 @@ bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
 // state dependence), and nothing acts on a qubit after it is measured. Under
 // this condition the gate pass can run ONCE and each shot samples measurements
 // from a copy, instead of re-applying every gate per shot.
-static bool clifford_measures_are_terminal(const QuantumCircuit& circuit) {
+// trivial = detail::trivial_resets' answer: a RESET on a qubit known to be |0>
+// changes nothing, so it does not force the per-shot path; the terminal pass
+// skips it.
+static bool clifford_measures_are_terminal(const QuantumCircuit& circuit,
+                                           const std::vector<bool>& trivial) {
     std::vector<bool> measured(static_cast<size_t>(circuit.n_qubits), false);
-    for (const auto& inst : circuit.instructions) {
+    for (std::size_t i = 0; i < circuit.instructions.size(); ++i) {
+        const Instruction& inst = circuit.instructions[i];
         if (inst.type == Instruction::GateType::BARRIER) continue;
         if (inst.condition_clbit >= 0) return false;
-        if (inst.type == Instruction::GateType::RESET) return false;
+        if (inst.type == Instruction::GateType::RESET) {
+            if (!trivial[i]) return false;
+            continue;
+        }
         for (int q : inst.qubits)
             if (q >= 0 && q < circuit.n_qubits && measured[static_cast<size_t>(q)])
                 return false;
@@ -1398,6 +1407,7 @@ CliffordSimulator::Result CliffordSimulator::run(
 ) {
     using GT = Instruction::GateType;
     ScopedWarningFlush flush_on_exit;
+    detail::check_circuit_has_qubits(circuit_in.n_qubits, "CliffordSimulator::run");
     Result result(circuit_in.n_qubits);
 
     // Pre-flight: reject any out-of-range operand index up front (this backend
@@ -1555,10 +1565,14 @@ CliffordSimulator::Result CliffordSimulator::run(
         }
     };
 
-    auto record = [&](const std::vector<int>& clreg) {
-        std::string bitstring(n_clbits, '0');
-        for (int c = 0; c < n_clbits; ++c)
-            if (clreg[c]) bitstring[n_clbits - 1 - c] = '1';
+    // Records one shot, bit 0 of `reg` the rightmost character: the classical
+    // register (n_clbits wide) when the circuit measures, the whole qubit
+    // register (n_qubits wide) when it does not.
+    auto record = [&](const std::vector<int>& reg) {
+        const std::size_t width = reg.size();
+        std::string bitstring(width, '0');
+        for (std::size_t c = 0; c < width; ++c)
+            if (reg[c]) bitstring[width - 1 - c] = '1';
         result.counts[bitstring]++;
     };
 
@@ -1569,7 +1583,13 @@ CliffordSimulator::Result CliffordSimulator::run(
     detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
     const bool harnessed = !plan.empty();
 
-    if (clifford_measures_are_terminal(circuit)) {
+    const std::vector<bool> trivial = detail::trivial_resets(
+        circuit, detail::zero_at_start(plan.initial, circuit.n_qubits));
+    bool has_measure = false;
+    for (const auto& inst : circuit.instructions)
+        if (inst.type == GT::MEASURE) has_measure = true;
+
+    if (clifford_measures_are_terminal(circuit, trivial)) {
         // The gate pass is deterministic and runs ONCE. Only the sampling that
         // follows it differs from shot to shot, and how it does so is what
         // Options::sampling selects.
@@ -1599,14 +1619,20 @@ CliffordSimulator::Result CliffordSimulator::run(
                 ++index;
                 if (watcher) watcher->before_instruction(index, inst, view);
                 detail::FiringGuard fire(watcher, index, inst, view);
-                if (inst.type == GT::MEASURE || inst.type == GT::BARRIER) continue;
+                // A RESET here is on a qubit known to be |0> and changes
+                // nothing (clifford_measures_are_terminal lets no other in).
+                if (inst.type == GT::MEASURE || inst.type == GT::BARRIER ||
+                    inst.type == GT::RESET)
+                    continue;
                 apply_gate(base, inst);
             }
             if (watcher) watcher->at_end(view, index);
         } else {
             StabilizerState::ColumnTableau cols(circuit.n_qubits);
             for (const auto& inst : circuit.instructions) {
-                if (inst.type == GT::MEASURE || inst.type == GT::BARRIER) continue;
+                if (inst.type == GT::MEASURE || inst.type == GT::BARRIER ||
+                    inst.type == GT::RESET)
+                    continue;
                 apply_gate(cols, inst);
             }
             base = cols.to_state();
@@ -1631,29 +1657,27 @@ CliffordSimulator::Result CliffordSimulator::run(
             // Where each outcome is recorded, read once. Terminal Z
             // measurements commute, so their order does not affect the
             // distribution, only the qubit-to-clbit mapping.
-            std::vector<std::pair<int, int>> measured;  // (qubit, clbit)
+            //
+            // A circuit with no MEASURE samples the whole register, qubit q
+            // at key position q, n_qubits wide, as every other backend
+            // samples such a circuit.
+            std::vector<std::pair<int, int>> measured;  // (qubit, key bit)
             for (const auto& inst : circuit.instructions) {
                 if (inst.type != GT::MEASURE) continue;
                 const int q = inst.qubits[0];
                 measured.emplace_back(q, inst.clbits.empty() ? q : inst.clbits[0]);
             }
+            if (!has_measure)
+                for (int q = 0; q < circuit.n_qubits; ++q) measured.emplace_back(q, q);
+            const int key_width = has_measure ? n_clbits : circuit.n_qubits;
 
             const int W = base.words_per_vector();
 
-            // Extracting the slab is an elimination over the whole tableau. A
-            // circuit with no measurements has nothing to draw from it, so it
-            // must not pay for one: every shot there records the same empty
-            // register. The zero-dimensional stand-in keeps the vector sizes
-            // the sampling loop expects.
-            StabilizerState::OutcomeSlab slab;
-            if (measured.empty()) {
-                slab.n_qubits = circuit.n_qubits;
-                slab.offset.assign(static_cast<size_t>(W), 0ULL);
-            } else {
-                slab = base.outcome_slab(options.elimination);
-            }
+            // Extracting the slab is one elimination over the whole tableau,
+            // paid once for every shot.
+            const StabilizerState::OutcomeSlab slab = base.outcome_slab(options.elimination);
             std::vector<uint64_t> y(static_cast<size_t>(W), 0ULL);
-            std::vector<int> clreg(static_cast<size_t>(n_clbits), 0);
+            std::vector<int> clreg(static_cast<size_t>(key_width), 0);
 
             // The generator yields 64 bits at a time and they are spent one
             // free direction at a time, so a shot costs one draw per 64
@@ -1678,7 +1702,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                 std::fill(clreg.begin(), clreg.end(), 0);
                 for (const auto& qc : measured) {
                     const int q = qc.first, clbit = qc.second;
-                    if (clbit < 0 || clbit >= n_clbits) continue;
+                    if (clbit < 0 || clbit >= key_width) continue;
                     clreg[static_cast<size_t>(clbit)] = static_cast<int>(
                         (y[static_cast<size_t>(q / 64)] >> (q % 64)) & 1ULL);
                 }
@@ -1687,6 +1711,14 @@ CliffordSimulator::Result CliffordSimulator::run(
         } else {
             for (int s = 0; s < shots; ++s) {
                 StabilizerState state = base;
+                if (!has_measure) {
+                    // The whole register, qubit q at key position q.
+                    std::vector<int> reg(static_cast<size_t>(circuit.n_qubits), 0);
+                    for (int q = 0; q < circuit.n_qubits; ++q)
+                        reg[static_cast<size_t>(q)] = state.measure(q, true, rng);
+                    record(reg);
+                    continue;
+                }
                 std::vector<int> clreg(n_clbits, 0);
                 for (const auto& inst : circuit.instructions) {
                     if (inst.type != GT::MEASURE) continue;
@@ -1725,17 +1757,40 @@ CliffordSimulator::Result CliffordSimulator::run(
     // state, so the body runs once and records nothing.
     const int trajectories = shots > 0 ? shots : 1;
     runner.begin_run(circuit.n_qubits, trajectories);
+
+    // Everything before the first MEASURE, RESET or conditioned instruction is
+    // the same in every shot and draws nothing, so an unobserved run of more
+    // than one shot runs it once into a start tableau every shot copies; the
+    // random stream, so the seeded counts, are those of a rerun. A tableau is
+    // small beside the gates it saves. An observed run reruns every shot, so
+    // each anchor fires once per shot with that shot's index.
+    const bool reuse = !watcher && trajectories > 1;
+    std::size_t prefix_end = 0;
+    StabilizerState start(circuit.n_qubits);
+    if (reuse) {
+        detail::apply_initial_state(plan, start);
+        while (prefix_end < circuit.instructions.size()) {
+            const Instruction& inst = circuit.instructions[prefix_end];
+            if (inst.type == GT::MEASURE || inst.type == GT::RESET ||
+                inst.condition_clbit >= 0)
+                break;
+            if (inst.type != GT::BARRIER) apply_gate(start, inst);
+            ++prefix_end;
+        }
+    }
+
     for (int s = 0; s < trajectories; ++s) {
-        StabilizerState state(circuit.n_qubits);
-        detail::apply_initial_state(plan, state);
+        StabilizerState state = reuse ? start : StabilizerState(circuit.n_qubits);
+        if (!reuse) detail::apply_initial_state(plan, state);
         std::vector<int> clreg(n_clbits, 0);
 
         const StateView view(StateForm::Stabilizer, &state, circuit.n_qubits);
         runner.begin_shot(s, clreg);
         if (watcher) watcher->at_start(view);
 
-        int index = -1;
-        for (const auto& inst : circuit.instructions) {
+        int index = static_cast<int>(prefix_end) - 1;
+        for (std::size_t i = prefix_end; i < circuit.instructions.size(); ++i) {
+            const Instruction& inst = circuit.instructions[i];
             ++index;
             if (watcher) watcher->before_instruction(index, inst, view);
             detail::FiringGuard fire(watcher, index, inst, view);
@@ -1759,7 +1814,20 @@ CliffordSimulator::Result CliffordSimulator::run(
 
         if (watcher) watcher->at_end(view, index);
 
-        if (shots > 0) record(clreg);
+        if (shots > 0) {
+            if (has_measure) {
+                record(clreg);
+            } else {
+                // No MEASURE: one sample of the whole register from this
+                // trajectory's end state, drawn on a copy so the returned
+                // state is the trajectory's own.
+                StabilizerState probe = state;
+                std::vector<int> reg(static_cast<size_t>(circuit.n_qubits), 0);
+                for (int q = 0; q < circuit.n_qubits; ++q)
+                    reg[static_cast<size_t>(q)] = probe.measure(q, true, rng);
+                record(reg);
+            }
+        }
         result.final_state = std::move(state);
     }
 

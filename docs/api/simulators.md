@@ -36,6 +36,15 @@ void StatevectorSimulator::apply_instruction(Statevector& sv, const Instruction&
 
 ### Operand Validation
 
+Before anything else, every backend's `run()` refuses a circuit with no qubits,
+at every shot count including 0, with `std::invalid_argument` whose message
+opens with the entry point that refused (`MPSSimulator::run: the circuit must
+have at least 1 qubit (got 0)`). A register of none has one state and one
+outcome, so there is nothing to simulate. The statevector and density-matrix
+backends report the refusal through `Result`, the MPS and Clifford backends
+throw it. A zero-qubit `MPSState` is still a valid object, the scalar one; only
+running a circuit over no qubits is refused.
+
 Every backend runs a pre-flight over `circuit.instructions` at the start of
 `run()`, checking that each qubit and classical-bit index lies in range. This
 closes the ingress paths that bypass the per-gate circuit builders (`compose`
@@ -72,8 +81,8 @@ own arithmetic are documented in [validation.md](validation.md).
 The statevector, density-matrix, and MPS simulators pick one of three
 strategies:
 
-- **Terminal-only measurements** (no classical conditioning, and nothing acts on a qubit after it is measured, the `measure_all` pattern): ONE forward pass with MEASURE skipped, then outcomes are sampled from the final state. Counts keys follow the qubit-to-clbit map of the measure instructions (`n_clbits` wide, clbit 0 rightmost); partial measurements key only the measured qubits. This replaces the per-shot re-execution used before R.1.12, which cost `shots` full evolutions for the most common circuit shape.
-- **Mid-circuit measurement or feedforward** with `shots > 0`: per-shot trajectories. The circuit is re-executed from `|0...0⟩` once per shot; each MEASURE collapse is drawn independently, conditions are evaluated against the per-shot classical register.
+- **Terminal-only measurements** (no classical conditioning, no RESET that can change the state, and nothing acts on a qubit after it is measured, the `measure_all` pattern): ONE forward pass with MEASURE skipped, then outcomes are sampled from the final state. Counts keys follow the qubit-to-clbit map of the measure instructions (`n_clbits` wide, clbit 0 rightmost); partial measurements key only the measured qubits. This replaces the per-shot re-execution used before R.1.12, which cost `shots` full evolutions for the most common circuit shape.
+- **Mid-circuit measurement, feedforward, or a RESET that can change the state** with `shots > 0`: per-shot trajectories. Each shot starts from the initial state; each MEASURE and RESET collapse is drawn independently, conditions are evaluated against the per-shot classical register.
 - **shots == 0**: a single seeded trajectory. Classical conditions are honoured and MEASURE outcomes are recorded along the way; `final_state` is one reproducible trajectory. (`eval_expectation` instead THROWS for measure/conditional circuits: the exact expectation of one random trajectory is undefined; estimate from counts with `shots > 0`.)
 
 The MPS simulator collapses a qubit at the chain's orthogonality centre, where
@@ -81,6 +90,49 @@ the outcome's marginal is a read of one site and dividing that site by the
 marginal's square root restores unit norm (see [Canonical Form](#canonical-form));
 sampled MPS bitstrings use the project key convention (qubit 0 rightmost) at
 every register width.
+
+**RESET.** A RESET collapses its qubit, so one forward pass would collapse it
+once for every shot. On the statevector, MPS and Clifford backends a RESET that
+can change the state therefore sends a run shot by shot, like a mid-circuit
+measurement. A RESET on a qubit known to be $|0\rangle$ cannot: the qubit is
+known $|0\rangle$ when the initial state puts it there (every qubit under the
+default state, those whose bit is 0 under a basis state, none under a supplied
+state) and nothing has acted on it since, or when an unconditioned RESET has
+just put it there. A conditioned RESET leaves a qubit known $|0\rangle$ only if
+it already was. Such a RESET leaves the one-pass path open, so `reset q;` at
+the top of a QASM file costs nothing. The density-matrix backend applies RESET
+as a channel, which one pass describes exactly, and never samples shot by shot
+on its account.
+
+**A circuit with no MEASURE** is sampled on the whole register at `shots > 0`,
+qubit $q$ at key position $q$ (qubit 0 rightmost), `n_qubits` wide, on every
+backend. A circuit that runs shot by shot with no MEASURE (a RESET-only
+circuit) draws one such sample from each shot's final state.
+
+**The shared start of a per-shot run.** Everything before a circuit's first
+MEASURE, RESET or conditioned instruction (on the density-matrix backend, first
+MEASURE or conditioned instruction, since RESET and noise are channels there) is
+the same in every shot and draws nothing. An unobserved run of more than one
+shot computes it once and starts every shot from a copy, so the counts for a
+seed are exactly those of a run that repeats it. The MPS and Clifford backends
+always do this, since a chain or a tableau is small beside the gates it saves;
+the statevector and density-matrix backends do it as `Options::prefix_reuse`
+says (`PrefixReuse::Hardware` by default: take the copy when the operating
+system reports at least twice its size available and the run with it fits
+`max_memory_mb`; `Manual`: when it fits `max_memory_mb`; `Off`: never). An
+observed run repeats the prefix in every shot, so each anchor fires once per
+shot with that shot's index. On the MPS backend the profile figures count what
+was performed: the shared start's splits once, each trajectory's own per shot.
+
+Every sample and every collapse, on every backend, draws from the state's own
+normalised distribution: each outcome's weight divided by the total. A state
+short of unit norm (a truncated MPS chain, or a state a caller set under
+`Validation::Ignore`) is therefore sampled as the state it holds, and an outcome
+of probability zero is never drawn. A state with no norm, zero or non-finite, is
+refused with `std::runtime_error` before anything is drawn, on the threshold
+each state class's `normalize()` refuses at. The statevector and
+density-matrix simulators report the refusal through `Result`; the MPS
+simulator throws it.
 
 ### The run harness
 
@@ -135,7 +187,8 @@ See [Statevector API](statevector.md) for full details. State stored as:
 ```cpp
 struct Options {
     int max_parallel_threads = 0;  // 0 = auto (all cores)
-    uint64_t max_memory_mb = 0;    // 0 = auto
+    uint64_t max_memory_mb = 0;    // MiB; 0 = no limit
+    PrefixReuse prefix_reuse = PrefixReuse::Hardware;
     int precision = 64;            // 32 or 64 bit (not yet used)
     bool zero_threshold = true;
     double threshold = 1e-10;      // Unused; for API compatibility
@@ -145,8 +198,28 @@ struct Options {
 };
 ```
 
-- **max_parallel_threads**: Cap on OpenMP thread count (0 = system default)
-- **max_memory_mb**: Memory budget (0 = no limit); used for preemptive error checking
+- **max_parallel_threads**: the most OpenMP threads any parallel region of
+  `run()`, `simulate_circuit()` or `eval_expectation()` may use. 0 leaves
+  OpenMP's own choice in force (`OMP_NUM_THREADS`, else every core). The cap
+  holds for the length of the call and the caller's own setting is back when
+  it returns, so parallel code around the call, and other threads running
+  simulators side by side, keep theirs. `apply_instruction`, a one-gate
+  primitive, runs under the caller's setting. A negative value is refused
+  through `Result` (`eval_expectation` and `simulate_circuit` throw
+  `std::invalid_argument`)
+- **max_memory_mb**: the most memory the caller gives a run, in MiB (2^20
+  bytes); 0 means no limit. It caps the buffers whose size grows with the
+  register, which is where a run's memory goes: the states it holds at once.
+  A statevector run always holds two, the working buffer and the copy returned
+  in `Result::final_state` ($2 \cdot 16 \cdot 2^n$ bytes), and a run that needs
+  more than the cap is refused before anything is allocated, through `Result`,
+  with a message giving what it needs. Fixed-size bookkeeping is not counted
+- **prefix_reuse**: whether a per-shot run keeps a snapshot of the stretch
+  before its first MEASURE, RESET or conditioned instruction and starts every
+  shot from it rather than rerunning that stretch (`Hardware` by default, or
+  `Manual`, or `Off`; see [Execution Semantics](#execution-semantics-frozen-in-r112)).
+  The snapshot is released before the result's copy is made, so for this
+  simulator it never raises the two-state peak
 - **precision**: Reserved for future 32-bit float variants
 - **zero_threshold**, **threshold**: Legacy fields; may be removed in future versions
 - **fusion_enable**: Master switch for the gate-fusion pre-pass (see Gate Fusion below); `false` runs every circuit unfused
@@ -350,6 +423,28 @@ its superoperator with its stride tables, so per-shot trajectory execution
 pays zero per-call setup. One density-matrix buffer is reused across shots,
 and the structured `MCX`/`MCP`/`PERMUTATION` ops apply as a full-register
 row/column relabel or diagonal phase (no dense matrix).
+
+### DensityMatrixSimulator Options
+
+```cpp
+struct Options {
+    uint64_t max_memory_mb = 0;                        // MiB; 0 = no limit
+    PrefixReuse prefix_reuse = PrefixReuse::Hardware;
+};
+```
+
+- **max_memory_mb**: the most memory the caller gives a run, in MiB (2^20
+  bytes); 0 means no limit. It caps the density matrices a run holds at once,
+  $16 \cdot 4^n$ bytes each. A run holds one, and a run whose one matrix
+  exceeds the cap is refused before anything is allocated, through `Result`,
+  with a message giving what it needs. Fixed-size bookkeeping is not counted
+- **prefix_reuse**: whether a per-shot run keeps a snapshot of the stretch
+  before its first MEASURE or conditioned instruction (RESET and noise are
+  channels here, so they do not end it) and starts every shot from it. Here
+  the snapshot is a second density matrix for the length of the shot loop, so
+  `Hardware` takes it only when the machine reports at least twice its size
+  available and the run with it still fits `max_memory_mb`, and `Manual` only
+  when it fits `max_memory_mb`
 
 ### DensityMatrixSimulator Workflow
 
@@ -558,12 +653,19 @@ Both sample the same distribution. They consume the random stream differently,
 so a given seed produces different individual bitstrings under each; counts
 agree in distribution, not shot for shot.
 
-Circuits with mid-circuit measurement, feedforward or reset take the per-shot
-route regardless of what is selected, because the subspace describes a terminal
-measurement of a fixed state: once a measurement collapses the state
-mid-circuit, each trajectory diverges and there is no single subspace left to
-read. Selecting `Slab` explicitly for such a circuit emits a note saying the
-per-shot route was used instead. `Auto` asked for nothing and stays silent.
+Circuits with mid-circuit measurement, feedforward or a RESET that can change
+the state take the per-shot route regardless of what is selected, because the
+subspace describes a terminal measurement of a fixed state: once a collapse
+happens mid-circuit, each trajectory diverges and there is no single subspace
+left to read. A RESET on a qubit known to be $|0\rangle$ changes nothing and
+keeps the terminal route (see
+[Execution Semantics](#execution-semantics-frozen-in-r112)). Selecting `Slab`
+explicitly for such a circuit emits a note saying the per-shot route was used
+instead. `Auto` asked for nothing and stays silent.
+
+A circuit with no MEASURE is sampled on the whole register, qubit $q$ at key
+position $q$, `n_qubits` wide, as every backend samples such a circuit: through
+the slab, or per shot, whichever `sampling` selects.
 
 `elimination` chooses how that subspace is extracted. `Plain`, the default,
 multiplies a row into another only where the pivot bit is set. `FourRussians`
@@ -831,11 +933,15 @@ kernel selection are untouched, so afterwards the chain reports splits it did
 not itself perform, exactly as one chain performing both sets would have.
 
 It is what makes the figures on the chain `MPSSimulator::run` returns cover
-every split of the run on every path. Mid-circuit measurement or feedforward at
-nonzero shots re-simulates per shot, each trajectory on a chain of its own;
-each trajectory absorbs the figures the run has gathered so far and becomes the
-returned chain, so what comes back is the last trajectory in every respect,
-carrying the totals of all of them. `truncation_error()` read there is
+every split the run performed on every path. Mid-circuit measurement,
+feedforward or a RESET that can change the state, at nonzero shots,
+re-simulates per shot, each trajectory on a chain of its own; each trajectory
+absorbs the figures the run has gathered so far and becomes the returned chain,
+so what comes back is the last trajectory in every respect, carrying the totals
+of all of them. An unobserved run of several shots computes the stretch before
+the first MEASURE, RESET or conditioned instruction once (see
+[Execution Semantics](#execution-semantics-frozen-in-r112)), and its splits are
+counted once, as performed. `truncation_error()` read there is
 everything the run discarded rather than the returned tensors' own history,
 which is the accumulate-rather-than-reset contract above applied across
 trajectories. So `svd_time_ns()` against the run's wall clock is the share bond
@@ -1026,6 +1132,9 @@ Rules:
   different factors, so neither figure describes the pair afterwards. On the
   per-shot path of `MPSSimulator::run` the returned chain has collapsed, so both
   are empty there
+- Both are **empty** once a gate that is not unitary has been applied, and stay
+  empty: the bound is derived for unitary gates between splits (see
+  [Unchecked Gates](#unchecked-gates) for how the chain knows)
 - `rebuild_from_statevector` counts its splits like any other; they are
   canonical by construction
 - `absorb_profile` does not fold them: they describe the returned tensors' own
@@ -1040,7 +1149,8 @@ Rules:
 **Single-qubit gate on site $i$**: the 2x2 matrix is contracted into the
 physical index of $M_i$. No SVD and no bond change, and the open span is left as
 it is, because a unitary on the physical index preserves both
-orthonormalities.
+orthonormalities. A matrix that is not unitary on a site outside the open span
+widens the span over that site instead (see [Unchecked Gates](#unchecked-gates)).
 
 **Two-qubit gate on sites $(i, i+1)$** (adjacent):
 
@@ -1087,11 +1197,61 @@ orthonormalities.
   from inside `to_statevector()`. Decompose >2q unitaries into 1q/2q factors
   for wider registers.
 
+### Unchecked Gates
+
+Every read of the chain (the norm, a marginal, a measurement, a sample) is taken
+at the orthogonality centre, trusting every site outside the open span to be
+orthonormal, and the [fidelity figures](#fidelity-figures) are derived for
+unitary gates between splits. Both rest on each gate being unitary, so after
+every gate the chain needs to know whether the matrix it applied is unitary to
+`DEFAULT_PHYSICAL_ATOL`. When it is not:
+
+- a single-qubit gate on a site outside the open span widens the span over that
+  site, so the next move of the centre sweeps it and later reads are correct
+- any gate empties the fidelity figures
+
+The matrix is applied exactly as given either way, and nothing is reported:
+this is the chain keeping its own records, not a judgement of the operand.
+
+Where the answer comes from depends on the policy the matrix arrived under:
+
+| Policy | Where the answer comes from |
+|---|---|
+| `Throw`, `Warn`, or any `Repair::Attempt` | the policy's own measurement (the repaired matrix, when it repaired) |
+| `Ignore` with `Repair::None` | the chain's `unchecked_gates` setting |
+
+```cpp
+enum class UncheckedGates { Track, AssumeUnitary };
+
+UncheckedGates MPSState::unchecked_gates = UncheckedGates::Track;
+UncheckedGates QuditMPS::unchecked_gates = UncheckedGates::Track;
+UncheckedGates MPSSimulator::unchecked_gates = UncheckedGates::Track;
+```
+
+- `Track` (the default) measures the matrix for the chain's records. The caller
+  asked for the operand not to be judged, not for later reads to be wrong
+- `AssumeUnitary` measures nothing and takes the matrix to be unitary. It is the
+  cheapest route, for a caller who knows their matrices are unitary; if one is
+  not, the chain's reads and fidelity figures come out wrong, and choosing this
+  setting accepts that
+
+`MPSSimulator` copies its setting onto every chain a run builds. Inside a run
+the gates the simulator builds itself (named gates, the decompositions of
+three-qubit gates, a RESET's flip) are unitary by construction and are never
+measured, and a circuit's own `unitary()` matrix is judged for the records under
+its instruction's policy, as the table above says. A collapse is not a gate: the
+projection onto an outcome empties the fidelity figures under either setting.
+
 ### Measurement
 
 Every measurement reads a qubit at the orthogonality centre, where its raw
 marginals $\langle\psi|P_k|\psi\rangle$ are the squared norms of its site's two
-physical slices.
+physical slices. Every draw is from those marginals divided by their sum, the
+chain's own normalised distribution, so a chain whose norm truncation has
+lowered is measured as the state it holds. A chain with no norm, zero or
+non-finite, is refused with `std::runtime_error` before anything is drawn, on
+the threshold `normalize()` refuses at, so the caller's generator is left as it
+was.
 
 **One qubit**.
 
@@ -1104,7 +1264,8 @@ chain onto the outcome (returned as 0 or 1): the other slice is zeroed and the
 site divided by the square root of the outcome's marginal, which leaves the
 state with unit norm and `open_span()` at `{qubit, qubit}`. A MEASURE in a run
 and the first half of a RESET are this call. Throws `std::out_of_range` for a
-qubit outside the register. The fidelity figures become empty.
+qubit outside the register, and `std::runtime_error` for a chain with no norm.
+The fidelity figures become empty.
 
 **Sequential measurement** (`measure_sequential(rng)`), physically realistic:
 
@@ -1113,7 +1274,8 @@ qubit outside the register. The fidelity figures become empty.
 3. Step the centre one site right by a QR and repeat for qubit 1, 2, ...
 
 A full bitstring costs $O(N \cdot \chi^3)$ with no environments, draws one
-uniform per qubit, and is returned with qubit 0 as the rightmost character.
+uniform per qubit, and is returned with qubit 0 as the rightmost character. A
+chain with no norm is refused before the first draw.
 
 **Terminal sampling**. With the centre on qubit 0, every other site is
 right-orthonormal, so the environment right of any qubit is the identity and a
@@ -1123,13 +1285,16 @@ w_{\text{out}} / |w_{\text{out}}|$. When the run samples this way (see
 [Choosing the Sampling Path](#choosing-the-sampling-path)), it moves the centre
 of the returned chain to qubit 0 once (a gauge change: the state is unchanged)
 and samples every shot read-only from it at $O(N \cdot \chi^2)$ per shot, with
-nothing precomputed and nothing copied.
+nothing precomputed and nothing copied. `MPSSimulator::run` refuses a chain with
+no norm before either sampling path draws.
 
 ### Choosing the Sampling Path
 
 Terminal sampling has two paths that draw from the same distribution, the
-chain's own, so `MPSSimulator::run` picks whichever is cheaper for the chain it
-holds and the shots requested. Both costs follow from the bond profile, so the
+chain's own normalised one, $|a_k|^2 / \text{norm\_sq}()$, so `MPSSimulator::run`
+picks whichever is cheaper for the chain it holds and the shots requested. For a
+truncated chain, whose `norm_sq()` sits below 1 by what the splits discarded,
+both paths still draw that distribution. Both costs follow from the bond profile, so the
 choice is made before either runs:
 
 - **Dense**: contract the chain into $2^n$ amplitudes once

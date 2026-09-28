@@ -136,6 +136,22 @@ public:
 
 class DensityMatrixSimulator {
 public:
+    struct Options {
+        // The most memory the caller gives a run, in MiB (2^20 bytes); 0 = no
+        // limit. It caps the density matrices a run holds at once, 16 * 4^n
+        // bytes each: one, and a second while a per-shot run keeps its
+        // prefix snapshot. A run whose one matrix exceeds it is refused up
+        // front, through Result, before anything is allocated.
+        uint64_t max_memory_mb = 0;
+        // Whether a per-shot run keeps a snapshot of the stretch before its
+        // first MEASURE or conditioned instruction; see PrefixReuse in
+        // types.hpp. Here the snapshot is a second density matrix, so
+        // Hardware and Manual take it only when that second one fits.
+        PrefixReuse prefix_reuse = PrefixReuse::Hardware;
+    };
+
+    Options options;
+
     struct Result {
         DensityMatrix final_state;
         std::unordered_map<std::string, int> counts;

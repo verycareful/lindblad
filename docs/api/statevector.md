@@ -112,8 +112,15 @@ std::unordered_map<std::string, int> sample_counts(int shots, uint64_t seed = 0)
 Behavior:
 
 - `seed == 0` uses `std::random_device` to seed the RNG
-- `measure_once` does a linear scan of cumulative probability
-- `sample_counts` precomputes cumulative probabilities and uses `lower_bound`
+- Both draw from the state's own normalised distribution,
+  $|a_i|^2 / \sum_j |a_j|^2$, so a state short of unit norm (one set under
+  `Validation::Ignore`) is sampled as the state it holds. An outcome of
+  probability zero is never drawn
+- A state with no norm, zero or non-finite, throws `std::runtime_error` before
+  anything is drawn, on the threshold `normalize()` refuses at
+- `measure_once` does a linear scan of cumulative probability; `sample_counts`
+  precomputes the cumulative probabilities once and binary-searches them per
+  shot
 - Bitstrings are returned MSB-first (leftmost char is the most significant bit)
 
 ## Cloning and Debug Output

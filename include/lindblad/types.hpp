@@ -342,6 +342,91 @@ constexpr const char* to_string(CanonicalForm f) noexcept {
     return "CanonicalForm(?)";
 }
 
+// =============================================================================
+// UncheckedGates - what an MPS does with a gate no policy measured
+// =============================================================================
+// Both MPS layers keep two records that let them answer cheaply, and both rest
+// on every gate being unitary:
+//
+//   - which sites are orthonormal (MPSState::open_span). A read of the norm, a
+//     marginal, a measurement or a sample touches only the centre because every
+//     other site is known orthonormal; a non-unitary matrix on such a site
+//     breaks that, and every later read returns a number that is not the
+//     chain's.
+//   - the fidelity ledger (detail::FidelityLedger). Its bound is derived for
+//     unitary gates between splits; after a non-unitary one its figures no
+//     longer mean anything.
+//
+// So after every gate the chain needs to know whether the matrix it applied is
+// unitary to DEFAULT_PHYSICAL_ATOL. When it is not, a single-site gate on a site
+// outside the open span widens the span over that site, so the next move of
+// the centre sweeps it, and any gate invalidates the ledger, as a collapse
+// does. The matrix is still applied exactly as given and nothing is reported:
+// this is the chain keeping its own records, not a judgement of the operand.
+//
+// Under Throw, Warn or Repair::Attempt the policy measures the matrix anyway,
+// so the answer is there whatever this setting says. The one policy that
+// measures nothing, Ignore with Repair::None, leaves it to this setting:
+//
+//   Track         = measure the matrix for the records. The default: the
+//                   caller asked for the operand not to be judged, not for the
+//                   chain's later reads to be wrong.
+//   AssumeUnitary = take the matrix to be unitary and measure nothing. The
+//                   cheapest route, for a caller who knows their matrices are
+//                   unitary; if one is not, the chain's reads and fidelity
+//                   figures come out wrong and the caller has accepted that.
+//
+// A collapse is not a gate and this setting does not reach it: the projection
+// onto an outcome is the library's own non-unitary step, and it invalidates the
+// ledger under both. Gates the library builds itself are unitary by
+// construction and are never measured.
+enum class UncheckedGates { Track, AssumeUnitary };
+
+// The enumerator's name, for diagnostics.
+constexpr const char* to_string(UncheckedGates g) noexcept {
+    switch (g) {
+        case UncheckedGates::Track:         return "Track";
+        case UncheckedGates::AssumeUnitary: return "AssumeUnitary";
+    }
+    return "UncheckedGates(?)";
+}
+
+// =============================================================================
+// PrefixReuse - whether a dense per-shot run keeps a copy of its shared start
+// =============================================================================
+// A run that samples shot by shot (a mid-circuit measurement, feedforward, or
+// a RESET that can change the state) repeats, in every shot, everything before
+// its first MEASURE, RESET or conditioned instruction. That stretch draws
+// nothing, so it can run once into a snapshot every shot copies, with the
+// random stream, and so the seeded counts, exactly those of a rerun. What the
+// snapshot costs is one more full state held for the run: 16 * 2^n bytes for
+// the statevector simulator, 16 * 4^n for the density-matrix simulator. The
+// MPS and Clifford backends take their snapshot whenever no observer is
+// attached, since a chain or a tableau is small beside the gates it saves.
+//
+//   Hardware = take it when the memory the operating system reports available
+//              at that moment (hw::available_memory_bytes) is at least twice
+//              the snapshot, so the machine keeps as much free as the copy
+//              takes, and the run still fits max_memory_mb when one is set.
+//              No reading means no snapshot. The default.
+//   Manual   = take it when the run, snapshot included, fits max_memory_mb;
+//              with no max_memory_mb set, always.
+//   Off      = never; every shot reruns its prefix.
+//
+// An observed run never takes one, whatever this says: anchors inside the
+// prefix fire once per shot with that shot's index.
+enum class PrefixReuse { Hardware, Manual, Off };
+
+// The enumerator's name, for diagnostics.
+constexpr const char* to_string(PrefixReuse r) noexcept {
+    switch (r) {
+        case PrefixReuse::Hardware: return "Hardware";
+        case PrefixReuse::Manual:   return "Manual";
+        case PrefixReuse::Off:      return "Off";
+    }
+    return "PrefixReuse(?)";
+}
+
 // Mathematical constants (PI, INV_SQRT2, ...) live in constants.hpp, included
 // at the top of this header, so every one of those names is visible to anything
 // including types.hpp.

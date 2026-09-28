@@ -106,8 +106,13 @@ bool eigh(const std::complex<double>* data, int n, MatrixOrder order,
 // full size before the call.
 //
 // Householder QR is backward stable and has no iteration to fail, so a finite
-// input always factorises; a non-finite one propagates into both factors
-// rather than being reported. Returns false only for an empty shape.
+// input always factorises. A non-finite input is not reported either: the call
+// returns true and the factors never come back entirely finite, which is what
+// lets a caller downstream see the damage. Which factor carries it depends on
+// where it sits. The reflectors are built from the first k columns only, so an
+// entry there reaches Q and R, while one in a column beyond k of a wide input
+// is only carried through the reflectors and reaches R alone. Returns false
+// only for an empty shape.
 //
 // An LQ needs no entry of its own. A row-major buffer read column-major is the
 // transpose, so passing a row-major M as a column-major M^T gives M^T = QR,

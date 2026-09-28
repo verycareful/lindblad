@@ -428,18 +428,21 @@ TEST(V11251CliffordSampling, SlabPoolRefillsAcrossWideRegisters) {
 // Circuits with no measurement at all
 // =============================================================================
 
-// A circuit with nothing to measure must not pay for an elimination, and every
-// shot records the same empty register rather than an arbitrary one.
-TEST(V11251CliffordSampling, CircuitWithoutMeasurementRecordsAllZeroKeys) {
+// A circuit with no MEASURE samples the whole register, qubit q at key
+// position q and n_qubits wide, as the statevector, density-matrix and MPS
+// backends sample such a circuit. The distribution is the state's own, read
+// off the statevector, on both routes.
+TEST(V11251CliffordSampling, CircuitWithoutMeasurementSamplesTheWholeRegister) {
+    QuantumCircuit qc(4);
+    qc.h(0).cx(0, 1).sx(2).iswap(2, 3).ecr(0, 3);
+    std::vector<std::pair<int, int>> whole;
+    for (int q = 0; q < qc.n_qubits; ++q) whole.emplace_back(q, q);
+    const std::map<std::string, double> exact =
+        expected_keys(v11251::exact_statevector_distribution(qc), whole, qc.n_qubits);
+    ASSERT_GT(exact.size(), 1u) << "the fixture is meant to have more than one outcome";
     for (Sampling route : kRoutes) {
         SCOPED_TRACE(route_name(route));
-        QuantumCircuit qc(4);
-        qc.h(0).cx(0, 1).sx(2).iswap(2, 3).ecr(0, 3);
-
-        const Counts counts = run_with(qc, route, 64, kSeed);
-        ASSERT_EQ(counts.size(), 1u);
-        EXPECT_EQ(counts.begin()->first, "0000");
-        EXPECT_EQ(counts.begin()->second, 64);
+        EXPECT_TRUE(counts_match(run_with(qc, route, kShots, kSeed), exact, kShots));
     }
 }
 

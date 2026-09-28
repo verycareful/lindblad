@@ -10,6 +10,7 @@
 #include "lindblad/qudit/qudit_density_matrix.hpp"
 
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/born_draw.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 
 #include <algorithm>
@@ -734,23 +735,28 @@ void QuditDensityMatrix::apply_function_oracle(
 // measure — sample from diagonal; collapse ρ
 // =============================================================================
 
+// Draws from the diagonal divided by its own total (detail::born_draw_linear).
+// The trace is judged on the raw diagonal before each entry is clamped at 0,
+// since the clamp would turn a NaN into a zero and hide it; a state with no
+// trace is refused before drawing.
 std::vector<int> QuditDensityMatrix::measure(uint64_t seed)
 {
+    double trace_raw = 0.0;
+    double total = 0.0;
+    for (size_t i = 0; i < dim; ++i) {
+        trace_raw += rho[i * dim + i].real;
+        total += std::max(0.0, rho[i * dim + i].real);
+    }
+    detail::require_norm_to_sample(trace_raw, "QuditDensityMatrix::measure");
+
     std::mt19937_64 rng(seed == 0
         ? static_cast<uint64_t>(std::random_device{}())
         : seed);
     std::uniform_real_distribution<double> udist(0.0, 1.0);
-
-    const double roll = udist(rng);
-    double cumulative = 0.0;
-    size_t chosen = dim - 1;
-    for (size_t i = 0; i < dim; ++i) {
-        cumulative += rho[i * dim + i].real;
-        if (roll <= cumulative) {
-            chosen = i;
-            break;
-        }
-    }
+    const size_t chosen = detail::born_draw_linear(
+        dim, total, udist(rng), [this](size_t i) {
+            return std::max(0.0, rho[i * dim + i].real);
+        });
 
     // Collapse to post-measurement state
     std::fill(rho.begin(), rho.end(), Complex128(0.0, 0.0));

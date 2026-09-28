@@ -35,5 +35,13 @@ namespace hw {
 // Detected once, cached thread-safely; subsequent calls are a load.
 std::size_t llc_bytes();
 
+// Memory the operating system reports it could hand out now without
+// swapping, in bytes, or 0 if unknown: Linux's MemAvailable (/proc/meminfo),
+// Windows' available physical memory, macOS's free and inactive pages. Read
+// afresh on every call, since it changes as the process and the machine
+// allocate; a caller deciding whether a buffer fits asks at the moment it
+// would allocate.
+std::size_t available_memory_bytes();
+
 }  // namespace hw
 }  // namespace lindblad

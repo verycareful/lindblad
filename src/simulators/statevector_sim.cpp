@@ -8,6 +8,12 @@
 // Commercial License Agreement with the Author.
 
 #include "lindblad/simulators/statevector_sim.hpp"
+#include "lindblad/detail/born_draw.hpp"
+#include "lindblad/detail/memory_budget.hpp"
+#include "lindblad/detail/thread_cap.hpp"
+#include "lindblad/detail/trivial_resets.hpp"
+#include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/gates.hpp"
 #include "lindblad/hw_info.hpp"
 #include "lindblad/operators.hpp"
@@ -15,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstring>
 #include <memory>
 #include <random>
 #include <stdexcept>
@@ -33,7 +40,8 @@ thread_local std::mt19937_64 sv_sim_rng{std::random_device{}()};
 
 // Forward declaration: shared Born-rule collapse helper (defined with the
 // trajectory helpers below; used by the MEASURE/RESET dispatch cases).
-static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng);
+static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng,
+                             const char* ctx);
 
 // =============================================================================
 // apply_instruction — dispatch to the appropriate gate function
@@ -124,13 +132,15 @@ void StatevectorSimulator::apply_instruction(Statevector& sv,
         // renormalise via the shared Born-rule helper (outcome recording
         // happens in the trajectory runner, which calls the helper directly).
         case GT::MEASURE:
-            sv_collapse_qubit(sv, q[0], sv_sim_rng);
+            sv_collapse_qubit(sv, q[0], sv_sim_rng,
+                              "StatevectorSimulator::apply_instruction");
             break;
 
         // RESET: measure the qubit, then apply X if the outcome was |1⟩ so
         // the post-state is |0⟩.
         case GT::RESET:
-            if (sv_collapse_qubit(sv, q[0], sv_sim_rng) == 1)
+            if (sv_collapse_qubit(sv, q[0], sv_sim_rng,
+                                  "StatevectorSimulator::apply_instruction") == 1)
                 gates::apply_x(sv, q[0]);
             break;
 
@@ -157,28 +167,42 @@ void StatevectorSimulator::apply_instruction(Statevector& sv,
 // passes iterate the two qubit-value halves as strided
 // blocks with branch-free inner loops and are OMP-gated at the same
 // dim >= 2^20 threshold as the gate kernels.
-static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng) {
+static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng,
+                             const char* ctx) {
     const size_t step = 1ULL << qubit;
     const size_t dim = sv.dim;
     const int n_blocks = static_cast<int>(dim / (2 * step));
     double* __restrict__ rp = sv.real_parts;
     double* __restrict__ ip = sv.imag_parts;
 
+    // Both halves are summed rather than taking the second as 1 - prob0, so the
+    // draw is from the state's own normalised distribution and a state with no
+    // norm is refused before the engine is touched.
     double prob0 = 0.0;
-    #pragma omp parallel for reduction(+:prob0) schedule(static) if(dim >= (1<<20))
+    double prob1 = 0.0;
+    #pragma omp parallel for reduction(+:prob0,prob1) schedule(static) if(dim >= (1<<20))
     for (int bi = 0; bi < n_blocks; ++bi) {
         const size_t base = static_cast<size_t>(bi) * 2 * step;
-        double acc = 0.0;
-        #pragma omp simd reduction(+:acc)
-        for (size_t j = 0; j < step; ++j)
-            acc += rp[base + j] * rp[base + j] + ip[base + j] * ip[base + j];
-        prob0 += acc;
+        double acc0 = 0.0;
+        double acc1 = 0.0;
+        #pragma omp simd reduction(+:acc0,acc1)
+        for (size_t j = 0; j < step; ++j) {
+            acc0 += rp[base + j] * rp[base + j] + ip[base + j] * ip[base + j];
+            acc1 += rp[base + step + j] * rp[base + step + j] +
+                    ip[base + step + j] * ip[base + step + j];
+        }
+        prob0 += acc0;
+        prob1 += acc1;
     }
+    const double total = prob0 + prob1;
+    detail::require_norm_to_sample(std::sqrt(total), ctx);
 
+    // prob0 / total is exactly 1 when prob1 is 0 and exactly 0 when prob0 is,
+    // so the draw never picks an outcome of weight zero and p_out is positive.
     std::uniform_real_distribution<double> udist(0.0, 1.0);
-    const int outcome = (udist(rng) < prob0) ? 0 : 1;
-    const double p_out = (outcome == 0) ? prob0 : (1.0 - prob0);
-    const double inv_norm = (p_out > 1e-15) ? 1.0 / std::sqrt(p_out) : 1.0;
+    const int outcome = (udist(rng) < prob0 / total) ? 0 : 1;
+    const double p_out = (outcome == 0) ? prob0 : prob1;
+    const double inv_norm = 1.0 / std::sqrt(p_out);
     const size_t keep_off = (outcome == 0) ? 0 : step;   // half that survives
     const size_t zero_off = step - keep_off;             // half that vanishes
 
@@ -202,6 +226,9 @@ static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng) {
 
 // Execute one trajectory: classical conditions are honoured against `clreg`,
 // MEASURE collapses the state and records its outcome into `clreg`.
+// first = the instruction to start from: 0, or the end of a prefix a snapshot
+// has already run.
+// ctx = the public entry point a refused collapse names.
 // runner = the run's observation harness, or null when nothing is watching.
 // An instruction that is skipped (a barrier, or a conditioned gate whose
 // condition does not hold) still fires its anchors: the anchor names a point
@@ -210,15 +237,17 @@ static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng) {
 static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
                               const QuantumCircuit& circuit,
                               std::vector<int>& clreg, int n_clbits,
-                              std::mt19937_64& rng,
+                              std::mt19937_64& rng, std::size_t first,
+                              const char* ctx,
                               detail::ObservationRunner* runner = nullptr) {
     using GT = Instruction::GateType;
 
     const StateView view(StateForm::Statevector, &sv, sv.n_qubits);
     if (runner) runner->at_start(view);
 
-    int index = -1;
-    for (const auto& inst : circuit.instructions) {
+    int index = static_cast<int>(first) - 1;
+    for (std::size_t i = first; i < circuit.instructions.size(); ++i) {
+        const Instruction& inst = circuit.instructions[i];
         ++index;
         if (runner) runner->before_instruction(index, inst, view);
 
@@ -233,7 +262,8 @@ static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
             if (inst.type == GT::MEASURE) {
                 const int qubit = inst.qubits[0];
                 const int clbit = inst.clbits.empty() ? -1 : inst.clbits[0];
-                const int outcome = sv_collapse_qubit(sv, qubit, rng);
+                const int outcome =
+                    sv_collapse_qubit(sv, qubit, rng, ctx);
                 if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
             } else {
                 sim.apply_instruction(sv, inst, {Validation::Ignore});
@@ -244,6 +274,24 @@ static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
     }
 
     if (runner) runner->at_end(view, index);
+}
+
+// One sample of the whole register from `sv`'s own normalised distribution,
+// qubit 0 the rightmost character. Refuses a state with no norm before the
+// draw.
+static std::string sv_sample_register(const Statevector& sv, std::mt19937_64& rng) {
+    const auto weight = [&sv](std::size_t i) {
+        return sv.real_parts[i] * sv.real_parts[i] + sv.imag_parts[i] * sv.imag_parts[i];
+    };
+    double total = 0.0;
+    for (std::size_t i = 0; i < sv.dim; ++i) total += weight(i);
+    detail::require_norm_to_sample(std::sqrt(total), "StatevectorSimulator::run");
+    std::uniform_real_distribution<double> udist(0.0, 1.0);
+    const std::size_t outcome = detail::born_draw_linear(sv.dim, total, udist(rng), weight);
+    std::string bits(static_cast<std::size_t>(sv.n_qubits), '0');
+    for (int q = 0; q < sv.n_qubits; ++q)
+        if ((outcome >> q) & 1u) bits[static_cast<std::size_t>(sv.n_qubits - 1 - q)] = '1';
+    return bits;
 }
 
 // True when no instruction (other than BARRIER) acts on a qubit after that
@@ -271,6 +319,8 @@ void StatevectorSimulator::simulate_circuit(
     Statevector& sv,
     const QuantumCircuit& circuit_in
 ) {
+    const detail::ScopedThreadCap threads(options.max_parallel_threads,
+                                          "StatevectorSimulator::simulate_circuit");
     // Trajectory semantics (docs/api/simulators.md, Execution semantics):
     // classical conditions are honoured against a local register and MEASURE
     // outcomes are recorded into it (collapse drawn from the thread-local
@@ -290,7 +340,8 @@ void StatevectorSimulator::simulate_circuit(
     const int n_clbits =
         circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
     std::vector<int> clreg(static_cast<size_t>(n_clbits), 0);
-    sv_run_trajectory(*this, sv, circuit, clreg, n_clbits, sv_sim_rng);
+    sv_run_trajectory(*this, sv, circuit, clreg, n_clbits, sv_sim_rng, 0,
+                      "StatevectorSimulator::simulate_circuit");
 }
 
 // =============================================================================
@@ -301,6 +352,8 @@ double StatevectorSimulator::eval_expectation(
     const QuantumCircuit& circuit,
     const SparsePauliOp& observable
 ) {
+    const detail::ScopedThreadCap threads(options.max_parallel_threads,
+                                          "StatevectorSimulator::eval_expectation");
     if (circuit.n_qubits < 1)
         throw std::invalid_argument(
             "StatevectorSimulator::eval_expectation: circuit must have at least 1 qubit");
@@ -525,9 +578,19 @@ StatevectorSimulator::Result StatevectorSimulator::run(
     Result result;
 
     try {
-        if (circuit_in.n_qubits < 1) {
-            throw std::invalid_argument("Circuit must have at least 1 qubit");
-        }
+        detail::check_circuit_has_qubits(circuit_in.n_qubits,
+                                         "StatevectorSimulator::run");
+        // Every parallel region of the run below takes Options::
+        // max_parallel_threads; the caller's own setting is back on return.
+        const detail::ScopedThreadCap threads(options.max_parallel_threads,
+                                              "StatevectorSimulator::run");
+        // A run holds two states at once: the working buffer and the copy
+        // returned in Result::final_state. A prefix snapshot, when taken, is
+        // released before that copy is made, so it does not raise the count.
+        detail::require_memory_budget(
+            detail::saturating_mul(2, detail::complex_bytes(
+                                          detail::pow2_saturating(circuit_in.n_qubits))),
+            options.max_memory_mb, "StatevectorSimulator::run");
         // Pre-flight: reject any out-of-range operand index up front so the
         // failure surfaces through Result rather than reaching a kernel.
         circuit_in.validate_operands();
@@ -623,8 +686,9 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         //      a qubit after it was measured): ONE forward pass, then sample
         //      outcomes from the final state with the qubit -> clbit map.
         //      O(gates + shots) instead of O(shots * gates).
-        //   2. Mid-circuit measurement or feedforward with shots > 0:
-        //      per-shot trajectories (each collapse drawn independently).
+        //   2. Mid-circuit measurement, feedforward, or a RESET that can
+        //      change the state, with shots > 0: per-shot trajectories (each
+        //      collapse drawn independently).
         //   3. Otherwise (shots == 0, or no measurements): a single seeded
         //      trajectory; conditions honoured, MEASURE outcomes recorded.
         bool has_measure = false;
@@ -634,27 +698,83 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             if (inst.type == Instruction::GateType::MEASURE) has_measure = true;
             if (inst.condition_clbit >= 0) has_condition = true;
         }
-        const bool terminal_only =
-            has_measure && !has_condition && sv_measures_are_terminal(circuit);
+        // A RESET collapses its qubit, and one pass would collapse it once for
+        // every shot. One on a qubit known to be |0> changes nothing and leaves
+        // the one-pass path open (detail::trivial_resets).
+        const bool has_reset = detail::has_nontrivial_reset(circuit, plan.initial);
+        const bool terminal_only = has_measure && !has_condition && !has_reset &&
+                                   sv_measures_are_terminal(circuit);
+        const bool per_shot =
+            shots > 0 && ((has_measure && !terminal_only) || has_reset);
 
-        if (shots > 0 && has_measure && !terminal_only) {
+        if (per_shot) {
             // Per-shot trajectories: re-initialise and re-simulate for every
-            // shot so each MEASURE collapses the state independently.
+            // shot so each collapse is drawn independently.
+            //
+            // The stretch before the first MEASURE, RESET or conditioned
+            // instruction is the same in every shot and draws nothing. When
+            // Options::prefix_reuse allows, an unobserved run of more than one
+            // shot runs it once into a snapshot every shot copies, and the
+            // seeded counts are those of a rerun. The snapshot lives only in
+            // this block, so it is gone before the result's copy is made.
             result.counts.clear();
             std::vector<int> clreg(n_clbits, 0);
             runner.begin_run(circuit.n_qubits, shots);
 
+            const std::uint64_t state_bytes = detail::complex_bytes(sv_work->dim);
+            const bool reuse =
+                !runner.active() && shots > 1 &&
+                detail::take_prefix_snapshot(options.prefix_reuse, state_bytes,
+                                             detail::saturating_mul(2, state_bytes),
+                                             options.max_memory_mb);
+            std::size_t prefix_end = 0;
+            std::unique_ptr<Statevector> snapshot;
+            if (reuse) {
+                using GT = Instruction::GateType;
+                while (prefix_end < exec->instructions.size()) {
+                    const Instruction& inst = exec->instructions[prefix_end];
+                    if (inst.type == GT::MEASURE || inst.type == GT::RESET ||
+                        inst.condition_clbit >= 0)
+                        break;
+                    if (inst.type != GT::BARRIER)
+                        apply_instruction(*sv_work, inst, {Validation::Ignore});
+                    ++prefix_end;
+                }
+                snapshot = std::make_unique<Statevector>(circuit.n_qubits);
+                std::memcpy(snapshot->real_parts, sv_work->real_parts,
+                            sv_work->dim * sizeof(double));
+                std::memcpy(snapshot->imag_parts, sv_work->imag_parts,
+                            sv_work->dim * sizeof(double));
+            }
+
             for (int shot = 0; shot < shots; ++shot) {
-                detail::apply_initial_state(plan, *sv_work);
+                if (snapshot) {
+                    std::memcpy(sv_work->real_parts, snapshot->real_parts,
+                                sv_work->dim * sizeof(double));
+                    std::memcpy(sv_work->imag_parts, snapshot->imag_parts,
+                                sv_work->dim * sizeof(double));
+                } else {
+                    detail::apply_initial_state(plan, *sv_work);
+                }
                 clreg.assign(n_clbits, 0);
                 runner.begin_shot(shot, clreg);
                 sv_run_trajectory(*this, *sv_work, *exec, clreg, n_clbits,
-                                  sv_sim_rng, runner.active() ? &runner : nullptr);
+                                  sv_sim_rng, prefix_end, "StatevectorSimulator::run",
+                                  runner.active() ? &runner : nullptr);
 
-                // Build bitstring: clbit 0 is LSB (rightmost), highest clbit is MSB.
-                std::string bits(n_clbits, '0');
-                for (int c = 0; c < n_clbits; ++c) {
-                    if (clreg[c]) bits[n_clbits - 1 - c] = '1';
+                std::string bits;
+                if (has_measure) {
+                    // Build bitstring: clbit 0 is LSB (rightmost), highest
+                    // clbit is MSB.
+                    bits.assign(static_cast<std::size_t>(n_clbits), '0');
+                    for (int c = 0; c < n_clbits; ++c) {
+                        if (clreg[c]) bits[n_clbits - 1 - c] = '1';
+                    }
+                } else {
+                    // No MEASURE: the shot is one sample of the whole register
+                    // from this trajectory's end state, as the single-pass
+                    // path samples a circuit with no MEASURE.
+                    bits = sv_sample_register(*sv_work, sv_sim_rng);
                 }
                 result.counts[bits]++;
             }
@@ -700,6 +820,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                      + sv_work->imag_parts[i] * sv_work->imag_parts[i];
                 cum[i] = acc;
             }
+            detail::require_norm_to_sample(std::sqrt(acc), "StatevectorSimulator::run");
             // Sample with the per-call RNG seeded above from {seed, tid}:
             // identical seeds on DIFFERENT threads stay statistically
             // independent (B9_StatevectorRngParallelIndependence, relied on
@@ -709,11 +830,8 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             // the same stream.
             std::uniform_real_distribution<double> udist(0.0, 1.0);
             for (int s = 0; s < shots; ++s) {
-                const double r = udist(sv_sim_rng);
-                auto it = std::lower_bound(cum.begin(), cum.end(), r);
-                size_t outcome = static_cast<size_t>(
-                    std::distance(cum.begin(), it));
-                if (outcome >= sv_work->dim) outcome = sv_work->dim - 1;
+                const size_t outcome =
+                    detail::born_draw_cumulative(cum, udist(sv_sim_rng));
 
                 std::string bits(n_clbits, '0');
                 for (const auto& [q, c] : meas) {
@@ -729,7 +847,8 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             runner.begin_run(circuit.n_qubits, 1);
             runner.begin_shot(0, clreg);
             sv_run_trajectory(*this, *sv_work, *exec, clreg, n_clbits,
-                              sv_sim_rng, runner.active() ? &runner : nullptr);
+                              sv_sim_rng, 0, "StatevectorSimulator::run",
+                              runner.active() ? &runner : nullptr);
             if (shots > 0) {
                 result.counts = sv_work->sample_counts(shots, seed);
             }

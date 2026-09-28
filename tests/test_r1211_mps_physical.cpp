@@ -251,10 +251,10 @@ TEST(R1211MpsGate2q, IgnoreStillAppliesTheGate) {
 // =============================================================================
 
 TEST(R1211MpsStandardGates, LibraryBuiltGatesRunUnderTheDefaultPolicy) {
-    // The gate2x2 and gate4x4 builders pass Ignore: those matrices are the
-    // library's own arithmetic, not a caller's declaration. A circuit of named
-    // gates must therefore run clean under the strictest policy, and warn
-    // about nothing.
+    // The gate2x2 and gate4x4 builders' matrices go to the chain as unitary and
+    // unjudged: they are the library's own arithmetic, not a caller's
+    // declaration. A circuit of named gates must therefore run clean under the
+    // strictest policy, and warn about nothing.
     //
     // This is built up one gate at a time and each prefix is run, so a failure
     // names the exact gate that introduces it rather than only the whole

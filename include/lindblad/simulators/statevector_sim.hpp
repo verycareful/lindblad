@@ -33,8 +33,24 @@ namespace lindblad {
 class StatevectorSimulator {
 public:
     struct Options {
-        int max_parallel_threads = 0;  // 0 = auto (all cores)
-        uint64_t max_memory_mb = 0;    // 0 = auto
+        // The most OpenMP threads any parallel region of run(),
+        // simulate_circuit() or eval_expectation() may use; 0 leaves OpenMP's
+        // own choice (OMP_NUM_THREADS, else every core). The caller's setting
+        // is restored when the call returns. apply_instruction, a one-gate
+        // primitive, runs under the caller's setting. Negative values are
+        // refused.
+        int max_parallel_threads = 0;
+        // The most memory the caller gives a run, in MiB (2^20 bytes); 0 = no
+        // limit. It caps the states a run holds at once, which for this
+        // simulator is always two (the working buffer and the copy returned in
+        // Result::final_state): a run needing more is refused up front,
+        // through Result, before anything is allocated.
+        uint64_t max_memory_mb = 0;
+        // Whether a per-shot run keeps a snapshot of the stretch before its
+        // first MEASURE, RESET or conditioned instruction; see PrefixReuse in
+        // types.hpp. The snapshot is released before the result's copy is
+        // made, so here it never raises the two-state peak.
+        PrefixReuse prefix_reuse = PrefixReuse::Hardware;
         int precision = 64;            // 32 or 64 bit
         bool zero_threshold = true;
         double threshold = 1e-10;

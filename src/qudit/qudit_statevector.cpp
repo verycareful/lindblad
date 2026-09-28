@@ -10,6 +10,7 @@
 #include "lindblad/qudit/qudit_statevector.hpp"
 
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/born_draw.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 
 #include <algorithm>
@@ -410,23 +411,22 @@ void QuditStatevector::apply_phase_oracle(
 // measure — sample one outcome from |amplitude[i]|^2
 // ---------------------------------------------------------------------------
 
+// Draws from |a_i|^2 / total, the state's own normalised distribution
+// (detail::born_draw_linear), and refuses a state with no norm before drawing.
 std::vector<int> QuditStatevector::measure(uint64_t seed) const {
+    const auto weight = [this](size_t i) {
+        return amplitudes[i].real * amplitudes[i].real +
+               amplitudes[i].imag * amplitudes[i].imag;
+    };
+    double total = 0.0;
+    for (size_t i = 0; i < dim; ++i) total += weight(i);
+    detail::require_norm_to_sample(std::sqrt(total), "QuditStatevector::measure");
+
     std::mt19937_64 rng(seed == 0
         ? static_cast<uint64_t>(std::random_device{}())
         : seed);
     std::uniform_real_distribution<double> udist(0.0, 1.0);
-
-    const double roll = udist(rng);
-    double cumulative = 0.0;
-    size_t chosen = dim - 1;  // fallback for floating-point rounding at tail
-    for (size_t i = 0; i < dim; ++i) {
-        cumulative += amplitudes[i].real * amplitudes[i].real
-                    + amplitudes[i].imag * amplitudes[i].imag;
-        if (roll <= cumulative) {
-            chosen = i;
-            break;
-        }
-    }
+    const size_t chosen = detail::born_draw_linear(dim, total, udist(rng), weight);
 
     return index_to_digits(chosen, d, n_qudits);
 }

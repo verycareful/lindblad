@@ -419,7 +419,9 @@ If RX commutes with both H gates:
 
 ### RemoveResetInZeroState
 
-**Behavior**: Remove RESET instructions on qubits already in state $|0\rangle$ (at circuit start or after prior RESET).
+**Behavior**: Remove each RESET on a qubit known to be in $|0\rangle$. A qubit is known $|0\rangle$ from the start of the circuit until an instruction acts on it, and after an unconditioned RESET. A conditioned RESET leaves it known only if it already was, since the condition may not hold.
+
+The pass sees the circuit alone and takes every qubit to start in $|0\rangle$. A circuit that will run from a supplied initial state (`RunPlan::initial`) must not be given it: a RESET at its top acts on the supplied state. No preset level includes the pass for that reason. The simulators apply the same rule at run time, knowing the state the run starts from, so a RESET that cannot change the state never costs a circuit its single-pass sampling. Compose the pass by hand when exporting a circuit that will start in $|0\rangle$, where it saves the device a reset.
 
 **Complexity**: $O(n)$ single pass with qubit state tracking
 
@@ -509,7 +511,7 @@ Stage 1 — layout + routing:
 
 Stage 2 — optimisation:
 - Level 0: none
-- Level 1: `RemoveResetInZeroState` → `Optimize1qGates` → `CXCancellation` → `RemoveDiagonalGatesBeforeMeasure`
+- Level 1: `Optimize1qGates` → `CXCancellation` → `RemoveDiagonalGatesBeforeMeasure`
 - Level 2: level-1 chain with `CommutativeCancellation` inserted before the diagonal removal
 - Level 3: level-2 chain, then `ConsolidateBlocks` (KAK) followed by a second cleanup sweep (`Optimize1qGates` → `CXCancellation` → `CommutativeCancellation` → `RemoveDiagonalGatesBeforeMeasure`)
 

@@ -31,6 +31,7 @@ class QuantumCircuit;
 
 namespace detail {
 struct SvdTruncation;
+struct MPSDispatch;
 }
 
 // =============================================================================
@@ -56,8 +57,8 @@ struct MPSTensor {
     }
 };
 
-// SVDMethod (BDC default, Jacobi selectable), CanonicalForm and
-// MPS_DEFAULT_CUTOFF are declared in types.hpp so the qubit and qudit MPS
+// SVDMethod (BDC default, Jacobi selectable), CanonicalForm, UncheckedGates
+// and MPS_DEFAULT_CUTOFF are declared in types.hpp so the qubit and qudit MPS
 // layers share them.
 
 // =============================================================================
@@ -105,6 +106,10 @@ public:
     // Always by default; the two policies and what each costs are with the
     // enum in types.hpp.
     CanonicalForm canonical_form = CanonicalForm::Always;
+    // Whether a gate no policy measured (Ignore with Repair::None) is measured
+    // for this chain's own records anyway. Track by default; the two settings
+    // and what each keeps are with the enum in types.hpp.
+    UncheckedGates unchecked_gates = UncheckedGates::Track;
 
 public:
     // cutoff defaults to MPS_DEFAULT_CUTOFF (types.hpp), at which a split
@@ -156,14 +161,20 @@ public:
     // of q2, so q1 is the least significant. A CX with its control on q1 is
     // therefore nonzero at (0,0), (1,3), (2,2) and (3,1).
     //
-    // A single-qubit gate leaves open_span() as it is: a unitary acting on the
-    // physical index preserves both orthonormalities. (A matrix accepted under
-    // Validation::Ignore that is not unitary breaks that, as it breaks the
-    // state's norm.) A two-qubit gate on an adjacent pair contracts the pair,
-    // applies U and splits the block by truncated SVD, moving the centre onto
-    // the pair first when canonical_form calls for it. A non-adjacent pair is
-    // brought together by a SWAP chain whose splits follow the same rule, each
-    // leaving the centre where the next one starts.
+    // A single-qubit gate leaves open_span() as it is when U is unitary: a
+    // unitary acting on the physical index preserves both orthonormalities. A
+    // two-qubit gate on an adjacent pair contracts the pair, applies U and
+    // splits the block by truncated SVD, moving the centre onto the pair first
+    // when canonical_form calls for it. A non-adjacent pair is brought together
+    // by a SWAP chain whose splits follow the same rule, each leaving the
+    // centre where the next one starts.
+    //
+    // Either gate applies U exactly as given, whatever its unitarity. When U
+    // is not unitary to DEFAULT_PHYSICAL_ATOL (known from the policy's own
+    // measurement, or from one taken for the chain's records as
+    // unchecked_gates says), a single-qubit gate on a site outside the open
+    // span widens the span over that site, and either gate empties the
+    // fidelity figures. Nothing is reported.
     void apply_single_qubit_gate(
         const std::array<Complex128, 4>& U, int qubit,
         ValidationOptions validation = {}
@@ -206,9 +217,10 @@ public:
     //
     // Both read 1 on a new chain and after set_tensors(). Both are EMPTY once a
     // measurement or reset has collapsed the chain (measure_qubit,
-    // measure_sequential, or a MEASURE or RESET in a run) and stay empty:
-    // projection renormalises the exact and the truncated state by different
-    // factors. rebuild_from_statevector's splits count like any other.
+    // measure_sequential, or a MEASURE or RESET in a run), or once a gate that
+    // is not unitary has been applied, and stay empty: projection renormalises
+    // the exact and the truncated state by different factors, and the bound is
+    // derived for unitary gates between splits. rebuild_from_statevector's splits count like any other.
     // absorb_profile does not fold them, because they describe these tensors'
     // own history rather than a run's splits.
     std::optional<double> fidelity_estimate() const noexcept {
@@ -268,9 +280,10 @@ public:
     // the Gram rung.
     //
     // On a chain MPSSimulator::run returns, every figure here covers every
-    // split of the run on every path, the per-shot trajectories included: a
-    // run that re-simulates per shot returns the last trajectory's tensors
-    // carrying the totals of all of them (see absorb_profile).
+    // split the run performed on every path, the per-shot trajectories
+    // included: a run that re-simulates per shot returns the last trajectory's
+    // tensors carrying the totals of all of them, and of the shared start an
+    // unobserved run of several shots computes once (see absorb_profile).
     std::size_t jacobi_rescue_count() const { return jacobi_rescues; }
     std::size_t gram_fallback_count() const { return gram_fallbacks; }
     double floor_rejected_weight() const { return floor_rejected; }
@@ -314,7 +327,8 @@ public:
     // are untouched, so this is how a chain comes to report splits it did not
     // itself perform. MPSSimulator::run uses it on the per-shot path, where
     // every trajectory runs on a chain of its own and the returned one carries
-    // their sum. truncation_error() after absorbing is everything the run
+    // their sum, plus the shared start's once when the run computed one.
+    // truncation_error() after absorbing is everything the run
     // discarded, consistent with the accumulate-rather-than-reset contract
     // above, and is not the returned tensors' own history.
     void absorb_profile(const MPSState& other);
@@ -333,6 +347,11 @@ public:
     // its marginals are local and the collapse renormalises that site alone;
     // afterwards the state has unit norm and open_span() is {qubit, qubit}.
     // Draws one uniform from `rng`. The fidelity figures become empty.
+    //
+    // The outcome is drawn from the qubit's marginals divided by their sum, the
+    // chain's own normalised distribution. A chain with no norm, zero or
+    // non-finite, is refused with std::runtime_error before the draw, so `rng`
+    // is left as it was.
     int measure_qubit(int qubit, std::mt19937_64& rng);
 
     // Sequential measurement: sample a full bitstring respecting correlations,
@@ -340,7 +359,8 @@ public:
     // qubit in turn is measured at the centre, collapsed, and the centre
     // stepped right by one QR, O(N * chi^3) per call with no environments.
     // Qubit 0 is the rightmost character. Draws one uniform per qubit. The
-    // fidelity figures become empty.
+    // fidelity figures become empty. A chain with no norm is refused, as by
+    // measure_qubit, before the first draw.
     std::string measure_sequential(std::mt19937_64& rng);
 
     // Convert to exact statevector (expensive, for small N only)
@@ -369,6 +389,11 @@ public:
     void rebuild_from_statevector(const Statevector& sv);
 
 private:
+    // run()'s instruction dispatcher applies gates it built itself, unitary by
+    // construction, through gate_one_site and gate_two_site without measuring
+    // them, and a circuit's own matrices under that instruction's policy.
+    friend struct detail::MPSDispatch;
+
     std::vector<MPSTensor> tensors_;
     // The open span; see the class comment. {0, -1} when there are no sites.
     int span_lo = 0;
@@ -428,6 +453,17 @@ private:
     // raw marginal `p_outcome` so the state leaves with unit norm.
     void collapse_centre(int site, int outcome, double p_outcome);
 
+    // The gates after validation, given whether U is unitary to
+    // DEFAULT_PHYSICAL_ATOL. gate_one_site applies U to the site and, when it
+    // is not unitary, widens the open span over a site outside it and empties
+    // the fidelity figures. gate_two_site takes U LSB-first, as the public
+    // entry does, and empties the figures when it is not unitary; its splits
+    // leave the gauge sound whatever U was.
+    void gate_one_site(const std::array<Complex128, 4>& U, int qubit,
+                       bool unitary);
+    void gate_two_site(const std::array<Complex128, 16>& U, int q1, int q2,
+                       bool unitary);
+
     // apply_two_qubit_gate with U already in the MSB-first order the two-site
     // contraction reads (bit 1 = q1, bit 0 = q2): orders the pair, runs the
     // SWAP chain, applies. The public entry converts to this order once.
@@ -457,10 +493,12 @@ public:
     // them the choices are reachable only by driving MPSState directly, since
     // run() constructs its own chain and a chain built inside a call cannot be
     // configured from outside it. Meaning of each: MPSState::svd_method,
-    // MPSState::svd_rescue and MPSState::canonical_form.
+    // MPSState::svd_rescue, MPSState::canonical_form and
+    // MPSState::unchecked_gates.
     SVDMethod svd_method = SVDMethod::BDC;
     bool svd_rescue = true;
     CanonicalForm canonical_form = CanonicalForm::Always;
+    UncheckedGates unchecked_gates = UncheckedGates::Track;
 
     struct Result {
         MPSState final_state;

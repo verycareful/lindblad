@@ -8,6 +8,7 @@
 // Commercial License Agreement with the Author.
 
 #include "lindblad/statevector.hpp"
+#include "lindblad/detail/born_draw.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 
 #include <algorithm>
@@ -290,22 +291,22 @@ Complex128 Statevector::inner_product(const Statevector& other) const {
 // Measurement sampling
 // =============================================================================
 
+// Both samplers draw from |a_i|^2 / total, the state's own normalised
+// distribution (detail::born_draw_*), and refuse a state with no norm before
+// drawing.
+
 std::string Statevector::measure_once(uint64_t seed) const {
+    double total = 0.0;
+    for (size_t i = 0; i < dim; ++i)
+        total += real_parts[i] * real_parts[i] + imag_parts[i] * imag_parts[i];
+    detail::require_norm_to_sample(std::sqrt(total), "Statevector::measure_once");
+
     std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
     std::uniform_real_distribution<double> dist(0.0, 1.0);
-    double r = dist(rng);
-
-    double cumulative = 0.0;
-    size_t outcome = dim - 1;  // fallback
-
-    for (size_t i = 0; i < dim; ++i) {
-        cumulative += real_parts[i] * real_parts[i] +
-                      imag_parts[i] * imag_parts[i];
-        if (r < cumulative) {
-            outcome = i;
-            break;
-        }
-    }
+    const size_t outcome = detail::born_draw_linear(
+        dim, total, dist(rng), [this](size_t i) {
+            return real_parts[i] * real_parts[i] + imag_parts[i] * imag_parts[i];
+        });
 
     // Convert to bitstring (MSB first)
     std::string bits(n_qubits, '0');
@@ -321,8 +322,6 @@ std::unordered_map<std::string, int> Statevector::sample_counts(
     int shots, uint64_t seed
 ) const {
     std::unordered_map<std::string, int> counts;
-    std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
-    std::uniform_real_distribution<double> dist(0.0, 1.0);
 
     // Precompute cumulative probabilities
     std::vector<double> cum_probs(dim);
@@ -332,13 +331,13 @@ std::unordered_map<std::string, int> Statevector::sample_counts(
                         real_parts[i] * real_parts[i] +
                         imag_parts[i] * imag_parts[i];
     }
+    const double total = cum_probs[dim - 1];
+    detail::require_norm_to_sample(std::sqrt(total), "Statevector::sample_counts");
 
+    std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
+    std::uniform_real_distribution<double> dist(0.0, 1.0);
     for (int s = 0; s < shots; ++s) {
-        double r = dist(rng);
-        // Binary search for the outcome
-        auto it = std::lower_bound(cum_probs.begin(), cum_probs.end(), r);
-        size_t outcome = static_cast<size_t>(std::distance(cum_probs.begin(), it));
-        if (outcome >= dim) outcome = dim - 1;
+        const size_t outcome = detail::born_draw_cumulative(cum_probs, dist(rng));
 
         // Convert to bitstring
         std::string bits(n_qubits, '0');

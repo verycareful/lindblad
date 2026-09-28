@@ -197,8 +197,12 @@ std::vector<int> measure(uint64_t seed = 0);
 QuditDensityMatrix partial_trace(const std::vector<int>& keep_qudits) const;
 ```
 
-`measure` samples from the diagonal probabilities, collapses ρ to the
-post-measurement pure state, and returns per-qudit digits.
+`measure` samples from the diagonal probabilities divided by their own total,
+collapses ρ to the post-measurement pure state, and returns per-qudit digits.
+Negative diagonal entries (a ρ that is not positive) count as zero. A ρ with no
+trace, zero, negative or non-finite, throws `std::runtime_error` before
+anything is drawn; the trace is judged on the raw diagonal, so a NaN is not
+hidden by the clamp.
 
 `partial_trace` traces out all qudits not in `keep_qudits`. Throws
 `std::invalid_argument` if `keep_qudits` is empty.
@@ -262,6 +266,14 @@ counters and fidelity figures. `MPS_DEFAULT_CUTOFF` (`1e-16`) is declared in
   bond cap can bind or the cutoff is above `MPS_DEFAULT_CUTOFF`, which skips QR
   steps but can keep wider bonds than the state needs. Same meaning as the qubit
   `MPSState::canonical_form`; declared in `lindblad/types.hpp`
+- `unchecked_gates` (`UncheckedGates`, default `Track`): whether a gate applied
+  under `Ignore` with `Repair::None` is measured for the chain's own records
+  anyway. A gate that is not unitary widens the open span over its site (when
+  `apply_1qudit` acts outside it) and empties the fidelity figures; the matrix
+  is applied as given either way. `AssumeUnitary` measures nothing. Same
+  meaning as the qubit `MPSState::unchecked_gates`, described under
+  [Unchecked Gates](simulators.md#unchecked-gates); declared in
+  `lindblad/types.hpp`
 
 ### Chain access and canonical form
 
@@ -304,8 +316,9 @@ Non-adjacent two-qudit gates (`apply_2qudit`) are handled via a SWAP chain:
 the sites are brought adjacent, the gate is applied, and the SWAPs are reversed.
 Each split sends its singular values toward the next block, so when splits move
 the centre it is already in place at each step. `apply_1qudit` leaves the open
-span as it is, since a unitary on the physical index preserves both
-orthonormalities.
+span as it is when its matrix is unitary, since a unitary on the physical index
+preserves both orthonormalities; a matrix that is not unitary widens the span
+over a site outside it (see `unchecked_gates` above).
 
 ```cpp
 void apply_phase_oracle(
@@ -355,7 +368,10 @@ expensive of any state type in the library.
 length-`n_qudits` vector of digits. It moves the centre to qudit 0, where every
 other site is right-orthonormal, then draws the digits left to right carrying a
 vector on the bond: `O(n · d · χ²)`, memory bounded by the bond dimension, and
-the state and the fidelity figures unchanged. `seed == 0` draws a seed from
+the state and the fidelity figures unchanged. Each digit is drawn from its
+marginals divided by their sum, the chain's own normalised distribution, and a
+digit of weight zero is never drawn. A chain with no norm throws
+`std::runtime_error` before the first draw. `seed == 0` draws a seed from
 `std::random_device`. The phase/function oracles still use the dense
 `to_statevector()` fallback (a separate, documented limitation).
 
@@ -363,8 +379,10 @@ the state and the fidelity figures unchanged. `seed == 0` draws a seed from
 outcome, returned as a digit in `[0, d)`. The centre moves to the qudit first,
 so the marginals are the squared norms of its site's `d` physical slices, and
 the collapse zeroes the other slices and divides the chosen one by the square
-root of its marginal, leaving unit norm with `open_span()` at `{q, q}`. One
-uniform is drawn from `rng` on every call. The fidelity figures become empty.
+root of its marginal, leaving unit norm with `open_span()` at `{q, q}`. The
+draw is from the chain's own normalised distribution, as in `measure`. A chain
+with no norm throws `std::runtime_error` before anything is drawn; otherwise
+exactly one uniform is drawn from `rng`. The fidelity figures become empty.
 
 `left_canonicalize()` moves the centre to site 0 and then sweeps right by
 truncated SVD: each site becomes the left-orthonormal `U` and `S V†` is absorbed

@@ -16,12 +16,17 @@
 //   effect and can be removed. Pure performance win — no semantic change.
 //
 // RemoveResetInZeroState:
-//   Track which qubits are known to be in |0⟩ (at circuit start, or after
-//   a RESET). Remove RESET instructions on qubits already in |0⟩.
+//   Remove each RESET on a qubit known to be in |0⟩, the rule in
+//   detail/trivial_resets.hpp that the simulators apply at run time: a qubit
+//   is known |0⟩ from the start until something acts on it, and after an
+//   unconditioned RESET; a conditioned RESET leaves it known only if it
+//   already was, since it may not run. The pass sees the circuit alone and
+//   takes every qubit to start at |0⟩, so a circuit to be run from a supplied
+//   initial state must not be given it; no preset level includes it.
 
 #include "lindblad/transpiler.hpp"
+#include "lindblad/detail/trivial_resets.hpp"
 
-#include <unordered_set>
 #include <vector>
 
 namespace lindblad {
@@ -114,34 +119,10 @@ DAGCircuit RemoveResetInZeroState::run(
     QuantumCircuit qc = dag.to_circuit();
     QuantumCircuit optimized(qc.n_qubits, qc.n_clbits);
 
-    // Track which qubits are known to be |0⟩
-    // All qubits start in |0⟩ state
-    std::unordered_set<int> known_zero;
-    for (int q = 0; q < qc.n_qubits; ++q) {
-        known_zero.insert(q);
-    }
-
-    for (const auto& inst : qc.instructions) {
-        if (inst.type == Instruction::GateType::RESET) {
-            int q = inst.qubits[0];
-            if (known_zero.count(q)) {
-                // Already |0⟩, skip the reset
-                continue;
-            }
-            // After reset, qubit is |0⟩
-            known_zero.insert(q);
-            optimized.instructions.push_back(inst);
-        } else {
-            // Any gate on a qubit makes it no longer known-zero
-            // (except BARRIER which is a no-op)
-            if (inst.type != Instruction::GateType::BARRIER) {
-                for (int q : inst.qubits) {
-                    known_zero.erase(q);
-                }
-            }
-            optimized.instructions.push_back(inst);
-        }
-    }
+    const std::vector<bool> trivial = detail::trivial_resets(
+        qc, std::vector<bool>(static_cast<std::size_t>(qc.n_qubits), true));
+    for (std::size_t i = 0; i < qc.instructions.size(); ++i)
+        if (!trivial[i]) optimized.instructions.push_back(qc.instructions[i]);
 
     return DAGCircuit::from_circuit(optimized);
 }

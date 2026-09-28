@@ -108,7 +108,7 @@ garbage instead of a state, and handing back an unnormalized state from a call
 named `normalize` would tell the caller nothing.
 | `apply_1qudit(q, U)` | Apply a d × d row-major gate `U` to qudit `q` |
 | `apply_2qudit(q0, q1, U)` | Apply a d² × d² row-major gate `U` to qudits `(q0, q1)`, `q0 != q1` |
-| `measure(seed)` | Sample one outcome; returns a length-`n_qudits` vector of digits in `{0..d-1}` |
+| `measure(seed)` | Sample one outcome from the state's own normalised distribution; returns a length-`n_qudits` vector of digits in `{0..d-1}`. A state with no norm throws `std::runtime_error` |
 
 `apply_2qudit` uses the row index convention `r = new_q0 · d + new_q1` and
 column index `c = old_q0 · d + old_q1`. Throws `std::invalid_argument` if

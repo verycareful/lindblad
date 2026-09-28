@@ -138,6 +138,16 @@ inline void check_require(bool ok, const char* ctx, const std::string& msg) {
     if (!ok) throw_structure(ctx, msg);
 }
 
+// A circuit a simulator runs must have a qubit. A register of none has one
+// state and one outcome, so a run of it computes nothing a caller could want,
+// and every run() refuses it with this one wording, at every shot count,
+// before it touches any state.
+inline void check_circuit_has_qubits(int n_qubits, const char* ctx) {
+    check_require(n_qubits >= 1, ctx,
+                  "the circuit must have at least 1 qubit (got " +
+                      std::to_string(n_qubits) + ")");
+}
+
 // A channel must supply at least one Kraus operator.
 //
 // This is structural rather than physical, and so is checked here rather than

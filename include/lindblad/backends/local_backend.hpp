@@ -50,6 +50,8 @@ public:
 
     struct Config {
         SimType simulator = SimType::AUTO;
+        // The most OpenMP threads the run may use on whichever backend it
+        // reaches; 0 leaves OpenMP's own choice. Restored on return.
         int max_parallel_threads = 0;
         uint64_t max_memory_mb = 0;
         int mps_bond_dim = 64;

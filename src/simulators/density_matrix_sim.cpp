@@ -16,6 +16,8 @@
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/circuit.hpp"
 #include "lindblad/detail/pauli_rules.hpp"
+#include "lindblad/detail/born_draw.hpp"
+#include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/noise.hpp"
@@ -27,6 +29,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <memory>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -862,6 +865,13 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
     Result result;
 
     try {
+        detail::check_circuit_has_qubits(circuit_in.n_qubits,
+                                         "DensityMatrixSimulator::run");
+        // A run holds one density matrix; a prefix snapshot, when taken, is
+        // judged on its own below.
+        detail::require_memory_budget(
+            detail::complex_bytes(detail::pow2_saturating(2 * circuit_in.n_qubits)),
+            options.max_memory_mb, "DensityMatrixSimulator::run");
         auto t_start = std::chrono::high_resolution_clock::now();
 
         // Pre-flight: reject any out-of-range operand index up front so the
@@ -1082,13 +1092,43 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             const StateView view(StateForm::DensityMatrix, &dm, circuit.n_qubits);
             runner.begin_run(circuit.n_qubits, n_shots);
 
-            for (int shot = 0; shot < n_shots; ++shot) {
+            // The stretch before the first MEASURE or conditioned instruction
+            // is the same in every shot and draws nothing (RESET and noise are
+            // channels here). When Options::prefix_reuse allows, an unobserved
+            // run of more than one shot runs it once into a snapshot every
+            // shot copies, and the seeded counts are those of a rerun. The
+            // snapshot is a second density matrix for the length of the loop.
+            const std::uint64_t matrix_bytes = detail::complex_bytes(dm.data.size());
+            const bool reuse =
+                !watcher && n_shots > 1 &&
+                detail::take_prefix_snapshot(options.prefix_reuse, matrix_bytes,
+                                             detail::saturating_mul(2, matrix_bytes),
+                                             options.max_memory_mb);
+            std::size_t prefix_end = 0;
+            std::unique_ptr<DensityMatrix> snapshot;
+            if (reuse) {
                 detail::apply_initial_state(plan, dm);
+                using GT = Instruction::GateType;
+                while (prefix_end < n_inst) {
+                    const auto& inst = circuit.instructions[prefix_end];
+                    if (inst.type == GT::MEASURE || inst.condition_clbit >= 0) break;
+                    if (inst.type != GT::BARRIER) apply_inst(dm, prefix_end);
+                    ++prefix_end;
+                }
+                snapshot = std::make_unique<DensityMatrix>(dm);
+            }
+
+            for (int shot = 0; shot < n_shots; ++shot) {
+                if (snapshot) {
+                    dm = *snapshot;
+                } else {
+                    detail::apply_initial_state(plan, dm);
+                }
                 clreg.assign(n_clbits, 0);
                 runner.begin_shot(shot, clreg);
                 if (watcher) watcher->at_start(view);
 
-                for (size_t ii = 0; ii < n_inst; ++ii) {
+                for (size_t ii = prefix_end; ii < n_inst; ++ii) {
                     const auto& inst = circuit.instructions[ii];
                     using GT = Instruction::GateType;
                     if (watcher) {
@@ -1108,16 +1148,30 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                         const int qubit = inst.qubits[0];
                         const int clbit = inst.clbits.empty() ? qubit : inst.clbits[0];
 
-                        // P(qubit=0) = sum of diagonal elements with qubit bit = 0
+                        // The diagonal's two halves, qubit bit 0 and bit 1.
+                        // Their raw sum is the trace, judged before the draw
+                        // as normalize() judges it, so a state with no trace
+                        // is refused with the engine untouched. Each half is
+                        // then clamped at 0, which only raises the total, and
+                        // the draw divides by that total: prob0 / total is
+                        // exactly 1 or 0 when the other half is empty, so an
+                        // outcome of weight zero is never drawn and p_out is
+                        // positive.
                         double prob0 = 0.0;
+                        double prob1 = 0.0;
                         for (size_t i = 0; i < dm.dim; ++i) {
-                            if (!((i >> qubit) & 1))
-                                prob0 += dm.data[i * dm.dim + i].real;
+                            const double w = dm.data[i * dm.dim + i].real;
+                            if ((i >> qubit) & 1) prob1 += w;
+                            else                  prob0 += w;
                         }
-                        prob0 = std::max(0.0, std::min(1.0, prob0));
+                        detail::require_norm_to_sample(prob0 + prob1,
+                                                       "DensityMatrixSimulator::run");
+                        prob0 = std::max(0.0, prob0);
+                        prob1 = std::max(0.0, prob1);
+                        const double total = prob0 + prob1;
 
-                        const int outcome = (udist(rng) < prob0) ? 0 : 1;
-                        const double p_out = (outcome == 0) ? prob0 : (1.0 - prob0);
+                        const int outcome = (udist(rng) < prob0 / total) ? 0 : 1;
+                        const double p_out = (outcome == 0) ? prob0 : prob1;
 
                         // Project: zero out rho_{ij} where qubit bit of i or j != outcome
                         for (size_t i = 0; i < dm.dim; ++i) {
@@ -1129,10 +1183,8 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                             }
                         }
                         // Renormalize
-                        if (p_out > 1e-15) {
-                            const double inv_p = 1.0 / p_out;
-                            for (auto& v : dm.data) { v.real *= inv_p; v.imag *= inv_p; }
-                        }
+                        const double inv_p = 1.0 / p_out;
+                        for (auto& v : dm.data) { v.real *= inv_p; v.imag *= inv_p; }
 
                         // Readout error (issue #33): flip the RECORDED value
                         // with the qubit's confusion probability. The state
@@ -1211,6 +1263,10 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                                           inst.clbits.empty() ? inst.qubits[0]
                                                               : inst.clbits[0]);
 
+                // The trace is judged on the raw diagonal, before
+                // probabilities() clamps each entry at 0, since the clamp
+                // would turn a NaN into a zero and hide it.
+                detail::require_norm_to_sample(dm.trace(), "DensityMatrixSimulator::run");
                 auto probs = dm.probabilities();
                 // Build cumulative probability array and sample via binary search —
                 // avoids the O(2^N) alias table built by std::discrete_distribution.
@@ -1221,10 +1277,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 std::uniform_real_distribution<double> udist(0.0, 1.0);
 
                 for (int s = 0; s < shots; ++s) {
-                    double r = udist(rng);
-                    auto it = std::lower_bound(cum.begin(), cum.end(), r);
-                    size_t outcome = static_cast<size_t>(std::distance(cum.begin(), it));
-                    if (outcome >= dm.dim) outcome = dm.dim - 1;
+                    const size_t outcome = detail::born_draw_cumulative(cum, udist(rng));
 
                     if (meas.empty()) {
                         std::string bits(circuit.n_qubits, '0');

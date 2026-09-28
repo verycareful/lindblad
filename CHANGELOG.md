@@ -4,6 +4,197 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.30.2] - 2026-09-28
+
+The patch for the ten tests 1.1.30.1 shipped red, and for what fixing them
+turned up. Every sampler and collapse draws from the state's own normalised
+distribution and refuses a state with no norm. A RESET is a collapse in every
+shot. An MPS chain keeps its reads and its fidelity figures right after a gate
+that is not unitary. Every simulator refuses a circuit with no qubits, and
+`QuditMPS::apply_2qudit` judges a reversed pair once. Two options that were
+documented and never read, `max_memory_mb` and `max_parallel_threads`, now do
+what their documentation says. The Clifford simulator's answer for a circuit
+with no MEASURE, and the transpiler's level 1 pipeline, change. All ten tests
+listed under 1.1.30.1's Known red pass, and nothing ships red.
+
+### Fixed
+
+- **Every dense sampler divides by the state's own total.**
+  `Statevector::sample_counts` and `measure_once`, the statevector
+  simulator's terminal sampling, the density-matrix simulator's sampling,
+  `QuditStatevector::measure` and `QuditDensityMatrix::measure` all assumed
+  their weights summed to 1 and gave the missing weight to the last outcome. On
+  a truncated chain sampled through the dense path that put 22.6% of the shots
+  on an outcome of probability zero. Each outcome is now drawn with probability
+  weight / total, the rule the MPS samplers already followed, and no draw can
+  select an outcome of weight zero: the old search could, for a draw of exactly
+  0 or one landing on a boundary.
+- **The dense collapses sum both halves.** The statevector and density-matrix
+  simulators' MEASURE and RESET took the probability of 1 as 1 - p0, so a short
+  state could collapse onto an outcome of weight zero and be left with no norm,
+  and they skipped renormalising below a hand-typed 1e-15. The outcome is drawn
+  from p0 / (p0 + p1) and the state divided by the drawn half, which is never
+  zero.
+- **A state with no norm is refused before anything is drawn.** A zero or
+  non-finite state gave 1, 0, a coin flip or the last basis state, depending on
+  the class. Every collapse and sampler now throws `std::runtime_error` on the
+  threshold its class's `normalize()` refuses at, leaving the caller's
+  generator as it was; the statevector and density-matrix simulators report it
+  through `Result`. Both MPS layers also dropped a floor of 1e-30 under which a
+  draw split 50/50, took digit 0, or skipped renormalising: with the refusal in
+  front of it, the floor caught only chains `normalize()` accepts, with a norm
+  between machine epsilon and about 1e-15, and drew wrongly from them.
+- **A RESET is a collapse in every shot.** The statevector and MPS simulators
+  treated a RESET on a qubit nothing had measured as deterministic and served
+  every shot from one collapse. A RESET that can change the state now sends a
+  run shot by shot on the statevector, MPS and Clifford simulators, and a
+  circuit with a RESET and no MEASURE draws one sample of the whole register
+  from each shot's final state. A RESET on a qubit known to be |0> changes
+  nothing and keeps the single pass: the qubit is known |0> when the initial
+  state puts it there and nothing has acted on it, or after an unconditioned
+  RESET. The density-matrix simulator applies RESET as a channel and is
+  unchanged.
+- **A non-unitary single-site gate off the MPS centre no longer breaks the
+  chain's reads.** Both MPS layers read the norm, marginals, measurements and
+  samples at the orthogonality centre, trusting every site outside the open
+  span to be orthonormal, and a single-site gate never widened the span. A
+  matrix applied under `Validation::Ignore`, or accepted by `Warn` or a wide
+  `atol`, broke that site while the span still vouched for it: H then diag(2, 1)
+  on a site away from the centre left `norm_sq()` reading 1 where the state
+  holds 5/2. A single-site gate whose matrix is not unitary to
+  `DEFAULT_PHYSICAL_ATOL` now widens the span over its site, so the next move of
+  the centre sweeps it. The matrix is applied as given and nothing is reported.
+- **The fidelity figures empty after a gate that is not unitary.**
+  `fidelity_estimate()` and `fidelity_lower_bound()` are derived for unitary
+  gates between splits, and a collapse already emptied them for that reason; a
+  non-unitary gate, single-site or two-site, left them reporting. They now
+  empty on both MPS layers.
+- **`QuditMPS::apply_2qudit` judges a reversed pair once**, under the caller's
+  policy, and applies the matrix that judgement produced. It re-entered itself
+  with default options, so a matrix accepted under `Ignore`, `Warn` or a wider
+  `atol` was rejected on a reversed pair.
+- **Every simulator refuses a circuit with no qubits**, at every shot count and
+  before touching any state, with `std::invalid_argument` whose message opens
+  with the entry point: `MPSSimulator::run: the circuit must have at least 1
+  qubit (got 0)`. The statevector and density-matrix simulators report it
+  through `Result`. A zero-qubit `MPSState` stays a valid object.
+- **`RemoveResetInZeroState` keeps a RESET that follows a conditioned one.** It
+  took every RESET to leave its qubit at |0>, a conditioned one included,
+  though its condition may not hold, and removed the next RESET on that qubit.
+  In `x(0); measure(1, 0); if (c0 == 1) reset(0); reset(0)` it removed the
+  second reset, leaving qubit 0 at |1>.
+- **`max_memory_mb` is enforced.** Documented on
+  `StatevectorSimulator::Options` and `LocalBackend::Config` as a budget "used
+  for preemptive error checking", it was read by nothing. It is the most memory
+  the caller gives a run, in MiB, counting the full-size states the run holds at
+  once: two for the statevector simulator (the working buffer and the copy
+  returned in `Result`), one density matrix for the density-matrix simulator,
+  which gains the option. A run that needs more is refused through `Result`
+  before anything is allocated, and `LocalBackend` passes its setting on.
+- **`max_parallel_threads` is enforced.** Documented as an OpenMP thread cap on
+  the same two structs, it was read by nothing. It now caps every parallel
+  region of `StatevectorSimulator::run`, `simulate_circuit` and
+  `eval_expectation`, and of `LocalBackend::run` on whichever backend it picks,
+  for the length of the call; the caller's own setting is back when the call
+  returns, even if it throws. 0 leaves OpenMP's choice in force, and a
+  negative value is refused.
+
+### Changed
+
+- **BREAKING: the Clifford simulator samples a circuit with no MEASURE on the
+  whole register.** It recorded an all-zero key `n_clbits` wide in every shot,
+  which reads exactly like a measurement of zeros. It now draws qubit q to key
+  position q, `n_qubits` wide, as the statevector, density-matrix and MPS
+  simulators already did. On the terminal path that costs one elimination
+  of the tableau per run.
+- **BREAKING: no preset level runs `RemoveResetInZeroState`.** The pass takes
+  every qubit to start at |0>, and a run from a `RunPlan` initial state does
+  not, so a circuit transpiled at level 1 or above lost resets that act on the
+  supplied state. The simulators recognise a RESET that cannot change the state
+  at run time, knowing the state the run starts from. The pass is still
+  available to compose by hand, for a circuit that will start at |0> on a
+  device.
+- **A per-shot run computes its shared start once.** Everything before the
+  first MEASURE, RESET or conditioned instruction is the same in every shot and
+  draws nothing, so an unobserved run of more than one shot computes it once
+  and starts every shot from a copy. The counts for a seed are exactly those of
+  a run that repeats it, and an observed run still repeats it, so each anchor
+  fires once per shot. The MPS and Clifford simulators always do this; the
+  statevector and density-matrix simulators follow the new
+  `Options::prefix_reuse`. The MPS profile figures count what the run
+  performed: the shared start's splits once, each trajectory's own per shot,
+  so a run of N shots no longer reports N times its prefix.
+- **Docs.** The simulators page gains the RESET rule, the whole-register rule,
+  the shared start, an Unchecked Gates section for the MPS chains, the
+  density-matrix `Options`, and the refusals; validation, statevector, qudit,
+  transpiler and backends pages follow.
+
+### Added
+
+- **`UncheckedGates { Track, AssumeUnitary }`** on `MPSState`, `QuditMPS` and
+  `MPSSimulator`, which copies it onto every chain it builds. It decides
+  whether a gate applied under `Ignore` with `Repair::None`, which measures
+  nothing, is measured for the chain's own records. `Track`, the default,
+  measures it; `AssumeUnitary` takes it to be unitary, for a caller who knows
+  their matrices are and accepts wrong reads if one is not. Every other policy
+  measures anyway, and gates the MPS simulator builds itself are never measured.
+- **`PrefixReuse { Hardware, Manual, Off }`** on
+  `StatevectorSimulator::Options` and the new `DensityMatrixSimulator::Options`.
+  `Hardware`, the default, keeps the shared start when the operating system
+  reports at least twice its size available and the run with it fits
+  `max_memory_mb`; `Manual` when it fits `max_memory_mb`; `Off` never. On the
+  statevector simulator the copy is released before the result's copy is made,
+  so it never raises the two-state peak.
+- **`hw::available_memory_bytes()`**, the memory the operating system reports
+  it can allocate now without swapping: `MemAvailable` on Linux, available
+  physical memory on Windows, free and inactive pages on macOS. 0 when unknown.
+
+### Tests
+
+- **Five new files, 37 tests in 10 suites.**
+  `test_v11302_unchecked_gates.cpp` (11): the span and the fidelity figures
+  after unitary and non-unitary gates under each setting and policy, a run's
+  circuit matrices judged under their own policy, library gates untouched, and
+  the qudit layer. `test_v11302_normalised_draws.cpp` (7): the draw never lands
+  on a weight of zero, short dense states sampled and collapsed as themselves on
+  every dense class and simulator, and chains of norm 4 eps measured as
+  themselves, with the refusal at exactly `normalize()`'s threshold.
+  `test_v11302_reset_sampling.cpp` (15): which RESETs cannot change the state,
+  a leading RESET keeping the single pass, RESET-only circuits against the
+  analytic distribution on all four simulators, the shared start giving a
+  rerun's seeded counts, observed runs firing once per shot, `max_memory_mb`,
+  and the transpiler pass. `test_v11302_thread_cap.cpp` (4): the cap inside a
+  run and the caller's setting after every entry point.
+- **Eight tests rewritten for the changed contracts.** The seven per-shot
+  profile pins of #126, three in `V11281SvdTime` and four in
+  `V11282ProfileTotals`, run a circuit with a split on each side of the
+  measurement and expect the shared start once plus N times a trajectory's
+  own, derived from runs of each; `SeedingRebuildsAreCountedPerShot` is renamed
+  `SeedingRebuildsAreCountedAsPerformed`.
+  `V11251CliffordSampling.CircuitWithoutMeasurementRecordsAllZeroKeys` is
+  renamed `CircuitWithoutMeasurementSamplesTheWholeRegister` and checks the
+  exact distribution on both sampling routes.
+- **The ten tests 1.1.30.1 shipped red pass unedited.**
+
+### Results
+
+Six configurations, every leg passing (CachyOS Linux, native):
+
+| Compiler | Target | Options | Tests | Passed | Skipped | Failed | Time |
+|---|---|---|---:|---:|---:|---:|---:|
+| Clang 22.1.8 | native | none (the documented build) | 3494 | 3486 | 8 | 0 | 17.9 s |
+| Clang 22.1.8 | native | harvest | 3494 | 3493 | 1 | 0 | 18.5 s |
+| Clang 22.1.8 | x86-64-v3 | harvest | 3494 | 3493 | 1 | 0 | 17.7 s |
+| GCC 14.3.1 | native | harvest | 3494 | 3493 | 1 | 0 | 21.5 s |
+| GCC 14.3.1 | x86-64-v3 | harvest | 3494 | 3493 | 1 | 0 | 27.0 s |
+| Clang 20.1.8 | native | harvest | 3494 | 3493 | 1 | 0 | 18.0 s |
+
+3494 tests across 324 suites, all passed. The documented build skips the seven
+theta-harvest tests and the large register-size margin test; the harvest legs
+skip the margin test alone. The Python tool suite passes with 66 tests, 5
+skipped where no harvest build is given, and the 5 histogram tests pass
+against one.
+
 ## [1.1.30.1] - 2026-09-27
 
 The test release for 1.1.30.0. It returns the ten test sources 1.1.30.0 took

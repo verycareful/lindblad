@@ -71,6 +71,16 @@ the bottom-right cell looks, repairs what it can, and stays silent about what it
 cannot. That is a different policy from the cell above it, not a louder version
 of the same one.
 
+One reader outside the policy consumes the number too. An MPS chain reads its
+norm, marginals and measurements at its orthogonality centre and derives its
+fidelity figures for unitary gates, so it needs to know whether each matrix it
+applies is unitary. Under `Ignore` with `Repair::None` the chain measures the
+matrix for those records itself, unless its `unchecked_gates` setting is
+`UncheckedGates::AssumeUnitary`, which keeps "never looks" in full. The
+measurement changes nothing the caller sees: no rejection, no warning, no
+repair, and the matrix is applied as given. The rule in full is under
+[Unchecked Gates](simulators.md#unchecked-gates).
+
 `Repair::None` is a command rather than a condition: it means do not attempt a
 repair, and says nothing about whether one exists. Whether a repair exists is a
 property of what is being checked, and it is a third thing again, described under
@@ -341,7 +351,11 @@ declaration, and their distance from exact unitarity is accumulated rounding.
 `run()` reads each instruction's `ValidationOptions` exactly once, in the
 pre-flight, over the instructions present at that moment. It then applies every
 gate under `Ignore`, so an unchanged matrix is not re-measured once per gate per
-shot. Under `Repair::Attempt` the pre-flight also performs the repair, and the
+shot. The MPS backend's chains are the one reader that measures again: a
+circuit's own matrix under `Warn`, under a widened `atol`, or under `Ignore`
+with the default `UncheckedGates::Track` is measured at each application for
+the chain's records (a 2x2 or 4x4 residual beside a gate that contracts or
+splits a site), and never reported. Under `Repair::Attempt` the pre-flight also performs the repair, and the
 run executes a repaired copy rather than the circuit the caller passed.
 
 What falls outside that window is anything that comes into being after the

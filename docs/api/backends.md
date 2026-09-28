@@ -52,8 +52,15 @@ Configuration parameters for `LocalBackend`.
 Fields and defaults:
 
 - `simulator = SimType::AUTO`: which backend to use
-- `max_parallel_threads = 0`: OpenMP thread limit (0 = auto-detect based on hardware)
-- `max_memory_mb = 0`: memory budget in megabytes (0 = no limit)
+- `max_parallel_threads = 0`: the most OpenMP threads a run may use, on
+  whichever backend it reaches; 0 leaves OpenMP's own choice
+  (`OMP_NUM_THREADS`, else every core). The caller's setting is back when the
+  run returns. A negative value is refused (`success` false)
+- `max_memory_mb = 0`: the most memory the caller gives a run, in MiB
+  (2^20 bytes); 0 means no limit. Passed to the statevector and
+  density-matrix simulators, which count the states a run holds at once and
+  refuse a run over the cap before allocating (see their `Options`). The MPS
+  and Clifford backends hold no dense state and do not read it
 - `mps_bond_dim = 64`: bond dimension for MPS simulator
 
 ## Construction
@@ -153,7 +160,7 @@ Returns: `"lindblad_local_simulator"`
 std::string version() const;
 ```
 
-Returns the build version string derived from the CMake `LINDBLAD_VERSION_LABEL` compile definition (e.g. `"1.1.30.1"`). The value tracks `LINDBLAD_VERSION_LABEL` in `CMakeLists.txt` and cannot drift from the project version.
+Returns the build version string derived from the CMake `LINDBLAD_VERSION_LABEL` compile definition (e.g. `"1.1.30.2"`). The value tracks `LINDBLAD_VERSION_LABEL` in `CMakeLists.txt` and cannot drift from the project version.
 
 ### `max_qubits()`
 

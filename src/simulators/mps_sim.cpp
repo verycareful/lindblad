@@ -26,6 +26,7 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/circuit.hpp"
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/detail/svd_truncate.hpp"
 #include "lindblad/detail/eigen_backend.hpp"
@@ -269,15 +270,16 @@ bool MPSState::split_needs_centre(int q) const {
 // Collapse at the centre
 // =============================================================================
 
-// Below this a marginal is treated as zero: sampling falls back to an even
-// split and renormalisation is skipped rather than dividing by noise.
-static constexpr double MARGINAL_FLOOR = 1e-30;
+// Every draw below compares a uniform against p0 / total, which is exactly 1
+// when the other marginal is 0 and exactly 0 when p0 is, so an outcome of
+// weight zero is never drawn and the outcome's marginal is always positive.
+// Each routine first refuses a chain with no norm (zero or non-finite), so the
+// total it divides by is finite and positive.
 
 void MPSState::collapse_centre(int site, int outcome, double p_outcome) {
     MPSTensor& T = tensors_[static_cast<std::size_t>(site)];
     const int other = 1 - outcome;
-    const double inv_norm =
-        (p_outcome > MARGINAL_FLOOR) ? 1.0 / std::sqrt(p_outcome) : 1.0;
+    const double inv_norm = 1.0 / std::sqrt(p_outcome);
     for (int l = 0; l < T.bond_left; ++l)
         for (int r = 0; r < T.bond_right; ++r) {
             T(l, other, r) = Complex128(0.0, 0.0);
@@ -294,8 +296,8 @@ int MPSState::measure_qubit(int qubit, std::mt19937_64& rng) {
     // summing to the state's norm², so sampling normalises by their sum and
     // the collapse divides out the chosen one, leaving unit norm.
     const std::array<double, 2> p = centre_marginals(qubit);
-    double total = p[0] + p[1];
-    if (total < MARGINAL_FLOOR) total = 1.0;
+    const double total = p[0] + p[1];
+    detail::require_norm_to_sample(std::sqrt(total), "MPSState::measure_qubit");
     std::uniform_real_distribution<double> udist(0.0, 1.0);
     const int outcome = (udist(rng) < p[0] / total) ? 0 : 1;
     collapse_centre(qubit, outcome, p[static_cast<std::size_t>(outcome)]);
@@ -398,6 +400,13 @@ void MPSState::apply_single_qubit_gate(
     std::array<Complex128, 4> U_fixed;
     const std::array<Complex128, 4>& U = detail::check_unitary_fixing(
         U_in, 2, validation, "MPSState::apply_single_qubit_gate", U_fixed);
+    gate_one_site(U, qubit,
+                  detail::gate_keeps_unitarity(U.data(), 2, validation,
+                                               unchecked_gates));
+}
+
+void MPSState::gate_one_site(const std::array<Complex128, 4>& U, int qubit,
+                             bool unitary) {
     auto& T = tensors_[qubit];
     MPSTensor result(T.bond_left, T.bond_right);
 
@@ -415,6 +424,16 @@ void MPSState::apply_single_qubit_gate(
     }
 
     T = std::move(result);
+
+    // A site outside the open span is held orthonormal, and every read at the
+    // centre relies on it; a matrix that is not unitary voids that, so the
+    // span widens over the site and the next move of the centre sweeps it.
+    // The span stays contiguous, taking in whatever lies between.
+    if (!unitary) {
+        if (qubit < span_lo) span_lo = qubit;
+        if (qubit > span_hi) span_hi = qubit;
+        fidelity.invalidate();
+    }
 }
 
 // =============================================================================
@@ -577,11 +596,20 @@ void MPSState::apply_two_qubit_gate(
     std::array<Complex128, 16> U_fixed;
     const std::array<Complex128, 16>& U = detail::check_unitary_fixing(
         U_in, 4, validation, "MPSState::apply_two_qubit_gate", U_fixed);
+    gate_two_site(U, q1, q2,
+                  detail::gate_keeps_unitarity(U.data(), 4, validation,
+                                               unchecked_gates));
+}
 
+void MPSState::gate_two_site(const std::array<Complex128, 16>& U, int q1,
+                             int q2, bool unitary) {
     // The caller's matrix is LSB-first (q1 is bit 0), the contraction reads
     // MSB-first. Exchanging the two bits permutes rows and columns alike, so
-    // it preserves unitarity and the check above holds for what is applied.
+    // it preserves unitarity and `unitary` holds for what is applied.
     apply_two_qubit_gate_msb(exchange_operand_bits(U), q1, q2);
+    // The splits restore the gauge whatever U was; the fidelity bound does
+    // not survive a gate that is not unitary.
+    if (!unitary) fidelity.invalidate();
 }
 
 void MPSState::apply_two_qubit_gate_msb(
@@ -866,13 +894,17 @@ std::string MPSState::measure_sequential(std::mt19937_64& rng) {
     if (n_qubits == 0) return bits;
     focus(0, 0);
 
+    // With the centre on qubit 0 its marginals sum to the chain's norm², so
+    // the refusal is taken there, before the first draw. Each collapse leaves
+    // unit norm, so every later total is 1 to rounding.
     std::uniform_real_distribution<double> dist(0.0, 1.0);
     for (int q = 0; q < n_qubits; ++q) {
         const std::array<double, 2> probs = centre_marginals(q);
-        double p0 = probs[0];
-        double total = probs[0] + probs[1];
-        if (total < MARGINAL_FLOOR) { p0 = 0.5; total = 1.0; }
-        const int outcome = (dist(rng) < p0 / total) ? 0 : 1;
+        const double total = probs[0] + probs[1];
+        if (q == 0)
+            detail::require_norm_to_sample(std::sqrt(total),
+                                           "MPSState::measure_sequential");
+        const int outcome = (dist(rng) < probs[0] / total) ? 0 : 1;
         // Project bitstring convention: qubit 0 is the RIGHTMOST character
         // (matches Statevector::sample_counts and the per-shot paths).
         bits[static_cast<size_t>(n_qubits - 1 - q)] = outcome ? '1' : '0';
@@ -1270,6 +1302,51 @@ static std::array<Complex128, 16> gate4x4(const Instruction& inst) {
     return U;
 }
 
+// =============================================================================
+// detail::MPSDispatch - run()'s route onto the chain's gate helpers
+// =============================================================================
+// Below run()'s pre-flight no matrix is judged again, so the dispatcher does not
+// go through the public gate entries, whose policy would measure a caller's
+// matrix once per gate per shot. It hands the chain each gate together with
+// whether it is unitary, which is all the chain's records need: a gate this
+// file builds is unitary by construction and is never measured, and a
+// circuit's own matrix is judged for the records under its instruction's
+// policy (detail::gate_keeps_unitarity). The structural checks stay, since a
+// circuit can reach here without passing through the builders that make them.
+
+namespace detail {
+
+struct MPSDispatch {
+    static void one_site(MPSState& s, const std::array<Complex128, 4>& U,
+                         int qubit, bool unitary) {
+        check_qubit(qubit, s.n_qubits, "MPSState::apply_single_qubit_gate");
+        s.gate_one_site(U, qubit, unitary);
+    }
+    static void two_site(MPSState& s, const std::array<Complex128, 16>& U,
+                         int q1, int q2, bool unitary) {
+        check_qubit(q1, s.n_qubits, "MPSState::apply_two_qubit_gate");
+        check_qubit(q2, s.n_qubits, "MPSState::apply_two_qubit_gate");
+        check_distinct2(q1, q2, "MPSState::apply_two_qubit_gate");
+        s.gate_two_site(U, q1, q2, unitary);
+    }
+    // A dense fallback rebuilds the chain in canonical gauge whatever the
+    // matrix was; only the fidelity bound needs telling.
+    static void not_unitary(MPSState& s) { s.fidelity.invalidate(); }
+    // Zero exactly the figures absorb_profile folds, so a chain copied from a
+    // shared start then absorbed reports only the splits it performed itself.
+    static void clear_profile(MPSState& s) {
+        s.svd_calls = 0;
+        s.svd_nanos = 0;
+        s.jacobi_rescues = 0;
+        s.gram_fallbacks = 0;
+        s.floor_rejected = 0.0;
+        s.total_truncation_error = 0.0;
+        s.max_verify_resid_excess = 0.0;
+    }
+};
+
+}  // namespace detail
+
 // Helper: apply one instruction to an MPS state.
 // Handles RESET, all gate types. MEASURE and BARRIER must NOT be passed here.
 static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
@@ -1283,12 +1360,13 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
         const int outcome = mps.measure_qubit(qubit, rng);
         if (outcome == 1) {
             // Flipping the collapsed |1> back to |0>. X is built here, so it
-            // carries Ignore like the other locally-built factors.
+            // goes to the chain as unitary, like the other locally-built
+            // factors.
             const std::array<Complex128, 4> X_g = {
                 Complex128(0,0), Complex128(1,0),
                 Complex128(1,0), Complex128(0,0)
             };
-            mps.apply_single_qubit_gate(X_g, qubit, {Validation::Ignore});
+            detail::MPSDispatch::one_site(mps, X_g, qubit, true);
         }
         return;
     }
@@ -1335,10 +1413,11 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
 
     // UNITARY gates store the matrix directly in inst.matrix.
     //
-    // 1-qubit and 2-qubit UNITARYs route to MPSState's direct
-    // apply_single_qubit_gate / apply_two_qubit_gate, which contract the
-    // matrix into the affected site tensors (with truncated SVD for the
-    // 2-qubit case, and a SWAP network for non-adjacent qubit pairs). Memory
+    // 1-qubit and 2-qubit UNITARYs route to the chain's one- and two-site
+    // gates through MPSDispatch, judged for the chain's records under the
+    // instruction's own policy, which contract the matrix into the affected
+    // site tensors (with truncated SVD for the 2-qubit case, and a SWAP
+    // network for non-adjacent qubit pairs). Memory
     // cost stays bounded by the bond dimension and is independent of
     // n_qubits — so MPS circuits with arbitrary register widths can now
     // contain user-supplied 1q/2q unitaries.
@@ -1357,8 +1436,10 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
                 inst.matrix[0], inst.matrix[1],
                 inst.matrix[2], inst.matrix[3]
             };
-            mps.apply_single_qubit_gate(U, inst.qubits[0],
-                                        {Validation::Ignore});
+            detail::MPSDispatch::one_site(
+                mps, U, inst.qubits[0],
+                detail::gate_keeps_unitarity(U.data(), 2, inst.validation,
+                                             mps.unchecked_gates));
             return;
         }
         if (inst.qubits.size() == 2) {
@@ -1368,8 +1449,10 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
             // own convention, so it is handed over as it stands.
             std::array<Complex128, 16> U{};
             std::copy(inst.matrix.begin(), inst.matrix.end(), U.begin());
-            mps.apply_two_qubit_gate(U, inst.qubits[0], inst.qubits[1],
-                                     {Validation::Ignore});
+            detail::MPSDispatch::two_site(
+                mps, U, inst.qubits[0], inst.qubits[1],
+                detail::gate_keeps_unitarity(U.data(), 4, inst.validation,
+                                             mps.unchecked_gates));
             return;
         }
         if (mps.n_qubits > MPS_SV_MAX_QUBITS) {
@@ -1386,27 +1469,30 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
         auto sv = mps.to_statevector();
         gates::apply_unitary(sv, inst.qubits, inst.matrix, {Validation::Ignore});
         mps.rebuild_from_statevector(sv);
+        const std::size_t rows = std::size_t{1} << inst.qubits.size();
+        if (!detail::gate_keeps_unitarity(inst.matrix.data(), rows,
+                                          inst.validation, mps.unchecked_gates))
+            detail::MPSDispatch::not_unitary(mps);
         return;
     }
 
     if (inst.qubits.size() == 1) {
         auto U = gate2x2(inst);
-        mps.apply_single_qubit_gate(U, inst.qubits[0], {Validation::Ignore});
+        detail::MPSDispatch::one_site(mps, U, inst.qubits[0], true);
 
     } else if (inst.qubits.size() == 2) {
         // gate4x4 builds in its MSB-first frame (first operand = bit 1);
         // apply_two_qubit_gate takes the project's LSB-first order.
         const auto U = exchange_operand_bits(gate4x4(inst));
-        mps.apply_two_qubit_gate(U, inst.qubits[0], inst.qubits[1],
-                                 {Validation::Ignore});
+        detail::MPSDispatch::two_site(mps, U, inst.qubits[0], inst.qubits[1], true);
 
     } else if (inst.qubits.size() == 3) {
         int q0 = inst.qubits[0], q1 = inst.qubits[1], q2 = inst.qubits[2];
 
         // The factors below are built here rather than supplied, so every
-        // application of them passes Ignore: their unitarity is a property of
-        // this file, and checking it once per gate per shot would measure the
-        // same four constants for the life of the run.
+        // application of them goes to the chain as unitary: their unitarity is
+        // a property of this file, and measuring it once per gate per shot
+        // would measure the same four constants for the life of the run.
         constexpr double s2 = INV_SQRT2;
         const std::array<Complex128, 4> H_g = {
             Complex128(s2,0), Complex128(s2,0),
@@ -1429,21 +1515,21 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
 
         // CCX decomposition: standard 6-CNOT Toffoli
         auto apply_ccx = [&](int c1, int c2, int tgt) {
-            mps.apply_single_qubit_gate(H_g, tgt, {Validation::Ignore});
-            mps.apply_two_qubit_gate(CX_g, c2, tgt, {Validation::Ignore});
-            mps.apply_single_qubit_gate(Tdg_g, tgt, {Validation::Ignore});
-            mps.apply_two_qubit_gate(CX_g, c1, tgt, {Validation::Ignore});
-            mps.apply_single_qubit_gate(T_g, tgt, {Validation::Ignore});
-            mps.apply_two_qubit_gate(CX_g, c2, tgt, {Validation::Ignore});
-            mps.apply_single_qubit_gate(Tdg_g, tgt, {Validation::Ignore});
-            mps.apply_two_qubit_gate(CX_g, c1, tgt, {Validation::Ignore});
-            mps.apply_single_qubit_gate(T_g, c2, {Validation::Ignore});
-            mps.apply_single_qubit_gate(T_g, tgt, {Validation::Ignore});
-            mps.apply_single_qubit_gate(H_g, tgt, {Validation::Ignore});
-            mps.apply_two_qubit_gate(CX_g, c1, c2, {Validation::Ignore});
-            mps.apply_single_qubit_gate(T_g, c1, {Validation::Ignore});
-            mps.apply_single_qubit_gate(Tdg_g, c2, {Validation::Ignore});
-            mps.apply_two_qubit_gate(CX_g, c1, c2, {Validation::Ignore});
+            detail::MPSDispatch::one_site(mps, H_g, tgt, true);
+            detail::MPSDispatch::two_site(mps, CX_g, c2, tgt, true);
+            detail::MPSDispatch::one_site(mps, Tdg_g, tgt, true);
+            detail::MPSDispatch::two_site(mps, CX_g, c1, tgt, true);
+            detail::MPSDispatch::one_site(mps, T_g, tgt, true);
+            detail::MPSDispatch::two_site(mps, CX_g, c2, tgt, true);
+            detail::MPSDispatch::one_site(mps, Tdg_g, tgt, true);
+            detail::MPSDispatch::two_site(mps, CX_g, c1, tgt, true);
+            detail::MPSDispatch::one_site(mps, T_g, c2, true);
+            detail::MPSDispatch::one_site(mps, T_g, tgt, true);
+            detail::MPSDispatch::one_site(mps, H_g, tgt, true);
+            detail::MPSDispatch::two_site(mps, CX_g, c1, c2, true);
+            detail::MPSDispatch::one_site(mps, T_g, c1, true);
+            detail::MPSDispatch::one_site(mps, Tdg_g, c2, true);
+            detail::MPSDispatch::two_site(mps, CX_g, c1, c2, true);
         };
 
         switch (inst.type) {
@@ -1451,25 +1537,25 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
                 apply_ccx(q0, q1, q2);
                 break;
             case GT::CCZ:
-                mps.apply_single_qubit_gate(H_g, q2, {Validation::Ignore});
+                detail::MPSDispatch::one_site(mps, H_g, q2, true);
                 apply_ccx(q0, q1, q2);
-                mps.apply_single_qubit_gate(H_g, q2, {Validation::Ignore});
+                detail::MPSDispatch::one_site(mps, H_g, q2, true);
                 break;
             case GT::CSWAP:
-                mps.apply_two_qubit_gate(CX_g, q2, q1, {Validation::Ignore});
+                detail::MPSDispatch::two_site(mps, CX_g, q2, q1, true);
                 apply_ccx(q0, q1, q2);
-                mps.apply_two_qubit_gate(CX_g, q2, q1, {Validation::Ignore});
+                detail::MPSDispatch::two_site(mps, CX_g, q2, q1, true);
                 break;
             case GT::RCCX:
-                mps.apply_single_qubit_gate(H_g, q2, {Validation::Ignore});
-                mps.apply_single_qubit_gate(T_g, q2, {Validation::Ignore});
-                mps.apply_two_qubit_gate(CX_g, q1, q2, {Validation::Ignore});
-                mps.apply_single_qubit_gate(Tdg_g, q2, {Validation::Ignore});
-                mps.apply_two_qubit_gate(CX_g, q0, q2, {Validation::Ignore});
-                mps.apply_single_qubit_gate(T_g, q2, {Validation::Ignore});
-                mps.apply_two_qubit_gate(CX_g, q1, q2, {Validation::Ignore});
-                mps.apply_single_qubit_gate(Tdg_g, q2, {Validation::Ignore});
-                mps.apply_single_qubit_gate(H_g, q2, {Validation::Ignore});
+                detail::MPSDispatch::one_site(mps, H_g, q2, true);
+                detail::MPSDispatch::one_site(mps, T_g, q2, true);
+                detail::MPSDispatch::two_site(mps, CX_g, q1, q2, true);
+                detail::MPSDispatch::one_site(mps, Tdg_g, q2, true);
+                detail::MPSDispatch::two_site(mps, CX_g, q0, q2, true);
+                detail::MPSDispatch::one_site(mps, T_g, q2, true);
+                detail::MPSDispatch::two_site(mps, CX_g, q1, q2, true);
+                detail::MPSDispatch::one_site(mps, Tdg_g, q2, true);
+                detail::MPSDispatch::one_site(mps, H_g, q2, true);
                 break;
             case GT::UNITARY: {
                 auto sv = mps.to_statevector();
@@ -1557,14 +1643,14 @@ static std::string mps_sample(const MPSState& state, std::mt19937_64& rng) {
             for (const auto& z : wp) probs[static_cast<size_t>(p)] += std::norm(z);
         }
 
-        double p0 = probs[0];
-        double total = probs[0] + probs[1];
-        if (total < MARGINAL_FLOOR) { p0 = 0.5; total = 1.0; }
-        const int outcome = (dist(rng) < p0 / total) ? 0 : 1;
+        // The caller refused a chain with no norm, so the first total is the
+        // chain's positive norm² and every later one is 1 to rounding.
+        const double total = probs[0] + probs[1];
+        const int outcome = (dist(rng) < probs[0] / total) ? 0 : 1;
         bits[static_cast<size_t>(n - 1 - q)] = outcome ? '1' : '0';
 
         const double p_out = probs[static_cast<size_t>(outcome)];
-        const double inv = (p_out > MARGINAL_FLOOR) ? 1.0 / std::sqrt(p_out) : 1.0;
+        const double inv = 1.0 / std::sqrt(p_out);
         v = w[static_cast<size_t>(outcome)];
         for (auto& z : v) z *= inv;
     }
@@ -1629,8 +1715,8 @@ static bool dense_sampling_is_cheaper(const MPSState& state, int shots) {
         walk += w;
         dense += std::ldexp(w, q + 1);
     }
-    // At or below: a chain with no sites has nothing to walk and one amplitude
-    // to sample, which only the dense path handles.
+    // At or below, as docs/api/simulators.md states the rule: when the two
+    // costs tie, the dense path runs.
     return dense <= MPS_SAMPLER_COST_RATIO * static_cast<double>(shots) * walk;
 }
 
@@ -1639,6 +1725,7 @@ MPSSimulator::Result MPSSimulator::run(
     int shots, uint64_t seed, const RunPlan& plan
 ) {
     ScopedWarningFlush flush_on_exit;
+    detail::check_circuit_has_qubits(circuit_in.n_qubits, "MPSSimulator::run");
     // Checked here as well as in the MPSState constructor so the message names
     // this call. The argument order differs from StatevectorSimulator::run
     // (circuit, shots, seed), so run(qc, 0, 0) meaning shots is a live way to
@@ -1655,6 +1742,7 @@ MPSSimulator::Result MPSSimulator::run(
     prototype.svd_method = svd_method;
     prototype.svd_rescue = svd_rescue;
     prototype.canonical_form = canonical_form;
+    prototype.unchecked_gates = unchecked_gates;
     result.final_state = prototype;
 
     // Pre-flight: reject any out-of-range operand index up front (this backend
@@ -1675,8 +1763,9 @@ MPSSimulator::Result MPSSimulator::run(
     //   1. Terminal-only measurements (no feedforward, nothing acting on a
     //      qubit after it was measured): ONE forward pass, then sample
     //      outcomes from the final state with the qubit -> clbit mapping.
-    //   2. Mid-circuit measurement or feedforward with shots > 0: per-shot
-    //      trajectories (each stochastic collapse drawn independently).
+    //   2. Mid-circuit measurement, feedforward, or a RESET that can change
+    //      the state, with shots > 0: per-shot trajectories (each stochastic
+    //      collapse drawn independently).
     //   3. shots == 0: a single seeded trajectory; classical conditions are
     //      honoured and MEASURE outcomes recorded along the way.
     bool has_measure = false;
@@ -1686,8 +1775,14 @@ MPSSimulator::Result MPSSimulator::run(
         if (inst.type == Instruction::GateType::MEASURE) has_measure = true;
         if (inst.condition_clbit >= 0) has_condition = true;
     }
-    const bool terminal_only =
-        has_measure && !has_condition && mps_measures_are_terminal(circuit);
+    // A RESET collapses its qubit, and one pass would collapse it once for
+    // every shot. One on a qubit known to be |0> changes nothing and leaves
+    // the one-pass path open (detail::trivial_resets).
+    const bool has_reset = detail::has_nontrivial_reset(circuit, plan.initial);
+    const bool terminal_only = has_measure && !has_condition && !has_reset &&
+                               mps_measures_are_terminal(circuit);
+    const bool per_shot =
+        shots > 0 && ((has_measure && !terminal_only) || has_reset);
 
     // One trajectory: honours classical conditions, records MEASURE outcomes.
     // Anchors resolve against the circuit before any state is touched, so an
@@ -1696,12 +1791,16 @@ MPSSimulator::Result MPSSimulator::run(
     runner.set_bundle(&result.observations);
     detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
 
-    auto run_trajectory = [&](MPSState& state, std::vector<int>& clreg) {
+    // `first` = the instruction to start from: 0, or the end of a prefix a
+    // shared start chain has already run.
+    auto run_trajectory = [&](MPSState& state, std::vector<int>& clreg,
+                              std::size_t first) {
         const StateView view(StateForm::MPS, &state, circuit.n_qubits);
         if (watcher) watcher->at_start(view);
 
-        int index = -1;
-        for (const auto& inst : circuit.instructions) {
+        int index = static_cast<int>(first) - 1;
+        for (std::size_t i = first; i < circuit.instructions.size(); ++i) {
+            const Instruction& inst = circuit.instructions[i];
             using GT = Instruction::GateType;
             ++index;
             if (watcher) watcher->before_instruction(index, inst, view);
@@ -1727,27 +1826,67 @@ MPSSimulator::Result MPSSimulator::run(
 
     std::vector<int> clreg(n_clbits, 0);
 
-    if (shots > 0 && has_measure && !terminal_only) {
-        // Per-shot trajectories: every shot runs on a fresh chain from the
-        // initial state so that each MEASURE collapses independently (required
-        // for mid-circuit measurement / feedforward). Each trajectory then
-        // absorbs the profile figures the run has gathered so far and becomes
-        // result.final_state, so the chain the caller reads afterwards is the
-        // last trajectory in every respect (tensors, cap, cutoff, kernel) and
-        // carries the totals of all of them.
+    if (per_shot) {
+        // Per-shot trajectories: every shot runs on its own chain from the
+        // initial state so that each collapse is drawn independently (required
+        // for mid-circuit measurement, feedforward and reset). Each trajectory
+        // then absorbs the profile figures the run has gathered so far and
+        // becomes result.final_state, so the chain the caller reads afterwards
+        // is the last trajectory in every respect (tensors, cap, cutoff,
+        // kernel) and carries the run's totals.
+        //
+        // Everything before the first instruction that draws or reads a clbit
+        // (a MEASURE, a RESET, a conditioned gate) is the same in every shot
+        // and draws nothing. With no observer watching and more than one shot,
+        // it runs once, seeding included, into a start chain every trajectory
+        // copies, and the random stream, so the seeded counts, are those of a
+        // rerun. The start's splits are counted once, as performed, and each
+        // trajectory adds only its own. An observed run reruns every shot, so
+        // each anchor fires once per shot with that shot's index.
+        const bool reuse = !watcher && shots > 1;
+        std::size_t prefix_end = 0;
+        MPSState start = prototype;
+        if (reuse) {
+            detail::apply_initial_state(plan, start);
+            using GT = Instruction::GateType;
+            while (prefix_end < circuit.instructions.size()) {
+                const Instruction& inst = circuit.instructions[prefix_end];
+                if (inst.type == GT::MEASURE || inst.type == GT::RESET ||
+                    inst.condition_clbit >= 0)
+                    break;
+                if (inst.type != GT::BARRIER) mps_apply_instruction(start, inst, rng);
+                ++prefix_end;
+            }
+            result.final_state.absorb_profile(start);
+            detail::MPSDispatch::clear_profile(start);
+        }
+
         result.counts.clear();
         runner.begin_run(circuit.n_qubits, shots);
         for (int shot = 0; shot < shots; ++shot) {
-            MPSState trajectory = prototype;
-            detail::apply_initial_state(plan, trajectory);
+            MPSState trajectory = reuse ? start : prototype;
+            if (!reuse) detail::apply_initial_state(plan, trajectory);
             clreg.assign(n_clbits, 0);
             runner.begin_shot(shot, clreg);
-            run_trajectory(trajectory, clreg);
+            run_trajectory(trajectory, clreg, prefix_end);
 
-            // Build bitstring: clbit 0 is LSB (rightmost), highest clbit is MSB.
-            std::string bits(n_clbits, '0');
-            for (int c = 0; c < n_clbits; ++c) {
-                if (clreg[c]) bits[n_clbits - 1 - c] = '1';
+            std::string bits;
+            if (has_measure) {
+                // Build bitstring: clbit 0 is LSB (rightmost), highest clbit
+                // is MSB.
+                bits.assign(static_cast<std::size_t>(n_clbits), '0');
+                for (int c = 0; c < n_clbits; ++c) {
+                    if (clreg[c]) bits[n_clbits - 1 - c] = '1';
+                }
+            } else {
+                // No MEASURE: the shot is one sample of the whole register
+                // from this trajectory's end state, qubit-indexed, as the
+                // one-pass path samples a circuit with no MEASURE. Read-only,
+                // so the returned chain is the trajectory's end state.
+                trajectory.canonicalize(0);
+                detail::require_norm_to_sample(std::sqrt(trajectory.norm_sq()),
+                                               "MPSSimulator::run");
+                bits = mps_sample(trajectory, rng);
             }
             result.counts[bits]++;
 
@@ -1762,7 +1901,7 @@ MPSSimulator::Result MPSSimulator::run(
         if (shots == 0) {
             // Single seeded trajectory (collapses measures, honours
             // conditions); final_state is one reproducible trajectory.
-            run_trajectory(result.final_state, clreg);
+            run_trajectory(result.final_state, clreg, 0);
         } else {
             // Terminal-only measurements (or none): one forward pass with
             // MEASURE skipped; outcomes are sampled from the final state. That
@@ -1815,8 +1954,11 @@ MPSSimulator::Result MPSSimulator::run(
 
             // Whichever path is cheaper for this chain and shot count; both
             // sample the same distribution (see dense_sampling_is_cheaper).
+            // Either path refuses a chain with no norm before its first draw,
+            // naming this call rather than the state class underneath it.
             if (dense_sampling_is_cheaper(result.final_state, shots)) {
                 auto sv = result.final_state.to_statevector();
+                detail::require_norm_to_sample(sv.norm(), "MPSSimulator::run");
                 auto raw = sv.sample_counts(shots, seed);
                 for (const auto& [bits, cnt] : raw) record(bits, cnt);
             } else {
@@ -1825,6 +1967,8 @@ MPSSimulator::Result MPSSimulator::run(
                 // same state, and each shot then carries a vector rather than
                 // an environment. O(N * chi^2) per shot.
                 result.final_state.canonicalize(0);
+                detail::require_norm_to_sample(
+                    std::sqrt(result.final_state.norm_sq()), "MPSSimulator::run");
                 for (int s = 0; s < shots; ++s) {
                     record(mps_sample(result.final_state, rng), 1);
                 }
@@ -1862,6 +2006,7 @@ static MPSState fresh_chain_like(const MPSState& like) {
     chain.svd_method = like.svd_method;
     chain.svd_rescue = like.svd_rescue;
     chain.canonical_form = like.canonical_form;
+    chain.unchecked_gates = like.unchecked_gates;
     return chain;
 }
 
@@ -1888,15 +2033,16 @@ void apply_initial_state(const RunPlan& plan, MPSState& mps) {
         // A product state costs nothing in bond dimension, so this is an X on
         // each set digit rather than a dense build and a factorisation.
         //
-        // Ignore, because this matrix is the library's own: it is exactly
-        // unitary by construction, and a check here would judge our constant
-        // against a caller's tolerance while overriding the policy they chose.
+        // Applied as unitary with no policy, because this matrix is the
+        // library's own: it is exactly unitary by construction, and a check
+        // here would judge our constant against a caller's tolerance while
+        // overriding the policy they chose.
         const std::array<Complex128, 4> pauli_x = {
             Complex128(0.0, 0.0), Complex128(1.0, 0.0),
             Complex128(1.0, 0.0), Complex128(0.0, 0.0)};
         for (int q = 0; q < n && q < 64; ++q) {
             if ((index >> q) & 1ULL) {
-                mps.apply_single_qubit_gate(pauli_x, q, {Validation::Ignore});
+                detail::MPSDispatch::one_site(mps, pauli_x, q, true);
             }
         }
         return;
