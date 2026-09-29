@@ -14,6 +14,7 @@
 #include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/memory_budget.hpp"
+#include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/report.hpp"
 
 #include <optional>
@@ -1352,32 +1353,58 @@ static int clifford_quarter_turn(double angle) {
     return -1;
 }
 
-bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
+// Whether the tableau backend can apply one instruction, and if not, why.
+// is_clifford() and run()'s pass before the first gate both classify through
+// this one function, so the circuits AUTO dispatch sends here are exactly the
+// ones run() accepts.
+enum class CliffordVerdict { Clifford, NoAngle, OffGrid, NotClifford };
+
+static CliffordVerdict clifford_verdict(const Instruction& inst) {
     using GT = Instruction::GateType;
+    switch (inst.type) {
+        case GT::H: case GT::X: case GT::Y: case GT::Z:
+        case GT::S: case GT::SDG:
+        case GT::CX: case GT::CZ: case GT::SWAP:
+        case GT::MEASURE: case GT::RESET: case GT::BARRIER:
+            return CliffordVerdict::Clifford;
+        // Genuine Clifford gates whose tableau action composes from the
+        // primitives StabilizerState exposes. Rejecting them would push a
+        // circuit onto the statevector or MPS path with no diagnostic.
+        case GT::SX: case GT::SXDG:
+        case GT::CY: case GT::ISWAP: case GT::ECR:
+            return CliffordVerdict::Clifford;
+        // Rotations land in the Clifford group only at multiples of π/2.
+        // The two-qubit Ising rotations are exp(-iθ/2 P⊗Q) for Pauli P, Q
+        // and are Clifford on exactly the same grid as the one-qubit ones.
+        case GT::P: case GT::RX: case GT::RY: case GT::RZ:
+        case GT::RXX: case GT::RYY: case GT::RZZ: case GT::RZX:
+            if (inst.params.empty()) return CliffordVerdict::NoAngle;
+            if (clifford_quarter_turn(inst.params[0]) < 0) return CliffordVerdict::OffGrid;
+            return CliffordVerdict::Clifford;
+        default:
+            return CliffordVerdict::NotClifford;
+    }
+}
+
+// The reason for a verdict other than Clifford, or "" for Clifford.
+static std::string clifford_rejection(const Instruction& inst) {
+    switch (clifford_verdict(inst)) {
+        case CliffordVerdict::Clifford:
+            return {};
+        case CliffordVerdict::NoAngle:
+            return inst.gate_name() + " carries no angle parameter";
+        case CliffordVerdict::OffGrid:
+            return inst.gate_name() + "(" + std::to_string(inst.params[0]) +
+                   ") is not Clifford; only multiples of π/2 are supported";
+        case CliffordVerdict::NotClifford:
+            return "gate '" + inst.gate_name() + "' is not supported by the tableau backend";
+    }
+    return {};
+}
+
+bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
     for (const auto& inst : circuit.instructions) {
-        switch (inst.type) {
-            case GT::H: case GT::X: case GT::Y: case GT::Z:
-            case GT::S: case GT::SDG:
-            case GT::CX: case GT::CZ: case GT::SWAP:
-            case GT::MEASURE: case GT::RESET: case GT::BARRIER:
-                break;
-            // Genuine Clifford gates whose tableau action composes from the
-            // primitives StabilizerState exposes. Rejecting them would push a
-            // circuit onto the statevector or MPS path with no diagnostic.
-            case GT::SX: case GT::SXDG:
-            case GT::CY: case GT::ISWAP: case GT::ECR:
-                break;
-            // Rotations land in the Clifford group only at multiples of π/2.
-            // The two-qubit Ising rotations are exp(-iθ/2 P⊗Q) for Pauli P, Q
-            // and are Clifford on exactly the same grid as the one-qubit ones.
-            case GT::P: case GT::RX: case GT::RY: case GT::RZ:
-            case GT::RXX: case GT::RYY: case GT::RZZ: case GT::RZX:
-                if (inst.params.empty()) return false;
-                if (clifford_quarter_turn(inst.params[0]) < 0) return false;
-                break;
-            default:
-                return false;
-        }
+        if (clifford_verdict(inst) != CliffordVerdict::Clifford) return false;
     }
     return true;
 }
@@ -1417,6 +1444,14 @@ CliffordSimulator::Result CliffordSimulator::run(
     using GT = Instruction::GateType;
     ScopedWarningFlush flush_on_exit;
     detail::check_circuit_has_qubits(circuit_in.n_qubits, "CliffordSimulator::run");
+    // Pre-flight: reject any out-of-range operand index up front (this backend
+    // surfaces errors by throwing), then everything the instructions decide on
+    // their own, including every gate with no tableau form, before any state
+    // is touched.
+    circuit_in.validate_operands();
+    detail::preflight_instructions(
+        circuit_in, "CliffordSimulator::run",
+        [](const Instruction& inst, int) { return clifford_rejection(inst); });
     // Checked before the Result below allocates its own tableau.
     const std::uint64_t three_tableaux = detail::saturating_mul(
         3, detail::form_bytes(StateForm::Stabilizer, circuit_in.n_qubits));
@@ -1424,9 +1459,6 @@ CliffordSimulator::Result CliffordSimulator::run(
         three_tableaux, options.max_memory_mb, "CliffordSimulator::run");
     Result result(circuit_in.n_qubits);
 
-    // Pre-flight: reject any out-of-range operand index up front (this backend
-    // surfaces errors by throwing).
-    circuit_in.validate_operands();
     // Under Repair::Attempt a repaired copy is executed and the caller's
     // circuit is left exactly as it was handed over; Repair::None binds
     // straight to it and nothing is copied.
@@ -1440,10 +1472,10 @@ CliffordSimulator::Result CliffordSimulator::run(
 
     std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
 
-    // Angles reaching here have normally passed is_clifford(), which classifies
-    // through the same function. A DIRECT run() on a circuit that never went
-    // through that gate can still arrive carrying any angle, so one that is not
-    // a quarter turn is rejected rather than rounded to the nearest one.
+    // Angles reaching here have passed clifford_verdict() in the pass before
+    // the first gate, which classifies through the same function; this stays
+    // as the dispatcher's own guard, so an angle that is not a quarter turn is
+    // rejected rather than rounded to the nearest one whatever calls it.
     auto quarter_turn_or_throw = [](const Instruction& in) {
         if (in.params.empty()) {
             throw std::runtime_error(
@@ -1570,9 +1602,10 @@ CliffordSimulator::Result CliffordSimulator::run(
             case GT::ISWAP: state.apply_iswap(inst.qubits[0], inst.qubits[1]); break;
             case GT::ECR:   state.apply_ecr(inst.qubits[0], inst.qubits[1]); break;
             default:
-                // Fail loud instead of silently no-op'ing. Reachable only by a
-                // DIRECT run() on a non-Clifford circuit; the AUTO dispatch is
-                // gated by is_clifford(), so this never fires on that path.
+                // Fail loud instead of silently no-op'ing. run()'s pass before
+                // the first gate refuses every gate that would land here, so
+                // this is the dispatcher's own guard and fires only if that
+                // classification and this switch ever disagree.
                 throw std::invalid_argument(
                     "CliffordSimulator: gate '" + inst.gate_name() +
                     "' is not supported by the tableau backend");

@@ -18,6 +18,7 @@
 #include "lindblad/detail/pauli_rules.hpp"
 #include "lindblad/detail/born_draw.hpp"
 #include "lindblad/detail/memory_budget.hpp"
+#include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/noise.hpp"
@@ -878,6 +879,9 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
         // Pre-flight: reject any out-of-range operand index up front so the
         // failure surfaces through Result rather than reaching a kernel.
         circuit_in.validate_operands();
+        // Everything the instructions decide on their own, before any state is
+        // touched, each refusal naming its instruction.
+        detail::preflight_instructions(circuit_in, "DensityMatrixSimulator::run");
         // Under Repair::Attempt a repaired copy is executed and the caller's
         // circuit is left exactly as it was handed over; Repair::None binds
         // straight to it and nothing is copied.

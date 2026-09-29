@@ -27,6 +27,7 @@
 #include "lindblad/circuit.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/memory_budget.hpp"
+#include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/report.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate_physical.hpp"
@@ -1453,6 +1454,35 @@ struct MPSDispatch {
 
 }  // namespace detail
 
+// Why the dispatcher below cannot apply `inst` to an n_qubits chain under
+// `limit`, or "" when it can. run() asks this for every instruction before the
+// first gate, after preflight_instructions has checked each gate's operand and
+// parameter counts, so what is left is the dense fallback: MCX with more than
+// two controls, MCP, PERMUTATION and a UNITARY on three or more qubits have no
+// compact form and are applied to the chain's dense amplitudes, which stop at
+// the chain's limit. Every other gate the dispatcher reaches has a native or
+// decomposed route (CCX, CCZ, CSWAP and RCCX decompose into one- and two-qubit
+// gates). The messages are the dispatcher's own, which stay as its guards.
+static std::string mps_rejection(const Instruction& inst, int n_qubits, QubitLimit limit) {
+    using GT = Instruction::GateType;
+    const bool dense =
+        (inst.type == GT::MCX && inst.qubits.size() > 3) || inst.type == GT::MCP ||
+        inst.type == GT::PERMUTATION ||
+        (inst.type == GT::UNITARY && inst.qubits.size() >= 3);
+    if (!dense || n_qubits <= max_mps_dense_qubits(limit)) return {};
+    if (inst.type == GT::UNITARY) {
+        return "a " + std::to_string(inst.qubits.size()) +
+               "-qubit UNITARY is applied through the dense fallback, and " +
+               dense_limit_text(n_qubits, limit) +
+               ". Otherwise decompose the unitary into 1- and 2-qubit factors, "
+               "which the chain applies by direct tensor contraction";
+    }
+    return inst.gate_name() + " is applied through the dense fallback, and " +
+           dense_limit_text(n_qubits, limit) +
+           ". Otherwise decompose it to 1- and 2-qubit gates or use the "
+           "statevector or density-matrix backend";
+}
+
 // Helper: apply one instruction to an MPS state.
 // Handles RESET, all gate types. MEASURE and BARRIER must NOT be passed here.
 static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
@@ -1855,6 +1885,14 @@ MPSSimulator::Result MPSSimulator::run(
     // Pre-flight: reject any out-of-range operand index up front (this backend
     // surfaces errors by throwing, consistent with its other run() guards).
     circuit_in.validate_operands();
+    // Everything the instructions decide on their own, before any state is
+    // touched, including every gate the dense fallback would refuse at this
+    // width.
+    detail::preflight_instructions(
+        circuit_in, "MPSSimulator::run",
+        [limit = qubit_limit](const Instruction& inst, int n) {
+            return mps_rejection(inst, n, limit);
+        });
     // Under Repair::Attempt a repaired copy is executed and the caller's
     // circuit is left exactly as it was handed over; Repair::None binds
     // straight to it and nothing is copied.

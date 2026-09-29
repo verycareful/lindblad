@@ -10,6 +10,7 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/detail/born_draw.hpp"
 #include "lindblad/detail/memory_budget.hpp"
+#include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/report.hpp"
 #include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
@@ -316,23 +317,24 @@ static bool sv_measures_are_terminal(const QuantumCircuit& circuit) {
 // simulate_circuit
 // =============================================================================
 
-void StatevectorSimulator::simulate_circuit(
-    Statevector& sv,
-    const QuantumCircuit& circuit_in
-) {
-    const detail::ScopedThreadCap threads(options.max_parallel_threads,
-                                          "StatevectorSimulator::simulate_circuit");
-    // Trajectory semantics (docs/api/simulators.md, Execution semantics):
-    // classical conditions are honoured against a local register and MEASURE
-    // outcomes are recorded into it (collapse drawn from the thread-local
-    // RNG). For circuits without measurement or conditioning this reduces to
-    // the plain forward pass.
-    // A public entry that does not pass through run(), so it owns the physical
-    // pre-flight itself. The trajectory below then applies under Ignore, the
-    // same division run() uses.
-    // Under Repair::Attempt a repaired copy is executed and the caller's
-    // circuit is left exactly as it was handed over; Repair::None binds
-    // straight to it and nothing is copied.
+// The body of simulate_circuit, shared with eval_expectation so that each
+// refusal names the entry point its caller actually called.
+//
+// Trajectory semantics (docs/api/simulators.md, Execution semantics):
+// classical conditions are honoured against a local register and MEASURE
+// outcomes are recorded into it (collapse drawn from the thread-local RNG).
+// For circuits without measurement or conditioning this reduces to the plain
+// forward pass.
+//
+// Both are public entries that do not pass through run(), so they own the
+// checks run() makes before its first gate: the instruction pass, then the
+// physical pre-flight. The trajectory below then applies under Ignore, the
+// same division run() uses. Under Repair::Attempt a repaired copy is executed
+// and the caller's circuit is left exactly as it was handed over;
+// Repair::None binds straight to it and nothing is copied.
+static void sv_simulate(StatevectorSimulator& sim, Statevector& sv,
+                        const QuantumCircuit& circuit_in, const char* ctx) {
+    detail::preflight_instructions(circuit_in, ctx);
     std::optional<QuantumCircuit> repaired_storage =
         circuit_in.validated_physical();
     const QuantumCircuit& circuit =
@@ -341,8 +343,16 @@ void StatevectorSimulator::simulate_circuit(
     const int n_clbits =
         circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
     std::vector<int> clreg(static_cast<size_t>(n_clbits), 0);
-    sv_run_trajectory(*this, sv, circuit, clreg, n_clbits, sv_sim_rng, 0,
-                      "StatevectorSimulator::simulate_circuit");
+    sv_run_trajectory(sim, sv, circuit, clreg, n_clbits, sv_sim_rng, 0, ctx);
+}
+
+void StatevectorSimulator::simulate_circuit(
+    Statevector& sv,
+    const QuantumCircuit& circuit_in
+) {
+    const detail::ScopedThreadCap threads(options.max_parallel_threads,
+                                          "StatevectorSimulator::simulate_circuit");
+    sv_simulate(*this, sv, circuit_in, "StatevectorSimulator::simulate_circuit");
 }
 
 // =============================================================================
@@ -381,7 +391,7 @@ double StatevectorSimulator::eval_expectation(
         sv_work->initialize();
     }
 
-    simulate_circuit(*sv_work, circuit);
+    sv_simulate(*this, *sv_work, circuit, "StatevectorSimulator::eval_expectation");
     return observable.expectation_value(*sv_work);
 }
 
@@ -612,6 +622,9 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // Pre-flight: reject any out-of-range operand index up front so the
         // failure surfaces through Result rather than reaching a kernel.
         circuit_in.validate_operands();
+        // Everything the instructions decide on their own, before any state is
+        // touched, each refusal naming its instruction.
+        detail::preflight_instructions(circuit_in, "StatevectorSimulator::run");
         // Under Repair::Attempt a repaired copy is executed and the caller's
         // circuit is left exactly as it was handed over; Repair::None binds
         // straight to it and nothing is copied. Same shape as the fused-circuit
