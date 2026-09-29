@@ -674,16 +674,24 @@ static inline Complex128 i_power(int k) {
     }
 }
 
-Statevector StabilizerState::to_statevector() const {
+Statevector StabilizerState::to_statevector(QubitLimit limit) const {
     const int N = n_qubits;
 
-    // 2^N must be addressable before anything else is worth attempting. The
-    // tableau is happy at thousands of qubits; the dense form it is being asked
-    // for is not, and a caller learns that here rather than from an allocator.
-    if (N < 0 || N > 62) {
-        throw std::invalid_argument(
-            "StabilizerState::to_statevector: 2^n amplitudes are not "
-            "representable for n = " + std::to_string(N));
+    // The dense width is checked before anything else is worth attempting. The
+    // tableau is happy at thousands of qubits; the 2^N amplitudes it is being
+    // asked for are not, and a caller learns that here rather than from an
+    // allocator, or from the Statevector below after two dense scratch arrays
+    // have already been paid for.
+    const int ceiling = max_statevector_qubits(limit);
+    if (N < 0 || N > ceiling) {
+        std::string msg = "StabilizerState::to_statevector: a dense state of n = " +
+                          std::to_string(N) + " qubits is outside [0, " +
+                          std::to_string(ceiling) + "]";
+        if (limit == QubitLimit::Enforce && N > ceiling && N <= LIFTED_MAX_QUBITS) {
+            msg += "; QubitLimit::Lift raises the ceiling to " +
+                   std::to_string(LIFTED_MAX_QUBITS);
+        }
+        throw std::invalid_argument(msg);
     }
     const std::size_t dim = std::size_t{1} << N;
 
@@ -749,7 +757,7 @@ Statevector StabilizerState::to_statevector() const {
         imag_parts[index] = amp.imag * inv_norm;
     }
 
-    Statevector sv(N);
+    Statevector sv(N, limit);
     sv.set_amplitudes(real_parts.data(), imag_parts.data(), dim);
     return sv;
 }

@@ -102,6 +102,11 @@ public:
     // caller who would rather stop than accept a tensor from a kernel they did
     // not name.
     bool svd_rescue = true;
+    // The widest register this chain may expand into a dense array: a gate
+    // over three or more qubits, MCX, MCP and PERMUTATION (applied to the
+    // amplitudes and the chain rebuilt), and to_statevector. 25 qubits under
+    // Enforce, 59 under Lift (see QubitLimit in types.hpp).
+    QubitLimit qubit_limit = QubitLimit::Enforce;
     // Which bond splits first move the orthogonality centre onto their block.
     // Always by default; the two policies and what each costs are with the
     // enum in types.hpp.
@@ -493,12 +498,13 @@ public:
     // them the choices are reachable only by driving MPSState directly, since
     // run() constructs its own chain and a chain built inside a call cannot be
     // configured from outside it. Meaning of each: MPSState::svd_method,
-    // MPSState::svd_rescue, MPSState::canonical_form and
-    // MPSState::unchecked_gates.
+    // MPSState::svd_rescue, MPSState::canonical_form,
+    // MPSState::unchecked_gates and MPSState::qubit_limit.
     SVDMethod svd_method = SVDMethod::BDC;
     bool svd_rescue = true;
     CanonicalForm canonical_form = CanonicalForm::Always;
     UncheckedGates unchecked_gates = UncheckedGates::Track;
+    QubitLimit qubit_limit = QubitLimit::Enforce;
 
     struct Result {
         MPSState final_state;

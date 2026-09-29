@@ -32,22 +32,35 @@ namespace {
 // behaviour (shift-width overflow), so the guard must run first — a body check
 // after the init list is too late. Called from the n_qubits member initializer,
 // which precedes `dim` in declaration order, so a bad n throws before the shift.
-inline int validated_n_qubits(int n) {
-    if (n < 1 || n > 30)
-        throw std::invalid_argument(
-            "Statevector: n_qubits must be in [1, 30], got " + std::to_string(n));
+inline int validated_n_qubits(int n, QubitLimit limit) {
+    const int ceiling = max_statevector_qubits(limit);
+    if (n < 1 || n > ceiling) {
+        std::string msg = "Statevector: n_qubits must be in [1, " +
+                          std::to_string(ceiling) + "], got " + std::to_string(n);
+        if (limit == QubitLimit::Enforce && n > ceiling && n <= LIFTED_MAX_QUBITS)
+            msg += "; QubitLimit::Lift raises the ceiling to " +
+                   std::to_string(LIFTED_MAX_QUBITS);
+        throw std::invalid_argument(msg);
+    }
     return n;
 }
 } // namespace
 
-Statevector::Statevector(int n_qubits)
-    : n_qubits(validated_n_qubits(n_qubits))
+Statevector::Statevector(int n_qubits, QubitLimit limit)
+    : n_qubits(validated_n_qubits(n_qubits, limit))
     , dim(1ULL << this->n_qubits)   // this->n_qubits is already validated
     , real_parts(nullptr)
     , imag_parts(nullptr)
 {
     real_parts = aligned_alloc_doubles(dim);
-    imag_parts = aligned_alloc_doubles(dim);
+    // A constructor that throws runs no destructor, so the first buffer is
+    // freed here when the second cannot be had.
+    try {
+        imag_parts = aligned_alloc_doubles(dim);
+    } catch (...) {
+        aligned_free(real_parts);
+        throw;
+    }
 
     initialize();
 }

@@ -46,6 +46,10 @@ public:
         // Result::final_state): a run needing more is refused up front,
         // through Result, before anything is allocated.
         uint64_t max_memory_mb = 0;
+        // The widest register a run accepts: 30 qubits under Enforce, 59 under
+        // Lift (see QubitLimit in types.hpp). Lifting never bypasses
+        // max_memory_mb.
+        QubitLimit qubit_limit = QubitLimit::Enforce;
         // Whether a per-shot run keeps a snapshot of the stretch before its
         // first MEASURE, RESET or conditioned instruction; see PrefixReuse in
         // types.hpp. The snapshot is released before the result's copy is

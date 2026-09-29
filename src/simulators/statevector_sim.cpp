@@ -10,6 +10,7 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/detail/born_draw.hpp"
 #include "lindblad/detail/memory_budget.hpp"
+#include "lindblad/detail/report.hpp"
 #include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate.hpp"
@@ -375,7 +376,7 @@ double StatevectorSimulator::eval_expectation(
 
     thread_local std::unique_ptr<Statevector> sv_work;
     if (!sv_work || sv_work->n_qubits != circuit.n_qubits) {
-        sv_work = std::make_unique<Statevector>(circuit.n_qubits);
+        sv_work = std::make_unique<Statevector>(circuit.n_qubits, options.qubit_limit);
     } else {
         sv_work->initialize();
     }
@@ -580,6 +581,23 @@ StatevectorSimulator::Result StatevectorSimulator::run(
     try {
         detail::check_circuit_has_qubits(circuit_in.n_qubits,
                                          "StatevectorSimulator::run");
+        // The widest register this run accepts, checked before anything is
+        // sized from the width, so the refusal names the limit and how to lift
+        // it rather than a memory figure.
+        {
+            const int ceiling = max_statevector_qubits(options.qubit_limit);
+            if (circuit_in.n_qubits > ceiling) {
+                std::string what = "the circuit has " + std::to_string(circuit_in.n_qubits) +
+                                   " qubits, over the statevector limit of " +
+                                   std::to_string(ceiling);
+                if (options.qubit_limit == QubitLimit::Enforce &&
+                    circuit_in.n_qubits <= LIFTED_MAX_QUBITS) {
+                    what += "; Options::qubit_limit = QubitLimit::Lift raises it to " +
+                            std::to_string(LIFTED_MAX_QUBITS);
+                }
+                detail::raise<InvalidArgument>("StatevectorSimulator::run", what);
+            }
+        }
         // Every parallel region of the run below takes Options::
         // max_parallel_threads; the caller's own setting is back on return.
         const detail::ScopedThreadCap threads(options.max_parallel_threads,
@@ -618,7 +636,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // on variational hot paths (VQE, QAOA) that call run() thousands of times.
         thread_local std::unique_ptr<Statevector> sv_work;
         if (!sv_work || sv_work->n_qubits != circuit.n_qubits) {
-            sv_work = std::make_unique<Statevector>(circuit.n_qubits);
+            sv_work = std::make_unique<Statevector>(circuit.n_qubits, options.qubit_limit);
         }
         // Writes |0...0> for the default plan, so a reused buffer is cleared on
         // the same call that seeds a supplied initial state.
@@ -740,7 +758,8 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                         apply_instruction(*sv_work, inst, {Validation::Ignore});
                     ++prefix_end;
                 }
-                snapshot = std::make_unique<Statevector>(circuit.n_qubits);
+                snapshot = std::make_unique<Statevector>(circuit.n_qubits,
+                                                         options.qubit_limit);
                 std::memcpy(snapshot->real_parts, sv_work->real_parts,
                             sv_work->dim * sizeof(double));
                 std::memcpy(snapshot->imag_parts, sv_work->imag_parts,
@@ -871,7 +890,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // circuit accumulated. Checking here would judge a circuit's arithmetic
         // against a caller's tolerance and could make run() throw on a
         // simulation that did nothing wrong.
-        result.final_state = Statevector(circuit.n_qubits);
+        result.final_state = Statevector(circuit.n_qubits, options.qubit_limit);
         result.final_state.set_amplitudes(sv_work->real_parts, sv_work->imag_parts,
                                           sv_work->dim, {Validation::Ignore});
         result.success = true;

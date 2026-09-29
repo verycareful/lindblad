@@ -39,8 +39,9 @@ public:
     double* imag_parts;
 
 public:
-    // Construct and initialise to |0...0⟩ state
-    explicit Statevector(int n_qubits);
+    // Construct and initialise to |0...0⟩ state. `limit` sets the widest
+    // register accepted: 30 qubits under Enforce, 59 under Lift (types.hpp).
+    explicit Statevector(int n_qubits, QubitLimit limit = QubitLimit::Enforce);
 
     // Destructor — free aligned memory
     ~Statevector();

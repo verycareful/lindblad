@@ -47,6 +47,7 @@ BackendResult LocalBackend::run(
             case SimType::STATEVECTOR: {
                 StatevectorSimulator sim;
                 sim.options.max_memory_mb = config.max_memory_mb;
+                sim.options.qubit_limit = config.qubit_limit;
                 auto sv_result = sim.run(circuit, shots, seed);
                 result.counts = sv_result.counts;
                 result.simulation_time_seconds = sv_result.simulation_time_seconds;
@@ -73,6 +74,7 @@ BackendResult LocalBackend::run(
             }
             case SimType::MPS: {
                 MPSSimulator sim;
+                sim.qubit_limit = config.qubit_limit;
                 auto mps_result = sim.run(circuit, config.mps_bond_dim, shots, seed);
                 result.counts = mps_result.counts;
                 result.simulation_time_seconds = mps_result.simulation_time_seconds;

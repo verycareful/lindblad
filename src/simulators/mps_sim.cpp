@@ -917,17 +917,29 @@ std::string MPSState::measure_sequential(std::mt19937_64& rng) {
 }
 
 // =============================================================================
-// to_statevector — full contraction for N <= 25 (used for small systems)
+// to_statevector - full contraction, up to the chain's dense limit
 // =============================================================================
 
-// Hard memory limit: 2^25 complex doubles ≈ 512 MB. Every dense route this
-// backend takes stops here; terminal sampling stops earlier still (see
-// dense_sampling_is_cheaper).
-static constexpr int MPS_SV_MAX_QUBITS = 25;
+// Every dense route this backend takes stops at max_mps_dense_qubits(
+// qubit_limit): 25 qubits under Enforce (2^25 complex doubles, 512 MiB), 59
+// under Lift. Terminal sampling stops earlier still (see
+// dense_sampling_is_cheaper). This is the refusal each of those routes gives,
+// naming the limit in force and, under Enforce, how to lift it.
+static std::string dense_limit_text(int n_qubits, QubitLimit limit) {
+    std::string text = std::to_string(n_qubits) +
+                       " qubits exceed the dense-fallback limit (" +
+                       std::to_string(max_mps_dense_qubits(limit)) + ")";
+    if (limit == QubitLimit::Enforce && n_qubits <= LIFTED_MAX_QUBITS) {
+        text += "; qubit_limit = QubitLimit::Lift raises it to " +
+                std::to_string(LIFTED_MAX_QUBITS);
+    }
+    return text;
+}
 
 Statevector MPSState::to_statevector() const {
-    if (n_qubits > MPS_SV_MAX_QUBITS) {
-        throw std::runtime_error("Too many qubits for full statevector conversion");
+    if (n_qubits > max_mps_dense_qubits(qubit_limit)) {
+        throw std::runtime_error("MPSState::to_statevector: " +
+                                 dense_limit_text(n_qubits, qubit_limit));
     }
 
     // Standard left-to-right site contraction: maintains a (dim_so_far x chi) matrix
@@ -972,7 +984,7 @@ Statevector MPSState::to_statevector() const {
     //   index i  ↔  qubit q has value (i >> q) & 1
     //
     // Reconcile by bit-reversing each index when writing the output.
-    Statevector sv(n_qubits);
+    Statevector sv(n_qubits, qubit_limit);
     for (size_t idx = 0; idx < static_cast<size_t>(dim_so_far); ++idx) {
         // Reverse the N-bit representation of idx so that qubit 0 maps to bit 0.
         size_t rev = 0;
@@ -1391,13 +1403,12 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
     }
     if (inst.type == GT::MCX || inst.type == GT::MCP ||
         inst.type == GT::PERMUTATION) {
-        if (mps.n_qubits > MPS_SV_MAX_QUBITS) {
+        if (mps.n_qubits > max_mps_dense_qubits(mps.qubit_limit)) {
             throw std::runtime_error(
-                "MPS simulator: " + inst.gate_name() + " on n_qubits=" +
-                std::to_string(mps.n_qubits) + " exceeds the statevector-"
-                "fallback limit (" + std::to_string(MPS_SV_MAX_QUBITS) +
-                "); decompose to 1/2-qubit gates or use the statevector/"
-                "density-matrix backend");
+                "MPS simulator: " + inst.gate_name() + " is applied through the "
+                "dense fallback, and " + dense_limit_text(mps.n_qubits, mps.qubit_limit) +
+                ". Otherwise decompose it to 1- and 2-qubit gates or use the "
+                "statevector or density-matrix backend");
         }
         auto sv = mps.to_statevector();
         if (inst.type == GT::MCX) {
@@ -1423,12 +1434,10 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
     // n_qubits — so MPS circuits with arbitrary register widths can now
     // contain user-supplied 1q/2q unitaries.
     //
-    // 3+ qubit UNITARYs fall back to the full statevector path. That path
-    // is bounded by MPS_SV_MAX_QUBITS (= 25) inside to_statevector(); for
-    // wider circuits with a multi-qubit UNITARY we raise a clearer error
-    // naming the gate and qubit count rather than letting the generic
-    // "Too many qubits for full statevector conversion" message surface
-    // from a call site far from the offending instruction.
+    // 3+ qubit UNITARYs fall back to the full statevector path, which
+    // to_statevector() bounds by the chain's dense limit. For a wider register
+    // the refusal is raised here instead, naming the gate and its width, so it
+    // is not reported from a call site far from the offending instruction.
     if (inst.type == GT::UNITARY) {
         if (inst.qubits.size() == 1) {
             if (inst.matrix.size() != 4)
@@ -1456,16 +1465,13 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
                                              mps.unchecked_gates));
             return;
         }
-        if (mps.n_qubits > MPS_SV_MAX_QUBITS) {
+        if (mps.n_qubits > max_mps_dense_qubits(mps.qubit_limit)) {
             throw std::runtime_error(
-                "MPS UNITARY: cannot apply a " +
-                std::to_string(inst.qubits.size()) +
-                "-qubit UNITARY on an MPS state with n_qubits=" +
-                std::to_string(mps.n_qubits) + " (limit " +
-                std::to_string(MPS_SV_MAX_QUBITS) +
-                " for the full-statevector fallback path). Decompose the "
-                "unitary into 1- and 2-qubit factors and apply them via the "
-                "direct MPS tensor-contraction path.");
+                "MPS UNITARY: a " + std::to_string(inst.qubits.size()) +
+                "-qubit UNITARY is applied through the dense fallback, and " +
+                dense_limit_text(mps.n_qubits, mps.qubit_limit) +
+                ". Otherwise decompose the unitary into 1- and 2-qubit factors, "
+                "which the chain applies by direct tensor contraction.");
         }
         auto sv = mps.to_statevector();
         gates::apply_unitary(sv, inst.qubits, inst.matrix, {Validation::Ignore});
@@ -1691,13 +1697,15 @@ static constexpr std::size_t MPS_DENSE_SAMPLING_LLC_FALLBACK = std::size_t(4) <<
 static constexpr std::size_t MPS_BYTES_PER_AMPLITUDE = sizeof(Complex128);
 
 // Widest register the dense path may take, detected once. Never above
-// MPS_SV_MAX_QUBITS.
+// ENFORCED_MPS_DENSE_MAX_QUBITS, whatever the chain's qubit_limit: this only
+// chooses between two sampling paths and refuses nothing, so lifting the limit
+// has no reason to widen it.
 static int dense_sampling_max_qubits() {
     static const int cached = [] {
         std::size_t llc = hw::llc_bytes();
         if (llc == 0) llc = MPS_DENSE_SAMPLING_LLC_FALLBACK;
         int n = 0;
-        while (n < MPS_SV_MAX_QUBITS &&
+        while (n < ENFORCED_MPS_DENSE_MAX_QUBITS &&
                (MPS_BYTES_PER_AMPLITUDE << (n + 1)) <= llc)
             ++n;
         return n;
@@ -1744,6 +1752,7 @@ MPSSimulator::Result MPSSimulator::run(
     prototype.svd_rescue = svd_rescue;
     prototype.canonical_form = canonical_form;
     prototype.unchecked_gates = unchecked_gates;
+    prototype.qubit_limit = qubit_limit;
     result.final_state = prototype;
 
     // Pre-flight: reject any out-of-range operand index up front (this backend
@@ -1999,7 +2008,7 @@ namespace detail {
 // A |0...0> chain with every setting of `like`. Re-seeding builds a fresh
 // chain, and the constructor carries the bond cap and the weight cutoff but
 // not the settings that are assigned (the factorisation, the rescue choice,
-// the canonical-form policy). Every branch below that rebuilds a chain goes
+// the canonical-form policy, the dense limit). Every branch below that rebuilds a chain goes
 // through here, or a caller's choice would be silently replaced by the
 // default before the first gate is applied.
 static MPSState fresh_chain_like(const MPSState& like) {
@@ -2008,6 +2017,7 @@ static MPSState fresh_chain_like(const MPSState& like) {
     chain.svd_rescue = like.svd_rescue;
     chain.canonical_form = like.canonical_form;
     chain.unchecked_gates = like.unchecked_gates;
+    chain.qubit_limit = like.qubit_limit;
     return chain;
 }
 

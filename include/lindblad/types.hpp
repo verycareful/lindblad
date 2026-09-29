@@ -427,6 +427,35 @@ constexpr const char* to_string(PrefixReuse r) noexcept {
     return "PrefixReuse(?)";
 }
 
+// =============================================================================
+// QubitLimit - how wide a register a dense representation may be
+// =============================================================================
+// Enforce keeps the default ceilings, sized so a dense state fits a
+// workstation. Lift raises every one of them to LIFTED_MAX_QUBITS, the widest
+// statevector whose byte count (16 * 2^n) fits 64 bits; nothing lifts that.
+// Lifting never bypasses the memory check.
+enum class QubitLimit { Enforce, Lift };
+
+inline constexpr int ENFORCED_MAX_QUBITS = 30;
+inline constexpr int ENFORCED_MPS_DENSE_MAX_QUBITS = 25;
+inline constexpr int LIFTED_MAX_QUBITS = 59;
+
+// The widest statevector a limit allows, and the widest register the MPS
+// backend may expand into a dense array (a gate over three or more qubits, a
+// statevector read).
+inline constexpr int max_statevector_qubits(QubitLimit limit) {
+    return limit == QubitLimit::Lift ? LIFTED_MAX_QUBITS : ENFORCED_MAX_QUBITS;
+}
+inline constexpr int max_mps_dense_qubits(QubitLimit limit) {
+    return limit == QubitLimit::Lift ? LIFTED_MAX_QUBITS : ENFORCED_MPS_DENSE_MAX_QUBITS;
+}
+
+// max_memory_mb values. 0 means automatic (the machine's available memory,
+// else FALLBACK_MEMORY_CAP_MB). NO_MEMORY_CAP is only ever passed by a
+// caller, to say there is no cap.
+inline constexpr std::uint64_t NO_MEMORY_CAP = std::numeric_limits<std::uint64_t>::max();
+inline constexpr std::uint64_t FALLBACK_MEMORY_CAP_MB = 4096;
+
 // Mathematical constants (PI, INV_SQRT2, ...) live in constants.hpp, included
 // at the top of this header, so every one of those names is visible to anything
 // including types.hpp.

@@ -161,7 +161,10 @@ public:
     // ones Y = iXZ carries in this tableau's convention. Intermediate terms are
     // held sparsely, so the working set is the state's own support (2^k for a
     // k-dimensional outcome slab) rather than 2^n.
-    Statevector to_statevector() const;
+    //
+    // limit = the widest register accepted, as for any Statevector: 30 qubits
+    // under Enforce, 59 under Lift. Checked before anything is allocated.
+    Statevector to_statevector(QubitLimit limit = QubitLimit::Enforce) const;
 
     // =========================================================================
     // ColumnTableau - bit-sliced companion for the gate pass

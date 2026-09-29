@@ -55,6 +55,10 @@ public:
         int max_parallel_threads = 0;
         uint64_t max_memory_mb = 0;
         int mps_bond_dim = 64;
+        // Passed to the backend the run reaches: the statevector limit (30
+        // qubits under Enforce, 59 under Lift) and the MPS dense-fallback limit
+        // (25 and 59). See QubitLimit in types.hpp.
+        QubitLimit qubit_limit = QubitLimit::Enforce;
     };
 
     Config config;
@@ -77,7 +81,9 @@ public:
 
     std::string name() const { return "lindblad_local_simulator"; }
     std::string version() const { return LINDBLAD_VERSION_LABEL; }
-    int max_qubits() const { return 30; }
+    // The widest register the statevector backend accepts under
+    // config.qubit_limit.
+    int max_qubits() const { return max_statevector_qubits(config.qubit_limit); }
 };
 
 } // namespace backends
