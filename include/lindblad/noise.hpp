@@ -129,6 +129,19 @@ public:
         const std::unordered_map<std::string, std::vector<int>>& gate_qubits = {}
     );
 
+    // Lossless round trip: every channel's Kraus operators at full double
+    // precision, its qubits and whether it acts before or after the gate,
+    // every readout error, and the noisy-gate list in its stored order. Gate
+    // names and readout qubits are written sorted, so the same model always
+    // produces the same text. from_json restores the members exactly as they
+    // were written, without re-running add_quantum_error's checks, and throws
+    // lindblad::InvalidArgument for a document that is not this format, a
+    // version it does not read, or an operator whose length does not match
+    // its channel's width; a malformed document throws the JSON reader's
+    // std::runtime_error, as QuantumCircuit::from_json does.
+    std::string to_json() const;
+    static NoiseModel from_json(const std::string& json);
+
     std::unordered_map<std::string, std::vector<GateError>> basis_gate_errors;
     std::unordered_map<int, ReadoutError> readout_errors;
     std::vector<std::string> noisy_gates;

@@ -139,6 +139,14 @@ struct JsonReader {
         throw std::runtime_error("JSON parse error: expected a number, got \"" + word + "\"");
     }
 
+    // A JSON literal true or false.
+    bool read_bool() {
+        skip_ws();
+        if (s.compare(pos, 4, "true") == 0) { pos += 4; return true; }
+        if (s.compare(pos, 5, "false") == 0) { pos += 5; return false; }
+        throw std::runtime_error("JSON parse error: expected true or false");
+    }
+
     // Skip a JSON value we don't care about
     void skip_value() {
         skip_ws();
