@@ -411,5 +411,22 @@ std::string Statevector::to_string(int precision) const {
     return oss.str();
 }
 
-} // namespace lindblad
+namespace detail {
 
+bool state_is_finite_and_nonzero(const Statevector& sv) noexcept {
+    const std::size_t dim = sv.dim;
+    const double* re = sv.real_parts;
+    const double* im = sv.imag_parts;
+    double norm_sq = 0.0;
+    int non_finite = 0;
+    #pragma omp parallel for schedule(static) reduction(+:norm_sq, non_finite) if(dim >= (1<<20))
+    for (std::size_t i = 0; i < dim; ++i) {
+        if (!is_finite_strict(re[i]) || !is_finite_strict(im[i])) ++non_finite;
+        norm_sq += re[i] * re[i] + im[i] * im[i];
+    }
+    return non_finite == 0 && norm_sq > 0.0;
+}
+
+}  // namespace detail
+
+} // namespace lindblad

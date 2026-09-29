@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -367,6 +368,11 @@ public:
     const StabilizerState& stabilizer(const std::string& label) const;
     const MPSState& mps(const std::string& label) const;
 
+    // The payload stored under `label`, whatever its kind; throws
+    // std::invalid_argument when the label is absent. What saves and restores
+    // a whole bundle without knowing its labels in advance.
+    const Payload& payload(const std::string& label) const;
+
     // Insertion. A repeated label throws rather than overwriting: two
     // observations under one name means one of them is unreachable, and the
     // caller cannot tell which.
@@ -496,6 +502,19 @@ struct RunPlan {
         // rather than a byte count so that it needs no tuning and no knowledge
         // of the machine.
         double guard_multiple = 1.0;
+
+        // Whether a run that fails after its first gate saves what it had
+        // computed to a folder (see FailedRun in failed_run.hpp). Saved
+        // folders are never deleted by Lindblad: they accumulate until the
+        // caller deletes them, and each can hold a full state, so a folder
+        // nobody watches can fill the disk. DoNotSave keeps the record in
+        // memory only, where the next failure on the thread replaces it.
+        enum class SaveFailedRuns { Save, DoNotSave };
+        SaveFailedRuns save_failed_runs = SaveFailedRuns::Save;
+        // Where they go. Empty: $XDG_STATE_HOME/lindblad/failed-runs, else
+        // $HOME/.local/state/lindblad/failed-runs; on Windows,
+        // %LOCALAPPDATA%\lindblad\failed-runs.
+        std::filesystem::path failed_run_dir;
     };
 
     Options options;
@@ -659,6 +678,13 @@ public:
     void begin_run(int n_qubits, int n_shots);
     void end_run();
 
+    // The failure path's end of run: every observer's end_run, so firings
+    // buffered in BundleWriters reach the bundle; an observer end_run has
+    // already been called on is not called again. An observer that throws here
+    // is noted in `notes` and does not stop the others, and nothing thrown here
+    // replaces the run's own failure.
+    void flush_on_failure(std::vector<std::string>& notes) noexcept;
+
     // The bundle observers with a label write into. Set once, before the run,
     // to the one living on the backend's Result.
     void set_bundle(ObservationBundle* bundle) { bundle_ = bundle; }
@@ -701,6 +727,7 @@ private:
 
     const RunPlan& plan_;
     bool active_ = false;
+    std::size_t ended_count_ = 0;  // observers end_run has been called on
 
     int shot_ = 0;
     int n_shots_ = 1;

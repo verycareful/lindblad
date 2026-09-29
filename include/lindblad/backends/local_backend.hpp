@@ -28,6 +28,9 @@ namespace backends {
 struct BackendResult {
     std::unordered_map<std::string, int> counts;
     double simulation_time_seconds = 0.0;
+    // true and empty on every result a run returns: a run that fails
+    // throws instead, and leaves what it had computed in a FailedRun
+    // (failed_run.hpp).
     bool success = true;
     std::string error_message;
     std::string backend_name;

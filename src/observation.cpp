@@ -298,6 +298,10 @@ std::vector<std::string> ObservationBundle::labels() const {
     return out;
 }
 
+const ObservationBundle::Payload& ObservationBundle::payload(const std::string& label) const {
+    return entry_or_throw(entries_, label, "a payload");
+}
+
 double ObservationBundle::number(const std::string& label) const {
     return payload_or_throw<double>(
         entry_or_throw(entries_, label, "a number"), label, "a number");
@@ -1092,8 +1096,35 @@ void ObservationRunner::end_run() {
     // The last chance: a failure on the final instruction of the final shot has
     // no following instruction and no at_end to carry it out.
     rethrow_if_failed();
-    for (const auto& attachment : plan_.observations.attachments()) {
-        attachment.observer->end_run();
+    // Counted before each call, so an observer whose end_run throws is not
+    // asked again by the failure path, and the ones after it still are.
+    const auto& attachments = plan_.observations.attachments();
+    while (ended_count_ < attachments.size()) {
+        attachments[ended_count_++].observer->end_run();
+    }
+}
+
+void ObservationRunner::flush_on_failure(std::vector<std::string>& notes) noexcept {
+    // A failure already on its way out is the run's; one held from a firing
+    // guard is either that same failure or one the run never reached.
+    failure_ = nullptr;
+    // The budget belongs to the run, which is ending.
+    budget_ = nullptr;
+    const auto& attachments = plan_.observations.attachments();
+    while (ended_count_ < attachments.size()) {
+        try {
+            attachments[ended_count_++].observer->end_run();
+        } catch (const std::exception& e) {
+            try {
+                notes.push_back(std::string("an observer's end_run failed: ") + e.what());
+            } catch (...) {
+            }
+        } catch (...) {
+            try {
+                notes.emplace_back("an observer's end_run failed");
+            } catch (...) {
+            }
+        }
     }
 }
 

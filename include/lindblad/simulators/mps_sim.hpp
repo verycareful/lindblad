@@ -32,6 +32,7 @@ class QuantumCircuit;
 namespace detail {
 struct SvdTruncation;
 struct MPSDispatch;
+struct StateFileAccess;
 class RunBudget;
 
 // =============================================================================
@@ -431,6 +432,8 @@ private:
     // construction, through gate_one_site and gate_two_site without measuring
     // them, and a circuit's own matrices under that instruction's policy.
     friend struct detail::MPSDispatch;
+    // The failed-run state file writes and rebuilds the chain's storage.
+    friend struct detail::StateFileAccess;
 
     std::vector<MPSTensor> tensors_;
     // The open span; see the class comment. {0, -1} when there are no sites.

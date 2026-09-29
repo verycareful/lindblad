@@ -264,6 +264,7 @@ add_library(lindblad_core STATIC
     src/statevector.cpp
     src/observation.cpp
     src/observers.cpp
+    src/failed_run.cpp
     src/preflight.cpp
     src/report.cpp
     src/gates/single_qubit.cpp

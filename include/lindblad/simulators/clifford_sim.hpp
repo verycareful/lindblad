@@ -24,6 +24,8 @@ class QuantumCircuit;
 class DensityMatrix;
 class Statevector;
 
+namespace detail { struct StateFileAccess; }
+
 // =============================================================================
 // StabilizerState — Tableau representation for Clifford circuits
 // =============================================================================
@@ -241,6 +243,9 @@ private:
     void pop_scratch();
 
     void rowmult(int dest, int src);
+
+    // The failed-run state file writes and rebuilds the tableau's storage.
+    friend struct detail::StateFileAccess;
 };
 
 // =============================================================================

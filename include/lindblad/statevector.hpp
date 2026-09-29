@@ -139,4 +139,14 @@ public:
     std::string to_string(int precision = 6) const;
 };
 
+namespace detail {
+
+// Whether `sv` holds a state a run may hand back: every amplitude finite and
+// the squared norm above zero. One pass, in parallel at large sizes. A zero or
+// non-finite final state can only come from a matrix whose physical check was
+// waived, and returning it as a result would present no state as an answer.
+bool state_is_finite_and_nonzero(const Statevector& sv) noexcept;
+
+}  // namespace detail
+
 } // namespace lindblad
