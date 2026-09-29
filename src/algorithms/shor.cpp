@@ -227,7 +227,6 @@ uint64_t Shor::find_order(
     circuit.measure_all();
 
     auto br = backend.run(circuit, 128, seed);
-    if (br.counts.empty()) return 0;
 
     // Iterate observed bitstrings in descending frequency. Return on the first
     // shot that yields a valid r (mod_pow(a, r, N) == 1 for some convergent
