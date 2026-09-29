@@ -8,6 +8,8 @@
 // Commercial License Agreement with the Author.
 
 #include "lindblad/detail/report.hpp"
+#include "lindblad/observation.hpp"
+#include "lindblad/validation.hpp"
 
 #include <cstddef>
 #include <string>
@@ -49,6 +51,28 @@ void raise_internal(std::string_view entry_point, std::string_view what,
     text += " This is a defect in Lindblad, not in your code. Please report it at "
             "https://github.com/verycareful/lindblad/issues with this message.";
     raise<InternalError>(entry_point, text, std::move(where));
+}
+
+bool respond(Response policy, RunPhase phase, std::string_view entry_point,
+             std::string_view what, std::optional<FailurePoint> where) {
+    Response effective = policy;
+    if (policy == Response::Auto) {
+        effective = phase == RunPhase::BeforeFirstGate ? Response::Throw : Response::Warn;
+    }
+    switch (effective) {
+        case Response::Throw:
+            raise<InvalidArgument>(entry_point, what, std::move(where));
+        case Response::Warn: {
+            std::string text = failure_message(entry_point, what, where);
+            if (!text.empty() && text.back() != '.') text += '.';
+            emit_warning("note: " + text + " The observation is omitted.");
+            return false;
+        }
+        case Response::Ignore:
+        case Response::Auto:
+            return false;
+    }
+    return false;
 }
 
 }  // namespace detail

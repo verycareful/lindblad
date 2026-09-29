@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "lindblad/errors.hpp"
 #include "lindblad/types.hpp"
 
 #include <cstddef>
@@ -91,9 +92,10 @@ enum class Cost {
 
 // What a refusal looks like, whatever caused it.
 enum class Response {
-    Throw,   // std::invalid_argument, raised at the pre-flight where possible
+    Throw,   // lindblad::InvalidArgument, raised at the pre-flight where possible
     Warn,    // report through the warning channel and omit the observation
-    Ignore   // omit the observation silently
+    Ignore,  // omit the observation silently
+    Auto     // Throw when decided before the first gate, Warn after it
 };
 
 // -----------------------------------------------------------------------------
@@ -169,6 +171,10 @@ struct ObservationContext {
     // observer given a label writes here as well as into its own storage,
     // which is how one observer serves both roads.
     ObservationBundle* bundle;
+
+    // Whether any work would be lost by stopping here, which is what
+    // Response::Auto decides by.
+    RunPhase phase = RunPhase::MidRun;
 };
 
 // -----------------------------------------------------------------------------
@@ -223,7 +229,8 @@ public:
     // delivered through the response knob and reported by returning false.
     // False means this observer can never produce anything on this run, so the
     // runner drops it rather than invoking it at every anchor it was attached
-    // to. Under Throw the refusal has already been raised and nothing returns.
+    // to. Under Throw, and under Auto since nothing has run yet, the refusal
+    // has already been raised and nothing returns.
     //
     // Whatever is decided here STAYS checked at firing time as well. Two things
     // cannot be known in advance and the firing-time checks are their only
@@ -468,7 +475,10 @@ struct RunPlan {
         // array inside a backend chosen to avoid exactly that.
         Cost initial_cost = Cost::Unlimited;
 
-        Response response = Response::Throw;
+        // Auto throws a refusal decided before the first gate, when stopping
+        // loses nothing, and warns about one met mid-run, when stopping would
+        // throw away every shot and instruction already paid for.
+        Response response = Response::Auto;
         Fusion fusion = Fusion::Suppress;
 
         // Guarded refuses an allocation exceeding this multiple of the live
@@ -496,9 +506,11 @@ struct RunPlan {
 
 namespace detail {
 
-// Deliver a refusal the way the response knob says. Returns false always, so a
-// caller can `return refuse_observation(...)` and read as declining.
-bool refuse_observation(const RunPlan::Options& options, const std::string& message);
+// Deliver a refusal the way the response knob says, at `phase`. Returns false
+// always, so a caller can `return refuse_observation(...)` and read as
+// declining.
+bool refuse_observation(const RunPlan::Options& options, RunPhase phase,
+                        const std::string& message);
 
 // Whether a route from `from` to `to` exists at all: the answer
 // StateView::convertible_to gives, without needing a state to ask it of. This
@@ -513,24 +525,27 @@ std::size_t form_bytes(StateForm form, int n_qubits);
 
 // Judge, before the run, whether `target` can be produced on this backend, by
 // the same rules produce_state applies during it. Returns false having already
-// delivered the refusal through the response knob. The cost comparison is made
+// delivered the refusal through the response knob, at
+// RunPhase::BeforeFirstGate since nothing has run. The cost comparison is made
 // only where form_bytes can answer, so an MPS is left entirely to the
 // firing-time guard.
 bool preflight_conversion(const PreflightContext& ctx, StateForm target,
                           const std::string& what);
 
 // Produce `target` from what the view holds, judged by the knobs. Returns null
-// when the observation is to be omitted, and throws under Response::Throw.
-// `what` names the requester so the message says whose request was refused.
+// when the observation is to be omitted, and throws under Response::Throw, or
+// under Response::Auto at RunPhase::BeforeFirstGate. `what` names the
+// requester so the message says whose request was refused.
 std::shared_ptr<const void> produce_state(const StateView& view, StateForm target,
                                           const RunPlan::Options& options,
-                                          const std::string& what);
+                                          RunPhase phase, const std::string& what);
 
 // Charge an allocation an observer is about to make against the guard, the
 // same comparison produce_state applies to a conversion. Returns false when the
 // observation is to be omitted, having already delivered the refusal.
 bool charge_allocation(const StateView& view, std::size_t bytes,
-                       const RunPlan::Options& options, const std::string& what);
+                       const RunPlan::Options& options, RunPhase phase,
+                       const std::string& what);
 
 // Produce the state a run starts from. The same routes produce_state uses, and
 // the same conversion knob, with three differences that all follow from a
@@ -644,7 +659,8 @@ private:
     using Group = std::vector<const ObservationPlan::Attachment*>;
 
     void compute_layer_boundaries(const QuantumCircuit& circuit);
-    void fire(const Group& group, const StateView& state, int instruction_index);
+    void fire(const Group& group, const StateView& state, int instruction_index,
+              RunPhase phase);
 
     // Raise an observer failure caught in a destructor, if one is waiting.
     void rethrow_if_failed();
