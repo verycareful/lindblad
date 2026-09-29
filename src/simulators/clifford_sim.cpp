@@ -1726,6 +1726,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                 }
                 base = cols.to_state();
             }
+            failure.leave_instructions();
 
             // shots == 0 is ONE seeded trajectory, and the only thing it produces
             // is the returned state, so the measurements have to be drawn into it.
@@ -1869,6 +1870,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                 ++prefix_end;
             }
             prefix_running = false;
+            failure.leave_instructions();
         }
 
         for (int s = 0; s < trajectories; ++s) {
@@ -1908,6 +1910,7 @@ CliffordSimulator::Result CliffordSimulator::run(
             }
 
             if (watcher) watcher->at_end(view, index);
+            failure.leave_instructions();
 
             if (shots > 0) {
                 if (has_measure) {

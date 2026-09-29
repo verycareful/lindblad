@@ -1158,6 +1158,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                     if (inst.type != GT::BARRIER) apply_inst(dm, prefix_end);
                     ++prefix_end;
                 }
+                failure.leave_instructions();
                 snapshot = std::make_unique<DensityMatrix>(dm);
                 budget.set_held(detail::saturating_mul(2, matrix_bytes));
             }
@@ -1256,6 +1257,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 if (watcher) {
                     watcher->at_end(view, static_cast<int>(n_inst) - 1);
                 }
+                failure.leave_instructions();
 
                 // Record shot result
                 if (shots > 0) {
@@ -1303,6 +1305,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 apply_inst(dm, ii);
             }
             if (watcher) watcher->at_end(view, static_cast<int>(n_inst) - 1);
+            failure.leave_instructions();
 
             // Sample measurements from the diagonal of the density matrix.
             // Keys follow the qubit -> clbit mapping of the (terminal)

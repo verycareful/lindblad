@@ -2019,6 +2019,7 @@ MPSSimulator::Result MPSSimulator::run(
             }
 
             if (watcher) watcher->at_end(view, index);
+            failure.leave_instructions();
         };
 
         std::vector<int> clreg(n_clbits, 0);
@@ -2062,6 +2063,7 @@ MPSSimulator::Result MPSSimulator::run(
                 }
                 start.budget_link.detach();
                 prefix_running = false;
+                failure.leave_instructions();
                 result.final_state.absorb_profile(start);
                 detail::MPSDispatch::clear_profile(start);
             }
@@ -2146,6 +2148,7 @@ MPSSimulator::Result MPSSimulator::run(
                     mps_apply_instruction(result.final_state, inst, rng);
                 }
                 if (watcher) watcher->at_end(view, index);
+                failure.leave_instructions();
             }
 
             if (shots > 0) {

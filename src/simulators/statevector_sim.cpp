@@ -281,6 +281,7 @@ static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
     }
 
     if (runner) runner->at_end(view, index);
+    if (failure) failure->leave_instructions();
 }
 
 // One sample of the whole register from `sv`'s own normalised distribution,
@@ -810,6 +811,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                         apply_instruction(*sv_work, inst, {Validation::Ignore});
                     ++prefix_end;
                 }
+                failure.leave_instructions();
                 snapshot = std::make_unique<Statevector>(circuit.n_qubits,
                                                          options.qubit_limit);
                 std::memcpy(snapshot->real_parts, sv_work->real_parts,
@@ -877,6 +879,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                 if (runner->active()) runner->after_instruction(index, inst, view);
             }
             if (runner->active()) runner->at_end(view, index);
+            failure.leave_instructions();
 
             std::vector<std::pair<int, int>> meas;  // (qubit, clbit)
             for (const auto& inst : exec->instructions)

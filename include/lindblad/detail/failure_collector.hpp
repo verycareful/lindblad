@@ -59,6 +59,12 @@ public:
         instruction_ = index;
         inst_ = inst;
     }
+    // A pass over the instructions has ended: what fails next (sampling, the
+    // end-of-run checks) belongs to no instruction.
+    void leave_instructions() noexcept {
+        instruction_ = -1;
+        inst_ = nullptr;
+    }
     bool work_started() const noexcept { return work_started_; }
     void set_shot(int shot) noexcept {
         shot_ = shot;
