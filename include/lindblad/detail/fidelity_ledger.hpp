@@ -54,6 +54,8 @@
 namespace lindblad {
 namespace detail {
 
+struct StateFileAccess;
+
 class FidelityLedger {
 public:
     // One split: kept = Σ sigma² over the retained singular values, discarded
@@ -89,6 +91,10 @@ public:
     }
 
 private:
+    // The failed-run state file writes and restores these figures with the
+    // chain they describe.
+    friend struct StateFileAccess;
+
     double retained_ = 1.0;  // prod_k (1 - eps_k)
     double distance_ = 0.0;  // Delta = sum_k delta_k
     bool valid_ = true;

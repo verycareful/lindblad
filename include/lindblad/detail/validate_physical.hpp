@@ -11,6 +11,7 @@
 
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
+#include "lindblad/detail/report.hpp"
 #include "lindblad/detail/unitary_repair.hpp"
 
 #include <array>
@@ -534,7 +535,8 @@ inline bool gate_keeps_unitarity(const Complex128* U, std::size_t rows,
 // distribution, each outcome's weight divided by the total, which exists only
 // while there is a norm to divide out. A zero or non-finite state has none, so
 // each of them calls this BEFORE drawing, leaving the caller's engine as it
-// was, and raises the type normalize() raises on the same states.
+// was. It raises lindblad::RuntimeFailure, a std::runtime_error as
+// normalize()'s refusal of the same states is.
 //
 // `measure` is what the class's own normalize() divides by, so the two refuse
 // on the same threshold (is_normalizable's): the norm, not its square, for a
@@ -543,9 +545,7 @@ inline bool gate_keeps_unitarity(const Complex128* U, std::size_t rows,
 // could leave nothing to draw from.
 inline void require_norm_to_sample(double measure, const char* ctx) {
     if (!is_normalizable(measure)) {
-        throw std::runtime_error(std::string(ctx) +
-                                 ": no norm to sample from; the state is zero "
-                                 "or non-finite");
+        raise<RuntimeFailure>(ctx, "no norm to sample from; the state is zero or non-finite");
     }
 }
 

@@ -11,6 +11,7 @@
 
 #include "lindblad/failed_run.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -111,6 +112,13 @@ void store_failed_run(FailedRun&& record) noexcept;
 // throws: what it could not write is left in memory and described in
 // save_note.
 void save_failed_run(FailedRun& record, const std::filesystem::path& dir) noexcept;
+
+// CRC-32C (the Castagnoli polynomial) of `n` bytes, continuing from `crc`
+// (0 to start). Every file a failed run saves carries one in its manifest, and
+// load_failed_run refuses a file whose bytes no longer match it. Computed with
+// the SSE4.2 instruction where the build targets it, and a table elsewhere;
+// both give the same value.
+std::uint32_t crc32c(std::uint32_t crc, const void* data, std::size_t n) noexcept;
 
 // JSON values for the option record of a failed run.
 std::string option_value(bool value);

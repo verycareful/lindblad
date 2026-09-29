@@ -223,11 +223,5 @@ void FailureCollector::fail(std::exception_ptr failure,
     std::rethrow_exception(failure);
 }
 
-// =============================================================================
-// Saving
-// =============================================================================
-
-void save_failed_run(FailedRun&, const std::filesystem::path&) noexcept {}
-
 }  // namespace detail
 }  // namespace lindblad
