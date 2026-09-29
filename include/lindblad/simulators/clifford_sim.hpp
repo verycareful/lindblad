@@ -285,6 +285,17 @@ public:
         // repay its table.
         StabilizerState::Elimination elimination =
             StabilizerState::Elimination::Plain;
+
+        // The most memory a run may use, in MiB (2^20 bytes). 0, the default,
+        // is automatic: the memory this machine reports available, or
+        // FALLBACK_MEMORY_CAP_MB when it gives no coherent reading.
+        // NO_MEMORY_CAP means no cap. A run holds three tableau-sized buffers
+        // (the tableau it evolves, the one its Result holds, and a working copy
+        // or the sampling slab), checked before anything is allocated; every
+        // conversion an observer asks for is charged against it while the run
+        // goes on. At ordinary widths it never binds: it is here so every
+        // backend answers to the same option.
+        uint64_t max_memory_mb = 0;
     };
 
     Options options;

@@ -32,7 +32,36 @@ class QuantumCircuit;
 namespace detail {
 struct SvdTruncation;
 struct MPSDispatch;
-}
+class RunBudget;
+
+// =============================================================================
+// BudgetLink - a chain's tie to the run evolving it
+// =============================================================================
+// Which run budget this chain's growth is charged against, and where that run
+// has got to, while an MPSSimulator run evolves it. The link belongs to the
+// object, not to its value: copying or moving a chain never carries it, and
+// assigning to one keeps the target's own. So a chain an observer copied, or
+// the one a run hands back, never refers to a budget that has gone.
+class BudgetLink {
+public:
+    BudgetLink() = default;
+    BudgetLink(const BudgetLink&) noexcept {}
+    BudgetLink& operator=(const BudgetLink&) noexcept { return *this; }
+
+    void attach(RunBudget* run_budget) noexcept {
+        budget = run_budget;
+        shot = -1;
+        instruction = -1;
+        inst = nullptr;
+    }
+    void detach() noexcept { attach(nullptr); }
+
+    RunBudget* budget = nullptr;
+    int shot = -1;                       // -1 outside a per-shot trajectory
+    int instruction = -1;                // -1 before the first instruction
+    const Instruction* inst = nullptr;   // the instruction being applied
+};
+}  // namespace detail
 
 // =============================================================================
 // MPSTensor — tensor for one qubit site
@@ -105,8 +134,12 @@ public:
     // The widest register this chain may expand into a dense array: a gate
     // over three or more qubits, MCX, MCP and PERMUTATION (applied to the
     // amplitudes and the chain rebuilt), and to_statevector. 25 qubits under
-    // Enforce, 59 under Lift (see QubitLimit in types.hpp).
+    // Enforce, 31 under Lift (see QubitLimit in types.hpp).
     QubitLimit qubit_limit = QubitLimit::Enforce;
+    // Set only while an MPSSimulator run evolves this chain; see BudgetLink.
+    // Every two-site update and dense fallback is checked against the run's
+    // memory budget before it allocates.
+    detail::BudgetLink budget_link;
     // Which bond splits first move the orthogonality centre onto their block.
     // Always by default; the two policies and what each costs are with the
     // enum in types.hpp.
@@ -505,6 +538,13 @@ public:
     CanonicalForm canonical_form = CanonicalForm::Always;
     UncheckedGates unchecked_gates = UncheckedGates::Track;
     QubitLimit qubit_limit = QubitLimit::Enforce;
+    // The most memory a run may use, in MiB (2^20 bytes). 0, the default, is
+    // automatic: the memory this machine reports available, or
+    // FALLBACK_MEMORY_CAP_MB when it gives no coherent reading. NO_MEMORY_CAP
+    // means no cap. An MPS run has no fixed footprint to refuse up front; the
+    // cap is the budget every two-site update, dense fallback and observer
+    // copy is checked against before it allocates.
+    uint64_t max_memory_mb = 0;
 
     struct Result {
         MPSState final_state;

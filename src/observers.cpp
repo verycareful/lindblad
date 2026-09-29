@@ -42,8 +42,7 @@ void check_index(std::size_t k, std::size_t count, const char* who) {
 // Returns null when the observation is to be omitted.
 std::shared_ptr<const Statevector> dense_state(const ObservationContext& ctx,
                                                const std::string& what) {
-    auto produced = detail::produce_state(ctx.state, StateForm::Statevector,
-                                          ctx.plan.options, ctx.phase, what);
+    auto produced = detail::produce_state(ctx, StateForm::Statevector, what);
     return std::static_pointer_cast<const Statevector>(produced);
 }
 
@@ -100,9 +99,11 @@ bool StateObserver::preflight(const PreflightContext& ctx) {
 void StateObserver::observe(const ObservationContext& ctx) {
     const StateForm wanted = native_ ? ctx.state.form() : form_;
 
-    auto produced = detail::produce_state(ctx.state, wanted, ctx.plan.options,
-                                          ctx.phase, "StateObserver");
+    auto produced = detail::produce_state(ctx, wanted, "StateObserver");
     if (!produced) return;
+    // Kept to the end of the run, unlike every other observer's conversion,
+    // so the run's budget counts it from here on.
+    detail::retain_allocation(ctx, ctx.state.conversion_bytes(wanted), "StateObserver");
 
     states_.emplace_back(wanted, produced);
     record(ctx, ObservationBundle::StatePayload{wanted, produced});
@@ -443,8 +444,7 @@ namespace {
 using Cplx = std::complex<double>;
 
 bool charge_bytes(const ObservationContext& ctx, std::size_t bytes) {
-    return detail::charge_allocation(ctx.state, bytes, ctx.plan.options, ctx.phase,
-                                     "EntropyObserver");
+    return detail::charge_allocation(ctx, bytes, "EntropyObserver");
 }
 
 // An eigensolver that fails leaves the run's answer intact: only this firing
@@ -810,8 +810,7 @@ std::optional<std::vector<double>> mps_bipartition_spectrum(
         return mps_bond_spectrum(ctx, ctx.state.mps(), cut);
     }
 
-    auto dense = detail::produce_state(ctx.state, StateForm::Statevector,
-                                       ctx.plan.options, ctx.phase, "EntropyObserver");
+    auto dense = detail::produce_state(ctx, StateForm::Statevector, "EntropyObserver");
     if (!dense) return std::nullopt;
 
     const Statevector& sv = *static_cast<const Statevector*>(dense.get());

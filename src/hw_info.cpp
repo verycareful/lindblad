@@ -9,8 +9,12 @@
 
 #include "lindblad/hw_info.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -130,15 +134,35 @@ std::size_t detect_available_memory_bytes() {
     // MemAvailable is the kernel's own estimate of what can be allocated
     // without swapping, page cache it can drop included; MemFree alone would
     // understate it on any machine that has been running a while.
+    //
+    // Only a coherent reading is an answer. A field that does not parse as a
+    // number stops the read. Zero is no answer, a kB figure whose byte count
+    // overflows is not a reading of any machine, and available memory above
+    // the machine's MemTotal, read in the same pass, is not a reading of this
+    // one. Each of those returns 0, so the caller falls back.
     std::ifstream meminfo("/proc/meminfo");
     std::string key;
     unsigned long long value = 0;
     std::string unit;
+    unsigned long long total_kb = 0;
+    unsigned long long avail_kb = 0;
+    bool have_total = false;
+    bool have_avail = false;
     while (meminfo >> key >> value) {
         std::getline(meminfo, unit);
-        if (key == "MemAvailable:") return static_cast<std::size_t>(value) << 10;
+        if (key == "MemTotal:") {
+            total_kb = value;
+            have_total = true;
+        } else if (key == "MemAvailable:") {
+            avail_kb = value;
+            have_avail = true;
+        }
+        if (have_total && have_avail) break;
     }
-    return 0;
+    constexpr unsigned long long max_kb = std::numeric_limits<std::size_t>::max() >> 10;
+    if (!have_avail || avail_kb == 0 || avail_kb > max_kb) return 0;
+    if (have_total && avail_kb > total_kb) return 0;
+    return static_cast<std::size_t>(avail_kb) << 10;
 #endif
 }
 
@@ -150,6 +174,29 @@ std::size_t llc_bytes() {
 }
 
 std::size_t available_memory_bytes() { return detect_available_memory_bytes(); }
+
+std::size_t recent_available_memory_bytes() {
+    // One reading serves every call inside the window. The stamp is published
+    // after the reading (release, then acquire on the read side), so a caller
+    // that sees a fresh stamp also sees the reading it belongs to. Two callers
+    // refreshing at once both read the machine, which costs a second read and
+    // nothing else.
+    constexpr std::int64_t max_age_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds(1)).count();
+    static std::atomic<std::int64_t> read_at{-1};
+    static std::atomic<std::size_t> reading{0};
+    const std::int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count();
+    const std::int64_t stamp = read_at.load(std::memory_order_acquire);
+    if (stamp >= 0 && now - stamp < max_age_ns) {
+        return reading.load(std::memory_order_relaxed);
+    }
+    const std::size_t fresh = detect_available_memory_bytes();
+    reading.store(fresh, std::memory_order_relaxed);
+    read_at.store(now, std::memory_order_release);
+    return fresh;
+}
 
 }  // namespace hw
 }  // namespace lindblad

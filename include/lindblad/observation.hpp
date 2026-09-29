@@ -17,6 +17,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -52,6 +53,8 @@ class MPSState;
 class QuantumCircuit;
 class ObservationBundle;
 struct Instruction;
+
+namespace detail { class RunBudget; }
 
 // -----------------------------------------------------------------------------
 // StateForm - which representation a state is held in
@@ -175,6 +178,11 @@ struct ObservationContext {
     // Whether any work would be lost by stopping here, which is what
     // Response::Auto decides by.
     RunPhase phase = RunPhase::MidRun;
+
+    // The run's memory budget, or null when the run keeps none. The built-in
+    // observers charge the copies they take against it; a caller's observer
+    // has no need to.
+    detail::RunBudget* budget = nullptr;
 };
 
 // -----------------------------------------------------------------------------
@@ -536,15 +544,35 @@ bool preflight_conversion(const PreflightContext& ctx, StateForm target,
 // when the observation is to be omitted, and throws under Response::Throw, or
 // under Response::Auto at RunPhase::BeforeFirstGate. `what` names the
 // requester so the message says whose request was refused.
+//
+// With a run budget, the allocation is also checked against it, whatever the
+// knobs say, and going over raises RuntimeFailure at `where`: the knobs decide
+// whether an observation is wanted, the budget whether the run can afford it.
 std::shared_ptr<const void> produce_state(const StateView& view, StateForm target,
                                           const RunPlan::Options& options,
-                                          RunPhase phase, const std::string& what);
+                                          RunPhase phase, const std::string& what,
+                                          RunBudget* budget = nullptr,
+                                          const std::optional<FailurePoint>& where = {});
 
 // Charge an allocation an observer is about to make against the guard, the
 // same comparison produce_state applies to a conversion. Returns false when the
 // observation is to be omitted, having already delivered the refusal.
 bool charge_allocation(const StateView& view, std::size_t bytes,
                        const RunPlan::Options& options, RunPhase phase,
+                       const std::string& what, RunBudget* budget = nullptr,
+                       const std::optional<FailurePoint>& where = {});
+
+// The two above at a firing, with every argument taken from its context: the
+// view, the knobs, the phase, the budget, and the shot and instruction.
+std::shared_ptr<const void> produce_state(const ObservationContext& ctx, StateForm target,
+                                          const std::string& what);
+bool charge_allocation(const ObservationContext& ctx, std::size_t bytes,
+                       const std::string& what);
+
+// Record that an observer keeps `bytes` it was just handed until the run ends,
+// so every later allocation is judged with them counted. Nothing without a
+// budget.
+void retain_allocation(const ObservationContext& ctx, std::size_t bytes,
                        const std::string& what);
 
 // Produce the state a run starts from. The same routes produce_state uses, and
@@ -635,6 +663,10 @@ public:
     // to the one living on the backend's Result.
     void set_bundle(ObservationBundle* bundle) { bundle_ = bundle; }
 
+    // The run's memory budget, handed to every observer in its context. Set
+    // once, before the first firing; the run owns it.
+    void set_budget(RunBudget* budget) { budget_ = budget; }
+
     // `clbits` must stay alive for the shot; the runner holds it by pointer so
     // an observer reads the register as it stands rather than a copy.
     void begin_shot(int shot, const std::vector<int>& clbits);
@@ -674,6 +706,7 @@ private:
     int n_shots_ = 1;
     const std::vector<int>* clbits_ = nullptr;
     ObservationBundle* bundle_ = nullptr;
+    RunBudget* budget_ = nullptr;
 
     Group start_;
     Group end_;

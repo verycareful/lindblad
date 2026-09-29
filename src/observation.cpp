@@ -12,6 +12,7 @@
 #include "lindblad/circuit.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/validation.hpp"
+#include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/report.hpp"
 #include "lindblad/simulators/clifford_sim.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
@@ -465,7 +466,9 @@ bool refuse_observation(const RunPlan::Options& options, RunPhase phase,
 
 std::shared_ptr<const void> produce_state(const StateView& view, StateForm target,
                                           const RunPlan::Options& options,
-                                          RunPhase phase, const std::string& what) {
+                                          RunPhase phase, const std::string& what,
+                                          RunBudget* budget,
+                                          const std::optional<FailurePoint>& where) {
     const StateForm held = view.form();
 
     if (target != held) {
@@ -503,6 +506,24 @@ std::shared_ptr<const void> produce_state(const StateView& view, StateForm targe
             to_string(target) + ", allocating " +
             std::to_string(view.conversion_bytes(target)) +
             " bytes under Cost::Unlimited.");
+    }
+
+    // The run's budget, whatever the knobs allowed. A density matrix built
+    // from a tableau or a chain passes through its dense amplitudes, which
+    // are alive beside it at the peak.
+    if (budget) {
+        std::uint64_t peak = view.conversion_bytes(target);
+        if (target == StateForm::DensityMatrix &&
+            (held == StateForm::Stabilizer || held == StateForm::MPS)) {
+            peak = saturating_add(peak, view.conversion_bytes(StateForm::Statevector));
+        }
+        if (!budget->fits(peak)) {
+            budget->check_peak(peak,
+                               target == held ? what + " copying the state"
+                                              : what + " converting the state into a " +
+                                                    to_string(target),
+                               where);
+        }
     }
 
     switch (target) {
@@ -676,16 +697,58 @@ std::shared_ptr<const void> produce_initial_state(const StateView& supplied,
 
 bool charge_allocation(const StateView& view, std::size_t bytes,
                        const RunPlan::Options& options, RunPhase phase,
+                       const std::string& what, RunBudget* budget,
+                       const std::optional<FailurePoint>& where) {
+    if (options.cost == Cost::Guarded) {
+        const double guard =
+            static_cast<double>(view.state_bytes()) * options.guard_multiple;
+        if (static_cast<double>(bytes) > guard) {
+            return refuse_observation(
+                options, phase, what + " would allocate " + std::to_string(bytes) +
+                " bytes against a live state of " + std::to_string(view.state_bytes()) +
+                " bytes, which is over the guard. Cost::Unlimited allows it.");
+        }
+    }
+    // The run's budget, whatever the guard allowed.
+    if (budget && !budget->fits(bytes)) {
+        budget->check_peak(bytes, what + " working on the state", where);
+    }
+    return true;
+}
+
+namespace {
+
+// The shot and instruction a firing happened at, for a budget refusal. The
+// context carries the position but not the instruction, so no gate is named.
+FailurePoint firing_point(const ObservationContext& ctx) {
+    FailurePoint point;
+    point.shot = ctx.shot;
+    point.instruction = ctx.instruction_index;
+    return point;
+}
+
+}  // namespace
+
+std::shared_ptr<const void> produce_state(const ObservationContext& ctx, StateForm target,
+                                          const std::string& what) {
+    return produce_state(ctx.state, target, ctx.plan.options, ctx.phase, what, ctx.budget,
+                         firing_point(ctx));
+}
+
+bool charge_allocation(const ObservationContext& ctx, std::size_t bytes,
                        const std::string& what) {
-    if (options.cost != Cost::Guarded) return true;
+    return charge_allocation(ctx.state, bytes, ctx.plan.options, ctx.phase, what,
+                             ctx.budget, firing_point(ctx));
+}
 
-    const double budget = static_cast<double>(view.state_bytes()) * options.guard_multiple;
-    if (static_cast<double>(bytes) <= budget) return true;
-
-    return refuse_observation(
-        options, phase, what + " would allocate " + std::to_string(bytes) +
-        " bytes against a live state of " + std::to_string(view.state_bytes()) +
-        " bytes, which is over the guard. Cost::Unlimited allows it.");
+void retain_allocation(const ObservationContext& ctx, std::size_t bytes,
+                       const std::string& what) {
+    if (ctx.budget == nullptr) return;
+    if (!ctx.budget->fits(bytes)) {
+        ctx.budget->check_peak(bytes, what + " keeping a copy of the state",
+                               firing_point(ctx));
+    }
+    ctx.budget->retain(bytes, what);
 }
 
 void apply_initial_state(const RunPlan& plan, Statevector& sv) {
@@ -1053,7 +1116,8 @@ void ObservationRunner::fire(const std::vector<const ObservationPlan::Attachment
                                      clbits_ ? *clbits_ : no_clbits,
                                      plan_,
                                      bundle_,
-                                     phase};
+                                     phase,
+                                     budget_};
         attachment->observer->observe(ctx);
     }
 }
@@ -1123,7 +1187,7 @@ void ObservationRunner::after_instruction(int index, const Instruction& inst,
             const std::string anchor = attachment->anchor.name();
             const ObservationContext ctx{state, anchor, index, shot_, n_shots_,
                                          clbits_ ? *clbits_ : no_clbits, plan_,
-                                         bundle_, RunPhase::MidRun};
+                                         bundle_, RunPhase::MidRun, budget_};
             attachment->observer->observe(ctx);
         }
     }

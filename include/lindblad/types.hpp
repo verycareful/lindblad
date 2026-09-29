@@ -407,10 +407,10 @@ constexpr const char* to_string(UncheckedGates g) noexcept {
 //   Hardware = take it when the memory the operating system reports available
 //              at that moment (hw::available_memory_bytes) is at least twice
 //              the snapshot, so the machine keeps as much free as the copy
-//              takes, and the run still fits max_memory_mb when one is set.
-//              No reading means no snapshot. The default.
-//   Manual   = take it when the run, snapshot included, fits max_memory_mb;
-//              with no max_memory_mb set, always.
+//              takes, and the run still fits its memory cap (max_memory_mb,
+//              or the automatic cap when that is 0). No reading means no
+//              snapshot. The default.
+//   Manual   = take it when the run, snapshot included, fits its memory cap.
 //   Off      = never; every shot reruns its prefix.
 //
 // An observed run never takes one, whatever this says: anchors inside the
@@ -431,14 +431,20 @@ constexpr const char* to_string(PrefixReuse r) noexcept {
 // QubitLimit - how wide a register a dense representation may be
 // =============================================================================
 // Enforce keeps the default ceilings, sized so a dense state fits a
-// workstation. Lift raises every one of them to LIFTED_MAX_QUBITS, the widest
-// statevector whose byte count (16 * 2^n) fits 64 bits; nothing lifts that.
+// workstation. Lift raises the statevector ceilings to LIFTED_MAX_QUBITS, the
+// widest statevector whose byte count (16 * 2^n) fits 64 bits, and the MPS
+// dense fallback to LIFTED_MPS_DENSE_MAX_QUBITS; nothing lifts either.
 // Lifting never bypasses the memory check.
+//
+// The MPS ceiling is lower because the fallback rebuilds the chain by
+// factorising a 2 x 2^(n-1) block, and the factorisation takes its dimensions
+// as int: 2^30 columns (n = 31) is the widest block it can address.
 enum class QubitLimit { Enforce, Lift };
 
 inline constexpr int ENFORCED_MAX_QUBITS = 30;
 inline constexpr int ENFORCED_MPS_DENSE_MAX_QUBITS = 25;
 inline constexpr int LIFTED_MAX_QUBITS = 59;
+inline constexpr int LIFTED_MPS_DENSE_MAX_QUBITS = 31;
 
 // The widest statevector a limit allows, and the widest register the MPS
 // backend may expand into a dense array (a gate over three or more qubits, a
@@ -447,7 +453,8 @@ inline constexpr int max_statevector_qubits(QubitLimit limit) {
     return limit == QubitLimit::Lift ? LIFTED_MAX_QUBITS : ENFORCED_MAX_QUBITS;
 }
 inline constexpr int max_mps_dense_qubits(QubitLimit limit) {
-    return limit == QubitLimit::Lift ? LIFTED_MAX_QUBITS : ENFORCED_MPS_DENSE_MAX_QUBITS;
+    return limit == QubitLimit::Lift ? LIFTED_MPS_DENSE_MAX_QUBITS
+                                     : ENFORCED_MPS_DENSE_MAX_QUBITS;
 }
 
 // max_memory_mb values. 0 means automatic (the machine's available memory,

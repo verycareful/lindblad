@@ -13,6 +13,7 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/report.hpp"
 
 #include <optional>
@@ -1416,6 +1417,11 @@ CliffordSimulator::Result CliffordSimulator::run(
     using GT = Instruction::GateType;
     ScopedWarningFlush flush_on_exit;
     detail::check_circuit_has_qubits(circuit_in.n_qubits, "CliffordSimulator::run");
+    // Checked before the Result below allocates its own tableau.
+    const std::uint64_t three_tableaux = detail::saturating_mul(
+        3, detail::form_bytes(StateForm::Stabilizer, circuit_in.n_qubits));
+    const std::uint64_t cap_bytes = detail::require_memory_budget(
+        three_tableaux, options.max_memory_mb, "CliffordSimulator::run");
     Result result(circuit_in.n_qubits);
 
     // Pre-flight: reject any out-of-range operand index up front (this backend
@@ -1589,6 +1595,11 @@ CliffordSimulator::Result CliffordSimulator::run(
     detail::ObservationRunner runner(plan, circuit, StateForm::Stabilizer);
     runner.set_bundle(&result.observations);
     detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
+    // Everything the run allocates beyond its tableaux is charged here before
+    // it is allocated: the conversions its observers ask for, which reach
+    // 16 * 2^n bytes for a dense state.
+    detail::RunBudget budget(cap_bytes, three_tableaux, "CliffordSimulator::run");
+    runner.set_budget(&budget);
     const bool harnessed = !plan.empty();
 
     const std::vector<bool> trivial = detail::trivial_resets(

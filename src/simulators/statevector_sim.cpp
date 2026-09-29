@@ -605,10 +605,10 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // A run holds two states at once: the working buffer and the copy
         // returned in Result::final_state. A prefix snapshot, when taken, is
         // released before that copy is made, so it does not raise the count.
-        detail::require_memory_budget(
-            detail::saturating_mul(2, detail::complex_bytes(
-                                          detail::pow2_saturating(circuit_in.n_qubits))),
-            options.max_memory_mb, "StatevectorSimulator::run");
+        const std::uint64_t two_states = detail::saturating_mul(
+            2, detail::complex_bytes(detail::pow2_saturating(circuit_in.n_qubits)));
+        const std::uint64_t cap_bytes = detail::require_memory_budget(
+            two_states, options.max_memory_mb, "StatevectorSimulator::run");
         // Pre-flight: reject any out-of-range operand index up front so the
         // failure surfaces through Result rather than reaching a kernel.
         circuit_in.validate_operands();
@@ -698,6 +698,10 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // it.
         detail::ObservationRunner runner(plan, *exec, StateForm::Statevector);
         runner.set_bundle(&result.observations);
+        // Everything the run allocates beyond its two states is charged here
+        // before it is allocated: the copies and conversions its observers take.
+        detail::RunBudget budget(cap_bytes, two_states, "StatevectorSimulator::run");
+        runner.set_budget(&budget);
 
         // Execution strategy (docs/api/simulators.md, Execution semantics):
         //   1. Terminal-only measurements (no feedforward, nothing acting on

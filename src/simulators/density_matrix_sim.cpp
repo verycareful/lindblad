@@ -869,9 +869,10 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                                          "DensityMatrixSimulator::run");
         // A run holds one density matrix; a prefix snapshot, when taken, is
         // judged on its own below.
-        detail::require_memory_budget(
-            detail::complex_bytes(detail::pow2_saturating(2 * circuit_in.n_qubits)),
-            options.max_memory_mb, "DensityMatrixSimulator::run");
+        const std::uint64_t one_matrix =
+            detail::complex_bytes(detail::pow2_saturating(2 * circuit_in.n_qubits));
+        const std::uint64_t cap_bytes = detail::require_memory_budget(
+            one_matrix, options.max_memory_mb, "DensityMatrixSimulator::run");
         auto t_start = std::chrono::high_resolution_clock::now();
 
         // Pre-flight: reject any out-of-range operand index up front so the
@@ -1073,6 +1074,10 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
         detail::ObservationRunner runner(plan, circuit, StateForm::DensityMatrix);
         runner.set_bundle(&result.observations);
         detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
+        // Everything the run allocates beyond its matrix is charged here before
+        // it is allocated: the copies and conversions its observers take.
+        detail::RunBudget budget(cap_bytes, one_matrix, "DensityMatrixSimulator::run");
+        runner.set_budget(&budget);
 
         if (needs_per_shot) {
             // Per-shot trajectory path (feedforward and/or mid-circuit
@@ -1116,6 +1121,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                     ++prefix_end;
                 }
                 snapshot = std::make_unique<DensityMatrix>(dm);
+                budget.set_held(detail::saturating_mul(2, matrix_bytes));
             }
 
             for (int shot = 0; shot < n_shots; ++shot) {

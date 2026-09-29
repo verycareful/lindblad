@@ -41,7 +41,18 @@ std::size_t llc_bytes();
 // afresh on every call, since it changes as the process and the machine
 // allocate; a caller deciding whether a buffer fits asks at the moment it
 // would allocate.
+//
+// On Linux only a coherent reading counts: MemAvailable parsed as a number,
+// non-zero, convertible to bytes without overflow, and no larger than
+// MemTotal. Anything else is 0.
 std::size_t available_memory_bytes();
+
+// The same figure, read at most once a second and shared between calls in
+// between. The memory cap every run answers to is taken from this: a run
+// asks once, before it starts, and reading /proc/meminfo on every call would
+// cost more than a small run does. The cap is a snapshot either way, since
+// another process can allocate the moment after any reading.
+std::size_t recent_available_memory_bytes();
 
 }  // namespace hw
 }  // namespace lindblad

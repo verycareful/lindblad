@@ -67,6 +67,7 @@ BackendResult LocalBackend::run(
             }
             case SimType::CLIFFORD: {
                 CliffordSimulator sim;
+                sim.options.max_memory_mb = config.max_memory_mb;
                 auto cliff_result = sim.run(circuit, shots, seed);
                 result.counts = cliff_result.counts;
                 result.success = true;
@@ -75,6 +76,7 @@ BackendResult LocalBackend::run(
             case SimType::MPS: {
                 MPSSimulator sim;
                 sim.qubit_limit = config.qubit_limit;
+                sim.max_memory_mb = config.max_memory_mb;
                 auto mps_result = sim.run(circuit, config.mps_bond_dim, shots, seed);
                 result.counts = mps_result.counts;
                 result.simulation_time_seconds = mps_result.simulation_time_seconds;

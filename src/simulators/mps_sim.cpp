@@ -26,6 +26,7 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/circuit.hpp"
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/report.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate_physical.hpp"
@@ -438,6 +439,64 @@ void MPSState::gate_one_site(const std::array<Complex128, 4>& U, int qubit,
 }
 
 // =============================================================================
+// Run budget - what an MPS run's growth is charged against
+// =============================================================================
+
+// Bytes the chain's site tensors hold.
+static std::uint64_t chain_bytes(const std::vector<MPSTensor>& tensors) {
+    std::uint64_t bytes = 0;
+    for (const auto& tensor : tensors) {
+        bytes = detail::saturating_add(bytes,
+                                       detail::complex_bytes(tensor.data.size()));
+    }
+    return bytes;
+}
+
+// Where a linked run is, for a refusal: built only when one is raised, so the
+// instruction loop stores two ints and a pointer per gate and copies nothing.
+static FailurePoint link_point(const detail::BudgetLink& link) {
+    FailurePoint point;
+    point.shot = link.shot;
+    point.instruction = link.instruction;
+    if (link.inst != nullptr) {
+        point.gate = link.inst->gate_name();
+        point.qubits = link.inst->qubits;
+    }
+    return point;
+}
+
+// What a two-site update at bonds (bl, br) allocates beyond the chain before
+// it releases anything, in bytes: the contracted block and the gated block,
+// each (2 bl) x (2 br); the factorisation's U and V at the kept rank k and the
+// row-major copies taken of them; the two new site tensors; and the singular
+// values twice. A kernel's own workspace is not counted, so the budget bounds
+// what this code allocates rather than every byte a library below it touches.
+static std::uint64_t two_site_peak_bytes(int bl, int br, int max_bond_dim) {
+    const std::uint64_t l = static_cast<std::uint64_t>(bl);
+    const std::uint64_t r = static_cast<std::uint64_t>(br);
+    std::uint64_t k = std::min<std::uint64_t>(2 * l, 2 * r);
+    if (max_bond_dim > 0) k = std::min<std::uint64_t>(k, static_cast<std::uint64_t>(max_bond_dim));
+    const std::uint64_t blocks = detail::saturating_mul(8, detail::saturating_mul(l, r));
+    const std::uint64_t factors = detail::saturating_mul(6, detail::saturating_mul(k, l + r));
+    return detail::saturating_add(
+        detail::complex_bytes(detail::saturating_add(blocks, factors)),
+        detail::saturating_mul(2 * k, sizeof(double)));
+}
+
+// A dense fallback holds, at its peak, at most four arrays of 2^n amplitudes:
+// to_statevector's contraction keeps its last two rows of the expansion and
+// then one of them beside the Statevector it fills, and the rebuild holds the
+// Statevector, its bit-reversed block, and the first split's factor of the
+// same size. Checked before to_statevector is called.
+static void charge_dense_fallback(const MPSState& mps, const std::string& what) {
+    detail::RunBudget* budget = mps.budget_link.budget;
+    if (budget == nullptr) return;
+    const std::uint64_t peak = detail::saturating_mul(
+        4, detail::complex_bytes(detail::pow2_saturating(mps.n_qubits)));
+    if (!budget->fits(peak)) budget->check_peak(peak, what, link_point(mps.budget_link));
+}
+
+// =============================================================================
 // Adjacent two-qubit gate — contract, apply, SVD-split
 // U is 4x4 in row-major index order: U[po1*2+po2, pi1*2+pi2]
 // q1 and q2 MUST be adjacent (q2 == q1+1)
@@ -460,6 +519,15 @@ void MPSState::apply_two_qubit_gate_adjacent(
     int bl = T1.bond_left;
     int bm = T1.bond_right;  // = T2.bond_left
     int br = T2.bond_right;
+
+    // Before anything is allocated, so a run over its budget stops with the
+    // chain as it was.
+    if (budget_link.budget != nullptr) {
+        const std::uint64_t peak = two_site_peak_bytes(bl, br, max_bond_dim);
+        if (!budget_link.budget->fits(peak)) {
+            budget_link.budget->check_peak(peak, "a two-site update", link_point(budget_link));
+        }
+    }
 
     // theta[l, p1, p2, r] = sum_m T1[l,p1,m] * T2[m,p2,r]
     // Stored as (bl*2) x (2*br) matrix for SVD: row = l*2+p1, col = p2*br+r.
@@ -549,6 +617,8 @@ void MPSState::apply_two_qubit_gate_adjacent(
         if (span_hi <= q2) span_hi = q1;
         span_lo = std::min(span_lo, q1);
     }
+
+    if (budget_link.budget != nullptr) budget_link.budget->set_state(chain_bytes(tensors_));
 }
 
 // =============================================================================
@@ -921,17 +991,22 @@ std::string MPSState::measure_sequential(std::mt19937_64& rng) {
 // =============================================================================
 
 // Every dense route this backend takes stops at max_mps_dense_qubits(
-// qubit_limit): 25 qubits under Enforce (2^25 complex doubles, 512 MiB), 59
+// qubit_limit): 25 qubits under Enforce (2^25 complex doubles, 512 MiB), 31
 // under Lift. Terminal sampling stops earlier still (see
 // dense_sampling_is_cheaper). This is the refusal each of those routes gives,
-// naming the limit in force and, under Enforce, how to lift it.
+// naming the limit in force and, when one exists, how to lift it.
 static std::string dense_limit_text(int n_qubits, QubitLimit limit) {
     std::string text = std::to_string(n_qubits) +
                        " qubits exceed the dense-fallback limit (" +
                        std::to_string(max_mps_dense_qubits(limit)) + ")";
-    if (limit == QubitLimit::Enforce && n_qubits <= LIFTED_MAX_QUBITS) {
+    if (n_qubits > LIFTED_MPS_DENSE_MAX_QUBITS) {
+        text += ", which no setting raises past " +
+                std::to_string(LIFTED_MPS_DENSE_MAX_QUBITS) +
+                ": the chain is rebuilt by factorising a 2 x 2^(n-1) block, "
+                "and that is the widest the factorisation can address";
+    } else if (limit == QubitLimit::Enforce) {
         text += "; qubit_limit = QubitLimit::Lift raises it to " +
-                std::to_string(LIFTED_MAX_QUBITS);
+                std::to_string(LIFTED_MPS_DENSE_MAX_QUBITS);
     }
     return text;
 }
@@ -949,24 +1024,29 @@ Statevector MPSState::to_statevector() const {
     //               with bond index r ∈ [0, bond_right[q]).
     //
     // Expansion step: new_current[idx*2 + p, r'] = sum_m current[idx, m] * T[m, p, r']
-    int dim_so_far = 1;
+    //
+    // Row counts and flat offsets are size_t: past 30 qubits, which Lift
+    // allows, 2^n rows no longer fit an int.
+    std::size_t dim_so_far = 1;
     std::vector<Complex128> current(1, Complex128(1.0, 0.0));  // 1x1 identity
 
     for (int q = 0; q < n_qubits; ++q) {
         const auto& T  = tensors_[q];
         const int bl   = T.bond_left;
         const int br   = T.bond_right;
-        const int new_dim = dim_so_far * 2;
+        const std::size_t new_dim = dim_so_far * 2;
+        const std::size_t ubl = static_cast<std::size_t>(bl);
+        const std::size_t ubr = static_cast<std::size_t>(br);
 
-        std::vector<Complex128> next(new_dim * br, Complex128(0.0, 0.0));
-        for (int idx = 0; idx < dim_so_far; ++idx) {
+        std::vector<Complex128> next(new_dim * ubr, Complex128(0.0, 0.0));
+        for (std::size_t idx = 0; idx < dim_so_far; ++idx) {
             for (int p = 0; p < 2; ++p) {
-                const int new_row = idx * 2 + p;
+                const std::size_t new_row = idx * 2 + static_cast<std::size_t>(p);
                 for (int r = 0; r < br; ++r) {
                     Complex128 sum(0.0, 0.0);
                     for (int m = 0; m < bl; ++m)
-                        sum += current[idx * bl + m] * T(m, p, r);
-                    next[new_row * br + r] = sum;
+                        sum += current[idx * ubl + static_cast<std::size_t>(m)] * T(m, p, r);
+                    next[new_row * ubr + static_cast<std::size_t>(r)] = sum;
                 }
             }
         }
@@ -985,7 +1065,7 @@ Statevector MPSState::to_statevector() const {
     //
     // Reconcile by bit-reversing each index when writing the output.
     Statevector sv(n_qubits, qubit_limit);
-    for (size_t idx = 0; idx < static_cast<size_t>(dim_so_far); ++idx) {
+    for (size_t idx = 0; idx < dim_so_far; ++idx) {
         // Reverse the N-bit representation of idx so that qubit 0 maps to bit 0.
         size_t rev = 0;
         for (int b = 0; b < n_qubits; ++b)
@@ -1011,6 +1091,14 @@ void MPSState::rebuild_from_statevector(const Statevector& sv) {
             std::to_string(n));
     }
     if (n == 0) return;
+    // The first split factorises a 2 x 2^(n-1) block, and the factorisation
+    // takes its dimensions as int.
+    if (n > LIFTED_MPS_DENSE_MAX_QUBITS) {
+        throw std::invalid_argument(
+            "MPSState::rebuild_from_statevector: " + std::to_string(n) +
+            " qubits is wider than the " + std::to_string(LIFTED_MPS_DENSE_MAX_QUBITS) +
+            " the rebuild can factorise; its first block is 2 x 2^(n-1)");
+    }
 
     // Built beside this state rather than into it, so a throw part way through
     // the sweep leaves the chain and its fidelity figures as they were rather
@@ -1019,8 +1107,11 @@ void MPSState::rebuild_from_statevector(const Statevector& sv) {
     detail::FidelityLedger ledger = fidelity;
     size_t dim = 1ULL << n;
 
+    // right_cols is 2^n before the first split, one past what an int holds at
+    // n = 31, so it and every flat offset below are size_t. half_cols, which
+    // the factorisation receives, is at most 2^30.
     int left_bond = 1;
-    int right_cols = (int)dim;
+    std::size_t right_cols = dim;
     std::vector<Complex128> block(dim);
     // sv uses qubit q at bit q (LSB = qubit 0); the MPS sequential SVD expects
     // qubit 0 at the MSB of each index (site 0 = MSB).  Bit-reverse each index
@@ -1033,8 +1124,8 @@ void MPSState::rebuild_from_statevector(const Statevector& sv) {
     }
 
     for (int site = 0; site < n - 1; ++site) {
-        int half_cols = right_cols / 2;
-        int rows = left_bond * 2;
+        const int half_cols = static_cast<int>(right_cols / 2);
+        const int rows = left_bond * 2;
 
         // The block IS the matrix this split needs, so it is handed over in
         // place. right_cols == 2 * half_cols, so the reshape index
@@ -1082,15 +1173,17 @@ void MPSState::rebuild_from_statevector(const Statevector& sv) {
                         split.U(alpha * 2 + p, r).imag()};
 
         // New block = S * V†
-        block.resize(k * half_cols);
+        const std::size_t uhalf = static_cast<std::size_t>(half_cols);
+        block.resize(static_cast<std::size_t>(k) * uhalf);
         for (int r = 0; r < k; ++r)
             for (int c2 = 0; c2 < half_cols; ++c2) {
                 auto v = split.S(r) * std::conj(split.V(c2, r));
-                block[r * half_cols + c2] = {v.real(), v.imag()};
+                block[static_cast<std::size_t>(r) * uhalf + static_cast<std::size_t>(c2)] =
+                    {v.real(), v.imag()};
             }
 
         left_bond = k;
-        right_cols = half_cols;
+        right_cols = uhalf;
     }
 
     result.tensors_[n - 1] = MPSTensor(left_bond, 1);
@@ -1410,6 +1503,7 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
                 ". Otherwise decompose it to 1- and 2-qubit gates or use the "
                 "statevector or density-matrix backend");
         }
+        charge_dense_fallback(mps, "the dense fallback for " + inst.gate_name());
         auto sv = mps.to_statevector();
         if (inst.type == GT::MCX) {
             std::vector<int> controls(inst.qubits.begin(), inst.qubits.end() - 1);
@@ -1473,6 +1567,8 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
                 ". Otherwise decompose the unitary into 1- and 2-qubit factors, "
                 "which the chain applies by direct tensor contraction.");
         }
+        charge_dense_fallback(mps, "the dense fallback for a " +
+                                       std::to_string(inst.qubits.size()) + "-qubit UNITARY");
         auto sv = mps.to_statevector();
         gates::apply_unitary(sv, inst.qubits, inst.matrix, {Validation::Ignore});
         mps.rebuild_from_statevector(sv);
@@ -1565,6 +1661,7 @@ static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
                 detail::MPSDispatch::one_site(mps, H_g, q2, true);
                 break;
             case GT::UNITARY: {
+                charge_dense_fallback(mps, "the dense fallback for a 3-qubit UNITARY");
                 auto sv = mps.to_statevector();
                 gates::apply_unitary(sv, inst.qubits, inst.matrix,
                                      {Validation::Ignore});
@@ -1801,6 +1898,16 @@ MPSSimulator::Result MPSSimulator::run(
     runner.set_bundle(&result.observations);
     detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
 
+    // Everything the run allocates is checked here before it is allocated: the
+    // evolving chain's growth at every two-site update, its dense fallbacks,
+    // and the copies observers take. The chain being evolved is linked to it
+    // (MPSState::budget_link) and reports its own size as `state`; chains the
+    // run keeps but is not evolving are `held`. An MPS run has no fixed
+    // footprint to refuse before the first gate, so the cap is met here.
+    detail::RunBudget budget(detail::resolve_memory_cap_bytes(max_memory_mb), 0,
+                             "MPSSimulator::run");
+    runner.set_budget(&budget);
+
     // `first` = the instruction to start from: 0, or the end of a prefix a
     // shared start chain has already run.
     auto run_trajectory = [&](MPSState& state, std::vector<int>& clreg,
@@ -1813,6 +1920,8 @@ MPSSimulator::Result MPSSimulator::run(
             const Instruction& inst = circuit.instructions[i];
             using GT = Instruction::GateType;
             ++index;
+            state.budget_link.instruction = index;
+            state.budget_link.inst = &inst;
             if (watcher) watcher->before_instruction(index, inst, view);
             detail::FiringGuard fire(watcher, index, inst, view);
             if (inst.type == GT::BARRIER) continue;
@@ -1858,15 +1967,20 @@ MPSSimulator::Result MPSSimulator::run(
         MPSState start = prototype;
         if (reuse) {
             detail::apply_initial_state(plan, start);
+            start.budget_link.attach(&budget);
+            budget.set_state(chain_bytes(start.tensors()));
             using GT = Instruction::GateType;
             while (prefix_end < circuit.instructions.size()) {
                 const Instruction& inst = circuit.instructions[prefix_end];
                 if (inst.type == GT::MEASURE || inst.type == GT::RESET ||
                     inst.condition_clbit >= 0)
                     break;
+                start.budget_link.instruction = static_cast<int>(prefix_end);
+                start.budget_link.inst = &inst;
                 if (inst.type != GT::BARRIER) mps_apply_instruction(start, inst, rng);
                 ++prefix_end;
             }
+            start.budget_link.detach();
             result.final_state.absorb_profile(start);
             detail::MPSDispatch::clear_profile(start);
         }
@@ -1876,6 +1990,14 @@ MPSSimulator::Result MPSSimulator::run(
         for (int shot = 0; shot < shots; ++shot) {
             MPSState trajectory = reuse ? start : prototype;
             if (!reuse) detail::apply_initial_state(plan, trajectory);
+            // Held while this shot runs: the shared start and the previous
+            // shot's chain, which result.final_state keeps.
+            budget.set_held(detail::saturating_add(
+                reuse ? chain_bytes(start.tensors()) : 0,
+                chain_bytes(result.final_state.tensors())));
+            trajectory.budget_link.attach(&budget);
+            trajectory.budget_link.shot = shot;
+            budget.set_state(chain_bytes(trajectory.tensors()));
             clreg.assign(n_clbits, 0);
             runner.begin_shot(shot, clreg);
             run_trajectory(trajectory, clreg, prefix_end);
@@ -1905,6 +2027,8 @@ MPSSimulator::Result MPSSimulator::run(
         }
     } else {
         detail::apply_initial_state(plan, result.final_state);
+        result.final_state.budget_link.attach(&budget);
+        budget.set_state(chain_bytes(result.final_state.tensors()));
         runner.begin_run(circuit.n_qubits, 1);
         runner.begin_shot(0, clreg);
 
@@ -1924,6 +2048,8 @@ MPSSimulator::Result MPSSimulator::run(
             for (const auto& inst : circuit.instructions) {
                 using GT = Instruction::GateType;
                 ++index;
+                result.final_state.budget_link.instruction = index;
+                result.final_state.budget_link.inst = &inst;
                 if (watcher) watcher->before_instruction(index, inst, view);
                 detail::FiringGuard fire(watcher, index, inst, view);
                 if (inst.type == GT::BARRIER || inst.type == GT::MEASURE) continue;
@@ -1967,6 +2093,11 @@ MPSSimulator::Result MPSSimulator::run(
             // Either path refuses a chain with no norm before its first draw,
             // naming this call rather than the state class underneath it.
             if (dense_sampling_is_cheaper(result.final_state, shots)) {
+                // to_statevector's last two expansion rows, then one of them
+                // beside the Statevector it fills.
+                const std::uint64_t dense = detail::saturating_mul(
+                    2, detail::complex_bytes(detail::pow2_saturating(nq)));
+                budget.check_peak(dense, "sampling the final chain through its dense form");
                 auto sv = result.final_state.to_statevector();
                 detail::require_norm_to_sample(sv.norm(), "MPSSimulator::run");
                 auto raw = sv.sample_counts(shots, seed);
@@ -1994,6 +2125,9 @@ MPSSimulator::Result MPSSimulator::run(
     result.simulation_time_seconds =
         std::chrono::duration<double>(t_end - t_start).count();
 
+    // The budget ends with this call; the chain handed back must not refer
+    // to it.
+    result.final_state.budget_link.detach();
     return result;
 }
 

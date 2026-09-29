@@ -137,11 +137,14 @@ public:
 class DensityMatrixSimulator {
 public:
     struct Options {
-        // The most memory the caller gives a run, in MiB (2^20 bytes); 0 = no
-        // limit. It caps the density matrices a run holds at once, 16 * 4^n
-        // bytes each: one, and a second while a per-shot run keeps its
-        // prefix snapshot. A run whose one matrix exceeds it is refused up
-        // front, through Result, before anything is allocated.
+        // The most memory a run may use, in MiB (2^20 bytes). 0, the default,
+        // is automatic: the memory this machine reports available, or
+        // FALLBACK_MEMORY_CAP_MB when it gives no coherent reading.
+        // NO_MEMORY_CAP means no cap. It caps the density matrices a run holds
+        // at once, 16 * 4^n bytes each: one, and a second while a per-shot run
+        // keeps its prefix snapshot. A run whose one matrix exceeds it is
+        // refused before anything is allocated, and every copy an observer
+        // takes is charged against it while the run goes on.
         uint64_t max_memory_mb = 0;
         // Whether a per-shot run keeps a snapshot of the stretch before its
         // first MEASURE or conditioned instruction; see PrefixReuse in
