@@ -16,6 +16,48 @@ Recommended workflow:
 - Favor descriptive names over abbreviations in public APIs
 - Ensure exceptions and error strings are clear at subsystem boundaries
 
+## Raising Errors and Warnings
+
+Every refusal and failure goes through `include/lindblad/detail/report.hpp`, and
+every exception Lindblad raises is one of the four types in
+`include/lindblad/errors.hpp` (see [docs/api/failures.md](api/failures.md)).
+Classify a site by the first question that answers yes:
+
+1. Can it only fail if Lindblad itself is wrong? Call `detail::raise_internal()`,
+   which raises `InternalError` and appends the request to report it.
+2. Is it a caller mistake (the call, the circuit, the options, the plan) or an
+   exceeded limit (qubits, memory)? Call `detail::raise<InvalidArgument>()`, or
+   `detail::raise<OutOfRange>()` for an index outside its range.
+3. Is it a physical check on something the caller handed in (unitarity, trace
+   preservation, normalisation)? It belongs to `ValidationOptions`.
+4. Is it met while running, and does it make the answer wrong? Call
+   `detail::raise<RuntimeFailure>()` with a `FailurePoint`.
+5. Does it leave the answer intact, an optional observation left out? Call
+   `detail::respond()` with the knob that governs it. Adding a knob where none
+   exists is a design decision, not a fix.
+6. Is it only information? `emit_warning("note: ...")`.
+
+Rules that go with it:
+
+- Write `detail::raise<E>(...)` qualified outside `namespace lindblad::detail`:
+  `<csignal>` declares a global `raise(int)`.
+- A message starts with the public entry point the caller called
+  (`StatevectorSimulator::run`), says what is wrong and what to change, and
+  gives both sides of every comparison. Pass a `FailurePoint` for an
+  instruction rather than formatting its index by hand. Describe the fact in
+  the present tense.
+- Anything the circuit, options or plan decide on their own is checked before
+  the first gate. A check that fires only when execution reaches a gate belongs
+  in the pass before it.
+- Never add a knob to soften a failure that makes the answer wrong.
+- Inside a `run()`, never catch to convert: the failure path has to see the
+  exception to keep and save the partial run. Your caller's exceptions and
+  `std::bad_alloc` are never wrapped.
+- Each error type is also its standard counterpart, so retyping a
+  `std::runtime_error` as `InvalidArgument` breaks every
+  `EXPECT_THROW(..., std::runtime_error)` that reaches it; find those tests
+  before changing a type.
+
 ## Performance-Sensitive Code
 
 For code in `src/gates/`, `src/statevector.cpp`, and simulator kernels:

@@ -43,7 +43,7 @@ struct Result {
 };
 ```
 
-- `backend_result`: Contains the standard simulator output (`counts`, `simulation_time_seconds`, `success`, etc.). See [LocalBackend API](backends.md).
+- `backend_result`: Contains the standard simulator output (`counts`, `simulation_time_seconds`, etc.). A run that fails throws instead of returning, so a returned `backend_result` is always an answer. See [LocalBackend API](backends.md) and [Failures](failures.md).
 - `n_qubits`: Number of qubits in the input circuit.
 - `clifford_compatible`: True if the generated QFT circuit contains only Clifford gates. This is true only if `n ≤ 2` (exact) or `approximation_degree == 1` (AQFT). If false, running on the `CLIFFORD` backend will throw an error.
 

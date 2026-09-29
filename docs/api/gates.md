@@ -396,7 +396,7 @@ Backend support: native in the statevector and density-matrix backends. The MPS
 backend reduces `MCX` with `<= 2` controls to X/CX/CCX natively; wider MCX and
 MCP/PERMUTATION take the bounded statevector fallback (`to_statevector` ->
 apply -> `rebuild_from_statevector`, same as a 3+ qubit UNITARY, capped at
-`MPS_SV_MAX_QUBITS`). Peripheral tooling: QASM 3 export emits `ctrl(k) @`
+the chain's dense limit: 25 qubits, or 31 under `QubitLimit::Lift`). Peripheral tooling: QASM 3 export emits `ctrl(k) @`
 forms and lowers `PERMUTATION` to gates; QASM 2 export throws unless
 `QasmExportOptions::decompose_unrepresentable` is set; JSON round-trips all
 three natively; the stage-0 `HighLevelDecompose` transpiler pass lowers them
@@ -473,8 +473,9 @@ to the O(2^n) amplitude sweep:
 Messages match the `QuantumCircuit` validators (for example
 `"h: qubit index 9 out of range [0, 3)"`). Because they throw, the `apply_*`
 functions are not `noexcept`. Direct callers receive the exception; when a gate
-is reached through a simulator `run()`, the pre-flight surfaces the same failure
-through `Result`.
+is reached through a simulator `run()`, the checks before the first gate refuse
+the same fault first, with `lindblad::InvalidArgument` or `lindblad::OutOfRange`
+naming the instruction (see [Failures](failures.md)).
 
 Physical validity is a third class, and it is governed separately. A primitive
 taking a caller-supplied matrix, `apply_unitary` here, also checks that the

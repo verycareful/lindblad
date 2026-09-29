@@ -113,6 +113,12 @@ int main() {
 
 ## Exceptions and Failure Modes
 
+A simulator run that fails throws, and the algorithm passes the exception on
+rather than returning a result built from a failed run (see
+[Failures](../api/failures.md)). A register wider than the statevector's qubit
+limit, for one, is refused with `lindblad::InvalidArgument` before the first
+gate.
+
 Common issues include:
 
 - an oracle that does not mark the intended solution state

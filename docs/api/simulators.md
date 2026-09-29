@@ -2,6 +2,8 @@
 
 The Simulators API provides four distinct quantum state backends, each optimized for different circuit classes and simulation goals. All simulators follow a common interface (`Result run(circuit, ...)`) and dispatch gate operations via the `Instruction` enum defined in the Circuit API.
 
+A `run()` that fails throws; it never returns a failed `Result`. What the run had computed is kept in a failed-run record and, by default, saved to a folder the exception names. [Failures](failures.md) covers the exception types, every failure a run can meet, and the record.
+
 ## Architectural Overview
 
 ### Instruction Dispatch Pattern
@@ -34,27 +36,40 @@ void StatevectorSimulator::apply_instruction(Statevector& sv, const Instruction&
 5. **Measurement handling**: see Execution Semantics below
 6. **Result collection**: Extract final state and sampled bitstrings (if shots > 0)
 
-### Operand Validation
+### Checks Before the First Gate
 
-Before anything else, every backend's `run()` refuses a circuit with no qubits,
-at every shot count including 0, with `std::invalid_argument` whose message
-opens with the entry point that refused (`MPSSimulator::run: the circuit must
-have at least 1 qubit (got 0)`). A register of none has one state and one
-outcome, so there is nothing to simulate. The statevector and density-matrix
-backends report the refusal through `Result`, the MPS and Clifford backends
-throw it. A zero-qubit `MPSState` is still a valid object, the scalar one; only
-running a circuit over no qubits is refused.
+Every backend's `run()` refuses, before any state is touched, everything the
+circuit, the options and the run plan decide on their own. Each refusal throws
+`lindblad::InvalidArgument` (a `std::invalid_argument`), or
+`lindblad::OutOfRange` (a `std::out_of_range`) for an index, with a message that
+opens with the entry point that refused and, when one instruction is at fault,
+names it. Nothing has been computed yet, so nothing is lost and no failed-run
+record is left.
 
-Every backend runs a pre-flight over `circuit.instructions` at the start of
-`run()`, checking that each qubit and classical-bit index lies in range. This
-closes the ingress paths that bypass the per-gate circuit builders (`compose`
-index remapping, `control`, the QASM parsers, transpiler passes), so no
-out-of-range index reaches a kernel. The statevector and density-matrix backends
-surface a failure through `Result` (their `run()` wraps execution in a
-try/catch); the MPS and Clifford backends surface it by throwing, consistent with
-their existing error contract.
+- A circuit with no qubits, at every shot count including 0
+  (`MPSSimulator::run: the circuit must have at least 1 qubit (got 0)`). A
+  register of none has one state and one outcome, so there is nothing to
+  simulate. A zero-qubit `MPSState` is still a valid object, the scalar one;
+  only running a circuit over no qubits is refused.
+- A register over the qubit limit (`qubit_limit`, see
+  [QubitLimit](failures.md#qubitlimit)).
+- An option out of range, and fixed buffers that exceed the memory cap (see
+  [The memory cap](failures.md#the-memory-cap)).
+- A qubit or classical-bit index out of range. This closes the ingress paths
+  that bypass the per-gate circuit builders (`compose` index remapping,
+  `control`, the QASM parsers, transpiler passes), so no out-of-range index
+  reaches a kernel.
+- One pass over the instructions: an unbound parameter, a gate naming the wrong
+  number of qubits for its type or a qubit twice, fewer parameters than its
+  type reads, a parameter that is NaN or infinite, a `UNITARY` matrix of the
+  wrong size, a `PERMUTATION` map that is not a bijection, and a gate the
+  backend cannot apply (on MPS a dense fallback over the chain's limit, on
+  Clifford a gate with no tableau form).
+- The physical checks below, under their own policy.
+- The run plan: anchors, labels, observers and the starting state (see
+  [Observation and the run harness](observation.md)).
 
-Beneath the pre-flight, the low-level apply-primitives (`gates::apply_*`,
+Beneath these, the low-level apply-primitives (`gates::apply_*`,
 `DensityMatrix::apply_gate` / `apply_kraus`, the `StabilizerState` gates, the MPS
 gates, and the qudit apply-primitives) each validate independently: index bounds
 throw `std::out_of_range`, and operand-structure violations (non-distinct qubits,
@@ -129,10 +144,15 @@ normalised distribution: each outcome's weight divided by the total. A state
 short of unit norm (a truncated MPS chain, or a state a caller set under
 `Validation::Ignore`) is therefore sampled as the state it holds, and an outcome
 of probability zero is never drawn. A state with no norm, zero or non-finite, is
-refused with `std::runtime_error` before anything is drawn, on the threshold
-each state class's `normalize()` refuses at. The statevector and
-density-matrix simulators report the refusal through `Result`; the MPS
-simulator throws it.
+refused with `lindblad::RuntimeFailure` (a `std::runtime_error`) before anything
+is drawn, on the threshold each state class's `normalize()` refuses at. The run
+throws, and keeps what it had computed (see [Failures](failures.md)).
+
+A run's final state is checked the same way before it is returned: the
+statevector, density-matrix and MPS simulators raise `RuntimeFailure` rather
+than hand back a state that is zero or not finite. Only a matrix let through by
+`Validation::Warn` or `Validation::Ignore`, or an MPS starting chain with no
+norm, can produce one.
 
 ### The run harness
 
@@ -187,7 +207,8 @@ See [Statevector API](statevector.md) for full details. State stored as:
 ```cpp
 struct Options {
     int max_parallel_threads = 0;  // 0 = auto (all cores)
-    uint64_t max_memory_mb = 0;    // MiB; 0 = no limit
+    uint64_t max_memory_mb = 0;    // MiB; 0 = automatic
+    QubitLimit qubit_limit = QubitLimit::Enforce;  // 30 qubits; Lift: 59
     PrefixReuse prefix_reuse = PrefixReuse::Hardware;
     int precision = 64;            // 32 or 64 bit (not yet used)
     bool zero_threshold = true;
@@ -205,15 +226,21 @@ struct Options {
   it returns, so parallel code around the call, and other threads running
   simulators side by side, keep theirs. `apply_instruction`, a one-gate
   primitive, runs under the caller's setting. A negative value is refused
-  through `Result` (`eval_expectation` and `simulate_circuit` throw
-  `std::invalid_argument`)
-- **max_memory_mb**: the most memory the caller gives a run, in MiB (2^20
-  bytes); 0 means no limit. It caps the buffers whose size grows with the
-  register, which is where a run's memory goes: the states it holds at once.
-  A statevector run always holds two, the working buffer and the copy returned
-  in `Result::final_state` ($2 \cdot 16 \cdot 2^n$ bytes), and a run that needs
-  more than the cap is refused before anything is allocated, through `Result`,
-  with a message giving what it needs. Fixed-size bookkeeping is not counted
+  with `std::invalid_argument` before anything runs
+- **max_memory_mb**: the most memory a run may use, in MiB (2^20 bytes). 0,
+  the default, is automatic: the memory the machine reports available, else
+  4096 MiB; `NO_MEMORY_CAP` means no cap (see
+  [The memory cap](failures.md#the-memory-cap)). A statevector run always holds
+  two states, the working buffer and the copy returned in `Result::final_state`
+  ($2 \cdot 16 \cdot 2^n$ bytes), and a run that needs more than the cap is
+  refused with `InvalidArgument` before anything is allocated, naming what it
+  needs, the cap and where the cap came from. The copies and conversions its
+  observers take are checked against the same cap while the run goes on.
+  Fixed-size bookkeeping is not counted
+- **qubit_limit**: the widest register a run accepts: 30 qubits under
+  `QubitLimit::Enforce` (the default), 59 under `QubitLimit::Lift`. A wider
+  register is refused before anything is sized from it, and lifting never skips
+  the memory check (see [QubitLimit](failures.md#qubitlimit))
 - **prefix_reuse**: whether a per-shot run keeps a snapshot of the stretch
   before its first MEASURE, RESET or conditioned instruction and starts every
   shot from it rather than rerunning that stretch (`Hardware` by default, or
@@ -234,8 +261,9 @@ struct Result {
     std::unordered_map<std::string, int> counts;      // Sampled bitstrings (if shots > 0)
     std::vector<double> expectation_values;           // Empty; use Estimator for expectations
     double simulation_time_seconds = 0.0;
-    bool success = true;
-    std::string error_message;
+    bool success = true;         // true on every returned result
+    std::string error_message;   // empty on every returned result
+    ObservationBundle observations;
 };
 ```
 
@@ -243,9 +271,8 @@ struct Result {
 - **final_state**: Complete quantum state after circuit execution
 - **counts**: Measurement outcome histogram; keys are bitstrings (e.g., "01"), values are occurrence counts
 - **expectation_values**: Reserved for future use (currently not populated by simulator)
-- **success**: `false` when the run failed. `StatevectorSimulator` and `DensityMatrixSimulator` report failures through this field rather than by throwing, so a caller checks it; `MPSSimulator` and `CliffordSimulator` have no such field and throw instead
-- **error_message**: what went wrong, when `success` is `false`; empty otherwise
-- **observations**: whatever the run's labelled observers collected, empty unless the `RunPlan` attached observers carrying labels. A failed run leaves it empty rather than partly written
+- **success**, **error_message**: `true` and empty on every result `run()` returns. A run that fails throws instead (see [Failures](failures.md)), so a returned result is always an answer
+- **observations**: whatever the run's labelled observers collected, empty unless the `RunPlan` attached observers carrying labels. A run that fails flushes its observers into the failed-run record instead
 
 ### Workflow
 
@@ -428,16 +455,20 @@ row/column relabel or diagonal phase (no dense matrix).
 
 ```cpp
 struct Options {
-    uint64_t max_memory_mb = 0;                        // MiB; 0 = no limit
+    uint64_t max_memory_mb = 0;                        // MiB; 0 = automatic
     PrefixReuse prefix_reuse = PrefixReuse::Hardware;
 };
 ```
 
-- **max_memory_mb**: the most memory the caller gives a run, in MiB (2^20
-  bytes); 0 means no limit. It caps the density matrices a run holds at once,
-  $16 \cdot 4^n$ bytes each. A run holds one, and a run whose one matrix
-  exceeds the cap is refused before anything is allocated, through `Result`,
-  with a message giving what it needs. Fixed-size bookkeeping is not counted
+- **max_memory_mb**: the most memory a run may use, in MiB (2^20 bytes). 0,
+  the default, is automatic: the memory the machine reports available, else
+  4096 MiB; `NO_MEMORY_CAP` means no cap (see
+  [The memory cap](failures.md#the-memory-cap)). It caps the density matrices
+  a run holds at once, $16 \cdot 4^n$ bytes each. A run holds one, and a run
+  whose one matrix exceeds the cap is refused with `InvalidArgument` before
+  anything is allocated, naming what it needs and the cap. The copies and
+  conversions its observers take are checked against the same cap while the
+  run goes on. Fixed-size bookkeeping is not counted
 - **prefix_reuse**: whether a per-shot run keeps a snapshot of the stretch
   before its first MEASURE or conditioned instruction (RESET and noise are
   channels here, so they do not end it) and starts every shot from it. Here
@@ -641,7 +672,21 @@ there rather than being skipped.
 CliffordSimulator sim;
 sim.options.sampling = CliffordSimulator::Options::Sampling::Auto;
 sim.options.elimination = StabilizerState::Elimination::Plain;
+sim.options.max_memory_mb = 0;  // MiB; 0 = automatic
 ```
+
+`max_memory_mb` is the memory cap every backend answers to (see
+[The memory cap](failures.md#the-memory-cap)). A Clifford run holds three
+tableau-sized buffers, the tableau it evolves, the one its `Result` holds, and a
+working copy or the sampling slab, and a run whose three exceed the cap is
+refused before any is allocated. At ordinary widths it never binds. A
+conversion an observer asks for, a dense statevector of $16 \cdot 2^n$ bytes,
+is checked against it while the run goes on.
+
+A gate with no tableau form, or a rotation that is not a multiple of $\pi/2$,
+is refused with `InvalidArgument` before the first gate, through the same
+classification `is_clifford()` uses, so the circuits automatic dispatch sends
+here are exactly the ones `run()` accepts.
 
 `sampling` chooses how terminal measurements become shots. `Slab` reads the
 outcome distribution's affine subspace off the tableau once and draws each shot
@@ -1191,11 +1236,12 @@ widens the span over that site instead (see [Unchecked Gates](#unchecked-gates))
   split discards is added to `truncation_error()` rather than replacing it, so
   the figure covers everything the chain has lost rather than only the last
   thing that lost it. The fallback
-  is bounded by `MPS_SV_MAX_QUBITS` (= 25); beyond that the simulator throws
-  with a clear error naming the offending UNITARY and qubit count, rather
-  than the generic "Too many qubits for full statevector conversion" surfaced
-  from inside `to_statevector()`. Decompose >2q unitaries into 1q/2q factors
-  for wider registers.
+  is bounded by the chain's dense limit, `qubit_limit`: 25 qubits under
+  `QubitLimit::Enforce`, 31 under `QubitLimit::Lift`. A wider register is
+  refused before the first gate, naming the offending UNITARY, its width and
+  the limit, and each fallback is checked against the run's memory cap before
+  it allocates. Decompose >2q unitaries into 1q/2q factors for wider
+  registers.
 
 ### Unchecked Gates
 
@@ -1319,9 +1365,13 @@ bytes each) fit in one last-level cache instance, as reported by
 L3 per instance that allows $n \le 21$. Wider registers always use the
 sampler, whatever the shot count.
 
-`MPS_SV_MAX_QUBITS = 25` is the separate hard limit on `to_statevector()`: it
-throws above 25 qubits (about 512 MB at that size), and every dense fallback in
-this backend stops there.
+`to_statevector()` and every dense fallback stop at the chain's dense limit,
+`max_mps_dense_qubits(qubit_limit)`: 25 qubits (about 512 MiB of amplitudes)
+under `QubitLimit::Enforce`, 31 under `QubitLimit::Lift`. The limit under `Lift`
+is lower than the statevector's because the fallback rebuilds the chain by
+factorising a $2 \times 2^{n-1}$ block, and the factorisation takes its
+dimensions as `int`. The dense sampling path stays within 25 qubits whatever
+the limit, since it only chooses between two samplers.
 
 ### Measurement Normalization
 
@@ -1339,7 +1389,7 @@ For small systems, convert back to statevector via boundary contraction:
 Statevector MPSState::to_statevector() const {
     // Contract all tensors: M_0 @ M_1 @ ... @ M_{n-1}
     // O(n * chi^3) time, O(2^n) space
-    // Throws if n_qubits > MPS_SV_MAX_QUBITS (25)
+    // Throws past the chain's dense limit: 25 qubits, or 31 under QubitLimit::Lift
 }
 ```
 
@@ -1427,6 +1477,18 @@ simulators' `run(circuit, shots, seed)`.
   first move the orthogonality centre onto their block; `Auto` moves it only
   where truncation can bind (see [Canonical Form](#canonical-form)). Set on `MPSSimulator` for
   `run()` or on an `MPSState` driven directly
+- **qubit_limit** (`QubitLimit`, default `Enforce`): the chain's dense limit,
+  25 qubits under `Enforce` and 31 under `Lift`, which a gate over three or
+  more qubits, `MCX` with more than two controls, `MCP`, `PERMUTATION` and
+  `to_statevector()` need (see [QubitLimit](failures.md#qubitlimit)). Set on
+  `MPSSimulator` for `run()`, which copies it onto every chain it builds, or on
+  an `MPSState` driven directly
+- **max_memory_mb** (`uint64_t`, default `0`, automatic): the run's memory cap
+  (see [The memory cap](failures.md#the-memory-cap)). An MPS run has no fixed
+  footprint to refuse up front; every two-site update, dense fallback, dense
+  sampling pass and observer conversion is checked against the cap before it
+  allocates, and going over raises `RuntimeFailure` naming the shot and
+  instruction
 
 ## Simulator Selection Guide
 
@@ -1446,6 +1508,7 @@ simulators' `run(circuit, shots, seed)`.
 
 ## See Also
 
+- [Failures](failures.md): what a failed run throws and keeps
 - [Gates API](gates.md) — Gate implementation details and optimization
 - [Statevector API](statevector.md) — Aligned memory layout and measurement
 - [Operators API](operators.md) — Pauli string and sparse operator representations

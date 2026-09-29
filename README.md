@@ -63,6 +63,7 @@ Lindblad is a high-performance C++23 quantum computing framework for circuit con
 | Gates | [docs/api/gates.md](docs/api/gates.md) |
 | Operators | [docs/api/operators.md](docs/api/operators.md) |
 | Simulators | [docs/api/simulators.md](docs/api/simulators.md) |
+| Failures, failed runs, qubit and memory limits | [docs/api/failures.md](docs/api/failures.md) |
 | Backends | [docs/api/backends.md](docs/api/backends.md) |
 | Noise | [docs/api/noise.md](docs/api/noise.md) |
 | Transpiler | [docs/api/transpiler.md](docs/api/transpiler.md) |
@@ -129,7 +130,6 @@ Lindblad is a high-performance C++23 quantum computing framework for circuit con
 ### I/O
 
 - OpenQASM 2.0 parsing and export (fully wired)
-- Optional Python bindings via pybind11
 
 ---
 

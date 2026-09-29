@@ -53,7 +53,8 @@ Simulator classes and state representations:
 - **CliffordSimulator** + **StabilizerState**: Polynomial-time Clifford circuits via stabilizer tableau, unbounded system size
 - **MPSSimulator** + **MPSState**: Approximate large-system simulation, $O(n\chi^2)$ space, tunable bond dimension $\chi$; kept in canonical form (`CanonicalForm` in `lindblad/types.hpp`) so truncation acts on Schmidt coefficients, with a fidelity estimate and lower bound on the result
 
-All simulators follow common interface: `Result run(circuit, params)`
+All simulators follow common interface: `Result run(circuit, params)`. A run
+that fails throws rather than returning a `Result` (see [Failures](#failures)).
 
 Deep dive: [docs/api/simulators.md](api/simulators.md)
 
@@ -161,6 +162,34 @@ for (const auto& [bitstring, count] : result.counts) {
 }
 ```
 
+## Failures
+
+Headers:
+
+- `include/lindblad/errors.hpp`
+- `include/lindblad/failed_run.hpp`
+
+What a failed run throws and keeps:
+
+- **InvalidArgument**, **OutOfRange**, **RuntimeFailure**, **InternalError**:
+  the exception types, each also its standard counterpart
+  (`std::invalid_argument`, `std::out_of_range`, `std::runtime_error`,
+  `std::logic_error`), sharing the `Error` base with the entry point, the
+  failing instruction (`FailurePoint`) and the folder a failed run was saved to
+- **FailedRun**: everything a run had computed when it failed: counts,
+  observations, the state, the circuit, the options, where it failed
+- **take_failed_run()**: this thread's most recent failed run
+- **load_failed_run(folder)**: a saved run read back, every file checked
+  against its CRC-32C
+- **QubitLimit**, **NO_MEMORY_CAP**: the qubit ceilings and the memory cap
+  (`include/lindblad/types.hpp`)
+
+Everything the circuit, the options and the run plan decide on their own is
+refused before the first gate; a failure after it throws and keeps the partial
+run, saved by default to a folder the exception names.
+
+Deep dive: [docs/api/failures.md](api/failures.md)
+
 ## Noise
 
 Header: `include/lindblad/noise.hpp`
@@ -169,7 +198,8 @@ Core abstractions:
 
 - `KrausChannel`
 - `NoiseChannels` factory-style channel construction
-- `NoiseModel` for attaching errors to operations
+- `NoiseModel` for attaching errors to operations, with a lossless JSON round
+  trip (`to_json`, `from_json`)
 
 Noise models are consumed by primitives and simulator paths that support noisy execution.
 

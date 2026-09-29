@@ -83,7 +83,7 @@ The modular exponentiation oracle is implemented as `Instruction::GateType::PERM
 |---|---|---|
 | `STATEVECTOR` | ✓ | Default. Exact statevector simulation; PERMUTATION applied natively as an O(dim) gather. |
 | `DENSITY_MATRIX` | ✓ | Full mixed-state; useful for studying noise effects on factoring. PERMUTATION applied as a native row/column relabel. |
-| `MPS` | ✓ | PERMUTATION uses the bounded statevector fallback (`to_statevector` → apply → `rebuild_from_statevector`, capped at `MPS_SV_MAX_QUBITS`), as the dense UNITARY did before R.1.13. |
+| `MPS` | ✓ | PERMUTATION uses the bounded statevector fallback (`to_statevector` → apply → `rebuild_from_statevector`), capped at the chain's dense limit: 25 qubits, or 31 under `QubitLimit::Lift`. |
 | `CLIFFORD` | ✗ | **Not supported.** The modular exponentiation map is an arbitrary permutation — it cannot be decomposed into the Clifford gate set {H, S, CX, X, Y, Z}. This is a fundamental mathematical constraint, not an implementation limitation. |
 
 The `QFT::build_inverse_circuit` is used for the IQFT stage of the evaluation register.
@@ -147,6 +147,12 @@ int main() {
 `Shor::find_order` returns the multiplicative order r = ord_N(a), or 0 on failure.
 
 ## Exceptions and Failure Modes
+
+A simulator run that fails throws, and the algorithm passes the exception on
+rather than returning a result built from a failed run (see
+[Failures](../api/failures.md)). A register wider than the statevector's qubit
+limit, for one, is refused with `lindblad::InvalidArgument` before the first
+gate.
 
 - `std::invalid_argument` if N < 4
 - `std::invalid_argument` if N is prime (determined via deterministic Miller-Rabin with witnesses {2, 3, 5, 7, 11, 13})

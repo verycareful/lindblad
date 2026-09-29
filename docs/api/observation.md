@@ -117,11 +117,21 @@ struct ObservationContext {
     const std::vector<int>& clbits;             // the register as it stands
     const RunPlan&          plan;
     ObservationBundle*      bundle;             // may be null
+    RunPhase                phase = RunPhase::MidRun;
+    detail::RunBudget*      budget = nullptr;   // the run's memory budget
 };
 ```
 
 Nothing in the context is owned by the observer and nothing survives the call,
 so an observer keeping any of it must copy it.
+
+`phase` says whether stopping here would lose any work: `BeforeFirstGate` at the
+start of the first shot and just before its first instruction, `MidRun` at
+every later firing. `Response::Auto` decides by it, and an observer delivering
+its own refusal through `detail::refuse_observation` passes it on. `budget` is
+the run's memory budget; the built-in observers check the copies and
+conversions they take against it, and an observer you write has no need to
+touch it (see [The memory cap](failures.md#the-memory-cap)).
 
 ## `RunPlan::Options`
 
@@ -135,9 +145,16 @@ conversion is impossible".
 | `conversion` | `Convert`, `Never` | `Convert` | whether the library may translate into a representation the backend does not hold |
 | `cost` | `Guarded`, `Unlimited` | `Guarded` | what an OBSERVATION may allocate to look at the state |
 | `initial_cost` | `Guarded`, `Unlimited` | `Unlimited` | what SEEDING the run may allocate |
-| `response` | `Throw`, `Warn`, `Ignore` | `Throw` | what a refusal looks like, whatever caused it |
+| `response` | `Throw`, `Warn`, `Ignore`, `Auto` | `Auto` | what a refusal looks like, whatever caused it |
 | `fusion` | `Suppress`, `Keep` | `Suppress` | whether a watched run keeps gate fusion |
 | `guard_multiple` | `double` | `1.0` | how much `Guarded` allows, as a multiple of the live state |
+| `save_failed_runs` | `Save`, `DoNotSave` | `Save` | whether a run that fails after its first gate saves what it had computed to a folder |
+| `failed_run_dir` | `std::filesystem::path` | empty | where those folders go; empty means the default location |
+
+`save_failed_runs` and `failed_run_dir` govern the failed-run record, which
+[Failures](failures.md#failed-runs-take_failed_run-and-load_failed_run)
+describes with the folder it is saved to. Saved folders are never deleted by
+Lindblad and accumulate until you delete them.
 
 ### Why reading and seeding have separate cost knobs
 
@@ -167,7 +184,17 @@ delivered by `response`:
 - the conversion exists but exceeds the guard
 
 `Warn` and `Ignore` both omit the observation and differ only in whether the
-warning channel hears about it. Under `Throw` the run stops.
+warning channel hears about it. Under `Throw` the run stops with
+`lindblad::InvalidArgument`.
+
+`Auto`, the default, decides by when the refusal is met. Decided before any
+instruction of any shot has run (at the pre-flight, or at an anchor at the start
+of the first shot), it throws as `Throw` does: stopping then loses nothing, and
+the message says what to change. Met after that, it warns and omits the
+observation as `Warn` does: stopping would throw away every shot and instruction
+already paid for, and one observation left out does not make the rest of the run
+wrong. The same knob governs the entropy observer's eigensolver failing on a
+reduced state or a bond spectrum: that firing records nothing.
 
 ### What the guard measures
 
@@ -379,7 +406,15 @@ const Statevector&        statevector(const std::string& label) const;
 const DensityMatrix&      density_matrix(const std::string& label) const;
 const StabilizerState&    stabilizer(const std::string& label) const;
 const MPSState&           mps(const std::string& label) const;
+
+const Payload&            payload(const std::string& label) const;  // whatever kind it holds
+void                      put(std::string label, Payload payload);
 ```
+
+`payload()` returns the entry under a label whatever kind it holds, the
+variant of a number, the three vector kinds, text, and a state; it is how a
+whole bundle is saved and restored without knowing its labels in advance.
+`put()` refuses a label that is already present rather than overwrite it.
 
 An observer that fired exactly once writes under its plain label. One that fired
 repeatedly writes each firing under `label@<instruction>#<shot>`, so no firing
@@ -389,34 +424,25 @@ overwrites another.
 
 ### How a failure reaches you
 
-Which channel a failure arrives on is a property of the BACKEND, not of the
-failure, and the two are not interchangeable.
-
-`StatevectorSimulator` and `DensityMatrixSimulator` carry an error channel on
-their `Result` and report through it: `run()` returns normally with
-`success == false` and `error_message` describing what went wrong. A
-`try`/`catch` around those calls will not fire.
-
-`MPSSimulator` and `CliffordSimulator` have no such field on their `Result`, so
-they throw instead.
+Every backend throws. A `run()` that fails never returns a `Result`, so a
+returned result is an answer, and what a failed run had computed is kept in a
+failed-run record (see [Failures](failures.md)).
 
 ```cpp
 StatevectorSimulator sv;
-auto result = sv.run(circuit, shots, seed, plan);
-if (!result.success) {
-    std::cerr << result.error_message << "\n";   // the anchor that did not resolve
-}
-
-MPSSimulator mps;
 try {
-    auto result = mps.run(circuit, 64, shots, seed, plan);
-} catch (const std::invalid_argument& e) {
-    std::cerr << e.what() << "\n";               // the same failure, thrown
+    auto result = sv.run(circuit, shots, seed, plan);
+} catch (const lindblad::InvalidArgument& e) {
+    std::cerr << e.what() << "\n";   // e.g. the anchor that did not resolve
 }
 ```
 
-Everything below happens INSIDE `run()`, so each one reaches you through
-whichever of those two channels your backend uses:
+A plan fault is found before the first gate, so it throws `InvalidArgument`
+(a `std::invalid_argument`) before any state is touched and leaves no record.
+An exception thrown by an observer you wrote reaches you as itself, with the
+run's partial results kept.
+
+Everything below happens INSIDE `run()` and throws from it:
 
 - An anchor that does not resolve fails the run, whatever `response` says.
 - Two observers writing under one label fail the run, before it starts: one of
@@ -462,7 +488,8 @@ Two things cannot be decided in advance, and keep their firing-time checks:
 - Anything an observer you wrote does with the state it is handed.
 
 A refusal that `Response::Warn` or `Response::Ignore` would absorb is still
-absorbed when it is decided early. Deciding sooner changes WHEN the verdict is
+absorbed when it is decided early; under `Response::Auto` a refusal decided
+early throws, which is the point of deciding it then. Deciding sooner changes WHEN the verdict is
 reached, never what it is; an observer ruled out this way is then dropped, so it
 costs nothing per anchor for the rest of the run.
 
@@ -550,3 +577,5 @@ plan.observations.observe(Anchor::at_end(), dense);
   observers hand back
 - [Validation](validation.md) for the separate policy governing physical
   validity of caller-supplied operators
+- [Failures](failures.md) for the exception types, every failure a run can
+  meet, and the failed-run record

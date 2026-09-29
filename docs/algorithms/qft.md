@@ -211,7 +211,7 @@ auto aqft_circuit = QFT::build_approximate_circuit(10, 3);
 
 ```cpp
 struct Result {
-    backends::BackendResult backend_result;  // counts, timing, success flag
+    backends::BackendResult backend_result;  // counts and timing
     int n_qubits;
     bool clifford_compatible;
 };
@@ -219,7 +219,7 @@ struct Result {
 
 - `backend_result.counts`: Measurement outcome histogram. Only populated when `shots > 0`.
 - `backend_result.simulation_time_seconds`: Wall time for the simulation step.
-- `backend_result.success`: Whether the backend run completed without error.
+- `backend_result.success`: `true` on every returned result. A run that fails throws instead, as every simulator run does (see [Failures](../api/failures.md)).
 - `n_qubits`: The number of qubits in the input circuit.
 - `clifford_compatible`: Check this before dispatching to a Clifford backend.
 
@@ -227,11 +227,17 @@ struct Result {
 
 ## Exceptions and Failure Modes
 
+A simulator run that fails throws, and the algorithm passes the exception on
+rather than returning a result built from a failed run (see
+[Failures](../api/failures.md)). A register wider than the statevector's qubit
+limit, for one, is refused with `lindblad::InvalidArgument` before the first
+gate.
+
 | Condition | Exception | Thrown by |
 |---|---|---|
 | `n <= 0` | `std::invalid_argument` | `build_circuit`, `build_inverse_circuit`, `build_approximate_circuit` (propagated) |
 | `approximation_degree < 0` | `std::invalid_argument` | `build_approximate_circuit` |
-| Exact QFT ($n \ge 3$) on `SimType::CLIFFORD` backend | Runtime backend error | `backend.run()` inside `QFT::run()` |
+| Exact QFT ($n \ge 3$) on `SimType::CLIFFORD` backend | `lindblad::InvalidArgument`, before the first gate | `backend.run()` inside `QFT::run()` |
 
 The `QFT::apply()` and `QFT::run()` methods propagate any exception thrown by `build_circuit()`.
 
