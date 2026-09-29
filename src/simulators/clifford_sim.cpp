@@ -13,6 +13,7 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/report.hpp"
 
 #include <optional>
 #include <algorithm>
@@ -735,10 +736,9 @@ Statevector StabilizerState::to_statevector() const {
         norm_squared += amp.real * amp.real + amp.imag * amp.imag;
     }
     if (!(norm_squared > 0.0) || !is_finite_strict(norm_squared)) {
-        throw std::runtime_error(
-            "StabilizerState::to_statevector: the stabilizer projector "
-            "produced no state, which means the tableau's generators are not "
-            "independent");
+        detail::raise_internal("StabilizerState::to_statevector",
+            "the stabilizer projector produced no state, which means the "
+            "tableau's generators are not independent");
     }
     const double inv_norm = 1.0 / std::sqrt(norm_squared);
 
@@ -1029,9 +1029,9 @@ StabilizerState::OutcomeSlab StabilizerState::outcome_slab(Elimination method) c
     // the tableau rather than an input a caller can produce.
     for (int i = rank; i < n_con; ++i) {
         if (rhs[static_cast<size_t>(i)]) {
-            throw std::logic_error(
-                "StabilizerState::outcome_slab: stabilizer constraints are "
-                "inconsistent; no computational-basis outcome satisfies them");
+            detail::raise_internal("StabilizerState::outcome_slab",
+                "stabilizer constraints are inconsistent; no "
+                "computational-basis outcome satisfies them");
         }
     }
 

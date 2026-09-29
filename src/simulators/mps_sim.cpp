@@ -26,6 +26,7 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/circuit.hpp"
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/report.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/detail/svd_truncate.hpp"
@@ -1613,7 +1614,7 @@ static bool mps_measures_are_terminal(const QuantumCircuit& circuit) {
 
 static std::string mps_sample(const MPSState& state, std::mt19937_64& rng) {
     if (state.open_span() != std::pair<int, int>{0, 0}) {
-        throw std::logic_error(
+        detail::raise_internal("MPSSimulator::run",
             "mps_sample: the chain must be centred on qubit 0, so that every "
             "site right of it is right-orthonormal");
     }

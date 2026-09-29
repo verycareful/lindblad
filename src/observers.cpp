@@ -9,6 +9,7 @@
 
 #include "lindblad/observers.hpp"
 #include "lindblad/detail/pauli_rules.hpp"
+#include "lindblad/detail/report.hpp"
 
 #include "lindblad/statevector.hpp"
 #include "lindblad/detail/eigen_backend.hpp"
@@ -751,9 +752,9 @@ std::optional<std::vector<double>> mps_bond_spectrum(const MPSState& mps, int cu
     }
 
     if (gl_dim != gr_dim) {
-        throw std::runtime_error(
-            "EntropyObserver: the MPS bond dimensions on the two sides of the "
-            "cut disagree, which means the chain is malformed");
+        detail::raise_internal("EntropyObserver",
+            "the MPS bond dimensions on the two sides of the cut disagree, "
+            "which means the chain is malformed");
     }
 
     std::vector<Cplx> a_matrix(gl.size());
