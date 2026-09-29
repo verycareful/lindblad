@@ -4,6 +4,47 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.30.3] - 2026-09-29
+
+The patch that lets the test suite build on Clang 18 again. One test in the
+1.1.30.1 QR suite captured a structured binding in a lambda, which Clang 18
+refuses in any file compiled with OpenMP, so the test target of 1.1.30.1 and
+1.1.30.2 did not compile there. The library itself built throughout, and no
+library code changes in this release.
+
+### Fixed
+
+- **The test suite compiles on Clang 18.** In
+  `V11301QrSeam.TheTransposedCallIsAnLqOfTheRowMajorBuffer`, the lambda
+  reading the Q factor captured `b_cols`, a name bound by
+  `for (const auto& [b_rows, b_cols] : shapes())`. Clang 18 rejects any lambda
+  capture of a structured binding in a file compiled with `-fopenmp`
+  (`capturing a structured binding is not yet supported in OpenMP`), whether or
+  not an OpenMP region is involved; Clang 20 and 22 and GCC 13 and 14 accept
+  it. The loop now reads each shape into named variables, with a comment
+  saying why. No assertion, tolerance or shape changed. It was the only such
+  site: every other source file compiled on Clang 18, and the library built
+  and linked.
+
+### Results
+
+Six configurations, every leg passing (CachyOS Linux, native):
+
+| Compiler | Target | Options | Tests | Passed | Skipped | Failed | Time |
+|---|---|---|---:|---:|---:|---:|---:|
+| Clang 22.1.8 | native | none (the documented build) | 3494 | 3486 | 8 | 0 | 17.5 s |
+| Clang 22.1.8 | native | harvest | 3494 | 3493 | 1 | 0 | 18.3 s |
+| Clang 22.1.8 | x86-64-v3 | harvest | 3494 | 3493 | 1 | 0 | 16.4 s |
+| GCC 14.3.1 | native | harvest | 3494 | 3493 | 1 | 0 | 20.0 s |
+| GCC 14.3.1 | x86-64-v3 | harvest | 3494 | 3493 | 1 | 0 | 18.3 s |
+| Clang 20.1.8 | native | harvest | 3494 | 3493 | 1 | 0 | 18.3 s |
+
+3494 tests across 324 suites, all passed. The documented build skips the seven
+theta-harvest tests and the large register-size margin test; the harvest legs
+skip the margin test alone. The Python tool suite passes with 66 tests, 5
+skipped where no harvest build is given. The corrected test source compiles
+under Clang 18.1.8.
+
 ## [1.1.30.2] - 2026-09-28
 
 The patch for the ten tests 1.1.30.1 shipped red, and for what fixing them

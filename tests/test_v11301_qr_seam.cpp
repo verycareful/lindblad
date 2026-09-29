@@ -312,7 +312,12 @@ TEST(V11301QrSeam, TheTransposedCallIsAnLqOfTheRowMajorBuffer) {
     // Q^T orthonormal by rows (so the site it becomes is right-orthonormal),
     // and L lower trapezoidal.
     std::uint64_t seed = 900;
-    for (const auto& [b_rows, b_cols] : shapes()) {
+    for (const auto& shape : shapes()) {
+        // Named copies, not a structured binding: the Qt lambda below captures
+        // b_cols, and clang 18 refuses a lambda capture of a structured binding
+        // in any file compiled with -fopenmp.
+        const int b_rows = shape.first;
+        const int b_cols = shape.second;
         SCOPED_TRACE("B " + std::to_string(b_rows) + "x" + std::to_string(b_cols));
         const Mat B = random_mat(b_rows, b_cols, seed++);
         const std::vector<Cplx> buffer = row_major(B);  // what a site holds
