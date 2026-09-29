@@ -9,6 +9,7 @@
 
 #include "lindblad/circuit.hpp"
 #include "lindblad/operators.hpp"
+#include "lindblad/detail/json.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 
@@ -1899,25 +1900,6 @@ QuantumCircuit QuantumCircuit::from_qasm3(const std::string& qasm) {
 // JSON serialization — zero-dependency
 // =============================================================================
 
-// Helper: escape a string for JSON output
-static std::string json_escape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 2);
-    out += '"';
-    for (char c : s) {
-        switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n";  break;
-            case '\t': out += "\\t";  break;
-            case '\r': out += "\\r";  break;
-            default:   out += c;      break;
-        }
-    }
-    out += '"';
-    return out;
-}
-
 // GateType enum -> string (reuse gate_name() for OP types, explicit for specials)
 static std::string gate_type_to_str(Instruction::GateType t) {
     // Create a temp instruction to leverage gate_name()
@@ -2021,7 +2003,7 @@ std::string QuantumCircuit::to_json() const {
 
     o << "{";
     o << "\"version\":\"1.0\",";
-    o << "\"name\":" << json_escape(name) << ",";
+    o << "\"name\":" << detail::json_escape(name) << ",";
     o << "\"n_qubits\":" << n_qubits << ",";
     o << "\"n_clbits\":" << n_clbits << ",";
 
@@ -2029,7 +2011,7 @@ std::string QuantumCircuit::to_json() const {
     o << "\"parameter_names\":[";
     for (size_t i = 0; i < parameter_names.size(); ++i) {
         if (i > 0) o << ",";
-        o << json_escape(parameter_names[i]);
+        o << detail::json_escape(parameter_names[i]);
     }
     o << "],";
 
@@ -2039,7 +2021,7 @@ std::string QuantumCircuit::to_json() const {
         if (i > 0) o << ",";
         const auto& inst = instructions[i];
         o << "{";
-        o << "\"gate\":" << json_escape(gate_type_to_str(inst.type)) << ",";
+        o << "\"gate\":" << detail::json_escape(gate_type_to_str(inst.type)) << ",";
 
         // Qubits
         o << "\"qubits\":[";
@@ -2070,14 +2052,14 @@ std::string QuantumCircuit::to_json() const {
             o << ",\"param_names\":[";
             for (size_t j = 0; j < inst.param_names.size(); ++j) {
                 if (j > 0) o << ",";
-                o << json_escape(inst.param_names[j]);
+                o << detail::json_escape(inst.param_names[j]);
             }
             o << "]";
         }
 
         // Label
         if (!inst.label.empty()) {
-            o << ",\"label\":" << json_escape(inst.label);
+            o << ",\"label\":" << detail::json_escape(inst.label);
         }
 
         // Permutation basis-index map (R.1.18.0): serialised natively so JSON
@@ -2115,10 +2097,10 @@ std::string QuantumCircuit::to_json() const {
             inst.validation.atol != kDefaultValidation.atol ||
             inst.validation.repair != kDefaultValidation.repair) {
             o << ",\"validation\":{\"policy\":"
-              << json_escape(validation_policy_to_str(inst.validation.policy))
+              << detail::json_escape(validation_policy_to_str(inst.validation.policy))
               << ",\"atol\":" << inst.validation.atol
               << ",\"repair\":"
-              << json_escape(validation_repair_to_str(inst.validation.repair))
+              << detail::json_escape(validation_repair_to_str(inst.validation.repair))
               << "}";
         }
 
@@ -2137,98 +2119,11 @@ std::string QuantumCircuit::to_json() const {
 }
 
 // =============================================================================
-// JSON deserialization — minimal hand-rolled parser
+// JSON deserialization - minimal hand-rolled parser (detail::JsonReader)
 // =============================================================================
 
-// Simple JSON token reader
-namespace {
-
-struct JsonReader {
-    const std::string& s;
-    size_t pos = 0;
-
-    void skip_ws() {
-        while (pos < s.size() && (s[pos] == ' ' || s[pos] == '\t' || s[pos] == '\n' || s[pos] == '\r'))
-            ++pos;
-    }
-
-    char peek() { skip_ws(); return (pos < s.size()) ? s[pos] : '\0'; }
-    char next() { skip_ws(); return (pos < s.size()) ? s[pos++] : '\0'; }
-
-    void expect(char c) {
-        char got = next();
-        if (got != c)
-            throw std::runtime_error(std::string("JSON parse error: expected '") + c + "', got '" + got + "'");
-    }
-
-    std::string read_string() {
-        expect('"');
-        std::string out;
-        while (pos < s.size() && s[pos] != '"') {
-            if (s[pos] == '\\' && pos + 1 < s.size()) {
-                ++pos;
-                switch (s[pos]) {
-                    case '"': out += '"'; break;
-                    case '\\': out += '\\'; break;
-                    case 'n': out += '\n'; break;
-                    case 't': out += '\t'; break;
-                    case 'r': out += '\r'; break;
-                    default: out += s[pos]; break;
-                }
-            } else {
-                out += s[pos];
-            }
-            ++pos;
-        }
-        if (pos < s.size()) ++pos;  // skip closing '"'
-        return out;
-    }
-
-    double read_number() {
-        skip_ws();
-        size_t start = pos;
-        if (pos < s.size() && s[pos] == '-') ++pos;
-        while (pos < s.size() && (std::isdigit(s[pos]) || s[pos] == '.' || s[pos] == 'e' || s[pos] == 'E' || s[pos] == '+' || s[pos] == '-')) {
-            if ((s[pos] == '+' || s[pos] == '-') && pos > start + 1 && s[pos-1] != 'e' && s[pos-1] != 'E') break;
-            ++pos;
-        }
-        return std::stod(s.substr(start, pos - start));
-    }
-
-    int read_int() { return static_cast<int>(read_number()); }
-
-    // Skip a JSON value we don't care about
-    void skip_value() {
-        skip_ws();
-        if (s[pos] == '"') { read_string(); return; }
-        if (s[pos] == '[') {
-            ++pos;
-            if (peek() != ']') {
-                skip_value();
-                while (peek() == ',') { ++pos; skip_value(); }
-            }
-            expect(']');
-            return;
-        }
-        if (s[pos] == '{') {
-            ++pos;
-            if (peek() != '}') {
-                read_string(); expect(':'); skip_value();
-                while (peek() == ',') { ++pos; read_string(); expect(':'); skip_value(); }
-            }
-            expect('}');
-            return;
-        }
-        // number / true / false / null
-        while (pos < s.size() && s[pos] != ',' && s[pos] != '}' && s[pos] != ']')
-            ++pos;
-    }
-};
-
-} // anonymous namespace
-
 QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
-    JsonReader r{json};
+    detail::JsonReader r{json};
     r.expect('{');
 
     int nq = 0, nc = 0;
