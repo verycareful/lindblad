@@ -166,10 +166,10 @@ set(LINDBLAD_TEST_SOURCES
     test_v11261_entropy.cpp
     test_v11261_stabilizer_dense.cpp
     test_v11261_purity.cpp
-    # test_v11262_preflight.cpp
-    # test_v11262_initial_cost.cpp
+    test_v11262_preflight.cpp
+    test_v11262_initial_cost.cpp
     test_v11262_mps_truncation.cpp
-    # test_v11262_noise_width.cpp
+    test_v11262_noise_width.cpp
     test_v11271_policy_grid.cpp
     test_v11271_repair_impossible.cpp
     test_v11271_validation_serialisation.cpp
@@ -188,12 +188,12 @@ set(LINDBLAD_TEST_SOURCES
     test_v11291_svd_kernels.cpp
     # test_v11291_clifford_ising.cpp
     test_v11291_qasm_conditions.cpp
-    # test_v11291_scheduling.cpp
-    # test_v11292_observable_width.cpp
+    test_v11291_scheduling.cpp
+    test_v11292_observable_width.cpp
     test_v11292_qasm_operands.cpp
     test_v11292_optimizer_seam.cpp
     test_v11292_mps_two_qubit_order.cpp
-    # test_v11292_pauli_rules.cpp
+    test_v11292_pauli_rules.cpp
     test_v11292_maqaoa_gammas.cpp
     test_v11301_qr_seam.cpp
     test_v11301_canonical_form.cpp

@@ -221,10 +221,10 @@ TEST(V11292PauliRules, TheObserverRefusesANonHermitianObservableBeforeTheRun) {
         std::make_shared<ExpectationObserver>(SparsePauliOp::from_list(
             {{"ZIII", Complex128(1.0, 0.0)}, {"XIII", Complex128(0.0, 1.0)}})));
     StatevectorSimulator sim;
-    const auto result = sim.run(v11261::layered_circuit(), 0, 11292, plan);
-    EXPECT_FALSE(result.success);
-    EXPECT_NE(result.error_message.find("not Hermitian"), std::string::npos)
-        << result.error_message;
+    const std::string message = v11261::run_refusal(
+        "StatevectorSimulator::run",
+        [&] { (void)sim.run(v11261::layered_circuit(), 0, 11292, plan); });
+    EXPECT_NE(message.find("not Hermitian"), std::string::npos) << message;
     EXPECT_EQ(witness->count(), 0u);
 }
 

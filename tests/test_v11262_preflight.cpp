@@ -30,6 +30,7 @@
 #include "v11261_observation_oracle.hpp"
 
 #include "lindblad/circuit.hpp"
+#include "lindblad/failed_run.hpp"
 #include "lindblad/noise.hpp"
 #include "lindblad/observation.hpp"
 #include "lindblad/observers.hpp"
@@ -39,6 +40,8 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 
 #include <memory>
+#include <optional>
+#include <utility>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -117,6 +120,36 @@ private:
     int calls_ = 0;
 };
 
+// An observer's own exception ends the run with its type and its message
+// unchanged, after the first gate, so the run leaves a failed-run record
+// naming that exception. Returns the record.
+template <class Run>
+std::optional<FailedRun> expect_observer_failure(Run&& run) {
+    (void)take_failed_run();
+    const auto e = v11311::thrown<std::runtime_error>(std::forward<Run>(run));
+    if (!e) return std::nullopt;
+    EXPECT_STREQ(e->what(), "ThrowingObserver: as designed");
+    auto record = take_failed_run();
+    EXPECT_TRUE(record.has_value()) << "an observer failing mid-run left no record";
+    if (!record) return std::nullopt;
+    EXPECT_EQ(record->exception_type, "std::runtime_error");
+    EXPECT_EQ(record->message, "ThrowingObserver: as designed");
+    return record;
+}
+
+// As above, and the bundle the eager writer filled before the throw is in the
+// record's folder, whole, and nothing else is.
+template <class Run>
+void expect_observer_failure_keeps_the_bundle(Run&& run) {
+    const auto record = expect_observer_failure(std::forward<Run>(run));
+    ASSERT_TRUE(record.has_value());
+    ASSERT_TRUE(record->saved_to.has_value()) << record->save_note;
+    const FailedRun loaded = load_failed_run(*record->saved_to);
+    EXPECT_EQ(loaded.observations.size(), 1u);
+    ASSERT_TRUE(loaded.observations.contains("written"));
+    EXPECT_EQ(loaded.observations.number("written"), 1.0);
+}
+
 }  // namespace
 
 // =============================================================================
@@ -131,7 +164,6 @@ TEST(V11262Preflight, ACallerWrittenObserverIsConsultedBeforeTheRun) {
     StatevectorSimulator sim;
     auto r = sim.run(layered_circuit(), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(obs->preflights(), 1);
     EXPECT_EQ(obs->seen_form(), StateForm::Statevector);
     EXPECT_EQ(obs->seen_qubits(), 4);
@@ -150,7 +182,6 @@ TEST(V11262Preflight, TheHookIsAskedOncePerObserverNotOncePerAnchor) {
     StatevectorSimulator sim;
     auto r = sim.run(layered_circuit(), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(obs->preflights(), 1);
     // Still fires at every anchor it was attached to: 1 + 1 + 6.
     EXPECT_EQ(obs->observations(), 8);
@@ -195,7 +226,6 @@ TEST(V11262Preflight, AnObserverThatDoesNotOverrideTheHookStillRuns) {
     StatevectorSimulator sim;
     auto r = sim.run(layered_circuit(), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(rec->count(), 6u);
 }
 
@@ -213,7 +243,6 @@ TEST(V11262Preflight, AnObserverRuledOutNeverFiresAtAll) {
     StatevectorSimulator sim;
     auto r = sim.run(layered_circuit(), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(refused->preflights(), 1);
     EXPECT_EQ(refused->observations(), 0);
 }
@@ -229,7 +258,6 @@ TEST(V11262Preflight, RulingOneObserverOutLeavesTheRestOfThePlanAlone) {
     StatevectorSimulator sim;
     auto r = sim.run(layered_circuit(), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(refused->observations(), 0);
     EXPECT_EQ(kept->observations(), 6);
 }
@@ -245,7 +273,6 @@ TEST(V11262Preflight, APlanWhoseEveryObserverIsRuledOutStillRuns) {
     auto watched = sim.run(qc, 128, 20261, plan);
     auto unwatched = sim.run(qc, 128, 20261);
 
-    ASSERT_TRUE(watched.success) << watched.error_message;
     EXPECT_EQ(refused->observations(), 0);
     EXPECT_EQ(watched.counts, unwatched.counts);
 }
@@ -266,7 +293,6 @@ TEST(V11262Preflight, WarnStillAbsorbsARefusalDecidedEarly) {
         result = sim.run(layered_circuit(), 0, 20261, plan);
     });
 
-    EXPECT_TRUE(result.success) << result.error_message;
     EXPECT_FALSE(result.observations.contains("st"));
     EXPECT_FALSE(msgs.empty());
 }
@@ -283,7 +309,6 @@ TEST(V11262Preflight, IgnoreStillAbsorbsARefusalDecidedEarly) {
         result = sim.run(layered_circuit(), 0, 20261, plan);
     });
 
-    EXPECT_TRUE(result.success) << result.error_message;
     EXPECT_FALSE(result.observations.contains("st"));
     EXPECT_TRUE(msgs.empty()) << msgs.front();
 }
@@ -326,11 +351,10 @@ TEST(V11262Preflight, TwoObserversSharingALabelAreRefusedBeforeTheRun) {
     plan.observations.observe(Anchor::at_end(), std::make_shared<ProbabilityObserver>("same"));
     plan.observations.observe(Anchor::every_instruction(), witness);
 
-    StatevectorSimulator sim;
-    auto r = sim.run(layered_circuit(), 0, 20261, plan);
-
-    EXPECT_FALSE(r.success);
-    EXPECT_NE(r.error_message.find("same"), std::string::npos) << r.error_message;
+    const std::string message = v11261::sv_run_failure(layered_circuit(), plan);
+    EXPECT_NE(message.find("ObservationPlan: two observers write under the label 'same'"),
+              std::string::npos)
+        << message;
     EXPECT_EQ(witness->count(), 0u);
 }
 
@@ -345,7 +369,6 @@ TEST(V11262Preflight, OneObserverMayHoldItsLabelOnManyAnchors) {
     StatevectorSimulator sim;
     auto r = sim.run(layered_circuit(), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(obs->count(), 7u);
     EXPECT_EQ(r.observations.size(), 7u);
 }
@@ -359,7 +382,6 @@ TEST(V11262Preflight, UnlabelledObserversDoNotCollideWithEachOther) {
     StatevectorSimulator sim;
     auto r = sim.run(layered_circuit(), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(r.observations.size(), 0u);
 }
 
@@ -367,25 +389,24 @@ TEST(V11262Preflight, UnlabelledObserversDoNotCollideWithEachOther) {
 // A failed run hands back nothing
 // =============================================================================
 
-TEST(V11262Preflight, AFailedRunLeavesNoObservationsBehind) {
+TEST(V11262Preflight, AFailedRunReturnsNothingAndItsRecordKeepsWhatWasObserved) {
     // The first observer writes into the bundle as it fires, so by the time the
-    // second one throws there are real entries in it. A caller checking the
-    // flag and a caller reading the bundle must not be told different things.
+    // second one throws there are real entries in it. The run returns nothing,
+    // so no caller can read them as an answer; they are kept, with the rest of
+    // what the run computed, in its failed-run record, which says it failed.
     RunPlan plan;
     plan.observations.observe(Anchor::every_instruction(),
                               std::make_shared<EagerBundleWriter>("written"));
     plan.observations.observe(Anchor::every_instruction(),
                               std::make_shared<ThrowingObserver>(3));
 
-    StatevectorSimulator sim;
-    auto r = sim.run(layered_circuit(), 0, 20261, plan);
-
-    ASSERT_FALSE(r.success);
-    EXPECT_EQ(r.observations.size(), 0u);
-    EXPECT_FALSE(r.observations.contains("written"));
+    expect_observer_failure_keeps_the_bundle([&] {
+        StatevectorSimulator sim;
+        (void)sim.run(layered_circuit(), 0, 20261, plan);
+    });
 }
 
-TEST(V11262Preflight, AFailedDensityMatrixRunLeavesNoObservationsBehind) {
+TEST(V11262Preflight, AFailedDensityMatrixRunReturnsNothingAndItsRecordKeepsWhatWasObserved) {
     RunPlan plan;
     plan.observations.observe(Anchor::every_instruction(),
                               std::make_shared<EagerBundleWriter>("written"));
@@ -396,16 +417,15 @@ TEST(V11262Preflight, AFailedDensityMatrixRunLeavesNoObservationsBehind) {
     qc.h(0);
     qc.cx(0, 1);
 
-    DensityMatrixSimulator sim;
-    const NoiseModel noise;
-    auto r = sim.run(qc, noise, 4, 20261, plan);
-
-    ASSERT_FALSE(r.success);
-    EXPECT_EQ(r.observations.size(), 0u);
+    expect_observer_failure_keeps_the_bundle([&] {
+        DensityMatrixSimulator sim;
+        const NoiseModel noise;
+        (void)sim.run(qc, noise, 4, 20261, plan);
+    });
 }
 
 TEST(V11262Preflight, ASuccessfulRunStillReturnsEverythingItCollected) {
-    // The other half: clearing on failure must not clear on success.
+    // The other half: a run that succeeds hands back everything it collected.
     RunPlan plan;
     plan.observations.observe(Anchor::at_end(), std::make_shared<PurityObserver>("purity"));
     plan.observations.observe(Anchor::at_end(), std::make_shared<StateObserver>("state"));
@@ -415,7 +435,6 @@ TEST(V11262Preflight, ASuccessfulRunStillReturnsEverythingItCollected) {
     StatevectorSimulator sim;
     auto r = sim.run(layered_circuit(), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(r.observations.size(), 3u);
     EXPECT_TRUE(r.observations.contains("purity"));
     EXPECT_TRUE(r.observations.contains("state"));
@@ -438,12 +457,10 @@ TEST(V11262Preflight, AThrowingObserverFailsTheStatevectorRun) {
     plan.observations.observe(Anchor::every_instruction(),
                               std::make_shared<ThrowingObserver>(2));
 
-    StatevectorSimulator sim;
-    auto r = sim.run(layered_circuit(), 0, 20261, plan);
-
-    EXPECT_FALSE(r.success);
-    EXPECT_NE(r.error_message.find("as designed"), std::string::npos)
-        << r.error_message;
+    expect_observer_failure([&] {
+        StatevectorSimulator sim;
+        (void)sim.run(layered_circuit(), 0, 20261, plan);
+    });
 }
 
 TEST(V11262Preflight, AThrowingObserverFailsTheDensityMatrixRun) {
@@ -455,13 +472,11 @@ TEST(V11262Preflight, AThrowingObserverFailsTheDensityMatrixRun) {
     qc.h(0);
     qc.cx(0, 1);
 
-    DensityMatrixSimulator sim;
-    const NoiseModel noise;
-    auto r = sim.run(qc, noise, 4, 20261, plan);
-
-    EXPECT_FALSE(r.success);
-    EXPECT_NE(r.error_message.find("as designed"), std::string::npos)
-        << r.error_message;
+    expect_observer_failure([&] {
+        DensityMatrixSimulator sim;
+        const NoiseModel noise;
+        (void)sim.run(qc, noise, 4, 20261, plan);
+    });
 }
 
 TEST(V11262Preflight, AThrowingObserverFailsTheCliffordRun) {
@@ -476,8 +491,10 @@ TEST(V11262Preflight, AThrowingObserverFailsTheCliffordRun) {
     qc.h(0);
     qc.cx(0, 1);
 
-    CliffordSimulator sim;
-    EXPECT_THROW(sim.run(qc, 4, 20261, plan), std::runtime_error);
+    expect_observer_failure([&] {
+        CliffordSimulator sim;
+        (void)sim.run(qc, 4, 20261, plan);
+    });
 }
 
 TEST(V11262Preflight, AThrowingObserverFailsTheMpsRun) {
@@ -489,8 +506,10 @@ TEST(V11262Preflight, AThrowingObserverFailsTheMpsRun) {
     qc.h(0);
     qc.cx(0, 1);
 
-    MPSSimulator sim;
-    EXPECT_THROW(sim.run(qc, 8, 4, 20261, plan), std::runtime_error);
+    expect_observer_failure([&] {
+        MPSSimulator sim;
+        (void)sim.run(qc, 8, 4, 20261, plan);
+    });
 }
 
 TEST(V11262Preflight, AThrowingObserverOnTheLastInstructionStillFailsTheRun) {
@@ -502,10 +521,10 @@ TEST(V11262Preflight, AThrowingObserverOnTheLastInstructionStillFailsTheRun) {
         Anchor::every_instruction(),
         std::make_shared<ThrowingObserver>(static_cast<int>(qc.instructions.size())));
 
-    StatevectorSimulator sim;
-    auto r = sim.run(qc, 0, 20261, plan);
-
-    EXPECT_FALSE(r.success);
+    expect_observer_failure([&] {
+        StatevectorSimulator sim;
+        (void)sim.run(qc, 0, 20261, plan);
+    });
 }
 
 // =============================================================================
@@ -523,39 +542,37 @@ TEST(V11262Preflight, AnUnresolvableAnchorIsReportedBeforeAnyObserverFault) {
         std::make_shared<AmplitudeObserver>(std::vector<std::size_t>{999}, "amps"));
     plan.observations.observe(Anchor::after_instruction(99), recorder());
 
-    StatevectorSimulator sim;
-    auto r = sim.run(layered_circuit(), 0, 20261, plan);
-
-    ASSERT_FALSE(r.success);
-    EXPECT_NE(r.error_message.find("after_instruction(99)"), std::string::npos)
-        << r.error_message;
+    const std::string message = v11261::sv_run_failure(layered_circuit(), plan);
+    EXPECT_NE(message.find("after_instruction(99)"), std::string::npos) << message;
+    EXPECT_EQ(message.find("AmplitudeObserver"), std::string::npos) << message;
 }
 
 TEST(V11262Preflight, AnAmplitudeIndexOutsideTheRegisterIsACallerMistakeUnderEveryResponse) {
     // Not an observation the backend cannot produce, so no response softens it.
-    for (const Response response : {Response::Throw, Response::Warn, Response::Ignore}) {
+    for (const Response response :
+         {Response::Throw, Response::Warn, Response::Ignore, Response::Auto}) {
         RunPlan plan;
         plan.options.response = response;
         plan.observations.observe(
             Anchor::at_end(),
             std::make_shared<AmplitudeObserver>(std::vector<std::size_t>{64}, "amps"));
 
-        StatevectorSimulator sim;
-        auto r = sim.run(layered_circuit(), 0, 20261, plan);
-        EXPECT_FALSE(r.success);
+        const std::string message = v11261::sv_run_failure(layered_circuit(), plan);
+        EXPECT_NE(message.find("AmplitudeObserver: index 64 is outside"), std::string::npos)
+            << message;
     }
 }
 
 TEST(V11262Preflight, AMalformedEntropyRegionIsACallerMistakeUnderEveryResponse) {
-    for (const Response response : {Response::Throw, Response::Warn, Response::Ignore}) {
+    for (const Response response :
+         {Response::Throw, Response::Warn, Response::Ignore, Response::Auto}) {
         RunPlan plan;
         plan.options.response = response;
         plan.observations.observe(
             Anchor::at_end(),
             std::make_shared<EntropyObserver>(std::vector<int>{1, 1}));
 
-        StatevectorSimulator sim;
-        auto r = sim.run(layered_circuit(), 0, 20261, plan);
-        EXPECT_FALSE(r.success);
+        const std::string message = v11261::sv_run_failure(layered_circuit(), plan);
+        EXPECT_NE(message.find("twice"), std::string::npos) << message;
     }
 }
