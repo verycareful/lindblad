@@ -28,6 +28,7 @@
 #include <gtest/gtest.h>
 
 #include "v11251_clifford_oracle.hpp"
+#include "v11311_helpers.hpp"
 
 #include "lindblad/circuit.hpp"
 #include "lindblad/constants.hpp"
@@ -669,6 +670,23 @@ TEST(V11251CliffordRandom, GeneralPathRandomCircuitsMatchStatevector) {
 // A random Clifford circuit with one non-Clifford instruction spliced in must
 // be rejected by the classifier and must throw on a direct run. Both arms are
 // covered: a gate outside the group, and a rotation off the quarter-turn grid.
+// The refusal a direct run gives for the circuit's last instruction, the one
+// that spoils it: exactly InvalidArgument from CliffordSimulator::run, before
+// any gate has run, naming that instruction's index, gate and qubit.
+static void expect_refused_before_the_first_gate(CliffordSimulator& sim, const QuantumCircuit& spoiled,
+                                                 const std::string& reason) {
+    const Instruction& last = spoiled.instructions.back();
+    const int index = static_cast<int>(spoiled.instructions.size()) - 1;
+    const auto e = v11311::thrown<InvalidArgument>([&] { sim.run(spoiled, 2, 1); });
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), "CliffordSimulator::run");
+    v11311::expect_message(*e, {"CliffordSimulator::run: " + reason,
+                                "(instruction " + std::to_string(index) + ": " +
+                                    last.gate_name() + " on qubit " +
+                                    std::to_string(last.qubits[0]) + ")"});
+    v11311::expect_point(e->where(), -1, index, last.gate_name(), last.qubits);
+}
+
 TEST(V11251CliffordRandom, OneNonCliffordInstructionSpoilsTheWholeCircuit) {
     std::mt19937_64 rng(kSeedReject);
     CliffordSimulator sim;
@@ -687,7 +705,8 @@ TEST(V11251CliffordRandom, OneNonCliffordInstructionSpoilsTheWholeCircuit) {
                 spoiled.t(q);
                 SCOPED_TRACE("n=" + std::to_string(n) + " t-gate " + std::to_string(i));
                 EXPECT_FALSE(CliffordSimulator::is_clifford(spoiled));
-                EXPECT_THROW(sim.run(spoiled, 2, 1), std::invalid_argument);
+                expect_refused_before_the_first_gate(
+                    sim, spoiled, "gate 't' is not supported by the tableau backend");
             }
 
             {
@@ -697,7 +716,10 @@ TEST(V11251CliffordRandom, OneNonCliffordInstructionSpoilsTheWholeCircuit) {
                 spoiled.rz(PI_2 / 3.0, q);
                 SCOPED_TRACE("n=" + std::to_string(n) + " angle " + std::to_string(i));
                 EXPECT_FALSE(CliffordSimulator::is_clifford(spoiled));
-                EXPECT_THROW(sim.run(spoiled, 2, 1), std::runtime_error);
+                expect_refused_before_the_first_gate(
+                    sim, spoiled,
+                    "rz(" + std::to_string(PI_2 / 3.0) +
+                        ") is not Clifford; only multiples of π/2 are supported");
             }
         }
     }

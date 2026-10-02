@@ -23,6 +23,7 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/types.hpp"
+#include "v11311_helpers.hpp"
 
 #include <array>
 #include <cmath>
@@ -73,8 +74,17 @@ TEST(R1121Mps, ProbabilitiesSingleReflectsQubitState) {
 }
 
 TEST(R1121Mps, ToStatevectorThrowsAboveQubitLimit) {
-    MPSState big(26);  // > MPS_SV_MAX_QUBITS (25)
-    EXPECT_THROW(big.to_statevector(), std::runtime_error);
+    const int n = ENFORCED_MPS_DENSE_MAX_QUBITS + 1;
+    MPSState big(n);
+    const auto e = v11311::thrown<InvalidArgument>([&] { (void)big.to_statevector(); });
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), "MPSState::to_statevector");
+    v11311::expect_message(
+        *e, {"MPSState::to_statevector: " + std::to_string(n) +
+                 " qubits exceed the dense-fallback limit (" +
+                 std::to_string(ENFORCED_MPS_DENSE_MAX_QUBITS) + ")",
+             "QubitLimit::Lift raises it to " + std::to_string(LIFTED_MPS_DENSE_MAX_QUBITS)});
+    EXPECT_FALSE(e->where().has_value());
 }
 
 // =============================================================================
