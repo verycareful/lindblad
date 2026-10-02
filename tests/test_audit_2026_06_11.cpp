@@ -67,11 +67,9 @@ TEST(AuditR1112, C1_DM_RZX_MatchesStatevector) {
 
     StatevectorSimulator sv_sim;
     auto sv_res = sv_sim.run(qc, 0, 1);
-    ASSERT_TRUE(sv_res.success);
 
     DensityMatrixSimulator dm_sim;
     auto dm_res = dm_sim.run(qc, NoiseModel{}, 0, 1);
-    ASSERT_TRUE(dm_res.success);
     auto dm_probs = dm_res.final_state.probabilities();
 
     const double s2 = std::sin(theta / 2.0) * std::sin(theta / 2.0);
@@ -99,7 +97,6 @@ TEST(AuditR1112, C2a_DM_RXX_PreservesTrace) {
 
     DensityMatrixSimulator dm_sim;
     auto res = dm_sim.run(qc, NoiseModel{}, 0, 1);
-    ASSERT_TRUE(res.success);
     EXPECT_NEAR(res.final_state.trace(), 1.0, 1e-9)
         << "DM RXX lost trace: matrix is non-unitary (missing diagonal terms)";
 }
@@ -168,7 +165,6 @@ TEST(AuditR1112, C4a_PauliConvention_SVMatchesDM) {
 
     DensityMatrixSimulator dm_sim;
     auto dm_res = dm_sim.run(qc, NoiseModel{}, 0, 1);
-    ASSERT_TRUE(dm_res.success);
     const double dm_val = dm_res.final_state.expectation_value_sparse(zi);
 
     EXPECT_NEAR(sv_val, -1.0, kTol)
@@ -224,7 +220,6 @@ TEST(AuditR1112, C5a_ControlOfSXIsNotIdentity) {
 
     StatevectorSimulator sim;
     auto res = sim.run(qc, 0, 1);
-    ASSERT_TRUE(res.success);
 
     // Correct controlled-SX on |ctrl=1, tgt=0>: half the population moves to tgt=1.
     EXPECT_NEAR(res.final_state.probability(1), 0.5, kTol)
@@ -252,7 +247,6 @@ TEST(AuditR1112, C5b_ControlOfUnitaryTargetsTarget) {
 
     StatevectorSimulator sim;
     auto res = sim.run(qc, 0, 1);
-    ASSERT_TRUE(res.success);
 
     // Expected: |q0=1, q1=1> = index 3 with probability 1.
     EXPECT_NEAR(res.final_state.probability(3), 1.0, kTol)
@@ -280,11 +274,9 @@ TEST(AuditR1112, C6_UnitarySVvsDMAgree) {
 
     StatevectorSimulator sv_sim;
     auto sv_res = sv_sim.run(qc, 0, 1);
-    ASSERT_TRUE(sv_res.success);
 
     DensityMatrixSimulator dm_sim;
     auto dm_res = dm_sim.run(qc, NoiseModel{}, 0, 1);
-    ASSERT_TRUE(dm_res.success);
     auto dm_probs = dm_res.final_state.probabilities();
 
     for (size_t i = 0; i < 4; ++i) {
@@ -378,7 +370,6 @@ TEST(AuditR1112, C10_ShotsZeroHonoursConditions) {
 
     StatevectorSimulator sim;
     auto res = sim.run(qc, 0, 42);
-    ASSERT_TRUE(res.success);
 
     EXPECT_NEAR(res.final_state.probability(0), 1.0, kTol)
         << "conditional X fired although its clbit condition (==1) is false";
@@ -466,11 +457,9 @@ TEST(AuditR1112, C13_ConsolidateBlocksPreservesRZX) {
 
     StatevectorSimulator sim;
     auto ref = sim.run(qc, 0, 1);
-    ASSERT_TRUE(ref.success);
 
     auto out = transpile(qc, CouplingMap(), {}, 3);
     auto opt = sim.run(out, 0, 1);
-    ASSERT_TRUE(opt.success);
 
     for (size_t i = 0; i < 4; ++i) {
         EXPECT_NEAR(ref.final_state.probability(i),
@@ -582,8 +571,6 @@ TEST(AuditR1112, C17_EdgelessCouplingMapIsLiteral) {
     StatevectorSimulator sim;
     auto ref = sim.run(qc, 0, 1);
     auto opt = sim.run(out, 0, 1);
-    ASSERT_TRUE(ref.success);
-    ASSERT_TRUE(opt.success);
 
     // The Bell state has P(00) = P(11) = 0.5.
     EXPECT_NEAR(opt.final_state.probability(3),

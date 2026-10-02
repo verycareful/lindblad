@@ -72,7 +72,6 @@ TEST(MPSSim, BellState_Fidelity_VsSV) {
     // Exact SV result
     StatevectorSimulator sv_sim;
     auto sv_res = sv_sim.run(qc);
-    ASSERT_TRUE(sv_res.success);
 
     // MPS result
     MPSSimulator mps_sim;

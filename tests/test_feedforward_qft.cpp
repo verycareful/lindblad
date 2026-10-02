@@ -24,8 +24,10 @@
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/simulators/clifford_sim.hpp"
 #include "lindblad/simulators/mps_sim.hpp"
+#include "v11311_helpers.hpp"
 
 #include <cmath>
+#include <functional>
 #include <string>
 #include <unordered_map>
 
@@ -408,21 +410,32 @@ TEST(FeedforwardClifford, PGateAngle0_OnPlus_StillFiftyFifty) {
     EXPECT_GT(result.counts.count("1"), 0u);
 }
 
+// P(π/4) is not a Clifford gate. Whichever way the Clifford backend is reached,
+// the run refuses it before the first gate: exactly InvalidArgument from
+// CliffordSimulator::run, naming the angle and the instruction.
+static void expect_p_quarter_pi_refused(const std::function<void()>& run) {
+    const auto e = v11311::thrown<InvalidArgument>(run);
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), "CliffordSimulator::run");
+    v11311::expect_message(*e, {"CliffordSimulator::run: p(" + std::to_string(kPi / 4.0) +
+                                    ") is not Clifford; only multiples of π/2 are supported",
+                                "(instruction 0: p on qubit 0)"});
+    v11311::expect_point(e->where(), -1, 0, "p", {0});
+}
+
 TEST(FeedforwardClifford, NonCliffordPAngle_LocalBackendReturnsFailure) {
-    // P(π/4) is not a Clifford gate. LocalBackend catches the throw → success=false.
+    // LocalBackend reports the backend's refusal as the backend raised it.
     QuantumCircuit qc(1, 1);
     qc.p(kPi / 4.0, 0).measure(0, 0);
     auto backend = make_backend(backends::LocalBackend::SimType::CLIFFORD);
-    auto result  = backend.run(qc, 10, 1);
-    EXPECT_FALSE(result.success);
+    expect_p_quarter_pi_refused([&] { (void)backend.run(qc, 10, 1); });
 }
 
 TEST(FeedforwardClifford, NonCliffordPAngle_DirectSimThrows) {
-    // Direct CliffordSimulator::run() must throw for P(π/4).
     QuantumCircuit qc(1, 1);
     qc.p(kPi / 4.0, 0).measure(0, 0);
     CliffordSimulator sim;
-    EXPECT_THROW(sim.run(qc, 10, 1), std::exception);
+    expect_p_quarter_pi_refused([&] { (void)sim.run(qc, 10, 1); });
 }
 
 TEST(FeedforwardClifford, IsCliffordFalseForPiOver4) {
@@ -761,7 +774,6 @@ TEST(RunIterativeCorrectness, N1_PlusInput_AlwaysZero) {
     QuantumCircuit input(1);
     input.h(0);
     auto result = QFT::run_iterative(input, 200, 42);
-    ASSERT_TRUE(result.backend_result.success);
     ASSERT_EQ(result.backend_result.counts.size(), 1u);
     EXPECT_EQ(result.backend_result.counts.at("0"), 200);
 }
@@ -771,7 +783,6 @@ TEST(RunIterativeCorrectness, N1_MinusInput_AlwaysOne) {
     QuantumCircuit input(1);
     input.x(0).h(0);
     auto result = QFT::run_iterative(input, 200, 42);
-    ASSERT_TRUE(result.backend_result.success);
     ASSERT_EQ(result.backend_result.counts.size(), 1u);
     EXPECT_EQ(result.backend_result.counts.at("1"), 200);
 }
@@ -802,9 +813,13 @@ TEST(RunIterativeCorrectness, CliffordCompatibleAlwaysFalse) {
 }
 
 TEST(RunIterativeCorrectness, ResultSuccessTrue) {
+    // A run that returns is an answer: it did not throw, and it accounts for
+    // every shot it was asked for.
     QuantumCircuit input(2);
-    auto result = QFT::run_iterative(input, 100, 1);
-    EXPECT_TRUE(result.backend_result.success);
+    QFT::Result result{};
+    ASSERT_NO_THROW(result = QFT::run_iterative(input, 100, 1));
+    EXPECT_EQ(result.backend_result.shots, 100);
+    EXPECT_EQ(total_shots(result.backend_result.counts), 100);
 }
 
 TEST(RunIterativeCorrectness, TotalShotsPreserved) {
@@ -847,7 +862,6 @@ TEST(RunIterativeCorrectness, N2_FeedforwardPGateExercised) {
     input.x(1).h(1);    // qubit 1 = |−⟩
 
     auto result = QFT::run_iterative(input, 200, 42);
-    ASSERT_TRUE(result.backend_result.success);
     ASSERT_EQ(result.backend_result.counts.size(), 1u);
     EXPECT_EQ(result.backend_result.counts.at("11"), 200);
 }
@@ -859,7 +873,6 @@ TEST(RunIterativeCorrectness, DM_N1_PlusInput_AlwaysZero) {
     input.h(0);
     auto backend = make_backend(backends::LocalBackend::SimType::DENSITY_MATRIX);
     auto result  = QFT::run_iterative(input, backend, 200, 42);
-    ASSERT_TRUE(result.backend_result.success);
     ASSERT_EQ(result.backend_result.counts.size(), 1u);
     EXPECT_EQ(result.backend_result.counts.at("0"), 200);
 }
@@ -880,7 +893,6 @@ TEST(RunIterativeCorrectness, DM_N2_FeedforwardPGateExercised) {
     input.x(1).h(1);
     auto backend = make_backend(backends::LocalBackend::SimType::DENSITY_MATRIX);
     auto result  = QFT::run_iterative(input, backend, 200, 42);
-    ASSERT_TRUE(result.backend_result.success);
     ASSERT_EQ(result.backend_result.counts.size(), 1u);
     EXPECT_EQ(result.backend_result.counts.at("11"), 200);
 }
@@ -891,7 +903,6 @@ TEST(RunIterativeCorrectness, Clifford_N1_PlusInput_AlwaysZero) {
     input.h(0);
     auto backend = make_backend(backends::LocalBackend::SimType::CLIFFORD);
     auto result  = QFT::run_iterative(input, backend, 200, 42);
-    ASSERT_TRUE(result.backend_result.success);
     ASSERT_EQ(result.backend_result.counts.size(), 1u);
     EXPECT_EQ(result.backend_result.counts.at("0"), 200);
 }
@@ -903,7 +914,6 @@ TEST(RunIterativeCorrectness, Clifford_N2_PlusPlusInput_AlwaysZero) {
     input.h(0).h(1);
     auto backend = make_backend(backends::LocalBackend::SimType::CLIFFORD);
     auto result  = QFT::run_iterative(input, backend, 200, 42);
-    ASSERT_TRUE(result.backend_result.success);
     ASSERT_EQ(result.backend_result.counts.size(), 1u);
     EXPECT_EQ(result.backend_result.counts.at("00"), 200);
 }
@@ -913,7 +923,6 @@ TEST(RunIterativeCorrectness, MPS_N1_PlusInput_AlwaysZero) {
     input.h(0);
     auto backend = make_backend(backends::LocalBackend::SimType::MPS);
     auto result  = QFT::run_iterative(input, backend, 200, 42);
-    ASSERT_TRUE(result.backend_result.success);
     ASSERT_EQ(result.backend_result.counts.size(), 1u);
     EXPECT_EQ(result.backend_result.counts.at("0"), 200);
 }
@@ -924,7 +933,6 @@ TEST(RunIterativeCorrectness, MPS_N2_FeedforwardPGateExercised) {
     input.x(1).h(1);
     auto backend = make_backend(backends::LocalBackend::SimType::MPS);
     auto result  = QFT::run_iterative(input, backend, 200, 42);
-    ASSERT_TRUE(result.backend_result.success);
     ASSERT_EQ(result.backend_result.counts.size(), 1u);
     EXPECT_EQ(result.backend_result.counts.at("11"), 200);
 }

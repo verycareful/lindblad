@@ -20,7 +20,7 @@
 set(LINDBLAD_TEST_SOURCES
     test_gates.cpp
     test_circuit.cpp
-    # test_simulators.cpp
+    test_simulators.cpp
     test_noise.cpp
     test_operators.cpp
     test_transpiler.cpp
@@ -28,23 +28,23 @@ set(LINDBLAD_TEST_SOURCES
     test_maqaoa_noisy.cpp
     test_maqaoa_5qubit.cpp
     test_maqaoa_microgrid.cpp
-    # test_integration.cpp
+    test_integration.cpp
     test_classic_algorithms.cpp
-    # test_simulators_r130.cpp
-    # test_mps_sim.cpp
+    test_simulators_r130.cpp
+    test_mps_sim.cpp
     test_gates_extended.cpp
     test_operators_qi.cpp
     test_ising.cpp
-    # test_feedforward_qft.cpp
+    test_feedforward_qft.cpp
     test_qudit_bv.cpp
     test_qudit_algorithms.cpp
     test_qudit_simulators.cpp
-    # test_bug_regression.cpp
+    test_bug_regression.cpp
     test_primitives.cpp
     test_dag.cpp
     test_qasm_parser.cpp
     test_shor.cpp
-    # test_qft_convention.cpp
+    test_qft_convention.cpp
     test_qasm3_parser.cpp
     test_visualiser_layout.cpp
     test_visualiser_catalogue.cpp
@@ -57,7 +57,7 @@ set(LINDBLAD_TEST_SOURCES
     test_visualiser_html_fixtures.cpp
     test_visualiser_file_io.cpp
     test_qudit_r1111.cpp
-    # test_audit_2026_06_11.cpp
+    test_audit_2026_06_11.cpp
     test_r1121_types.cpp
     test_r1121_statevector.cpp
     test_r1121_gates_matrices.cpp

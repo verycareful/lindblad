@@ -38,13 +38,11 @@ TEST(IntegrationTest, StatevectorMatchesDensityMatrix) {
     // Statevector
     StatevectorSimulator sv_sim;
     auto sv_result = sv_sim.run(qc);
-    ASSERT_TRUE(sv_result.success);
 
     // Density matrix (ideal noise model)
     NoiseModel ideal;
     DensityMatrixSimulator dm_sim;
     auto dm_result = dm_sim.run(qc, ideal);
-    ASSERT_TRUE(dm_result.success);
 
     // Compare: diagonal of density matrix should match statevector probabilities
     auto sv_probs = sv_result.final_state.probabilities();
@@ -73,8 +71,6 @@ TEST(IntegrationTest, OptLevel3PreservesUnitary) {
     auto r1 = sim.run(qc);
     auto r2 = sim.run(transpiled);
 
-    ASSERT_TRUE(r1.success);
-    ASSERT_TRUE(r2.success);
 
     for (size_t i = 0; i < 4; ++i) {
         EXPECT_NEAR(r1.final_state.probability(i),
@@ -125,7 +121,6 @@ TEST(IntegrationTest, DensityMatrixReset) {
     DensityMatrixSimulator dm_sim;
     auto result = dm_sim.run(qc, ideal);
 
-    ASSERT_TRUE(result.success);
 
     // After reset, should be in |0⟩: rho = |0><0|
     auto probs = result.final_state.probabilities();
@@ -141,7 +136,6 @@ TEST(IntegrationTest, DensityMatrixResetSuperposition) {
     DensityMatrixSimulator dm_sim;
     auto result = dm_sim.run(qc, ideal);
 
-    ASSERT_TRUE(result.success);
 
     auto probs = result.final_state.probabilities();
     EXPECT_NEAR(probs[0], 1.0, 1e-10);
@@ -168,8 +162,6 @@ TEST(IntegrationTest, QASM2PiExpressionRoundTrip) {
     auto r1 = sim.run(qc);
     auto r2 = sim.run(reimported);
 
-    ASSERT_TRUE(r1.success);
-    ASSERT_TRUE(r2.success);
 
     EXPECT_NEAR(r1.final_state.probability(0),
                 r2.final_state.probability(0), 1e-8);
@@ -224,7 +216,6 @@ measure myq[1] -> myc[1];
 
     StatevectorSimulator sim;
     auto result = sim.run(qc, 1024, 42);
-    ASSERT_TRUE(result.success);
     // Bell state: only 00 and 11 outcomes
     for (const auto& [bits, count] : result.counts) {
         EXPECT_TRUE(bits == "00" || bits == "11")
@@ -252,7 +243,6 @@ measure q2[0] -> c2[0];
 
     StatevectorSimulator sim;
     auto result = sim.run(qc, 64, 0);
-    ASSERT_TRUE(result.success);
     // MSB-first: bitstring[0]=qubit1=q2=1, bitstring[1]=qubit0=q1=0 → "10"
     EXPECT_EQ(result.counts.size(), 1u);
     EXPECT_GT(result.counts.count("10"), 0u);

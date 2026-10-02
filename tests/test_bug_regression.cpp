@@ -21,6 +21,7 @@
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/simulators/mps_sim.hpp"
 #include "lindblad/transpiler.hpp"
+#include "v11311_helpers.hpp"
 
 #include <cmath>
 #include <string>
@@ -60,7 +61,6 @@ measure q[2] -> c[2];
 
     StatevectorSimulator sim;
     auto res = sim.run(qc, 1024, 7);
-    ASSERT_TRUE(res.success);
     for (const auto& [bits, count] : res.counts)
         EXPECT_TRUE(bits == "000" || bits == "111")
             << "Unexpected bitstring: " << bits;
@@ -94,7 +94,6 @@ measure right[1] -> out[3];
 
     StatevectorSimulator sim;
     auto res = sim.run(qc, 128, 11);
-    ASSERT_TRUE(res.success);
     EXPECT_EQ(res.counts.size(), 1u);
     // Qubit layout: left[0]=q0, left[1]=q1, right[0]=q2, right[1]=q3.
     // MSB-first bitstring: q3 q2 q1 q0 = 1 0 0 0 = "1000".
@@ -136,7 +135,6 @@ TEST(BugRegression, B3_MPSUnitaryGateNoThrow) {
 
     StatevectorSimulator sv_sim;
     auto sv_res = sv_sim.run(make_circuit(), 256, 13);
-    ASSERT_TRUE(sv_res.success);
 
     MPSSimulator mps_sim;
     auto mps_res = mps_sim.run(make_circuit(), 16, 256, 13);
@@ -175,12 +173,10 @@ TEST(BugRegression, B4_DensityMatrixRCCXMatchesSV) {
 
     StatevectorSimulator sv_sim;
     auto sv_res = sv_sim.run(make_circuit(), 512, 17);
-    ASSERT_TRUE(sv_res.success);
 
     NoiseModel ideal;
     DensityMatrixSimulator dm_sim;
     auto dm_res = dm_sim.run(make_circuit(), ideal, 512, 17);
-    ASSERT_TRUE(dm_res.success);
 
     // Both must give "111" with probability 1.
     EXPECT_EQ(sv_res.counts.size(), 1u);
@@ -212,12 +208,10 @@ TEST(BugRegression, B4_DensityMatrixRCCXOnState101) {
 
     StatevectorSimulator sv_sim;
     auto sv_res = sv_sim.run(make_circuit(), 256, 19);
-    ASSERT_TRUE(sv_res.success);
 
     NoiseModel ideal;
     DensityMatrixSimulator dm_sim;
     auto dm_res = dm_sim.run(make_circuit(), ideal, 256, 19);
-    ASSERT_TRUE(dm_res.success);
 
     EXPECT_EQ(sv_res.counts.size(),  1u);
     EXPECT_GT(sv_res.counts.count("101"), 0u) << "SV: expected |101⟩ after RCCX|101⟩";
@@ -386,7 +380,6 @@ TEST(BugRegression, B6_BeforeGateNoiseApplied) {
 
     DensityMatrixSimulator dm_sim;
     auto res = dm_sim.run(qc, nm, 1024, 23);
-    ASSERT_TRUE(res.success);
 
     int count_0 = res.counts.count("0") ? res.counts.at("0") : 0;
     EXPECT_EQ(count_0, 1024)
@@ -407,7 +400,6 @@ TEST(BugRegression, B6_BeforeGateNoiseAffectsDensityMatrix) {
 
     DensityMatrixSimulator dm_sim;
     auto res = dm_sim.run(qc, nm, 0, 0);
-    ASSERT_TRUE(res.success);
 
     const auto& dm = res.final_state;
     EXPECT_NEAR(dm(0, 1).real, -0.5, kTol)
@@ -431,7 +423,6 @@ TEST(BugRegression, B6_AfterGateRemainsDefault) {
 
     DensityMatrixSimulator dm_sim;
     auto res = dm_sim.run(qc, nm, 1024, 23);
-    ASSERT_TRUE(res.success);
 
     int count_0 = res.counts.count("0") ? res.counts.at("0") : 0;
     EXPECT_EQ(count_0, 1024)
@@ -573,12 +564,10 @@ TEST(BugRegression, B4_DensityMatrixRCCXFullBasisSweep) {
         std::string exp_bits = to_bits(expected, 3);
 
         auto sv_res = sv_sim.run(qc, 128, 31);
-        ASSERT_TRUE(sv_res.success) << "SV failed for input=" << to_bits(input,3);
         EXPECT_GT(sv_res.counts.count(exp_bits), 0u)
             << "SV wrong for input=" << to_bits(input,3) << " expected=" << exp_bits;
 
         auto dm_res = dm_sim.run(qc, ideal, 128, 31);
-        ASSERT_TRUE(dm_res.success) << "DM failed for input=" << to_bits(input,3);
         EXPECT_GT(dm_res.counts.count(exp_bits), 0u)
             << "DM wrong for input=" << to_bits(input,3) << " expected=" << exp_bits;
     }
@@ -611,7 +600,6 @@ measure gamma[0] -> res[3];
 
     StatevectorSimulator sim;
     auto res = sim.run(qc, 64, 37);
-    ASSERT_TRUE(res.success);
     EXPECT_EQ(res.counts.size(), 1u);
     // beta[1] = global qubit 2; MSB-first: q3=0, q2=1, q1=0, q0=0 = "0100".
     EXPECT_GT(res.counts.count("0100"), 0u)
@@ -679,7 +667,6 @@ TEST(BugRegression, B6_BeforeGateNoiseMultiQubitCircuit) {
 
     DensityMatrixSimulator dm_sim;
     auto res = dm_sim.run(qc, nm, 0, 0);
-    ASSERT_TRUE(res.success);
 
     const auto& dm = res.final_state;
     // For |−⟩⊗|−⟩ the two-qubit density matrix has rho(0,1) = (-0.5)⊗(-0.5) ← sign matters.
@@ -780,7 +767,6 @@ TEST(BugRegression, B8_SabreLayoutFunctional) {
 
     StatevectorSimulator sim;
     auto res = sim.run(transpiled, 2048, 29);
-    ASSERT_TRUE(res.success);
 
     // GHZ: only "00000" and "11111" should appear.
     EXPECT_GE(res.counts.size(), 1u);
@@ -802,9 +788,12 @@ TEST(BugRegression, B8_SabreLayoutNocrashOnDenseCircuit) {
     }) << "transpile(level=2) crashed on a dense circuit (B8)";
 
     StatevectorSimulator sim;
-    auto res = sim.run(transpiled, 512, 41);
-    ASSERT_TRUE(res.success)
+    StatevectorSimulator::Result res;
+    ASSERT_NO_THROW(res = sim.run(transpiled, 512, 41))
         << "Transpiled circuit simulation failed after SabreLayout (B8)";
+    int total = 0;
+    for (const auto& [bits, count] : res.counts) total += count;
+    EXPECT_EQ(total, 512);
 }
 
 // =============================================================================
@@ -1046,16 +1035,19 @@ TEST(BugRegression, B12_MpsUnitary3QubitWideRegisterThrowsClearly) {
     QuantumCircuit qc(n);
     qc.unitary(I3, {3, 4, 5}, "id3_as_unitary");
 
+    // The refusal comes before the first gate: exactly InvalidArgument from the
+    // run, naming the gate's width, the register against the limit, and the
+    // instruction (a labelled UNITARY is named by its label).
     MPSSimulator sim;
-    try {
-        (void)sim.run(qc, 16, 64, 42);
-        ADD_FAILURE() << "MPS 3-qubit UNITARY at n=" << n
-                      << " did not throw; expected clear error.";
-    } catch (const std::runtime_error& e) {
-        const std::string msg = e.what();
-        EXPECT_NE(msg.find("UNITARY"), std::string::npos)
-            << "Error message did not name the UNITARY instruction: " << msg;
-    }
+    const auto e = v11311::thrown<InvalidArgument>([&] { (void)sim.run(qc, 16, 64, 42); });
+    ASSERT_TRUE(e.has_value()) << "MPS 3-qubit UNITARY at n=" << n << " was not refused";
+    EXPECT_EQ(e->entry_point(), "MPSSimulator::run");
+    v11311::expect_message(
+        *e, {"MPSSimulator::run: a 3-qubit UNITARY is applied through the dense fallback, and " +
+                 std::to_string(n) + " qubits exceed the dense-fallback limit (" +
+                 std::to_string(ENFORCED_MPS_DENSE_MAX_QUBITS) + ")",
+             "(instruction 0: id3_as_unitary on qubits 3, 4, 5)"});
+    v11311::expect_point(e->where(), -1, 0, "id3_as_unitary", {3, 4, 5});
 }
 
 TEST(BugRegression, B11_Qasm2CustomGateDefStillWorks) {
