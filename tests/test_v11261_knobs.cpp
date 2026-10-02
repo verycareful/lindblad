@@ -29,6 +29,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <typeinfo>
+
 #include "v11261_observation_oracle.hpp"
 
 #include "lindblad/circuit.hpp"
@@ -62,6 +65,7 @@ QuantumCircuit small_circuit() {
     return qc;
 }
 
+// success is whether the run returned; message is its refusal when it threw.
 struct Outcome {
     bool success = false;
     std::string message;
@@ -70,7 +74,9 @@ struct Outcome {
 };
 
 // Runs a StateObserver asking for `wanted` under the given options, and reports
-// every channel the verdict could have arrived on.
+// every channel the verdict could have arrived on. A refusal must be exactly
+// lindblad::InvalidArgument from the run, decided before the first gate and so
+// leaving no failed-run record; any other exception fails the test.
 Outcome observe_as(StateForm wanted, RunPlan::Options options) {
     RunPlan plan;
     plan.options = options;
@@ -80,12 +86,20 @@ Outcome observe_as(StateForm wanted, RunPlan::Options options) {
     StatevectorSimulator sim;
     StatevectorSimulator::Result result;
     Outcome out;
+    const std::uint64_t stores = lindblad::detail::failed_run_stores();
     out.warnings = capture_warnings([&] {
-        result = sim.run(small_circuit(), 0, 20261, plan);
+        try {
+            result = sim.run(small_circuit(), 0, 20261, plan);
+            out.success = true;
+        } catch (const lindblad::InvalidArgument& e) {
+            EXPECT_EQ(typeid(e), typeid(lindblad::InvalidArgument)) << e.what();
+            EXPECT_EQ(e.entry_point(), "StatevectorSimulator::run");
+            out.message = e.what();
+        }
     });
-    out.success = result.success;
-    out.message = result.error_message;
-    out.has_entry = result.observations.contains("s");
+    EXPECT_EQ(lindblad::detail::failed_run_stores(), stores)
+        << "a refusal before the first gate left a failed-run record";
+    out.has_entry = out.success && result.observations.contains("s");
     return out;
 }
 
@@ -329,7 +343,6 @@ TEST(V11261Knobs, WarnIsDeliveredOnceAndThenTallied) {
         result = sim.run(layered_circuit(), 0, 20261, plan);
     });
 
-    ASSERT_TRUE(result.success) << result.error_message;
     const std::vector<std::string> first = first_deliveries(msgs);
     EXPECT_EQ(first.size(), 1u) << "the channel delivered " << first.size()
                                 << " first-time notices for one repeated refusal";
@@ -348,7 +361,6 @@ TEST(V11261Knobs, ARefusedFiringRecordsNoPoint) {
     StatevectorSimulator sim;
     auto r = sim.run(layered_circuit(), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(observer->count(), 0u);
     EXPECT_FALSE(r.observations.contains("s"));
 }
@@ -374,7 +386,6 @@ TEST(V11261Knobs, SuppressKeepsAnchorsOnTheInstructionsTheCallerWrote) {
     StatevectorSimulator sim(options);
     auto r = sim.run(qc, 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(rec->count(), qc.instructions.size());
     EXPECT_EQ(rec->indices(), (std::vector<int>{0, 1, 2, 3, 4, 5}));
 }
@@ -395,7 +406,6 @@ TEST(V11261Knobs, KeepBindsAnchorsToTheFusedCircuit) {
     StatevectorSimulator sim(options);
     auto r = sim.run(qc, 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     // Fusion only helps if it merged something, so a firing count equal to the
     // instruction count would mean this test proved nothing.
     EXPECT_LT(rec->count(), qc.instructions.size())
@@ -418,10 +428,9 @@ TEST(V11261Knobs, ALabelFusionAbsorbedFailsTheRunUnderKeep) {
     plan.observations.observe(Anchor::after_label("absorbed"), recorder());
 
     StatevectorSimulator sim(options);
-    auto r = sim.run(qc, 0, 20261, plan);
-
-    EXPECT_FALSE(r.success);
-    EXPECT_NE(r.error_message.find("absorbed"), std::string::npos) << r.error_message;
+    const std::string message = v11261::run_refusal(
+        "StatevectorSimulator::run", [&] { (void)sim.run(qc, 0, 20261, plan); });
+    EXPECT_NE(message.find("absorbed"), std::string::npos) << message;
 }
 
 TEST(V11261Knobs, TheSameLabelResolvesUnderSuppress) {
@@ -442,6 +451,5 @@ TEST(V11261Knobs, TheSameLabelResolvesUnderSuppress) {
     StatevectorSimulator sim(options);
     auto r = sim.run(qc, 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(rec->indices(), (std::vector<int>{2}));
 }

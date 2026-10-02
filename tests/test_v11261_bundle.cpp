@@ -68,7 +68,6 @@ TEST(V11261Bundle, OneFiringWritesThePlainLabel) {
     StatevectorSimulator sim;
     auto r = sim.run(bell(), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_TRUE(r.observations.contains("purity"));
     EXPECT_EQ(r.observations.size(), 1u);
     EXPECT_NEAR(r.observations.number("purity"), 1.0, 1e-9);
@@ -83,7 +82,6 @@ TEST(V11261Bundle, SeveralFiringsWriteQualifiedKeysAndOverwriteNothing) {
     StatevectorSimulator sim;
     auto r = sim.run(qc, 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     // Six firings, six entries. The plain label is NOT among them: a caller
     // reading "purity" here would be reading one arbitrary firing as though it
     // described the run.
@@ -109,7 +107,6 @@ TEST(V11261Bundle, TheQualifiedKeyCarriesTheShotAsWellAsTheInstruction) {
     StatevectorSimulator sim;
     auto r = sim.run(qc, 2, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(r.observations.size(), 4u);
     EXPECT_TRUE(r.observations.contains("p@0#0"));
     EXPECT_TRUE(r.observations.contains("p@1#0"));
@@ -126,7 +123,6 @@ TEST(V11261Bundle, LabelsComeBackSorted) {
     StatevectorSimulator sim;
     auto r = sim.run(bell(), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     // The store is a hash map, so without the sort the order would vary by
     // build and by insertion history rather than by anything a caller controls.
     EXPECT_EQ(r.observations.labels(),
@@ -142,7 +138,6 @@ TEST(V11261Bundle, AnUnlabelledObserverCollectsItsOwnResultsAndWritesNothing) {
     StatevectorSimulator sim;
     auto r = sim.run(qc, 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_FALSE(observer->labelled());
     EXPECT_EQ(observer->count(), qc.instructions.size());
     EXPECT_EQ(observer->values().size(), qc.instructions.size());
@@ -204,7 +199,6 @@ TEST(V11261Bundle, AStatePayloadReportsItsFormAndRefusesTheOthers) {
     StatevectorSimulator sim;
     auto r = sim.run(bell(), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     ASSERT_TRUE(r.observations.contains("state"));
     EXPECT_EQ(r.observations.form("state"), StateForm::Statevector);
 
@@ -231,7 +225,6 @@ TEST(V11261Bundle, TheBundleSurvivesBeingMovedOutOfTheResult) {
 
     StatevectorSimulator sim;
     auto r = sim.run(bell(), 0, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
 
     // The claim is that this shape outlives the run and the observers that
     // filled it. State payloads are held by shared pointer, so the moved
@@ -249,7 +242,6 @@ TEST(V11261Bundle, TheBundleSurvivesBeingCopied) {
 
     StatevectorSimulator sim;
     auto r = sim.run(bell(), 0, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
 
     const ObservationBundle copy = r.observations;
 
@@ -270,7 +262,6 @@ TEST(V11261Bundle, TheDensityMatrixBackendCarriesABundleToo) {
     const NoiseModel noise;
     auto r = sim.run(bell(), noise, 8, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_TRUE(r.observations.contains("purity"));
     EXPECT_NEAR(r.observations.number("purity"), 1.0, 1e-9);
 }
@@ -279,7 +270,6 @@ TEST(V11261Bundle, AnEmptyPlanLeavesTheBundleEmpty) {
     StatevectorSimulator sim;
     auto r = sim.run(bell(), 0, 20261);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(r.observations.size(), 0u);
     EXPECT_TRUE(r.observations.labels().empty());
 }

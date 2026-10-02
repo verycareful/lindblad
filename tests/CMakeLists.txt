@@ -156,16 +156,16 @@ set(LINDBLAD_TEST_SOURCES
     test_v11251_clifford_sampling.cpp
     test_v11251_clifford_failloud.cpp
     test_v11251_clifford_random.cpp
-    # test_v11261_anchors.cpp
-    # test_v11261_anchor_failures.cpp
-    # test_v11261_preflight_contract.cpp
-    # test_v11261_initial_state.cpp
-    # test_v11261_knobs.cpp
-    # test_v11261_bundle.cpp
-    # test_v11261_observers.cpp
-    # test_v11261_entropy.cpp
-    # test_v11261_stabilizer_dense.cpp
-    # test_v11261_purity.cpp
+    test_v11261_anchors.cpp
+    test_v11261_anchor_failures.cpp
+    test_v11261_preflight_contract.cpp
+    test_v11261_initial_state.cpp
+    test_v11261_knobs.cpp
+    test_v11261_bundle.cpp
+    test_v11261_observers.cpp
+    test_v11261_entropy.cpp
+    test_v11261_stabilizer_dense.cpp
+    test_v11261_purity.cpp
     # test_v11262_preflight.cpp
     # test_v11262_initial_cost.cpp
     test_v11262_mps_truncation.cpp

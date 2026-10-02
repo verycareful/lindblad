@@ -19,10 +19,9 @@
 // copied out, including the thread the call arrived on, because the interface
 // promises the calling thread and nothing else in the tree asserts it.
 //
-// capture_warnings is defined here rather than taken from the Clifford oracle
-// that also has one: that header pulls two backends and a set of stabilizer
-// oracles into every translation unit including it, and none of this wave
-// needs them.
+// capture_warnings puts the warning handler back on every exit, a throwing
+// run included, so a refusal inside it cannot leave the channel pointing at a
+// capture that no longer exists.
 //
 // The circuits live here because their anchor expectations are hand computed
 // against their exact shape. A suite rebuilding one locally could drift from
@@ -32,7 +31,12 @@
 
 #include "lindblad/circuit.hpp"
 #include "lindblad/observation.hpp"
+#include "lindblad/noise.hpp"
+#include "lindblad/simulators/clifford_sim.hpp"
+#include "lindblad/simulators/density_matrix_sim.hpp"
+#include "lindblad/simulators/mps_sim.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
+#include "v11311_helpers.hpp"
 #include "lindblad/validation.hpp"
 
 #include <cstdint>
@@ -62,13 +66,9 @@ using lindblad::StateForm;
 // so a message emitted many times arrives once followed by a repeat tally,
 // which is why the two are separated below rather than counted together.
 inline std::vector<std::string> capture_warnings(const std::function<void()>& fn) {
-    lindblad::flush_warnings();
-    std::vector<std::string> captured;
-    lindblad::set_warning_handler(
-        [&captured](const std::string& m) { captured.push_back(m); });
+    v11311::WarningCapture capture;
     fn();
-    lindblad::set_warning_handler(nullptr);
-    return captured;
+    return capture.messages();
 }
 
 // The entries that are first deliveries rather than repeat tallies.
@@ -243,35 +243,52 @@ inline RunPlan plan_with(Anchor anchor, lindblad::ObserverPtr observer) {
 }
 
 // =============================================================================
-// How a run reports a failure, which is a property of the backend
+// How a run refuses
 // =============================================================================
-// The two styles are not interchangeable and the choice is not the failure's:
-// StatevectorSimulator and DensityMatrixSimulator carry an error channel on
-// their Result and catch inside run() to report through it, while MPSSimulator
-// and CliffordSimulator have no such field and surface the same failure by
-// throwing. A suite asserting that a run failed has to ask the backend it ran
-// on, so both questions are spelled here once instead of at every call site.
-//
-// Each returns the message, so a caller can go on to assert what the failure
-// named without repeating the run.
+// Every backend's run() throws when it refuses, with the run's own name as the
+// entry point and as the start of the message. A refusal the plan or the
+// circuit decides comes before the first gate, so it leaves no failed-run
+// record behind: nothing had been computed. run_refusal asserts all of that,
+// and the exact type, and returns the message, so a caller can go on to assert
+// what the refusal named without repeating the run.
+
+template <class E = lindblad::InvalidArgument, class Run>
+inline std::string run_refusal(const std::string& entry_point, Run&& run) {
+    const std::uint64_t stores = lindblad::detail::failed_run_stores();
+    const auto e = v11311::thrown<E>(std::forward<Run>(run));
+    EXPECT_EQ(lindblad::detail::failed_run_stores(), stores)
+        << "a refusal before the first gate left a failed-run record";
+    if (!e) return {};
+    EXPECT_EQ(e->entry_point(), entry_point);
+    const std::string message = e->what();
+    EXPECT_EQ(message.rfind(entry_point + ": ", 0), 0u) << message;
+    return message;
+}
 
 inline std::string sv_run_failure(const QuantumCircuit& qc, const RunPlan& plan,
                                   int shots = 0) {
     lindblad::StatevectorSimulator sim;
-    auto result = sim.run(qc, shots, 20261, plan);
-    EXPECT_FALSE(result.success) << "the run was expected to fail";
-    return result.error_message;
+    return run_refusal("StatevectorSimulator::run", [&] { sim.run(qc, shots, 20261, plan); });
 }
 
-template <typename Fn>
-inline std::string throwing_run_failure(Fn&& fn) {
-    try {
-        fn();
-    } catch (const std::invalid_argument& e) {
-        return e.what();
-    }
-    ADD_FAILURE() << "the run was expected to throw std::invalid_argument";
-    return {};
+inline std::string dm_run_failure(const QuantumCircuit& qc, const RunPlan& plan,
+                                  int shots = 16) {
+    lindblad::DensityMatrixSimulator sim;
+    const lindblad::NoiseModel noise;
+    return run_refusal("DensityMatrixSimulator::run",
+                       [&] { sim.run(qc, noise, shots, 20261, plan); });
+}
+
+inline std::string clifford_run_failure(const QuantumCircuit& qc, const RunPlan& plan,
+                                        int shots = 16) {
+    lindblad::CliffordSimulator sim;
+    return run_refusal("CliffordSimulator::run", [&] { sim.run(qc, shots, 20261, plan); });
+}
+
+inline std::string mps_run_failure(const QuantumCircuit& qc, const RunPlan& plan,
+                                   int shots = 16) {
+    lindblad::MPSSimulator sim;
+    return run_refusal("MPSSimulator::run", [&] { sim.run(qc, 8, shots, 20261, plan); });
 }
 
 }  // namespace v11261
