@@ -212,6 +212,7 @@ set(LINDBLAD_TEST_SOURCES
     # test_v11302_normalised_draws.cpp
     # test_v11302_reset_sampling.cpp
     # test_v11302_thread_cap.cpp
+    v11311_failed_run_env.cpp
 )
 
 # The R.1.16.0 diagnostic's strict leg. This flag governs the file's OWN
