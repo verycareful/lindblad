@@ -20,6 +20,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
@@ -184,6 +185,10 @@ struct ObservationContext {
     // observers charge the copies they take against it; a caller's observer
     // has no need to.
     detail::RunBudget* budget = nullptr;
+
+    // The run() that is firing, e.g. "StatevectorSimulator::run", which every
+    // refusal and failure raised for this observation starts with.
+    std::string_view entry_point = {};
 };
 
 // -----------------------------------------------------------------------------
@@ -216,6 +221,9 @@ struct PreflightContext {
     StateForm form;       // what this backend holds natively
     int n_qubits;         // the register the circuit runs on
     const RunPlan& plan;  // the policy in force
+    // The run() asking, e.g. "StatevectorSimulator::run", which every refusal
+    // and failure raised before the run starts with.
+    std::string_view entry_point = {};
 };
 
 class Observer {
@@ -533,11 +541,16 @@ struct RunPlan {
 
 namespace detail {
 
-// Deliver a refusal the way the response knob says, at `phase`. Returns false
-// always, so a caller can `return refuse_observation(...)` and read as
-// declining.
+// Deliver a refusal the way the response knob says, at `phase`, with a
+// message starting with `entry_point` when one is given. Returns false always,
+// so a caller can `return refuse_observation(...)` and read as declining.
 bool refuse_observation(const RunPlan::Options& options, RunPhase phase,
-                        const std::string& message);
+                        const std::string& message, std::string_view entry_point = {});
+
+// The same, with the knobs, the phase and the entry point taken from the
+// context: before the run, and at a firing.
+bool refuse_observation(const PreflightContext& ctx, const std::string& message);
+bool refuse_observation(const ObservationContext& ctx, const std::string& message);
 
 // Whether a route from `from` to `to` exists at all: the answer
 // StateView::convertible_to gives, without needing a state to ask it of. This
@@ -571,7 +584,8 @@ std::shared_ptr<const void> produce_state(const StateView& view, StateForm targe
                                           const RunPlan::Options& options,
                                           RunPhase phase, const std::string& what,
                                           RunBudget* budget = nullptr,
-                                          const std::optional<FailurePoint>& where = {});
+                                          const std::optional<FailurePoint>& where = {},
+                                          std::string_view entry_point = {});
 
 // Charge an allocation an observer is about to make against the guard, the
 // same comparison produce_state applies to a conversion. Returns false when the
@@ -579,10 +593,12 @@ std::shared_ptr<const void> produce_state(const StateView& view, StateForm targe
 bool charge_allocation(const StateView& view, std::size_t bytes,
                        const RunPlan::Options& options, RunPhase phase,
                        const std::string& what, RunBudget* budget = nullptr,
-                       const std::optional<FailurePoint>& where = {});
+                       const std::optional<FailurePoint>& where = {},
+                       std::string_view entry_point = {});
 
 // The two above at a firing, with every argument taken from its context: the
-// view, the knobs, the phase, the budget, and the shot and instruction.
+// view, the knobs, the phase, the budget, the shot and instruction, and the
+// entry point.
 std::shared_ptr<const void> produce_state(const ObservationContext& ctx, StateForm target,
                                           const std::string& what);
 bool charge_allocation(const ObservationContext& ctx, std::size_t bytes,
@@ -615,7 +631,8 @@ void retain_allocation(const ObservationContext& ctx, std::size_t bytes,
 std::shared_ptr<const void> produce_initial_state(const StateView& supplied,
                                                   StateForm target,
                                                   const RunPlan::Options& options,
-                                                  std::size_t run_state_bytes);
+                                                  std::size_t run_state_bytes,
+                                                  std::string_view entry_point);
 
 // Seed a backend's state from the plan. The default plan initialises to
 // |0...0>, which is what a caller who passed no plan gets, so a backend calls
@@ -625,10 +642,13 @@ std::shared_ptr<const void> produce_initial_state(const StateView& supplied,
 // knob: Warn and Ignore omit an OBSERVATION, and there is no such thing as
 // omitting the state a run starts from. The alternative to the state the caller
 // asked for is silently simulating a different circuit, so this throws.
-void apply_initial_state(const RunPlan& plan, Statevector& sv);
-void apply_initial_state(const RunPlan& plan, DensityMatrix& dm);
-void apply_initial_state(const RunPlan& plan, StabilizerState& state);
-void apply_initial_state(const RunPlan& plan, MPSState& mps);
+// Every refusal is an InvalidArgument whose message starts with `entry_point`,
+// the run() that asked.
+void apply_initial_state(const RunPlan& plan, Statevector& sv, std::string_view entry_point);
+void apply_initial_state(const RunPlan& plan, DensityMatrix& dm, std::string_view entry_point);
+void apply_initial_state(const RunPlan& plan, StabilizerState& state,
+                         std::string_view entry_point);
+void apply_initial_state(const RunPlan& plan, MPSState& mps, std::string_view entry_point);
 
 // Fires an instruction's anchors when the enclosing scope ends, however it
 // ends. Backends whose instruction loop skips work with `continue` (a barrier,
@@ -668,8 +688,13 @@ public:
     //
     // An observer the pre-flight rules out is DROPPED rather than carried, so
     // it costs nothing per anchor for the rest of the run.
+    //
+    // `entry_point` names the run() that owns this runner and must outlive it;
+    // the backends pass their own name as a literal. Every refusal the runner
+    // raises or delivers starts with it, and observers read it from their
+    // contexts.
     ObservationRunner(const RunPlan& plan, const QuantumCircuit& circuit,
-                      StateForm form);
+                      StateForm form, std::string_view entry_point);
 
     // False when nothing is attached, which is the check that keeps an
     // unobserved run free of every per-instruction test below.
@@ -726,6 +751,7 @@ private:
     std::exception_ptr failure_;
 
     const RunPlan& plan_;
+    std::string_view entry_point_;
     bool active_ = false;
     std::size_t ended_count_ = 0;  // observers end_run has been called on
 

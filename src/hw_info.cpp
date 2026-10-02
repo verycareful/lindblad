@@ -9,13 +9,16 @@
 
 #include "lindblad/hw_info.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #if defined(_WIN32)
@@ -111,6 +114,114 @@ std::size_t detect_llc_bytes() {
 // Available memory - one platform branch per OS, 0 on any failure
 // =============================================================================
 
+#if !defined(_WIN32) && !defined(__APPLE__)
+
+// A whole word as a count, in no locale, or false.
+bool parse_count(const std::string& word, unsigned long long& out) {
+    const char* first = word.data();
+    const char* last = first + word.size();
+    const auto [ptr, ec] = std::from_chars(first, last, out);
+    return ec == std::errc() && ptr == last;
+}
+
+// The first word of a cgroup interface file as a count. False for a missing
+// file, for "max" (no limit set at that level) and for anything else that is
+// not a number.
+bool read_cgroup_count(const std::string& path, unsigned long long& out) {
+    std::ifstream in(path);
+    std::string word;
+    return static_cast<bool>(in >> word) && parse_count(word, out);
+}
+
+// The value of `key` in a cgroup memory.stat file.
+bool read_cgroup_stat(const std::string& path, const char* key, unsigned long long& out) {
+    std::ifstream in(path);
+    std::string name;
+    std::string value;
+    while (in >> name >> value) {
+        if (name == key) return parse_count(value, out);
+    }
+    return false;
+}
+
+// The memory this process can still use under the limits of the cgroups it
+// runs in, or false when no limit applies or none can be read. A container, a
+// systemd slice or a batch scheduler's job caps memory below what
+// /proc/meminfo reports for the whole machine, and the kernel ends a process
+// that goes over it with no exception, so a cap read from the machine alone
+// would let a run walk into exactly that.
+//
+// A limit set on a parent binds every cgroup under it, so each level from the
+// process's own cgroup up to the root is read and the smallest room wins. The
+// room at a level is its limit less its working set: usage less the inactive
+// file cache, which the kernel reclaims before it kills anything (the figure
+// container runtimes report). Read at the standard mount points: the cgroup v1
+// memory controller at /sys/fs/cgroup/memory when this process is in one,
+// otherwise cgroup v2 at /sys/fs/cgroup.
+bool cgroup_room_bytes(unsigned long long& room) {
+    std::ifstream self("/proc/self/cgroup");
+    std::string line;
+    std::string v1_path;
+    std::string v2_path;
+    // Each line is hierarchy-id:controllers:path. The v2 line has id 0 and no
+    // controllers; a v1 line lists its controllers separated by commas.
+    while (std::getline(self, line)) {
+        const std::size_t first = line.find(':');
+        if (first == std::string::npos) continue;
+        const std::size_t second = line.find(':', first + 1);
+        if (second == std::string::npos) continue;
+        const std::string id = line.substr(0, first);
+        const std::string controllers = line.substr(first + 1, second - first - 1);
+        const std::string path = line.substr(second + 1);
+        if (id == "0" && controllers.empty()) {
+            v2_path = path;
+            continue;
+        }
+        std::size_t start = 0;
+        while (start <= controllers.size()) {
+            const std::size_t end = std::min(controllers.find(',', start), controllers.size());
+            if (controllers.compare(start, end - start, "memory") == 0) v1_path = path;
+            start = end + 1;
+        }
+    }
+
+    const bool v1 = !v1_path.empty();
+    const std::string root = v1 ? "/sys/fs/cgroup/memory" : "/sys/fs/cgroup";
+    const char* limit_file = v1 ? "/memory.limit_in_bytes" : "/memory.max";
+    const char* usage_file = v1 ? "/memory.usage_in_bytes" : "/memory.current";
+    const char* inactive_key = v1 ? "total_inactive_file" : "inactive_file";
+    std::string path = v1 ? v1_path : v2_path;
+    if (path.empty() || path.front() != '/') {
+        // No cgroup line for this hierarchy, or a path outside this view of
+        // it: the mount point itself is the nearest level there is.
+        path = "/";
+    }
+
+    bool limited = false;
+    unsigned long long smallest = 0;
+    for (;;) {
+        const std::string dir = root + (path == "/" ? std::string() : path);
+        unsigned long long limit = 0;
+        unsigned long long usage = 0;
+        if (read_cgroup_count(dir + limit_file, limit) &&
+            read_cgroup_count(dir + usage_file, usage)) {
+            unsigned long long inactive = 0;
+            if (!read_cgroup_stat(dir + "/memory.stat", inactive_key, inactive)) inactive = 0;
+            const unsigned long long working = usage > inactive ? usage - inactive : 0;
+            const unsigned long long here = limit > working ? limit - working : 0;
+            if (!limited || here < smallest) smallest = here;
+            limited = true;
+        }
+        if (path == "/") break;
+        const std::size_t slash = path.find_last_of('/');
+        path = slash == 0 ? std::string("/") : path.substr(0, slash);
+    }
+    if (limited) room = smallest;
+    return limited;
+}
+
+#endif
+
 std::size_t detect_available_memory_bytes() {
 #if defined(_WIN32)
     MEMORYSTATUSEX status;
@@ -160,9 +271,20 @@ std::size_t detect_available_memory_bytes() {
         if (have_total && have_avail) break;
     }
     constexpr unsigned long long max_kb = std::numeric_limits<std::size_t>::max() >> 10;
-    if (!have_avail || avail_kb == 0 || avail_kb > max_kb) return 0;
-    if (have_total && avail_kb > total_kb) return 0;
-    return static_cast<std::size_t>(avail_kb) << 10;
+    const bool coherent = have_avail && avail_kb != 0 && avail_kb <= max_kb &&
+                          !(have_total && avail_kb > total_kb);
+    const std::size_t machine = coherent ? static_cast<std::size_t>(avail_kb) << 10 : 0;
+
+    unsigned long long room = 0;
+    if (!cgroup_room_bytes(room)) return machine;
+    // A cgroup limit applies, so the answer is the smaller of the machine's
+    // figure and the room under the limit. A cgroup at its limit has no room,
+    // which is an answer (nothing more fits) rather than the absence of one,
+    // so it reads as 1 byte, never as the 0 that sends callers to a fallback.
+    const std::size_t limit_room = static_cast<std::size_t>(
+        std::min<unsigned long long>(room, std::numeric_limits<std::size_t>::max()));
+    const std::size_t answer = machine == 0 ? limit_room : std::min(machine, limit_room);
+    return answer == 0 ? 1 : answer;
 #endif
 }
 

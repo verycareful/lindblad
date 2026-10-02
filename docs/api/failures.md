@@ -4,8 +4,8 @@
 
 Every `run()` of `StatevectorSimulator`, `DensityMatrixSimulator`,
 `MPSSimulator`, `CliffordSimulator` and `LocalBackend` either returns a result
-that is an answer or throws. A run that fails never returns a `Result`: on every
-result a run does return, `success` is `true` and `error_message` is empty.
+that is an answer or throws. A run that fails never returns a `Result`, so every
+result a run does return is an answer; the result types carry no success flag.
 
 Two rules decide what a failure costs:
 
@@ -73,7 +73,10 @@ class InternalError   : public std::logic_error,       public Error;
 
 - Each type is also its standard counterpart, so an existing
   `catch (const std::invalid_argument&)` keeps matching.
-  `catch (const lindblad::Error&)` catches everything Lindblad raises itself.
+  `catch (const lindblad::Error&)` catches every failure a `run()` of these
+  backends raises, including every refusal before its first gate. A few calls
+  made outside a run, such as an accessor handed an index outside its range,
+  raise the standard type alone, which `catch (const std::exception&)` covers.
 - `Error` is not itself derived from `std::exception`. Each concrete type
   already is, once, through its standard base, and a second copy would make
   `catch (const std::exception&)` ambiguous, so it would stop matching.
@@ -83,10 +86,20 @@ class InternalError   : public std::logic_error,       public Error;
   (`StatevectorSimulator::run: ...`). When one instruction is at fault it ends
   with `(instruction 4: cx on qubits 0, 1)`, and with `at shot 7` when the
   failure happened inside a shot.
+- A refusal made for an observer or for the starting state starts with the run
+  as well, then names what asked
+  (`StatevectorSimulator::run: AmplitudeObserver: index 9 is outside a 8
+  amplitude state`).
+- A failure met during the run that names no instruction of its own, such as
+  a state left with no norm, reaches you naming the shot and instruction the
+  run had reached, and `where()` returns them.
 - An `InternalError` message ends by asking you to report it on the issue
   tracker with the message.
 - When the run's partial results were saved, the message ends with
-  `Partial results saved to <folder>.` and `saved_to()` returns the folder.
+  `Partial results saved to <folder>.` and `saved_to()` returns the folder. If
+  the folder lacks a part, the state when the disk had no room for it for
+  instance, a last sentence names it and says to take it from memory with
+  `take_failed_run()`.
 
 ### RunPhase
 
@@ -166,7 +179,9 @@ a run that fails or by `load_failed_run()`.
 |---|---|---|
 | `response` | `RunPlan::Options` | `Response::Auto` |
 | `ValidationOptions` | each instruction or call | `Validation::Throw` |
-| `svd_rescue` | `MPSSimulator`, `MPSState` | `true` |
+| `svd_rejection` | `MPSSimulator`, `MPSState`, `QuditMPS` | `SvdRejection::Fix` |
+| `svd_accept_gram` | `MPSSimulator`, `MPSState`, `QuditMPS` | `false` |
+| `svd_report` | `MPSSimulator`, `MPSState`, `QuditMPS` | `SvdReport::Warn` |
 | `qubit_limit` | `StatevectorSimulator::Options`, `MPSSimulator`, `LocalBackend::Config` | `QubitLimit::Enforce` |
 | `max_memory_mb` | the statevector, density-matrix and Clifford `Options`, `MPSSimulator`, `LocalBackend::Config` | `0` (automatic) |
 | `save_failed_runs` | `RunPlan::Options` | `SaveFailedRuns::Save` |
@@ -207,6 +222,13 @@ which setting lifts it.
   machine gives no coherent reading. On Linux that reading is `MemAvailable`,
   and it counts only when it parses as a number, is not zero, converts to bytes
   without overflow, and is no larger than `MemTotal`.
+- On Linux the automatic cap also answers to the memory limits of the cgroups
+  the process runs in: a container, a systemd slice, a batch scheduler's job.
+  It is the smaller of `MemAvailable` and the room left under the tightest
+  limit from the process's own cgroup up to the root, where the room is the
+  limit less what the cgroup uses, not counting inactive file cache. The
+  limits are read where cgroups are normally mounted, `/sys/fs/cgroup` (and
+  `/sys/fs/cgroup/memory` for the version 1 memory controller).
 
 Before the first gate, a run whose fixed buffers exceed the cap is refused with
 `InvalidArgument`, naming what it needs, the cap, and where the cap came from:
@@ -230,9 +252,15 @@ On Linux an allocation can succeed and the kernel's out-of-memory killer can end
 the process later, with `SIGKILL` and no exception; `systemd-oomd` can end a
 whole group of processes under memory pressure. No program can catch either.
 The checks above exist so a run never gets there: its fixed footprint is refused
-before the first gate, and its growth is refused before it is allocated. What
-stays out of reach is another process allocating during the run, since a reading
-of available memory is not a reservation.
+before the first gate, and its growth is refused before it is allocated. Two
+things stay out of reach, since a reading of available memory is not a
+reservation:
+
+- another process allocating during the run;
+- other runs in the same process. Runs started together on several threads
+  (`Estimator::run_batch`'s workers, or your own) each measure against the same
+  reading, so together they can use more than it. Give each an explicit
+  `max_memory_mb` that shares the memory out when they run at once.
 
 ## Failed runs: take_failed_run and load_failed_run
 
@@ -287,6 +315,7 @@ systems the folder is readable by its owner only (0700, files 0600).
 | File | Contents |
 |---|---|
 | `manifest.json` | every scalar field, `where`, the options, `save_note`, the state's form, and each file's size and CRC-32C |
+| `manifest.crc32c` | the manifest's own size and CRC-32C |
 | `counts.json` | `{"shots_completed": N, "counts": {"0101": 12, ...}}`, keys in the counts convention (clbit 0 rightmost) |
 | `circuit.json` | `QuantumCircuit::to_json()` |
 | `noise_model.json` | `NoiseModel::to_json()`, for a density-matrix run |
@@ -294,7 +323,8 @@ systems the folder is readable by its owner only (0700, files 0600).
 | `observations/<index>-<label>.bin` | one state file per observed state |
 | `state.bin` | the state being evolved |
 
-A state file is little-endian: an 8-byte magic `LBSTATE1`, the format version,
+A state file is little-endian on every host, so a folder saved on one machine
+loads on any other: an 8-byte magic `LBSTATE1`, the format version,
 the form (0 statevector, 1 density matrix, 2 MPS, 3 stabilizer), the qubit
 count, then the state's own storage, streamed from where the state holds it
 without a copy. An MPS file also carries the chain's settings, its open span,
@@ -321,12 +351,20 @@ memory is enough.
 FailedRun load_failed_run(const std::filesystem::path& folder);
 ```
 
-Reads a saved folder back in full. Every file the manifest lists is checked for
-its size and its CRC-32C before any of them is read, and a file that is missing,
-resized, fails its checksum, is malformed, or is named outside the folder is
-refused with `InvalidArgument` naming the file. The returned record's
-`saved_to` is `folder`. A loaded state can seed a new run through
-`RunPlan::initial` (`InitialState::from`).
+Reads a saved folder back in full, refusing with `InvalidArgument` that names
+the file:
+
+- the manifest, unless its size and CRC-32C match `manifest.crc32c`;
+- any file the manifest lists that is missing, resized, fails its checksum, is
+  malformed, or is named outside the folder; all of them are checked before any
+  is read;
+- a state file or a circuit whose qubit count differs from the manifest's, and
+  a state file whose form is not the one the manifest and its backend name;
+- a state file whose sizes do not fit the file, before anything is sized from
+  them.
+
+The returned record's `saved_to` is `folder`. A loaded state can seed a new run
+through `RunPlan::initial` (`InitialState::from`).
 
 ## Exceptions: the failures a run can meet
 
@@ -355,14 +393,16 @@ record.
   a rotation that is not a multiple of $\pi/2$.
 - A noise channel whose width does not match the gate it is attached to.
 - A fixed memory footprint over the cap.
-- A starting state that cannot be produced.
+- A starting state that cannot be produced, and an MPS starting chain with no
+  norm.
 - A run plan that does not match the circuit: an anchor that resolves to
   nothing, an absent label, two observers claiming one label.
 - An observer asking for something that does not exist: an amplitude index
   outside the register, a malformed entropy region, an observable of the wrong
   width, with no terms, or not Hermitian.
 
-Each is an `InvalidArgument` (an `OutOfRange` for an index). Physical checks on
+Each is an `InvalidArgument` (an `OutOfRange` for an operand or classical-bit
+index). Physical checks on
 what you hand in (a matrix that is not unitary, a Kraus set that is not trace
 preserving, a state that is not normalised) are governed by
 `ValidationOptions` instead, whose default also throws before the first gate;
@@ -370,18 +410,25 @@ see [Validation](validation.md).
 
 ### Failures during the run that make the answer wrong
 
-Always thrown, with no knob. The failed-run record keeps what was computed.
+Always thrown, with one exception a caller has to choose, and the failed-run
+record keeps what was computed. The exception is `SvdRejection::Ignore`: an MPS
+split whose factorisation fails verification is used as it is, so the state is
+unverified and can be wrong with nothing further to say so. It is not the
+default, a one-time note says it is in force, and both fidelity figures are
+withdrawn once it is used.
 
 - A state with no norm, zero or non-finite, met at a collapse or a sample:
   `RuntimeFailure`, before anything is drawn.
-- An MPS split that fails every rung of the SVD ladder (with `svd_rescue` off,
-  the first rejection): `std::runtime_error`.
+- An MPS split whose factorisation fails verification and is not repaired:
+  under `SvdRejection::Throw` the first rejection, under `Fix` a split no
+  permitted rung repairs (the Gram route is a rung only with
+  `svd_accept_gram`): `RuntimeFailure`.
 - The run budget exceeded by growth during the run: `RuntimeFailure`.
 - `std::bad_alloc` from the allocator: propagates as itself.
 - An exception from your own observer: propagates as itself.
-- A final state that is zero or not finite, which only a matrix let through by
-  `Validation::Warn` or `Validation::Ignore`, or an MPS starting chain with no
-  norm, can produce: `RuntimeFailure`, rather than returning it as an answer.
+- A final state that is zero or not finite, which only input let through by
+  `Validation::Warn` or `Validation::Ignore` can produce: `RuntimeFailure`,
+  rather than returning it as an answer.
 - A consistency check inside Lindblad that fails: `InternalError`.
 
 ### Failures that leave the answer intact
@@ -394,7 +441,7 @@ the run wrong.
 | An observation this backend cannot produce, or one that needs a conversion under `Conversion::Never` | `RunPlan::Options::response` | `Auto` |
 | An observation over the memory guard (`Cost::Guarded`, `guard_multiple`) | `response` | `Auto` |
 | The entropy observer's eigensolver failing on a reduced state or a bond spectrum | `response` | `Auto` |
-| An MPS split rescued by the Jacobi or Gram rung | `svd_rescue` | `true`: warn and continue |
+| An MPS split repaired by the Jacobi or Gram rung | `svd_rejection`, `svd_report` | `Fix` and `Warn`: repair, warn and continue |
 
 `Response::Auto` throws `InvalidArgument` when the failure is decided before any
 instruction of any shot has run (every pre-flight decision, and an anchor at the
@@ -428,6 +475,9 @@ int main() {
         std::cout << result.counts.size() << " outcomes\n";
     } catch (const InvalidArgument& e) {
         // Refused before the first gate: change what the message names.
+        std::cerr << e.what() << "\n";
+    } catch (const OutOfRange& e) {
+        // An operand outside the register, refused before the first gate.
         std::cerr << e.what() << "\n";
     } catch (const RuntimeFailure& e) {
         std::cerr << e.what() << "\n";

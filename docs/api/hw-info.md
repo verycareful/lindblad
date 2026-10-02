@@ -61,6 +61,16 @@ process and the machine allocate.
   which counts page cache it can drop. Only a coherent reading counts: the field
   must parse as a number, be non-zero, convert to bytes without overflow, and be
   no larger than `MemTotal`, read in the same pass. Anything else is `0`.
+  When the process runs under a cgroup memory limit (a container, a systemd
+  slice, a batch scheduler's job), the figure is the smaller of `MemAvailable`
+  and the room under the tightest limit from the process's own cgroup up to the
+  root: that limit less the cgroup's usage, not counting inactive file cache.
+  The kernel ends a process that goes over its cgroup's limit without an
+  exception, so the machine's figure alone would overstate what a run can use.
+  The limits are read at `/sys/fs/cgroup` (cgroup version 2) or
+  `/sys/fs/cgroup/memory` (the version 1 memory controller), where they are
+  normally mounted. A cgroup at its limit reads as 1 byte rather than `0`,
+  since that is an answer: nothing more fits.
 - **Windows**: the available physical memory from `GlobalMemoryStatusEx`.
 - **macOS**: free pages plus inactive ones, which the kernel reclaims before it
   swaps.

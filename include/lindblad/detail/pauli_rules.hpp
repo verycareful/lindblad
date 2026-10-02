@@ -41,9 +41,14 @@
 // number under the caller's name. Imaginary parts within
 // DEFAULT_PHYSICAL_ATOL count as real, as they do for MA-QAOA's mixer.
 //
-// Every refusal is std::invalid_argument and names `where`.
+// Every refusal is a lindblad::InvalidArgument (so also std::invalid_argument)
+// that names `where`, the requester. Each function takes an optional
+// `entry_point`: the run() that asked, when the request comes through an
+// observer. The message then starts with the entry point and goes on to name
+// the requester; without one, the requester is the entry point.
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace lindblad {
@@ -54,28 +59,32 @@ class SparsePauliOp;
 namespace detail {
 
 // Throws unless every character of `label` is I, X, Y or Z.
-void check_pauli_label(const std::string& label, const char* where);
+void check_pauli_label(const std::string& label, const char* where,
+                       std::string_view entry_point = {});
 
 // The width every term shares, or -1 for no terms. Checks every label's
 // alphabet, and throws when two terms differ in width, naming the first that
 // disagrees with term 0.
-int uniform_pauli_width(const std::vector<PauliString>& terms, const char* where);
+int uniform_pauli_width(const std::vector<PauliString>& terms, const char* where,
+                        std::string_view entry_point = {});
 
 // The width every term shares. Throws when there are no terms, and otherwise
 // as uniform_pauli_width.
-int required_pauli_width(const std::vector<PauliString>& terms, const char* where);
+int required_pauli_width(const std::vector<PauliString>& terms, const char* where,
+                         std::string_view entry_point = {});
 
 // Throws unless `op` is Hermitian: every coefficient real to within
 // DEFAULT_PHYSICAL_ATOL after merging repeated labels. When every coefficient
 // is already real term by term, nothing is merged or allocated.
-void check_hermitian(const SparsePauliOp& op, const char* where);
+void check_hermitian(const SparsePauliOp& op, const char* where,
+                     std::string_view entry_point = {});
 
 // Everything an evaluation that returns a real expectation value needs: at
 // least one term, a valid alphabet, every term exactly `n_qubits` wide, and a
 // Hermitian operator. `against` names what supplies the width in the message
 // ("state", "circuit").
 void check_observable(const SparsePauliOp& op, int n_qubits, const char* where,
-                      const char* against = "state");
+                      const char* against = "state", std::string_view entry_point = {});
 
 }  // namespace detail
 }  // namespace lindblad

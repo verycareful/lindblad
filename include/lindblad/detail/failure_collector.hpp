@@ -84,10 +84,13 @@ public:
 
     // Assembles the record (moving `counts`, `observations` and `state` into
     // it), saves it unless the plan's options say not to, stores it in this
-    // thread's slot and rethrows `failure`: as a copy naming the saved folder
-    // when it is a lindblad::Error and the save succeeded, unchanged otherwise.
-    // Nothing here replaces the run's own failure, including a failure to
-    // allocate while assembling.
+    // thread's slot and rethrows `failure`. A lindblad::Error is rethrown as a
+    // copy that names the saved folder and what it does not hold, and the
+    // shot and instruction the run had reached when the original named no
+    // position; anything else is rethrown unchanged. Nothing here replaces
+    // the run's own failure: a failure to allocate while assembling leaves a
+    // minimal record of the moved parts, and one while amending rethrows the
+    // original.
     [[noreturn]] void fail(std::exception_ptr failure,
                            std::unordered_map<std::string, int>&& counts,
                            ObservationBundle&& observations,
@@ -110,8 +113,15 @@ private:
     std::vector<std::string> notes_;
 };
 
-// Moves `record` into this thread's slot, replacing any record there.
-void store_failed_run(FailedRun&& record) noexcept;
+// Moves `record` into this thread's slot, replacing any record there. Can
+// throw std::bad_alloc where moving a map allocates.
+void store_failed_run(FailedRun&& record);
+
+// How many records have been stored on this thread. A caller that reads it
+// before a run and again after the run throws knows whether that failure left
+// a record, or whether the slot still holds an older one: a failure before the
+// first gate stores nothing.
+std::uint64_t failed_run_stores() noexcept;
 
 // Writes `record` into a new folder under `dir` (the default location when
 // empty), sets saved_to, and releases from memory every part it wrote. Never
@@ -135,6 +145,8 @@ std::string option_value(const std::filesystem::path& value);
 std::string option_value(QubitLimit value);
 std::string option_value(PrefixReuse value);
 std::string option_value(SVDMethod value);
+std::string option_value(SvdRejection value);
+std::string option_value(SvdReport value);
 std::string option_value(CanonicalForm value);
 std::string option_value(UncheckedGates value);
 

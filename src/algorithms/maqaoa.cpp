@@ -10,6 +10,7 @@
 #include "lindblad/algorithms.hpp"
 #include "lindblad/detail/optimizer.hpp"
 #include "lindblad/detail/pauli_rules.hpp"
+#include "lindblad/detail/report.hpp"
 #include "lindblad/gates.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
@@ -488,7 +489,23 @@ struct MAQAOACallbackData {
     const std::vector<std::vector<int>>* active_qubits;
 };
 
+// A non-finite parameter is refused on both paths, as every simulator run
+// refuses one before its first gate. The noisy path's density-matrix run would
+// refuse it anyway; the noiseless path evolves its state directly and would
+// otherwise turn it into a NaN energy scored as the sentinel, so whether the
+// optimisation stopped would depend on whether a noise model was set.
+static void require_finite_parameters(std::span<const double> x) {
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        if (!is_finite_strict(x[i])) {
+            detail::raise<InvalidArgument>("MAQAOA::optimize",
+                "the optimiser proposed parameter " + std::to_string(i) + " = " +
+                    std::to_string(x[i]) + "; every parameter must be finite");
+        }
+    }
+}
+
 static double maqaoa_objective(MAQAOACallbackData* cb, std::span<const double> x) {
+    require_finite_parameters(x);
     if (cb->params_buf.size() != x.size()) {
         cb->params_buf.resize(x.size());
     }
@@ -554,6 +571,7 @@ struct LayerCBData {
 };
 
 static double layer_objective(LayerCBData* d, std::span<const double> x) {
+    require_finite_parameters(x);
     // Update free portion in-place (Change 7: no allocation, no copy)
     std::copy(x.begin(), x.end(), d->all_params.begin() + d->free_start);
     if (!d->maqaoa->estimator.options.noise_model.is_ideal()) {

@@ -18,6 +18,7 @@
 #include <atomic>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -83,9 +84,23 @@
 namespace lindblad {
 namespace detail {
 
-static_assert(std::endian::native == std::endian::little,
-              "the failed-run state file is written in the host's byte order, "
-              "which it records as little-endian");
+// The state file is little-endian on every host. A big-endian host reverses
+// each word on the way out and on the way in, so a folder saved on one host
+// loads on any other; a host that is neither has no defined word order.
+static_assert(std::endian::native == std::endian::little ||
+                  std::endian::native == std::endian::big,
+              "the failed-run state file needs a little- or big-endian host");
+constexpr bool HOST_IS_LITTLE_ENDIAN = std::endian::native == std::endian::little;
+
+namespace {
+
+// Reverses each `word`-byte word of the `n` bytes at `p`, in place. Called only
+// on a big-endian host, so a little-endian build compiles it and leaves it out.
+[[maybe_unused]] void reverse_words(unsigned char* p, std::size_t n, std::size_t word) noexcept {
+    for (std::size_t i = 0; i + word <= n; i += word) std::reverse(p + i, p + i + word);
+}
+
+}  // namespace
 
 // =============================================================================
 // crc32c
@@ -126,6 +141,9 @@ namespace fs = std::filesystem;
 
 constexpr const char* FAILED_RUN_FORMAT = "lindblad.failed_run";
 constexpr int FAILED_RUN_VERSION = 1;
+// The manifest's own size and CRC-32C. Every other file is checked against the
+// manifest; this file is what the manifest is checked against.
+constexpr const char* MANIFEST_CHECK_FILE = "manifest.crc32c";
 constexpr char STATE_MAGIC[8] = {'L', 'B', 'S', 'T', 'A', 'T', 'E', '1'};
 constexpr std::uint32_t STATE_VERSION = 1;
 constexpr std::size_t HEADER_BYTES = 8 + 4 * sizeof(std::uint32_t);
@@ -177,10 +195,28 @@ public:
         }
     }
     void write_text(const std::string& text) { write(text.data(), text.size()); }
+    // `n` bytes of `word`-byte numbers (8 for a double, a std::uint64_t or each
+    // half of a Complex128), written little-endian whatever the host.
+    void write_words(const void* data, std::size_t n, std::size_t word) {
+        if constexpr (HOST_IS_LITTLE_ENDIAN) {
+            write(data, n);
+        } else {
+            const auto* p = static_cast<const unsigned char*>(data);
+            std::vector<unsigned char> chunk;
+            while (n > 0) {
+                const std::size_t piece = std::min(n, CHUNK_BYTES);
+                chunk.assign(p, p + piece);
+                reverse_words(chunk.data(), piece, word);
+                write(chunk.data(), piece);
+                p += piece;
+                n -= piece;
+            }
+        }
+    }
     template <class T>
     void write_value(T value) {
         static_assert(std::is_trivially_copyable_v<T>);
-        write(&value, sizeof value);
+        write_words(&value, sizeof value, sizeof value);
     }
 
     // Closes the file and leaves it readable and writable by its owner only.
@@ -228,11 +264,19 @@ public:
             n -= piece;
         }
     }
+    // `n` bytes of `word`-byte numbers stored little-endian, in the host's
+    // order once read.
+    void read_words(void* data, std::uint64_t n, std::size_t word) {
+        read(data, n);
+        if constexpr (!HOST_IS_LITTLE_ENDIAN) {
+            reverse_words(static_cast<unsigned char*>(data), static_cast<std::size_t>(n), word);
+        }
+    }
     template <class T>
     T read_value() {
         static_assert(std::is_trivially_copyable_v<T>);
         T value;
-        read(&value, sizeof value);
+        read_words(&value, sizeof value, sizeof value);
         return value;
     }
 
@@ -270,10 +314,24 @@ std::uint32_t read_enum(FailedRunReader& r, std::uint32_t count, const char* wha
 // =============================================================================
 
 struct StateFileAccess {
+    // What write_mps writes before the sites, field by field in its order: the
+    // bond cap, the cutoff, seven settings, the span, the two fidelity figures
+    // and their flag, the truncation total, the three rescue counts, the floor,
+    // the call and time counters, the residual excess, and the site count.
+    static constexpr std::uint64_t MPS_SETTINGS_BYTES =
+        sizeof(std::int32_t) + sizeof(double) + 7 * sizeof(std::uint32_t) +
+        2 * sizeof(std::int32_t) + 2 * sizeof(double) + sizeof(std::uint32_t) +
+        sizeof(double) + 3 * sizeof(std::uint64_t) + sizeof(double) +
+        2 * sizeof(std::uint64_t) + sizeof(double) + sizeof(std::uint32_t);
+    // What write_mps writes per site before its entries: two bonds and a count.
+    static constexpr std::uint64_t MPS_SITE_HEADER_BYTES =
+        2 * sizeof(std::int32_t) + sizeof(std::uint64_t);
+
     static std::uint64_t mps_bytes(const MPSState& c) {
-        std::uint64_t bytes = HEADER_BYTES + 128;
+        std::uint64_t bytes = HEADER_BYTES + MPS_SETTINGS_BYTES;
         for (const MPSTensor& t : c.tensors_) {
-            bytes += 16 + static_cast<std::uint64_t>(t.data.size()) * sizeof(Complex128);
+            bytes += MPS_SITE_HEADER_BYTES +
+                     static_cast<std::uint64_t>(t.data.size()) * sizeof(Complex128);
         }
         return bytes;
     }
@@ -283,7 +341,9 @@ struct StateFileAccess {
         f.write_value<std::int32_t>(c.max_bond_dim);
         f.write_value<double>(c.cutoff);
         f.write_value<std::uint32_t>(static_cast<std::uint32_t>(c.svd_method));
-        f.write_value<std::uint32_t>(c.svd_rescue ? 1u : 0u);
+        f.write_value<std::uint32_t>(static_cast<std::uint32_t>(c.svd_rejection));
+        f.write_value<std::uint32_t>(c.svd_accept_gram ? 1u : 0u);
+        f.write_value<std::uint32_t>(static_cast<std::uint32_t>(c.svd_report));
         f.write_value<std::uint32_t>(static_cast<std::uint32_t>(c.canonical_form));
         f.write_value<std::uint32_t>(static_cast<std::uint32_t>(c.unchecked_gates));
         f.write_value<std::uint32_t>(static_cast<std::uint32_t>(c.qubit_limit));
@@ -295,6 +355,7 @@ struct StateFileAccess {
         f.write_value<double>(c.total_truncation_error);
         f.write_value<std::uint64_t>(c.jacobi_rescues);
         f.write_value<std::uint64_t>(c.gram_fallbacks);
+        f.write_value<std::uint64_t>(c.ignored_rejections);
         f.write_value<double>(c.floor_rejected);
         f.write_value<std::uint64_t>(c.svd_calls);
         f.write_value<std::uint64_t>(c.svd_nanos);
@@ -304,17 +365,28 @@ struct StateFileAccess {
             f.write_value<std::int32_t>(t.bond_left);
             f.write_value<std::int32_t>(t.bond_right);
             f.write_value<std::uint64_t>(t.data.size());
-            f.write(t.data.data(), t.data.size() * sizeof(Complex128));
+            f.write_words(t.data.data(), t.data.size() * sizeof(Complex128), sizeof(double));
         }
     }
 
     static MPSState read_mps(FailedRunReader& r, int n_qubits) {
+        // Every site takes at least its two bonds, its entry count and two
+        // entries in the file, so the file's own size bounds the site count
+        // before a chain of that length is built. Without this, a header
+        // claiming 2^31 qubits would allocate a chain far larger than the file.
+        constexpr std::uint64_t min_site_bytes = MPS_SITE_HEADER_BYTES + 2 * sizeof(Complex128);
+        if (static_cast<std::uint64_t>(n_qubits) * min_site_bytes > r.remaining()) {
+            throw std::runtime_error("is too short to hold a chain of " +
+                                     std::to_string(n_qubits) + " sites");
+        }
         const std::int32_t max_bond_dim = r.read_value<std::int32_t>();
         const double cutoff = r.read_value<double>();
         if (max_bond_dim < 1) throw std::runtime_error("holds a bond cap below 1");
         MPSState c(n_qubits, max_bond_dim, cutoff);
         c.svd_method = static_cast<SVDMethod>(read_enum(r, 4, "an SVD method"));
-        c.svd_rescue = read_enum(r, 2, "a rescue flag") == 1;
+        c.svd_rejection = static_cast<SvdRejection>(read_enum(r, 3, "an SVD rejection policy"));
+        c.svd_accept_gram = read_enum(r, 2, "a Gram-route flag") == 1;
+        c.svd_report = static_cast<SvdReport>(read_enum(r, 2, "an SVD report policy"));
         c.canonical_form = static_cast<CanonicalForm>(read_enum(r, 2, "a canonical form"));
         c.unchecked_gates = static_cast<UncheckedGates>(read_enum(r, 2, "an unchecked-gates policy"));
         c.qubit_limit = static_cast<QubitLimit>(read_enum(r, 2, "a qubit limit"));
@@ -326,6 +398,7 @@ struct StateFileAccess {
         c.total_truncation_error = r.read_value<double>();
         c.jacobi_rescues = static_cast<std::size_t>(r.read_value<std::uint64_t>());
         c.gram_fallbacks = static_cast<std::size_t>(r.read_value<std::uint64_t>());
+        c.ignored_rejections = static_cast<std::size_t>(r.read_value<std::uint64_t>());
         c.floor_rejected = r.read_value<double>();
         c.svd_calls = static_cast<std::size_t>(r.read_value<std::uint64_t>());
         c.svd_nanos = r.read_value<std::uint64_t>();
@@ -352,7 +425,7 @@ struct StateFileAccess {
                 throw std::runtime_error("site " + std::to_string(i) + " is malformed");
             }
             MPSTensor t(bl, br);
-            r.read(t.data.data(), entries * sizeof(Complex128));
+            r.read_words(t.data.data(), entries * sizeof(Complex128), sizeof(double));
             tensors.push_back(std::move(t));
         }
         for (std::uint32_t i = 0; i + 1 < sites; ++i) {
@@ -388,7 +461,8 @@ struct StateFileAccess {
         f.write_value<std::uint32_t>(static_cast<std::uint32_t>(s.wpr));
         f.write_value<std::uint32_t>(static_cast<std::uint32_t>(rows));
         f.write_value<std::uint64_t>(words);
-        f.write(s.tab.data(), static_cast<std::size_t>(words) * sizeof(std::uint64_t));
+        f.write_words(s.tab.data(), static_cast<std::size_t>(words) * sizeof(std::uint64_t),
+                      sizeof(std::uint64_t));
         f.write_value<std::uint64_t>(rows);
         f.write(s.ph.data(), static_cast<std::size_t>(rows));
     }
@@ -405,7 +479,7 @@ struct StateFileAccess {
                                      " qubits");
         }
         StabilizerState s(n_qubits);
-        r.read(s.tab.data(), words * sizeof(std::uint64_t));
+        r.read_words(s.tab.data(), words * sizeof(std::uint64_t), sizeof(std::uint64_t));
         const std::uint64_t phases = r.read_value<std::uint64_t>();
         if (phases != want_rows) throw std::runtime_error("holds the wrong number of phases");
         r.read(s.ph.data(), phases);
@@ -441,14 +515,14 @@ std::uint64_t state_file_bytes(const FailedRun::State& state) {
 
 void write_statevector(FailedRunFile& f, const Statevector& sv) {
     write_header(f, FormCode::Statevector, sv.n_qubits);
-    f.write(sv.real_parts, sv.dim * sizeof(double));
-    f.write(sv.imag_parts, sv.dim * sizeof(double));
+    f.write_words(sv.real_parts, sv.dim * sizeof(double), sizeof(double));
+    f.write_words(sv.imag_parts, sv.dim * sizeof(double), sizeof(double));
 }
 
 void write_density_matrix(FailedRunFile& f, const DensityMatrix& dm) {
     write_header(f, FormCode::DensityMatrix, dm.n_qubits);
     f.write_value<std::uint64_t>(dm.data.size());
-    f.write(dm.data.data(), dm.data.size() * sizeof(Complex128));
+    f.write_words(dm.data.data(), dm.data.size() * sizeof(Complex128), sizeof(double));
 }
 
 void write_state(FailedRunFile& f, const FailedRun::State& state) {
@@ -495,20 +569,25 @@ FailedRun::State read_state(const fs::path& path) {
                                          std::to_string(n_qubits) + " qubits");
             }
             Statevector sv(n, QubitLimit::Lift);
-            r.read(sv.real_parts, sv.dim * sizeof(double));
-            r.read(sv.imag_parts, sv.dim * sizeof(double));
+            r.read_words(sv.real_parts, sv.dim * sizeof(double), sizeof(double));
+            r.read_words(sv.imag_parts, sv.dim * sizeof(double), sizeof(double));
             return FailedRun::State(std::move(sv));
         }
         case FormCode::DensityMatrix: {
             const std::uint64_t entries = r.read_value<std::uint64_t>();
-            // 4^n entries of 16 bytes fit a 64-bit byte count up to n = 29.
-            if (n_qubits < 1 || n_qubits > 29 || entries != (std::uint64_t{1} << (2 * n_qubits)) ||
+            // 4^n entries of sizeof(Complex128) bytes must fit a 64-bit byte
+            // count: 2n plus the entry's own power of two stays below 64.
+            constexpr std::uint32_t max_dm_qubits = static_cast<std::uint32_t>(
+                (std::numeric_limits<std::uint64_t>::digits - 1 -
+                 (std::bit_width(sizeof(Complex128)) - 1)) / 2);
+            if (n_qubits < 1 || n_qubits > max_dm_qubits ||
+                entries != (std::uint64_t{1} << (2 * n_qubits)) ||
                 r.remaining() != entries * sizeof(Complex128)) {
                 throw std::runtime_error("does not hold a density matrix of " +
                                          std::to_string(n_qubits) + " qubits");
             }
             DensityMatrix dm(n);
-            r.read(dm.data.data(), entries * sizeof(Complex128));
+            r.read_words(dm.data.data(), entries * sizeof(Complex128), sizeof(double));
             return FailedRun::State(std::move(dm));
         }
         case FormCode::MPS: {
@@ -663,14 +742,23 @@ struct SavedFile {
     std::uint32_t crc;
 };
 
-// Writes `name` in `folder` through `body`, and records it.
+// Writes `name` in `folder` through `body`, and records it. A file that cannot
+// be written whole is removed, so a disk that fills part way through leaves no
+// unlisted fragment behind in the folder.
 template <class Body>
 void write_file(const fs::path& folder, const std::string& name, std::vector<SavedFile>& files,
                 Body&& body) {
-    FailedRunFile f(folder / fs::path(name));
-    body(f);
-    f.close();
-    files.push_back(SavedFile{name, f.bytes(), f.crc()});
+    const fs::path path = folder / fs::path(name);
+    try {
+        FailedRunFile f(path);
+        body(f);
+        f.close();
+        files.push_back(SavedFile{name, f.bytes(), f.crc()});
+    } catch (...) {
+        std::error_code ec;
+        fs::remove(path, ec);
+        throw;
+    }
 }
 
 // Where saved runs go when the caller names no folder. Never the temporary
@@ -827,6 +915,7 @@ void save_failed_run(FailedRun& r, const std::filesystem::path& dir) noexcept {
             }
         }
 
+        const std::size_t files_before_observations = files.size();
         try {
             const std::vector<std::string> labels = r.observations.labels();
             std::uint64_t state_bytes = 0;
@@ -885,6 +974,15 @@ void save_failed_run(FailedRun& r, const std::filesystem::path& dir) noexcept {
                 wrote_observations = true;
             }
         } catch (const std::exception& e) {
+            // Whole or not at all: state files already written for earlier
+            // entries go with the rest, and so does their folder.
+            for (std::size_t k = files_before_observations; k < files.size(); ++k) {
+                std::error_code ec;
+                fs::remove(partial / fs::path(files[k].name), ec);
+            }
+            files.resize(files_before_observations);
+            std::error_code ec;
+            fs::remove(partial / "observations", ec);
             add_note(r, std::string("The observations were not saved: ") + e.what() + ".");
         }
 
@@ -942,6 +1040,13 @@ void save_failed_run(FailedRun& r, const std::filesystem::path& dir) noexcept {
         std::vector<SavedFile> manifest_only;
         write_file(partial, "manifest.json", manifest_only,
                    [&](FailedRunFile& f) { f.write_text(m); });
+        // An edit to the manifest (a file entry removed, a qubit count
+        // changed) is refused on load like an edit to any other file.
+        const std::string manifest_check =
+            "{\"bytes\":" + std::to_string(manifest_only.front().bytes) +
+            ",\"crc32c\":" + std::to_string(manifest_only.front().crc) + "}";
+        write_file(partial, MANIFEST_CHECK_FILE, manifest_only,
+                   [&](FailedRunFile& f) { f.write_text(manifest_check); });
 
         fs::rename(partial, final_path);
         partial.clear();
@@ -966,10 +1071,14 @@ void save_failed_run(FailedRun& r, const std::filesystem::path& dir) noexcept {
         }
     }
     // A folder that was never completed is removed, so no half-written run
-    // is left to be mistaken for one.
+    // is left to be mistaken for one. The error_code overload still allocates
+    // as it walks the folder, and this function never throws.
     if (!partial.empty()) {
-        std::error_code ec;
-        fs::remove_all(partial, ec);
+        try {
+            std::error_code ec;
+            fs::remove_all(partial, ec);
+        } catch (...) {
+        }
     }
 }
 
@@ -1033,6 +1142,37 @@ void parse_file(const std::string& name, Parse&& parse) {
     }
 }
 
+// A byte count or checksum the manifest records: a whole number below
+// 2^digits. It arrives as a double, and converting one outside the target's
+// range is undefined, so the range is checked first.
+std::uint64_t read_unsigned(detail::JsonReader& j, int digits, const char* what) {
+    const double d = j.read_number();
+    if (!(d >= 0.0) || d >= std::ldexp(1.0, digits) || d != std::floor(d)) {
+        throw std::runtime_error("records " + std::to_string(d) + " as " + what);
+    }
+    return static_cast<std::uint64_t>(d);
+}
+
+// The qubit count of a state read from a state file.
+int state_qubits(const FailedRun::State& state) {
+    return std::visit(
+        [](const auto& s) -> int {
+            using T = std::decay_t<decltype(s)>;
+            if constexpr (std::is_same_v<T, std::monostate>) {
+                return -1;
+            } else {
+                return s.n_qubits;
+            }
+        },
+        state);
+}
+
+// The state form a backend's run evolves, as the manifest names it.
+std::string form_of_backend(const std::string& backend) {
+    return backend == "clifford" ? std::string(detail::form_word(detail::FormCode::Stabilizer))
+                                 : backend;
+}
+
 }  // namespace
 
 FailedRun load_failed_run(const std::filesystem::path& folder) {
@@ -1042,6 +1182,50 @@ FailedRun load_failed_run(const std::filesystem::path& folder) {
         manifest = read_text(folder / "manifest.json");
     } catch (const std::exception& e) {
         detail::raise<InvalidArgument>(LOAD, "manifest.json in " + folder.string() + " " + e.what());
+    }
+
+    // The manifest is checked against its own size and CRC-32C before anything
+    // in it is believed.
+    std::string check;
+    try {
+        check = read_text(folder / detail::MANIFEST_CHECK_FILE);
+    } catch (const std::exception& e) {
+        detail::raise<InvalidArgument>(LOAD, std::string(detail::MANIFEST_CHECK_FILE) + " in " +
+                                                 folder.string() + " " + e.what());
+    }
+    std::uint64_t check_bytes = 0;
+    std::uint64_t check_crc = 0;
+    parse_file(detail::MANIFEST_CHECK_FILE, [&] {
+        detail::JsonReader j{check};
+        j.expect('{');
+        while (j.peek() != '}') {
+            if (j.peek() == ',') j.next();
+            const std::string key = j.read_string();
+            j.expect(':');
+            if (key == "bytes") {
+                check_bytes = read_unsigned(j, std::numeric_limits<std::uint64_t>::digits,
+                                            "a byte count");
+            } else if (key == "crc32c") {
+                check_crc = read_unsigned(j, std::numeric_limits<std::uint32_t>::digits,
+                                          "a CRC-32C");
+            } else {
+                j.skip_value();
+            }
+        }
+        j.expect('}');
+    });
+    const std::uint32_t manifest_crc = detail::crc32c(0, manifest.data(), manifest.size());
+    if (manifest.size() != check_bytes) {
+        detail::raise<InvalidArgument>(LOAD, "manifest.json holds " +
+                                                 std::to_string(manifest.size()) +
+                                                 " bytes; " + detail::MANIFEST_CHECK_FILE +
+                                                 " recorded " + std::to_string(check_bytes));
+    }
+    if (manifest_crc != check_crc) {
+        detail::raise<InvalidArgument>(LOAD, "manifest.json fails its checksum: CRC-32C " +
+                                                 std::to_string(manifest_crc) + ", " +
+                                                 detail::MANIFEST_CHECK_FILE + " recorded " +
+                                                 std::to_string(check_crc));
     }
 
     struct Listed {
@@ -1126,10 +1310,17 @@ FailedRun load_failed_run(const std::filesystem::path& folder) {
                         if (j.peek() == ',') j.next();
                         const std::string fkey = j.read_string();
                         j.expect(':');
-                        if (fkey == "name") entry.name = j.read_string();
-                        else if (fkey == "bytes") entry.bytes = static_cast<std::uint64_t>(j.read_number());
-                        else if (fkey == "crc32c") entry.crc = static_cast<std::uint32_t>(j.read_number());
-                        else j.skip_value();
+                        if (fkey == "name") {
+                            entry.name = j.read_string();
+                        } else if (fkey == "bytes") {
+                            entry.bytes = read_unsigned(
+                                j, std::numeric_limits<std::uint64_t>::digits, "a byte count");
+                        } else if (fkey == "crc32c") {
+                            entry.crc = static_cast<std::uint32_t>(read_unsigned(
+                                j, std::numeric_limits<std::uint32_t>::digits, "a CRC-32C"));
+                        } else {
+                            j.skip_value();
+                        }
                     }
                     j.expect('}');
                     files.push_back(std::move(entry));
@@ -1214,7 +1405,15 @@ FailedRun load_failed_run(const std::filesystem::path& folder) {
 
     if (listed("circuit.json")) {
         const std::string text = read_text(folder / "circuit.json");
-        parse_file("circuit.json", [&] { r.circuit = QuantumCircuit::from_json(text); });
+        parse_file("circuit.json", [&] {
+            r.circuit = QuantumCircuit::from_json(text);
+            if (r.circuit->n_qubits != r.n_qubits) {
+                throw std::runtime_error("holds a circuit of " +
+                                         std::to_string(r.circuit->n_qubits) +
+                                         " qubits; the manifest records " +
+                                         std::to_string(r.n_qubits));
+            }
+        });
     }
 
     if (listed("noise_model.json")) {
@@ -1304,7 +1503,24 @@ FailedRun load_failed_run(const std::filesystem::path& folder) {
     }
 
     if (listed("state.bin")) {
-        parse_file("state.bin", [&] { r.state = detail::read_state(folder / "state.bin"); });
+        // The state file, the manifest and the backend that ran must agree on
+        // what the state is, so an edited manifest cannot hand back a state of
+        // another width or form under this run's name.
+        parse_file("state.bin", [&] {
+            r.state = detail::read_state(folder / "state.bin");
+            const std::string form = detail::form_word(detail::form_code(r.state));
+            if (form != state_form || form != form_of_backend(r.backend)) {
+                throw std::runtime_error("holds a " + form + " state; the manifest records a " +
+                                         state_form + " state from the " + r.backend +
+                                         " backend");
+            }
+            if (state_qubits(r.state) != r.n_qubits) {
+                throw std::runtime_error("holds a state of " +
+                                         std::to_string(state_qubits(r.state)) +
+                                         " qubits; the manifest records " +
+                                         std::to_string(r.n_qubits));
+            }
+        });
     }
 
     r.saved_to = folder;

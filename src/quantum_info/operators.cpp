@@ -9,6 +9,7 @@
 
 #include "lindblad/operators.hpp"
 #include "lindblad/detail/pauli_rules.hpp"
+#include "lindblad/detail/report.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/gates.hpp"
@@ -86,26 +87,41 @@ bool PauliString::commutes_with(const PauliString& other) const {
 
 namespace detail {
 
-void check_pauli_label(const std::string& label, const char* where) {
+namespace {
+
+// Raises the refusal for `where`, the requester. When a run() asked through an
+// observer, `entry_point` names it and the message starts with it; otherwise
+// the requester is the entry point and the message reads as it always has.
+[[noreturn]] void refuse(std::string_view entry_point, const char* where,
+                         const std::string& body) {
+    if (entry_point.empty()) raise<InvalidArgument>(where, body);
+    raise<InvalidArgument>(entry_point, std::string(where) + ": " + body);
+}
+
+}  // namespace
+
+void check_pauli_label(const std::string& label, const char* where,
+                       std::string_view entry_point) {
     for (std::size_t q = 0; q < label.size(); ++q) {
         const char c = label[q];
         if (c != 'I' && c != 'X' && c != 'Y' && c != 'Z') {
-            throw std::invalid_argument(
-                std::string(where) + ": '" + std::string(1, c) + "' at position " +
+            refuse(entry_point, where,
+                "'" + std::string(1, c) + "' at position " +
                 std::to_string(q) + " of '" + label + "' is not a Pauli; a Pauli "
                 "string is written with I, X, Y and Z, uppercase");
         }
     }
 }
 
-int uniform_pauli_width(const std::vector<PauliString>& terms, const char* where) {
-    for (const PauliString& term : terms) check_pauli_label(term.pauli, where);
+int uniform_pauli_width(const std::vector<PauliString>& terms, const char* where,
+                        std::string_view entry_point) {
+    for (const PauliString& term : terms) check_pauli_label(term.pauli, where, entry_point);
     if (terms.empty()) return -1;
     const int width = terms[0].n_qubits();
     for (std::size_t i = 1; i < terms.size(); ++i) {
         if (terms[i].n_qubits() != width) {
-            throw std::invalid_argument(
-                std::string(where) + ": term " + std::to_string(i) + " ('" +
+            refuse(entry_point, where,
+                "term " + std::to_string(i) + " ('" +
                 terms[i].pauli + "') is " + std::to_string(terms[i].n_qubits()) +
                 " qubits wide but term 0 ('" + terms[0].pauli + "') is " +
                 std::to_string(width) + "; every term of one operator covers the "
@@ -115,17 +131,19 @@ int uniform_pauli_width(const std::vector<PauliString>& terms, const char* where
     return width;
 }
 
-int required_pauli_width(const std::vector<PauliString>& terms, const char* where) {
-    const int width = uniform_pauli_width(terms, where);
+int required_pauli_width(const std::vector<PauliString>& terms, const char* where,
+                         std::string_view entry_point) {
+    const int width = uniform_pauli_width(terms, where, entry_point);
     if (width < 0) {
-        throw std::invalid_argument(
-            std::string(where) + ": the operator has no terms, so it has no width; "
+        refuse(entry_point, where,
+            "the operator has no terms, so it has no width; "
             "the zero operator on n qubits is SparsePauliOp::zero(n)");
     }
     return width;
 }
 
-void check_hermitian(const SparsePauliOp& op, const char* where) {
+void check_hermitian(const SparsePauliOp& op, const char* where,
+                     std::string_view entry_point) {
     // Real term by term is the common case and needs no merging.
     bool all_real = true;
     for (const PauliString& term : op.terms) {
@@ -143,8 +161,8 @@ void check_hermitian(const SparsePauliOp& op, const char* where) {
     for (const PauliString& term : op.terms) {
         const Complex128 total = merged[term.pauli];
         if (std::abs(total.imag) > DEFAULT_PHYSICAL_ATOL) {
-            throw std::invalid_argument(
-                std::string(where) + ": the operator is not Hermitian: label '" +
+            refuse(entry_point, where,
+                "the operator is not Hermitian: label '" +
                 term.pauli + "' has coefficient " + std::to_string(total.real) +
                 (total.imag < 0.0 ? " - " : " + ") +
                 std::to_string(std::abs(total.imag)) +
@@ -155,19 +173,19 @@ void check_hermitian(const SparsePauliOp& op, const char* where) {
 }
 
 void check_observable(const SparsePauliOp& op, int n_qubits, const char* where,
-                      const char* against) {
-    (void)required_pauli_width(op.terms, where);
+                      const char* against, std::string_view entry_point) {
+    (void)required_pauli_width(op.terms, where, entry_point);
     for (std::size_t i = 0; i < op.terms.size(); ++i) {
         const int width = op.terms[i].n_qubits();
         if (width != n_qubits) {
-            throw std::invalid_argument(
-                std::string(where) + ": term " + std::to_string(i) + " ('" +
+            refuse(entry_point, where,
+                "term " + std::to_string(i) + " ('" +
                 op.terms[i].pauli + "') is " + std::to_string(width) +
                 " qubits wide, which does not match the " + std::to_string(n_qubits) +
                 " qubit " + against + "; a term names exactly one Pauli per qubit");
         }
     }
-    check_hermitian(op, where);
+    check_hermitian(op, where, entry_point);
 }
 
 }  // namespace detail

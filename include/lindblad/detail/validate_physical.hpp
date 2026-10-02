@@ -99,24 +99,30 @@ inline std::string format_residual(double x) {
     return std::string(buf);
 }
 
-inline std::string physical_message(const char* ctx, const PhysicalProperty& p,
-                                    double deviation, double atol) {
-    return std::string(ctx) + ": " + p.subject + " (" + p.residual + " = " +
-           format_residual(deviation) + ", atol = " + format_residual(atol) +
-           ")";
+// What is wrong and by how much, without the requester.
+inline std::string physical_finding(const PhysicalProperty& p, double deviation,
+                                    double atol) {
+    return std::string(p.subject) + " (" + p.residual + " = " +
+           format_residual(deviation) + ", atol = " + format_residual(atol) + ")";
 }
 
+inline std::string physical_message(const char* ctx, const PhysicalProperty& p,
+                                    double deviation, double atol) {
+    return std::string(ctx) + ": " + physical_finding(p, deviation, atol);
+}
+
+// Both refusals are InvalidArgument with `ctx`, the requester, as the entry
+// point, so the message reads "<ctx>: ...".
 [[noreturn]] inline void throw_not_physical(const char* ctx,
                                             const PhysicalProperty& p,
                                             double deviation, double atol) {
-    throw std::invalid_argument(physical_message(ctx, p, deviation, atol));
+    raise<InvalidArgument>(ctx, physical_finding(p, deviation, atol));
 }
 
 [[noreturn]] inline void throw_no_repair(const char* ctx,
                                          const PhysicalProperty& p) {
-    throw std::invalid_argument(std::string(ctx) +
-                                ": Repair::Attempt has no repair defined for " +
-                                p.noun);
+    raise<InvalidArgument>(ctx, std::string("Repair::Attempt has no repair defined for ") +
+                                    p.noun);
 }
 
 // -----------------------------------------------------------------------------
@@ -218,18 +224,17 @@ inline bool enforce_physical_repairable(double deviation,
 inline void respond_unrepaired(const ValidationOptions& v, const char* ctx,
                                const PhysicalProperty& p,
                                const std::string& why) {
-    const std::string msg =
-        std::string(ctx) + ": could not repair " + p.noun + ", " + why;
+    const std::string finding = std::string("could not repair ") + p.noun + ", " + why;
     switch (v.policy) {
         case Validation::Warn:
-            emit_warning(msg);
+            emit_warning(std::string(ctx) + ": " + finding);
             return;
         case Validation::Ignore:
             return;
         case Validation::Throw:
             break;
     }
-    throw std::invalid_argument(msg);
+    raise<InvalidArgument>(ctx, finding);
 }
 
 // -----------------------------------------------------------------------------

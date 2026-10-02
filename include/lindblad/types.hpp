@@ -272,7 +272,8 @@ inline void aligned_free(void* ptr) noexcept {
 // strict-FP translation unit in src/eigen_backend.cpp. Every kernel is
 // available in every build, so the public API does not change shape with the
 // build configuration. Selecting either Jacobi emits a one-time note per MPS
-// layer that it is the slower algorithm; selecting EigenBDC is silent.
+// layer that it is the slower algorithm, and selecting EigenBDC emits one
+// saying it is in force, since it is not the default either.
 enum class SVDMethod { Jacobi, BDC, EigenJacobi, EigenBDC };
 
 // The enumerator's name, for diagnostics.
@@ -284,6 +285,66 @@ constexpr const char* to_string(SVDMethod m) noexcept {
         case SVDMethod::EigenBDC:    return "EigenBDC";
     }
     return "SVDMethod(?)";
+}
+
+// =============================================================================
+// SvdRejection - what a bond split does with a factorisation it rejects
+// =============================================================================
+// Every factorisation a bond split receives is verified before it is used (see
+// detail/svd_truncate.hpp): its kept factors must be finite and must rebuild
+// the block to within the truncation it reports plus the backward error a
+// stable SVD is allowed. A kernel can also decline a block and return nothing.
+//
+// Fix, the DEFAULT, repairs a rejection by descending the ladder: autonne's
+// Jacobi (skipped when Jacobi was the kernel that failed), then the Gram route
+// when svd_accept_gram allows it, each candidate verified the same way. A
+// split that no permitted rung repairs throws. A repaired split is as
+// trustworthy as one the kernel got right, so the answer is intact.
+//
+// Throw ends the run with RuntimeFailure at the first rejection, for a caller
+// who would rather stop than take a tensor from a kernel they did not name.
+//
+// Ignore uses a rejected factorisation as it is. The state built from it is
+// UNVERIFIED and can be wrong with nothing further to say so; the fidelity
+// figures are withdrawn, since they would describe a factorisation that did
+// not happen. A kernel that returned nothing still leaves nothing to use, so
+// that case descends the ladder as under Fix, and whatever the first rung to
+// produce a factorisation gives is used, verified or not. A non-finite entry
+// carried into the chain is still refused where every state's is: at a
+// collapse or a sample, and in the final state.
+//
+// Throw and Ignore are not the default, and each emits a one-time note per MPS
+// layer saying so.
+enum class SvdRejection { Fix, Throw, Ignore };
+
+constexpr const char* to_string(SvdRejection r) noexcept {
+    switch (r) {
+        case SvdRejection::Fix:    return "Fix";
+        case SvdRejection::Throw:  return "Throw";
+        case SvdRejection::Ignore: return "Ignore";
+    }
+    return "SvdRejection(?)";
+}
+
+// =============================================================================
+// SvdReport - how a repaired or ignored rejection is reported
+// =============================================================================
+// Read only after SvdRejection::Fix repaired a factorisation or Ignore used one;
+// Throw ends the run before there is anything to report. Warn, the DEFAULT,
+// emits one warning per rung taken and per factorisation used unverified,
+// naming the layer, the block shape, the kernel and what verification found.
+// Silent emits none. Either way every repair and every unverified use is
+// counted on the chain (jacobi_rescue_count(), gram_fallback_count(),
+// ignored_rejection_count()). Silent is not the default and emits a one-time
+// note per MPS layer saying so.
+enum class SvdReport { Warn, Silent };
+
+constexpr const char* to_string(SvdReport r) noexcept {
+    switch (r) {
+        case SvdReport::Warn:   return "Warn";
+        case SvdReport::Silent: return "Silent";
+    }
+    return "SvdReport(?)";
 }
 
 // Default weight cutoff of both MPS layers: a bond split may discard at most

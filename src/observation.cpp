@@ -462,17 +462,28 @@ ObservationPlan& ObservationPlan::observe(Anchor anchor, ObserverPtr observer) {
 
 namespace detail {
 
-// The message already names its requester, so no entry point is prefixed.
+// The message names its requester; the entry point, when known, names the
+// run() that asked for it.
 bool refuse_observation(const RunPlan::Options& options, RunPhase phase,
-                        const std::string& message) {
-    return respond(options.response, phase, "", message);
+                        const std::string& message, std::string_view entry_point) {
+    return respond(options.response, phase, entry_point, message);
+}
+
+bool refuse_observation(const PreflightContext& ctx, const std::string& message) {
+    return refuse_observation(ctx.plan.options, RunPhase::BeforeFirstGate, message,
+                              ctx.entry_point);
+}
+
+bool refuse_observation(const ObservationContext& ctx, const std::string& message) {
+    return refuse_observation(ctx.plan.options, ctx.phase, message, ctx.entry_point);
 }
 
 std::shared_ptr<const void> produce_state(const StateView& view, StateForm target,
                                           const RunPlan::Options& options,
                                           RunPhase phase, const std::string& what,
                                           RunBudget* budget,
-                                          const std::optional<FailurePoint>& where) {
+                                          const std::optional<FailurePoint>& where,
+                                          std::string_view entry_point) {
     const StateForm held = view.form();
 
     if (target != held) {
@@ -480,14 +491,14 @@ std::shared_ptr<const void> produce_state(const StateView& view, StateForm targe
             refuse_observation(
                 options, phase, what + " asks for a " + to_string(target) +
                 " from a backend holding a " + to_string(held) +
-                ", and no conversion between those exists at all.");
+                ", and no conversion between those exists at all.", entry_point);
             return nullptr;
         }
         if (options.conversion == Conversion::Never) {
             refuse_observation(
                 options, phase, what + " asks for a " + to_string(target) +
                 " from a backend holding a " + to_string(held) +
-                ", and Conversion::Never is selected.");
+                ", and Conversion::Never is selected.", entry_point);
             return nullptr;
         }
     }
@@ -501,7 +512,8 @@ std::shared_ptr<const void> produce_state(const StateView& view, StateForm targe
                 options, phase, what + " would allocate " + std::to_string(wanted) +
                 " bytes against a live state of " +
                 std::to_string(view.state_bytes()) +
-                " bytes, which is over the guard. Cost::Unlimited allows it.");
+                " bytes, which is over the guard. Cost::Unlimited allows it.",
+                entry_point);
             return nullptr;
         }
     } else if (target != held) {
@@ -600,15 +612,13 @@ bool preflight_conversion(const PreflightContext& ctx, StateForm target,
     if (target != held) {
         if (!conversion_exists(held, target)) {
             return refuse_observation(
-                options, RunPhase::BeforeFirstGate,
-                what + " asks for a " + to_string(target) +
+                ctx, what + " asks for a " + to_string(target) +
                 " from a backend holding a " + to_string(held) +
                 ", and no conversion between those exists at all.");
         }
         if (options.conversion == Conversion::Never) {
             return refuse_observation(
-                options, RunPhase::BeforeFirstGate,
-                what + " asks for a " + to_string(target) +
+                ctx, what + " asks for a " + to_string(target) +
                 " from a backend holding a " + to_string(held) +
                 ", and Conversion::Never is selected.");
         }
@@ -627,8 +637,7 @@ bool preflight_conversion(const PreflightContext& ctx, StateForm target,
                 static_cast<double>(live) * options.guard_multiple;
             if (static_cast<double>(wanted) > budget) {
                 return refuse_observation(
-                    options, RunPhase::BeforeFirstGate,
-                    what + " would allocate " + std::to_string(wanted) +
+                    ctx, what + " would allocate " + std::to_string(wanted) +
                     " bytes against a live state of " + std::to_string(live) +
                     " bytes, which is over the guard. Cost::Unlimited allows it.");
             }
@@ -641,7 +650,8 @@ bool preflight_conversion(const PreflightContext& ctx, StateForm target,
 std::shared_ptr<const void> produce_initial_state(const StateView& supplied,
                                                   StateForm target,
                                                   const RunPlan::Options& options,
-                                                  std::size_t run_state_bytes) {
+                                                  std::size_t run_state_bytes,
+                                                  std::string_view entry_point) {
     const StateForm held = supplied.form();
 
     if (target != held) {
@@ -654,7 +664,7 @@ std::shared_ptr<const void> produce_initial_state(const StateView& supplied,
         const double budget =
             static_cast<double>(run_state_bytes) * options.guard_multiple;
         if (static_cast<double>(wanted) > budget) {
-            throw std::invalid_argument(
+            raise<InvalidArgument>(entry_point,
                 "InitialState: seeding this run would allocate " +
                 std::to_string(wanted) + " bytes against a run state of " +
                 std::to_string(run_state_bytes) +
@@ -702,7 +712,8 @@ std::shared_ptr<const void> produce_initial_state(const StateView& supplied,
 bool charge_allocation(const StateView& view, std::size_t bytes,
                        const RunPlan::Options& options, RunPhase phase,
                        const std::string& what, RunBudget* budget,
-                       const std::optional<FailurePoint>& where) {
+                       const std::optional<FailurePoint>& where,
+                       std::string_view entry_point) {
     if (options.cost == Cost::Guarded) {
         const double guard =
             static_cast<double>(view.state_bytes()) * options.guard_multiple;
@@ -710,7 +721,8 @@ bool charge_allocation(const StateView& view, std::size_t bytes,
             return refuse_observation(
                 options, phase, what + " would allocate " + std::to_string(bytes) +
                 " bytes against a live state of " + std::to_string(view.state_bytes()) +
-                " bytes, which is over the guard. Cost::Unlimited allows it.");
+                " bytes, which is over the guard. Cost::Unlimited allows it.",
+                entry_point);
         }
     }
     // The run's budget, whatever the guard allowed.
@@ -736,13 +748,13 @@ FailurePoint firing_point(const ObservationContext& ctx) {
 std::shared_ptr<const void> produce_state(const ObservationContext& ctx, StateForm target,
                                           const std::string& what) {
     return produce_state(ctx.state, target, ctx.plan.options, ctx.phase, what, ctx.budget,
-                         firing_point(ctx));
+                         firing_point(ctx), ctx.entry_point);
 }
 
 bool charge_allocation(const ObservationContext& ctx, std::size_t bytes,
                        const std::string& what) {
     return charge_allocation(ctx.state, bytes, ctx.plan.options, ctx.phase, what,
-                             ctx.budget, firing_point(ctx));
+                             ctx.budget, firing_point(ctx), ctx.entry_point);
 }
 
 void retain_allocation(const ObservationContext& ctx, std::size_t bytes,
@@ -755,7 +767,7 @@ void retain_allocation(const ObservationContext& ctx, std::size_t bytes,
     ctx.budget->retain(bytes, what);
 }
 
-void apply_initial_state(const RunPlan& plan, Statevector& sv) {
+void apply_initial_state(const RunPlan& plan, Statevector& sv, std::string_view entry_point) {
     const InitialState& initial = plan.initial;
 
     if (initial.is_default()) {
@@ -766,7 +778,7 @@ void apply_initial_state(const RunPlan& plan, Statevector& sv) {
     if (initial.is_basis()) {
         const std::uint64_t index = initial.basis_index();
         if (index >= sv.dimension()) {
-            throw std::invalid_argument(
+            raise<InvalidArgument>(entry_point,
                 "InitialState::basis(" + std::to_string(index) +
                 ") is outside a " + std::to_string(sv.dimension()) +
                 " amplitude register");
@@ -780,12 +792,12 @@ void apply_initial_state(const RunPlan& plan, Statevector& sv) {
     // against: the amplitudes are allocated whether or not the caller supplied
     // any, and a conversion that produces exactly them costs nothing extra.
     auto produced = produce_initial_state(view, StateForm::Statevector, plan.options,
-                                          sv.dimension() * 2 * sizeof(double));
+                                          sv.dimension() * 2 * sizeof(double), entry_point);
     if (!produced) {
         // Warn and Ignore omit an observation, but there is no such thing as
         // omitting the state a run starts from: the alternative to the supplied
         // state is silently simulating a different circuit.
-        throw std::invalid_argument(
+        raise<InvalidArgument>(entry_point,
             "InitialState: a " + std::string(to_string(initial.form())) +
             " cannot be turned into the statevector this backend runs on, and "
             "a run has to start somewhere. Response::Warn and Response::Ignore "
@@ -794,7 +806,7 @@ void apply_initial_state(const RunPlan& plan, Statevector& sv) {
 
     const Statevector& source = *static_cast<const Statevector*>(produced.get());
     if (source.n_qubits != sv.n_qubits) {
-        throw std::invalid_argument(
+        raise<InvalidArgument>(entry_point,
             "InitialState: the supplied state covers " +
             std::to_string(source.n_qubits) + " qubits, the circuit " +
             std::to_string(sv.n_qubits));
@@ -802,7 +814,7 @@ void apply_initial_state(const RunPlan& plan, Statevector& sv) {
     sv.set_amplitudes(source.real_parts, source.imag_parts, source.dim);
 }
 
-void apply_initial_state(const RunPlan& plan, DensityMatrix& dm) {
+void apply_initial_state(const RunPlan& plan, DensityMatrix& dm, std::string_view entry_point) {
     const InitialState& initial = plan.initial;
 
     if (initial.is_default()) {
@@ -813,7 +825,7 @@ void apply_initial_state(const RunPlan& plan, DensityMatrix& dm) {
     if (initial.is_basis()) {
         const std::uint64_t index = initial.basis_index();
         if (index >= dm.dim) {
-            throw std::invalid_argument(
+            raise<InvalidArgument>(entry_point,
                 "InitialState::basis(" + std::to_string(index) +
                 ") is outside a " + std::to_string(dm.dim) + " dimensional register");
         }
@@ -827,9 +839,9 @@ void apply_initial_state(const RunPlan& plan, DensityMatrix& dm) {
     // 4^n either way: that is what this backend IS, so producing it from a pure
     // state is the run's own footprint rather than an addition to it.
     auto produced = produce_initial_state(view, StateForm::DensityMatrix, plan.options,
-                                          dm.data.size() * sizeof(Complex128));
+                                          dm.data.size() * sizeof(Complex128), entry_point);
     if (!produced) {
-        throw std::invalid_argument(
+        raise<InvalidArgument>(entry_point,
             "InitialState: a " + std::string(to_string(initial.form())) +
             " cannot be turned into the density matrix this backend runs on, "
             "and a run has to start somewhere.");
@@ -837,7 +849,7 @@ void apply_initial_state(const RunPlan& plan, DensityMatrix& dm) {
 
     const DensityMatrix& source = *static_cast<const DensityMatrix*>(produced.get());
     if (source.n_qubits != dm.n_qubits) {
-        throw std::invalid_argument(
+        raise<InvalidArgument>(entry_point,
             "InitialState: the supplied state covers " +
             std::to_string(source.n_qubits) + " qubits, the circuit " +
             std::to_string(dm.n_qubits));
@@ -845,7 +857,8 @@ void apply_initial_state(const RunPlan& plan, DensityMatrix& dm) {
     dm.data = source.data;
 }
 
-void apply_initial_state(const RunPlan& plan, StabilizerState& state) {
+void apply_initial_state(const RunPlan& plan, StabilizerState& state,
+                         std::string_view entry_point) {
     const InitialState& initial = plan.initial;
     const int n = state.n_qubits;
 
@@ -857,7 +870,7 @@ void apply_initial_state(const RunPlan& plan, StabilizerState& state) {
     if (initial.is_basis()) {
         const std::uint64_t index = initial.basis_index();
         if (n < 64 && index >= (std::uint64_t{1} << n)) {
-            throw std::invalid_argument(
+            raise<InvalidArgument>(entry_point,
                 "InitialState::basis(" + std::to_string(index) +
                 ") is outside a " + std::to_string(n) + " qubit register");
         }
@@ -872,7 +885,7 @@ void apply_initial_state(const RunPlan& plan, StabilizerState& state) {
     // be turned into one: a general statevector is not a stabilizer state at
     // all, so this is impossibility rather than expense.
     if (initial.form() != StateForm::Stabilizer) {
-        throw std::invalid_argument(
+        raise<InvalidArgument>(entry_point,
             "InitialState: a " + std::string(to_string(initial.form())) +
             " cannot be turned into a stabilizer tableau. Only a state that IS "
             "a stabilizer state has one, and recovering it from amplitudes is "
@@ -881,7 +894,7 @@ void apply_initial_state(const RunPlan& plan, StabilizerState& state) {
 
     const auto& source = *static_cast<const StabilizerState*>(initial.state());
     if (source.n_qubits != n) {
-        throw std::invalid_argument(
+        raise<InvalidArgument>(entry_point,
             "InitialState: the supplied state covers " +
             std::to_string(source.n_qubits) + " qubits, the circuit " +
             std::to_string(n));
@@ -914,8 +927,8 @@ FiringGuard::~FiringGuard() {
 // ----- ObservationRunner -----
 
 ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& circuit,
-                                     StateForm form)
-    : plan_(plan) {
+                                     StateForm form, std::string_view entry_point)
+    : plan_(plan), entry_point_(entry_point) {
     const int count = static_cast<int>(circuit.instructions.size());
 
     for (const auto& attachment : plan.observations.attachments()) {
@@ -948,7 +961,7 @@ ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& 
                 // fired and found nothing unless the library says so.
                 const int index = attachment.anchor.index();
                 if (index >= count) {
-                    throw std::invalid_argument(
+                    raise<InvalidArgument>(entry_point_,
                         "ObservationPlan: " + attachment.anchor.name() +
                         " does not resolve: the circuit has " +
                         std::to_string(count) + " instructions.");
@@ -963,7 +976,7 @@ ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& 
                     circuit.instructions.begin(), circuit.instructions.end(),
                     [&](const Instruction& inst) { return inst.label == label; });
                 if (!found) {
-                    throw std::invalid_argument(
+                    raise<InvalidArgument>(entry_point_,
                         "ObservationPlan: " + attachment.anchor.name() +
                         " does not resolve: no instruction in the circuit "
                         "carries that label. A transpiler pass that removed or "
@@ -991,7 +1004,7 @@ ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& 
     std::vector<Observer*> checked;
     std::vector<Observer*> dropped;
     std::unordered_map<std::string, Observer*> claimed;
-    const PreflightContext ctx{form, circuit.n_qubits, plan};
+    const PreflightContext ctx{form, circuit.n_qubits, plan, entry_point_};
 
     for (const auto& attachment : plan.observations.attachments()) {
         Observer* observer = attachment.observer.get();
@@ -1007,7 +1020,7 @@ ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& 
         if (!label.empty()) {
             const auto [it, inserted] = claimed.emplace(label, observer);
             if (!inserted) {
-                throw std::invalid_argument(
+                raise<InvalidArgument>(entry_point_,
                     "ObservationPlan: two observers write under the label '" +
                     label + "'. One of them would be unreachable in the bundle, "
                     "and which one depends on how many times each fired.");
@@ -1148,7 +1161,8 @@ void ObservationRunner::fire(const std::vector<const ObservationPlan::Attachment
                                      plan_,
                                      bundle_,
                                      phase,
-                                     budget_};
+                                     budget_,
+                                     entry_point_};
         attachment->observer->observe(ctx);
     }
 }
@@ -1218,7 +1232,8 @@ void ObservationRunner::after_instruction(int index, const Instruction& inst,
             const std::string anchor = attachment->anchor.name();
             const ObservationContext ctx{state, anchor, index, shot_, n_shots_,
                                          clbits_ ? *clbits_ : no_clbits, plan_,
-                                         bundle_, RunPhase::MidRun, budget_};
+                                         bundle_, RunPhase::MidRun, budget_,
+                                         entry_point_};
             attachment->observer->observe(ctx);
         }
     }

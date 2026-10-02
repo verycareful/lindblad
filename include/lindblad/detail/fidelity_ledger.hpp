@@ -59,16 +59,24 @@ struct StateFileAccess;
 class FidelityLedger {
 public:
     // One split: kept = Σ sigma² over the retained singular values, discarded
-    // = the weight the split threw away. A block with no weight removes none.
-    void record(double kept, double discarded) noexcept {
+    // = the weight the split threw away, unresolved = weight the split could
+    // not resolve (the Gram route's floor), which may be real or may be noise
+    // the route manufactured. The estimate leaves unresolved weight out; the
+    // bound counts it as removed, so that it stays a bound either way. A block
+    // with no weight removes none.
+    void record(double kept, double discarded, double unresolved = 0.0) noexcept {
         const double total = kept + discarded;
         const double eps = (total > 0.0) ? std::clamp(discarded / total, 0.0, 1.0)
                                          : 0.0;
         retained_ *= 1.0 - eps;
+        const double total_b = total + unresolved;
+        const double eps_b =
+            (total_b > 0.0) ? std::clamp((discarded + unresolved) / total_b, 0.0, 1.0)
+                            : 0.0;
         // 2 - 2 sqrt(1 - eps) written as 2 eps / (1 + sqrt(1 - eps)): the
         // direct form subtracts two numbers within eps of each other, which at
         // a rounding-level eps returns zero or noise instead of the distance.
-        distance_ += std::sqrt(2.0 * eps / (1.0 + std::sqrt(1.0 - eps)));
+        distance_ += std::sqrt(2.0 * eps_b / (1.0 + std::sqrt(1.0 - eps_b)));
     }
 
     // A measurement collapsed the chain. Projection renormalises the exact and

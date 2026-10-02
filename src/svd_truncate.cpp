@@ -17,12 +17,14 @@
 #include "lindblad/detail/svd_truncate.hpp"
 
 #include "lindblad/detail/eigen_backend.hpp"
+#include "lindblad/detail/report.hpp"
 #include "lindblad/detail/svd_verify.hpp"
 #include "lindblad/validation.hpp"
 
 #include <Eigen/Dense>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -78,9 +80,16 @@ double gram_validity_floor(int gd, double sigma_max) {
            sigma_max;
 }
 
+// What a rung produced: a verified factorisation, a factorisation that failed
+// verification, or none at all (the kernel declined, or no singular value was
+// finite).
+enum class Candidate { Accepted, Rejected, None };
+
 // One rung of the ladder: build the kept slice from a candidate factorisation
-// and decide whether it is trustworthy. Returns false to reject it, leaving
-// `out` untouched, so the caller can try the next route.
+// and decide whether it is trustworthy. A rejected candidate leaves `out`
+// untouched unless `keep_unverified` asks for it (SvdRejection::Ignore), in
+// which case `out` holds it, flagged used_unverified, and the result is still
+// Rejected so the caller knows what it holds.
 //
 // sigma_floor rejects values that are not trustworthy DATA at all. The direct
 // SVD passes 0: a backend SVD resolves sigmas down to ~eps*sigma_max, so every
@@ -97,11 +106,11 @@ std::string sci(double v) {
 // it, so the warning that reports a descent can say what was wrong rather than
 // only that something was.
 template <typename MatT>
-bool attempt(const MatT& mat, int rows, int cols,
-             const RealVector& S_try, const DenseMatrix& U_try,
-             const DenseMatrix& V_try, double sigma_floor,
-             int max_bond_dim, double cutoff, double m_fro_sq,
-             SvdTruncation& out, std::string& why) {
+Candidate attempt(const MatT& mat, int rows, int cols,
+                  const RealVector& S_try, const DenseMatrix& U_try,
+                  const DenseMatrix& V_try, double sigma_floor,
+                  int max_bond_dim, double cutoff, double m_fro_sq,
+                  bool keep_unverified, SvdTruncation& out, std::string& why) {
     const int md = static_cast<int>(S_try.size());
 
     // SELECT. Every bit-level-finite sigma is a candidate WHEREVER IT SITS in
@@ -158,7 +167,7 @@ bool attempt(const MatT& mat, int rows, int cols,
         }
         if (best < 0) {
             why = "no finite singular value in the spectrum";
-            return false;
+            return Candidate::None;
         }
         // The rescued sigma may have sat below sigma_floor, in which case its
         // weight is already in below_floor. It is now KEPT, so take it back out
@@ -211,24 +220,26 @@ bool attempt(const MatT& mat, int rows, int cols,
     }
 
     // VERIFY 1: kept slice bit-finite.
-    for (int i = 0; i < k; ++i)
+    bool verified = true;
+    for (int i = 0; i < k && verified; ++i) {
         if (!is_finite_strict(S_k(i))) {
             why = "a kept singular value is non-finite";
-            return false;
+            verified = false;
         }
-    for (int c = 0; c < k; ++c) {
-        for (int r = 0; r < rows; ++r) {
+    }
+    for (int c = 0; c < k && verified; ++c) {
+        for (int r = 0; r < rows && verified; ++r) {
             const auto z = U_k(r, c);
             if (!is_finite_strict(z.real()) || !is_finite_strict(z.imag())) {
                 why = "a kept left singular vector holds a non-finite entry";
-                return false;
+                verified = false;
             }
         }
-        for (int r = 0; r < cols; ++r) {
+        for (int r = 0; r < cols && verified; ++r) {
             const auto z = V_k(r, c);
             if (!is_finite_strict(z.real()) || !is_finite_strict(z.imag())) {
                 why = "a kept right singular vector holds a non-finite entry";
-                return false;
+                verified = false;
             }
         }
     }
@@ -243,37 +254,43 @@ bool attempt(const MatT& mat, int rows, int cols,
     // The residual is computed in its own strict-FP translation unit: it
     // subtracts two nearly identical matrices, and a value perturbed too small
     // would admit exactly the factorisations this rung exists to reject.
-    const double resid = svd_reconstruction_residual_sq(
-        mat.data(), rows, cols,
-        static_cast<bool>(MatT::IsRowMajor) ? MatrixOrder::RowMajor
-                                            : MatrixOrder::ColMajor,
-        U_k.data(), S_k.data(), V_k.data(), k);
-    if (!is_finite_strict(resid)) {
-        why = "the reconstruction residual is non-finite";
-        return false;
+    double resid = std::numeric_limits<double>::infinity();
+    if (verified) {
+        resid = svd_reconstruction_residual_sq(
+            mat.data(), rows, cols,
+            static_cast<bool>(MatT::IsRowMajor) ? MatrixOrder::RowMajor
+                                                : MatrixOrder::ColMajor,
+            U_k.data(), S_k.data(), V_k.data(), k);
+        if (!is_finite_strict(resid)) {
+            why = "the reconstruction residual is non-finite";
+            verified = false;
+        } else {
+            const double bwd = kBackwardErrorSlack *
+                               static_cast<double>(std::max(rows, cols)) *
+                               std::numeric_limits<double>::epsilon();
+            // The comparison is stated and made in the AMPLITUDE domain:
+            //   ‖M - U_k S_k V_k†‖_F <= sqrt(discarded) + bwd * ‖M‖_F
+            // Squaring it here would drop the cross term
+            // 2*bwd*sqrt(discarded*‖M‖_F²), which is the dominant allowance
+            // whenever truncation is heavy. That term is not optional slack:
+            // with `discarded` at the scale of ‖M‖_F², resid and discarded are
+            // two large nearly-equal quantities computed by different routes,
+            // so their difference carries FIRST-order rounding (~eps*discarded)
+            // while a squared-domain bound offers only second-order room. It
+            // vanishes as discarded -> 0, so a bond that truncated nothing is
+            // still held to the strict backward-error bound alone.
+            const double allowed = std::sqrt(discarded) + bwd * std::sqrt(m_fro_sq);
+            if (resid > allowed * allowed + 1e-18) {
+                why = "reconstruction residual " + sci(std::sqrt(resid)) +
+                      " exceeds the allowance " + sci(allowed) + " (rank " +
+                      std::to_string(k) + " of " + std::to_string(md) +
+                      ", discarded weight " + sci(discarded) + ", |M|_F " +
+                      sci(std::sqrt(m_fro_sq)) + ")";
+                verified = false;
+            }
+        }
     }
-    const double bwd = kBackwardErrorSlack *
-                       static_cast<double>(std::max(rows, cols)) *
-                       std::numeric_limits<double>::epsilon();
-    // The comparison is stated and made in the AMPLITUDE domain:
-    //   ‖M - U_k S_k V_k†‖_F <= sqrt(discarded) + bwd * ‖M‖_F
-    // Squaring it here would drop the cross term
-    // 2*bwd*sqrt(discarded*‖M‖_F²), which is the dominant allowance whenever
-    // truncation is heavy. That term is not optional slack: with `discarded` at
-    // the scale of ‖M‖_F², resid and discarded are two large nearly-equal
-    // quantities computed by different routes, so their difference carries
-    // FIRST-order rounding (~eps*discarded) while a squared-domain bound offers
-    // only second-order room. It vanishes as discarded -> 0, so a bond that
-    // truncated nothing is still held to the strict backward-error bound alone.
-    const double allowed = std::sqrt(discarded) + bwd * std::sqrt(m_fro_sq);
-    if (resid > allowed * allowed + 1e-18) {
-        why = "reconstruction residual " + sci(std::sqrt(resid)) +
-              " exceeds the allowance " + sci(allowed) + " (rank " +
-              std::to_string(k) + " of " + std::to_string(md) +
-              ", discarded weight " + sci(discarded) + ", |M|_F " +
-              sci(std::sqrt(m_fro_sq)) + ")";
-        return false;
-    }
+    if (!verified && !keep_unverified) return Candidate::Rejected;
 
     out.U = std::move(U_k);
     out.S = std::move(S_k);
@@ -283,30 +300,34 @@ bool attempt(const MatT& mat, int rows, int cols,
     out.floor_rejected_weight = below_floor;
     // Subtracting `discarded` leaves only the factorisation's own error.
     // Clamped because the two sides are computed differently and can cross by
-    // an ulp when both are dust.
+    // an ulp when both are dust. A residual that could not be measured reports
+    // as infinite.
     out.residual_excess =
-        (m_fro_sq > 0.0) ? std::max(0.0, resid - discarded) / m_fro_sq : 0.0;
-    return true;
+        !is_finite_strict(resid) ? std::numeric_limits<double>::infinity()
+        : (m_fro_sq > 0.0)       ? std::max(0.0, resid - discarded) / m_fro_sq
+                                 : 0.0;
+    out.used_unverified = !verified;
+    return verified ? Candidate::Accepted : Candidate::Rejected;
 }
 
-// One SVD rung: factorise with `method`, then SELECT and VERIFY the result.
-// Returns false, leaving `out` untouched, when the kernel reported failure or
-// the factorisation was rejected. A kernel that reported failure has left its
-// outputs unspecified, so the verify rung is not given them to judge.
+// One SVD rung: factorise with `method`, then SELECT and VERIFY the result. A
+// kernel that reported failure has left its outputs unspecified, so there is no
+// candidate to judge, or to keep: Candidate::None.
 template <typename MapT>
-bool try_kernel(const MapT& mat, int rows, int cols, MatrixOrder order,
-                SVDMethod method, int max_bond_dim, double cutoff,
-                double m_fro_sq, SvdTruncation& out, std::string& why) {
+Candidate try_kernel(const MapT& mat, int rows, int cols, MatrixOrder order,
+                     SVDMethod method, int max_bond_dim, double cutoff,
+                     double m_fro_sq, bool keep_unverified, SvdTruncation& out,
+                     std::string& why) {
     const int kdim = std::min(rows, cols);
     DenseMatrix U(rows, kdim), V(cols, kdim);
     RealVector S(kdim);
     if (!svd_thin(mat.data(), rows, cols, order, method, U.data(), S.data(),
                   V.data())) {
-        why = "the kernel reported failure";
-        return false;
+        why = "the kernel declined the block";
+        return Candidate::None;
     }
     return attempt(mat, rows, cols, S, U, V, /*sigma_floor=*/0.0, max_bond_dim,
-                   cutoff, m_fro_sq, out, why);
+                   cutoff, m_fro_sq, keep_unverified, out, why);
 }
 
 // The Gram rung: recompute through a route that shares no code with either
@@ -314,12 +335,12 @@ bool try_kernel(const MapT& mat, int rows, int cols, MatrixOrder order,
 // self-adjoint eigendecomposition, which is robust on exactly-degenerate
 // Hermitian input. sigma = sqrt(max(lambda, 0)); the partner factor is built
 // only for sigmas above the validity floor, so no tiny divisions. Returns false
-// when the candidate is rejected; throws when the eigendecomposition itself
-// fails, since there is then no candidate to judge.
+// when the candidate is rejected, and Candidate::None when the
+// eigendecomposition itself fails, since there is then no candidate to judge.
 template <typename MapT>
-bool try_gram(const MapT& mat, int rows, int cols, int max_bond_dim,
-              double cutoff, double m_fro_sq, const char* ctx,
-              SvdTruncation& out, std::string& why) {
+Candidate try_gram(const MapT& mat, int rows, int cols, int max_bond_dim,
+                   double cutoff, double m_fro_sq, bool keep_unverified,
+                   SvdTruncation& out, std::string& why) {
     const bool tall = rows >= cols;
     const Eigen::MatrixXcd G = tall ? Eigen::MatrixXcd(mat.adjoint() * mat)
                                     : Eigen::MatrixXcd(mat * mat.adjoint());
@@ -328,10 +349,8 @@ bool try_gram(const MapT& mat, int rows, int cols, int max_bond_dim,
     DenseMatrix g_evecs(gd, gd);
     if (!eigh(G.data(), gd, MatrixOrder::ColMajor, g_evals.data(),
               g_evecs.data())) {
-        throw std::runtime_error(
-            std::string(ctx) +
-            ": Gram-route eigendecomposition failed on a " +
-            std::to_string(rows) + "x" + std::to_string(cols) + " matrix");
+        why = "the Gram-route eigendecomposition failed";
+        return Candidate::None;
     }
     RealVector Sg(gd);
     for (int i = 0; i < gd; ++i) {
@@ -372,12 +391,12 @@ bool try_gram(const MapT& mat, int rows, int cols, int max_bond_dim,
     }
 
     return attempt(mat, rows, cols, Sg, Ug, Vg, floor_g, max_bond_dim, cutoff,
-                   m_fro_sq, out, why);
+                   m_fro_sq, keep_unverified, out, why);
 }
 
 template <typename MapT>
 SvdTruncation run_ladder(const MapT& mat, int rows, int cols, int max_bond_dim,
-                         double cutoff, SVDMethod method, bool rescue,
+                         double cutoff, SVDMethod method, const SvdPolicy& policy,
                          const char* ctx) {
     // The input's storage order travels with the call rather than being
     // normalised here, so a caller's block is mapped in place on both paths.
@@ -398,71 +417,142 @@ SvdTruncation run_ladder(const MapT& mat, int rows, int cols, int max_bond_dim,
             m_fro_sq += q[t].real() * q[t].real() + q[t].imag() * q[t].imag();
     }
 
+    const bool keep = policy.rejection == SvdRejection::Ignore;
+    const bool report = policy.report == SvdReport::Warn;
+
     // Rung 1: the kernel the caller selected.
     SvdTruncation out;
     std::string why;
-    if (try_kernel(mat, rows, cols, order, method, max_bond_dim, cutoff,
-                   m_fro_sq, out, why))
-        return out;
+    Candidate got = try_kernel(mat, rows, cols, order, method, max_bond_dim, cutoff,
+                               m_fro_sq, keep, out, why);
+    if (got == Candidate::Accepted) return out;
 
-    const std::string where = std::string(ctx) + ": the " + to_string(method) +
+    const std::string block = std::string("the ") + to_string(method) +
                               " factorisation of a " + std::to_string(rows) +
                               "x" + std::to_string(cols) + " block";
-    if (!rescue) {
+    const std::string where = std::string(ctx) + ": " + block;
+    // What a rung's outcome was, in the words of a warning or a refusal.
+    const auto outcome = [](Candidate c, const std::string& reason) {
+        return std::string(c == Candidate::None ? " produced nothing ("
+                                                : " failed verification (") +
+               reason + ")";
+    };
+
+    if (policy.rejection == SvdRejection::Throw) {
         // The caller asked for this kernel and no other. Stopping here is the
         // answer they chose over a tensor from a kernel they did not name.
-        throw std::runtime_error(
-            where + " failed verification (" + why + ") and svd_rescue is off; "
-            "refusing to continue with a corrupt tensor");
+        raise<RuntimeFailure>(ctx, block + outcome(got, why) +
+                                       " and svd_rejection is SvdRejection::Throw; "
+                                       "refusing to continue with it");
     }
+    if (got == Candidate::Rejected && keep) {
+        if (report) {
+            emit_warning(where + outcome(got, why) +
+                         "; used as it is, unverified, under SvdRejection::Ignore");
+        }
+        return out;
+    }
+
+    // The ladder: under Fix for any rejection, under Ignore only when the kernel
+    // produced nothing to use. Under Ignore a rung's candidate is used whether
+    // or not it verifies.
+    std::string trail = block + outcome(got, why);
 
     // Rung 2: autonne's Jacobi, an independent road to the same factorisation.
     // Pointless when it was the kernel that just failed, so that case goes
     // straight to the Gram route.
     if (method != SVDMethod::Jacobi) {
-        emit_warning(where + " failed verification (" + why +
-                     "); retrying with SVDMethod::Jacobi");
-        if (try_kernel(mat, rows, cols, order, SVDMethod::Jacobi, max_bond_dim,
-                       cutoff, m_fro_sq, out, why)) {
+        if (report) emit_warning(where + outcome(got, why) + "; retrying with SVDMethod::Jacobi");
+        got = try_kernel(mat, rows, cols, order, SVDMethod::Jacobi, max_bond_dim, cutoff,
+                         m_fro_sq, keep, out, why);
+        if (got == Candidate::Accepted || (got == Candidate::Rejected && keep)) {
             out.used_jacobi_rescue = true;
+            if (out.used_unverified && report) {
+                emit_warning(where + ": the Jacobi rescue" + outcome(got, why) +
+                             "; used as it is, unverified, under SvdRejection::Ignore");
+            }
             return out;
         }
-        emit_warning(where + ": the Jacobi rescue failed verification too (" + why +
-                     "); recomputing through the Gram route");
-    } else {
-        emit_warning(where + " failed verification (" + why +
-                     "); recomputing through the Gram route");
+        trail += "; the Jacobi rescue" + outcome(got, why);
     }
 
-    // Rung 3: the Gram route.
-    if (try_gram(mat, rows, cols, max_bond_dim, cutoff, m_fro_sq, ctx, out, why)) {
+    // Rung 3: the Gram route, only when the caller accepts it.
+    if (!policy.accept_gram) {
+        raise<RuntimeFailure>(ctx, trail +
+                                       "; the Gram route is the remaining rung and "
+                                       "svd_accept_gram is off; refusing to continue "
+                                       "with a corrupt tensor");
+    }
+    if (report) emit_warning(where + trail.substr(block.size()) +
+                             "; recomputing through the Gram route");
+    got = try_gram(mat, rows, cols, max_bond_dim, cutoff, m_fro_sq, keep, out, why);
+    if (got == Candidate::Accepted || (got == Candidate::Rejected && keep)) {
         out.used_gram_fallback = true;
+        if (out.used_unverified && report) {
+            emit_warning(where + ": the Gram route" + outcome(got, why) +
+                         "; used as it is, unverified, under SvdRejection::Ignore");
+        }
         return out;
     }
 
     // THROW. Never continue with a corrupt tensor: silent propagation is
     // exactly how this class of defect manifests.
-    throw std::runtime_error(
-        where + ": every rung failed verification, the Gram-eigendecomposition "
-        "fallback last (" + why + "); refusing to continue with a corrupt tensor");
+    raise<RuntimeFailure>(ctx, trail + "; the Gram route" + outcome(got, why) +
+                                   "; every permitted rung failed, refusing to "
+                                   "continue with a corrupt tensor");
 }
 
 } // namespace
 
 SvdTruncation svd_truncate_verified(const Complex128* data, int rows, int cols,
                                     MatrixOrder order, int max_bond_dim,
-                                    double cutoff, SVDMethod method, bool rescue,
-                                    const char* ctx) {
+                                    double cutoff, SVDMethod method,
+                                    const SvdPolicy& policy, const char* ctx) {
     // Complex128 {double real, double imag} is layout-identical to
     // std::complex<double>, so both orders map in place and neither caller pays
     // an O(rows*cols) copy to hand a block over.
     const auto* p = reinterpret_cast<const std::complex<double>*>(data);
     if (order == MatrixOrder::RowMajor) {
         Eigen::Map<const RowMajorC> mat(p, rows, cols);
-        return run_ladder(mat, rows, cols, max_bond_dim, cutoff, method, rescue, ctx);
+        return run_ladder(mat, rows, cols, max_bond_dim, cutoff, method, policy, ctx);
     }
     Eigen::Map<const ColMajorC> mat(p, rows, cols);
-    return run_ladder(mat, rows, cols, max_bond_dim, cutoff, method, rescue, ctx);
+    return run_ladder(mat, rows, cols, max_bond_dim, cutoff, method, policy, ctx);
+}
+
+void note_nondefault_svd_policy(SvdLayer layer, const SvdPolicy& policy) {
+    // One flag per layer and per setting, so each note is emitted once in the
+    // process whichever thread splits first.
+    enum Setting { Throw, Ignore, AcceptGram, Silent, SettingCount };
+    static std::atomic<bool> noted[2][SettingCount] = {};
+    const int l = layer == SvdLayer::Qubit ? 0 : 1;
+    const char* name = layer == SvdLayer::Qubit ? "the qubit MPS" : "the qudit MPS";
+    const auto once = [&](Setting setting, const char* text) {
+        if (!noted[l][setting].exchange(true)) {
+            emit_warning(std::string("note: ") + name + " has " + text);
+        }
+    };
+    if (policy.rejection == SvdRejection::Throw) {
+        once(Throw, "svd_rejection = SvdRejection::Throw, not the default (Fix): a "
+                    "factorisation that fails verification ends the run instead of "
+                    "being repaired. Be alert to it.");
+    }
+    if (policy.rejection == SvdRejection::Ignore) {
+        once(Ignore, "svd_rejection = SvdRejection::Ignore, not the default (Fix): a "
+                     "factorisation that fails verification is used as it is, so the "
+                     "state can be wrong with nothing further to say so. Be alert to "
+                     "the results.");
+    }
+    if (policy.accept_gram) {
+        once(AcceptGram, "svd_accept_gram on, not the default: the ladder may end on "
+                         "the Gram route, which drops singular values below its "
+                         "validity floor. Be alert to floor_rejected_weight().");
+    }
+    if (policy.report == SvdReport::Silent) {
+        once(Silent, "svd_report = SvdReport::Silent, not the default (Warn): repaired "
+                     "and unverified factorisations are counted but not reported. Be "
+                     "alert to the counters.");
+    }
 }
 
 } // namespace detail

@@ -20,9 +20,11 @@ namespace detail {
 // =============================================================================
 // preflight_instructions - what the circuit alone decides, before the first gate
 // =============================================================================
-// One pass over a circuit before any state is touched, refusing everything the
+// A check over a circuit before any state is touched, refusing everything the
 // instructions decide on their own, so none of it can fail a run partway:
 //
+//   - a qubit, classical bit or condition bit index outside its register
+//     (OutOfRange), checked over the whole circuit before anything else
 //   - an unbound parameterised gate (a PARAM_* type, or symbolic expressions
 //     bind_parameters() has not resolved)
 //   - a gate naming the wrong number of qubits for its type, or one qubit
@@ -32,9 +34,8 @@ namespace detail {
 //   - a PERMUTATION whose map is not a bijection of [0, 2^k)
 //   - whatever `backend_check` refuses, given its reason (empty = accepted)
 //
-// Each refusal is an InvalidArgument whose message starts with `entry_point`
-// and names the instruction: its index, gate and qubits. Operand indices are
-// the caller's validate_operands(), which runs first.
+// Each refusal other than an index is an InvalidArgument. Every message starts
+// with `entry_point` and names the instruction: its index, gate and qubits.
 void preflight_instructions(
     const QuantumCircuit& circuit, const char* entry_point,
     const std::function<std::string(const Instruction&, int n_qubits)>& backend_check = {});

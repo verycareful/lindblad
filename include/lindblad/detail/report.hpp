@@ -65,10 +65,10 @@ template <class E>
 bool respond(Response policy, RunPhase phase, std::string_view entry_point,
              std::string_view what, std::optional<FailurePoint> where = {});
 
-// The failure path's access to Error::rethrow_saved.
+// The failure path's access to Error::rethrow_amended.
 struct FailurePathAccess {
-    [[noreturn]] static void rethrow_saved(const Error& e, const std::filesystem::path& path) {
-        e.rethrow_saved(path);
+    [[noreturn]] static void rethrow_amended(const Error& e, const Amendment& a) {
+        e.rethrow_amended(a);
     }
 };
 

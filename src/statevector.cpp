@@ -35,12 +35,12 @@ namespace {
 inline int validated_n_qubits(int n, QubitLimit limit) {
     const int ceiling = max_statevector_qubits(limit);
     if (n < 1 || n > ceiling) {
-        std::string msg = "Statevector: n_qubits must be in [1, " +
-                          std::to_string(ceiling) + "], got " + std::to_string(n);
+        std::string msg = "n_qubits must be in [1, " + std::to_string(ceiling) +
+                          "], got " + std::to_string(n);
         if (limit == QubitLimit::Enforce && n > ceiling && n <= LIFTED_MAX_QUBITS)
             msg += "; QubitLimit::Lift raises the ceiling to " +
                    std::to_string(LIFTED_MAX_QUBITS);
-        throw std::invalid_argument(msg);
+        detail::raise<InvalidArgument>("Statevector", msg);
     }
     return n;
 }
@@ -243,9 +243,8 @@ void Statevector::normalize() {
     // and the two states this rejects (zero, and non-finite) are precisely the
     // ones where dividing by the norm produces garbage rather than a state.
     if (!is_normalizable(n)) {
-        throw std::runtime_error(
-            "Statevector::normalize: no norm to divide out; the state is zero "
-            "or non-finite");
+        detail::raise<RuntimeFailure>("Statevector::normalize",
+            "no norm to divide out; the state is zero or non-finite");
     }
     const double inv_n = 1.0 / n;
 

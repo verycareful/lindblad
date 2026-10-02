@@ -83,9 +83,8 @@ void DensityMatrix::normalize() {
     // The two states rejected here, zero and non-finite, are the ones where
     // dividing by the trace yields garbage rather than a density matrix.
     if (!is_normalizable(std::abs(tr))) {
-        throw std::runtime_error(
-            "DensityMatrix::normalize: no trace to divide out; it is zero or "
-            "non-finite");
+        detail::raise<RuntimeFailure>("DensityMatrix::normalize",
+            "no trace to divide out; it is zero or non-finite");
     }
     const double inv = 1.0 / tr;
     for (auto& z : data) {
@@ -907,11 +906,9 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             one_matrix, options.max_memory_mb, "DensityMatrixSimulator::run");
         auto t_start = std::chrono::high_resolution_clock::now();
 
-        // Pre-flight: reject any out-of-range operand index up front so the
-        // failure surfaces through Result rather than reaching a kernel.
-        circuit_in.validate_operands();
-        // Everything the instructions decide on their own, before any state is
-        // touched, each refusal naming its instruction.
+        // Everything the instructions decide on their own, operand indices
+        // first, before any state is touched, each refusal naming its
+        // instruction.
         detail::preflight_instructions(circuit_in, "DensityMatrixSimulator::run");
         // Under Repair::Attempt a repaired copy is executed and the caller's
         // circuit is left exactly as it was handed over; Repair::None binds
@@ -1044,7 +1041,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                             // the channel. Handed a channel of the wrong width
                             // it reads past the operators it was given and
                             // produces a density matrix that is entirely NaN,
-                            // with a run that reports success. The operator size
+                            // returned as if it were an answer. The operator size
                             // is the authority here rather than the channel's
                             // own n_qubits, since a hand-built channel can
                             // disagree with itself.
@@ -1052,14 +1049,20 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                                 (std::size_t{1} << ek) * (std::size_t{1} << ek);
                             for (const auto& K : ge.channel.operators) {
                                 if (K.size() != expected) {
-                                    throw std::invalid_argument(
-                                        "NoiseModel: the channel attached to '" +
-                                        inst.gate_name() + "' acts on " +
-                                        std::to_string(ge.channel.n_qubits) +
-                                        " qubit(s), but it is being applied to " +
-                                        std::to_string(ek) +
-                                        ". A channel and the gate it is attached "
-                                        "to have to cover the same qubits.");
+                                    FailurePoint point;
+                                    point.instruction = static_cast<int>(ii);
+                                    point.gate = inst.gate_name();
+                                    point.qubits = inst.qubits;
+                                    detail::raise<InvalidArgument>(
+                                        "DensityMatrixSimulator::run",
+                                        "the noise model's channel attached to '" +
+                                            inst.gate_name() + "' acts on " +
+                                            std::to_string(ge.channel.n_qubits) +
+                                            " qubit(s), but it is being applied to " +
+                                            std::to_string(ek) +
+                                            ". A channel and the gate it is attached "
+                                            "to have to cover the same qubits.",
+                                        point);
                                 }
                             }
 
@@ -1108,7 +1111,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
 
         // Anchors resolve against the circuit before any state is touched, so
         // an anchor that cannot fire stops the run here.
-        runner.emplace(plan, circuit, StateForm::DensityMatrix);
+        runner.emplace(plan, circuit, StateForm::DensityMatrix, "DensityMatrixSimulator::run");
         runner->set_bundle(&result.observations);
         detail::ObservationRunner* watcher = runner->active() ? &*runner : nullptr;
         // Everything the run allocates beyond its matrix is charged here before
@@ -1149,7 +1152,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             std::size_t prefix_end = 0;
             std::unique_ptr<DensityMatrix> snapshot;
             if (reuse) {
-                detail::apply_initial_state(plan, dm);
+                detail::apply_initial_state(plan, dm, "DensityMatrixSimulator::run");
                 using GT = Instruction::GateType;
                 while (prefix_end < n_inst) {
                     const auto& inst = circuit.instructions[prefix_end];
@@ -1168,7 +1171,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 if (snapshot) {
                     dm = *snapshot;
                 } else {
-                    detail::apply_initial_state(plan, dm);
+                    detail::apply_initial_state(plan, dm, "DensityMatrixSimulator::run");
                 }
                 clreg.assign(n_clbits, 0);
                 runner->begin_shot(shot, clreg);
@@ -1277,12 +1280,11 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                     "return; a matrix or channel let through by ValidationOptions Warn "
                     "or Ignore can do this");
             }
-            result.final_state = std::move(dm);
 
         } else {
             // Standard single-pass mode: gates applied once, MEASURE deferred.
             DensityMatrix& dm = dm_slot.emplace(circuit.n_qubits);
-            detail::apply_initial_state(plan, dm);
+            detail::apply_initial_state(plan, dm, "DensityMatrixSimulator::run");
 
             // Nothing before the deferred measurements is stochastic, so this
             // one evolution describes every shot and the observers fire once.
@@ -1372,17 +1374,20 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                     "return; a matrix or channel let through by ValidationOptions Warn "
                     "or Ignore can do this");
             }
-            result.final_state = std::move(dm);
         }
 
         // Flushes every labelled observer into result.observations, before the
         // timer stops: collecting what was observed is part of the work.
         runner->end_run();
 
+        // The matrix leaves its slot only once nothing after it can fail, so a
+        // failure in end_run() still finds it there for the failed-run record.
+        result.final_state = std::move(*dm_slot);
+        dm_slot.reset();
+
         auto t_end = std::chrono::high_resolution_clock::now();
         result.simulation_time_seconds =
             std::chrono::duration<double>(t_end - t_start).count();
-        result.success = true;
 
     } catch (...) {
         // The failure path, as in the statevector backend: what the run had

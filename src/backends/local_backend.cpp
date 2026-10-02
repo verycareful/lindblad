@@ -82,11 +82,12 @@ BackendResult LocalBackend::run(
             break;
         }
         default:
-            detail::raise_internal("LocalBackend::run",
-                                   "the dispatcher reached an unknown simulator type");
+            // An out-of-range SimType can only come from the caller's config.
+            detail::raise<InvalidArgument>("LocalBackend::run",
+                "Config::simulator holds " + std::to_string(static_cast<int>(sim_type)) +
+                    ", which is not one of the LocalBackend::SimType values");
     }
 
-    result.success = true;
     return result;
 }
 

@@ -10,7 +10,9 @@
 #include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/report.hpp"
 
+#include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -29,8 +31,17 @@ FailurePoint point_of(const Instruction& inst, std::size_t index) {
     return p;
 }
 
-bool is_unbound(const Instruction& inst) {
-    return inst.is_parameterised() || !inst.param_exprs.empty();
+// Why a gate's parameters are not yet numbers, or empty when they are. A
+// PARAM_* gate is resolved by assign_parameters(); symbolic expressions by
+// bind_parameters().
+std::string unbound_reason(const Instruction& inst) {
+    if (inst.is_parameterised()) {
+        return "the gate has an unbound parameter; call assign_parameters() first";
+    }
+    if (!inst.param_exprs.empty()) {
+        return "the gate's parameters are symbolic expressions; call bind_parameters() first";
+    }
+    return {};
 }
 
 // What a gate type reads from its instruction: every kernel indexes qubits[0..]
@@ -68,6 +79,7 @@ Shape shape_of(GT type) {
         case GT::CCX: case GT::CCZ: case GT::CSWAP: case GT::RCCX:
             return {3, 0};
         case GT::MEASURE: case GT::RESET:
+            return {1, 0};
         case GT::UNITARY: case GT::MCX: case GT::PERMUTATION:
             return {Shape::AT_LEAST_ONE, 0};
         case GT::MCP:
@@ -82,9 +94,11 @@ Shape shape_of(GT type) {
 }
 
 // The widest a UNITARY or a PERMUTATION can be and still be indexed: a
-// matrix's (2^k)^2 entries fit a size_t up to k = 31, and a map's images are
-// ints, which address [0, 2^31).
-constexpr std::size_t MAX_STRUCTURED_WIDTH = 31;
+// matrix's (2^k)^2 entries must fit a size_t, so 2k stays below its width, and
+// a map's images are ints, so 2^k may not pass int's range.
+constexpr std::size_t MAX_STRUCTURED_WIDTH =
+    std::min<std::size_t>((std::numeric_limits<std::size_t>::digits - 1) / 2,
+                          static_cast<std::size_t>(std::numeric_limits<int>::digits));
 
 std::string plural(std::size_t n, const char* noun) {
     return std::to_string(n) + " " + noun + (n == 1 ? "" : "s");
@@ -95,13 +109,39 @@ std::string plural(std::size_t n, const char* noun) {
 void preflight_instructions(
     const QuantumCircuit& circuit, const char* entry_point,
     const std::function<std::string(const Instruction&, int)>& backend_check) {
+    // Every index first, over the whole circuit, so a register mistake is the
+    // failure reported whatever else the circuit gets wrong.
+    for (std::size_t i = 0; i < circuit.instructions.size(); ++i) {
+        const Instruction& inst = circuit.instructions[i];
+        for (const int q : inst.qubits) {
+            if (q < 0 || q >= circuit.n_qubits) {
+                raise<OutOfRange>(entry_point,
+                    "qubit index " + std::to_string(q) + " out of range [0, " +
+                        std::to_string(circuit.n_qubits) + ")",
+                    point_of(inst, i));
+            }
+        }
+        for (const int c : inst.clbits) {
+            if (c < 0 || c >= circuit.n_clbits) {
+                raise<OutOfRange>(entry_point,
+                    "classical bit index " + std::to_string(c) + " out of range [0, " +
+                        std::to_string(circuit.n_clbits) + ")",
+                    point_of(inst, i));
+            }
+        }
+        if (inst.condition_clbit >= circuit.n_clbits) {
+            raise<OutOfRange>(entry_point,
+                "the condition's classical bit index " + std::to_string(inst.condition_clbit) +
+                    " out of range [0, " + std::to_string(circuit.n_clbits) + ")",
+                point_of(inst, i));
+        }
+    }
+
     for (std::size_t i = 0; i < circuit.instructions.size(); ++i) {
         const Instruction& inst = circuit.instructions[i];
 
-        if (is_unbound(inst)) {
-            raise<InvalidArgument>(entry_point,
-                "the gate has an unbound parameter; call assign_parameters() first",
-                point_of(inst, i));
+        if (const std::string reason = unbound_reason(inst); !reason.empty()) {
+            raise<InvalidArgument>(entry_point, reason, point_of(inst, i));
         }
 
         const Shape shape = shape_of(inst.type);
@@ -153,7 +193,7 @@ void preflight_instructions(
             const std::size_t rows = std::size_t{1} << k;
             if (inst.matrix.size() != rows * rows) {
                 raise<InvalidArgument>(entry_point,
-                    "matrix size mismatch: the UNITARY acts on " + plural(k, "qubit") +
+                    "the UNITARY acts on " + plural(k, "qubit") +
                         ", so its matrix must have " +
                         std::to_string(rows * rows) + " entries; it has " +
                         std::to_string(inst.matrix.size()),

@@ -216,7 +216,7 @@ bool AmplitudeObserver::preflight(const PreflightContext& ctx) {
     if (dim != 0) {
         for (const std::size_t index : indices_) {
             if (index >= dim) {
-                throw std::invalid_argument(
+                detail::raise<InvalidArgument>(ctx.entry_point,
                     "AmplitudeObserver: index " + std::to_string(index) +
                     " is outside a " + std::to_string(dim) +
                     " amplitude state");
@@ -235,7 +235,7 @@ void AmplitudeObserver::observe(const ObservationContext& ctx) {
         const Statevector& sv = ctx.state.statevector();
         for (const std::size_t index : indices_) {
             if (index >= sv.dimension()) {
-                throw std::invalid_argument(
+                detail::raise<InvalidArgument>(ctx.entry_point,
                     "AmplitudeObserver: index " + std::to_string(index) +
                     " is outside a " + std::to_string(sv.dimension()) +
                     " amplitude state");
@@ -247,7 +247,7 @@ void AmplitudeObserver::observe(const ObservationContext& ctx) {
         if (!dense) return;
         for (const std::size_t index : indices_) {
             if (index >= dense->dimension()) {
-                throw std::invalid_argument(
+                detail::raise<InvalidArgument>(ctx.entry_point,
                     "AmplitudeObserver: index " + std::to_string(index) +
                     " is outside a " + std::to_string(dense->dimension()) +
                     " amplitude state");
@@ -273,7 +273,8 @@ bool ExpectationObserver::preflight(const PreflightContext& ctx) {
     // The observable was fixed at construction and the register when the
     // circuit was written, so a width that disagrees is wrong before anything
     // runs. Every firing still checks against the state it is handed.
-    detail::check_observable(observable_, ctx.n_qubits, "ExpectationObserver");
+    detail::check_observable(observable_, ctx.n_qubits, "ExpectationObserver", "state",
+                             ctx.entry_point);
     return Observer::preflight(ctx);
 }
 
@@ -295,7 +296,7 @@ void ExpectationObserver::observe(const ObservationContext& ctx) {
             // ever built.
             const StabilizerState& tableau = ctx.state.stabilizer();
             detail::check_observable(observable_, tableau.n_qubits,
-                                           "ExpectationObserver");
+                                     "ExpectationObserver", "state", ctx.entry_point);
             for (const PauliString& term : observable_.terms) {
                 value += term.coeff.real *
                          static_cast<double>(tableau.expectation_pauli(term.pauli));
@@ -381,7 +382,7 @@ const std::vector<int>& ClassicalRegisterObserver::clbits(std::size_t k) const {
 bool BondDimensionObserver::preflight(const PreflightContext& ctx) {
     if (ctx.form == StateForm::MPS) return true;
     return detail::refuse_observation(
-        ctx.plan.options, RunPhase::BeforeFirstGate,
+        ctx,
         std::string("BondDimensionObserver asks for bond dimensions from a "
                     "backend holding a ") + to_string(ctx.form) +
         ", which has no bonds to report.");
@@ -390,7 +391,7 @@ bool BondDimensionObserver::preflight(const PreflightContext& ctx) {
 void BondDimensionObserver::observe(const ObservationContext& ctx) {
     if (ctx.state.form() != StateForm::MPS) {
         detail::refuse_observation(
-            ctx.plan.options, ctx.phase,
+            ctx,
             std::string("BondDimensionObserver asks for bond dimensions from a "
                         "backend holding a ") + to_string(ctx.state.form()) +
             ", which has no bonds to report.");
@@ -414,7 +415,7 @@ const std::vector<int>& BondDimensionObserver::bond_dimensions(std::size_t k) co
 bool TruncationObserver::preflight(const PreflightContext& ctx) {
     if (ctx.form == StateForm::MPS) return true;
     return detail::refuse_observation(
-        ctx.plan.options, RunPhase::BeforeFirstGate,
+        ctx,
         std::string("TruncationObserver asks for discarded weight from a "
                     "backend holding a ") + to_string(ctx.form) +
         ", which discards nothing.");
@@ -423,7 +424,7 @@ bool TruncationObserver::preflight(const PreflightContext& ctx) {
 void TruncationObserver::observe(const ObservationContext& ctx) {
     if (ctx.state.form() != StateForm::MPS) {
         detail::refuse_observation(
-            ctx.plan.options, ctx.phase,
+            ctx,
             std::string("TruncationObserver asks for discarded weight from a "
                         "backend holding a ") + to_string(ctx.state.form()) +
             ", which discards nothing.");
@@ -452,8 +453,8 @@ bool charge_bytes(const ObservationContext& ctx, std::size_t bytes) {
 // and under Warn or Ignore the observer records nothing and the run goes on.
 // Returns false whenever it returns.
 bool eigensolver_failed(const ObservationContext& ctx, const char* on) {
-    return detail::respond(ctx.plan.options.response, ctx.phase, "EntropyObserver",
-                           std::string("the eigensolver failed on ") + on);
+    return detail::respond(ctx.plan.options.response, ctx.phase, ctx.entry_point,
+                           std::string("EntropyObserver: the eigensolver failed on ") + on);
 }
 
 // Entropy in bits from a spectrum that need not be normalised. Weights at or
@@ -485,16 +486,18 @@ double entropy_bits(std::vector<double> weights, double order) {
 }
 
 // The qubits NOT in region, ascending.
-std::vector<int> complement_of(const std::vector<int>& region, int n_qubits) {
+// `entry_point` is the run() asking, which a refusal starts with.
+std::vector<int> complement_of(const std::vector<int>& region, int n_qubits,
+                               std::string_view entry_point) {
     std::vector<bool> named(static_cast<std::size_t>(n_qubits), false);
     for (const int q : region) {
         if (q < 0 || q >= n_qubits) {
-            throw std::invalid_argument(
+            detail::raise<InvalidArgument>(entry_point,
                 "EntropyObserver: qubit " + std::to_string(q) +
                 " is outside a " + std::to_string(n_qubits) + " qubit register");
         }
         if (named[static_cast<std::size_t>(q)]) {
-            throw std::invalid_argument(
+            detail::raise<InvalidArgument>(entry_point,
                 "EntropyObserver: qubit " + std::to_string(q) +
                 " is named twice; a cut has each qubit on one side of it");
         }
@@ -761,9 +764,9 @@ std::optional<std::vector<double>> mps_bond_spectrum(const ObservationContext& c
     }
 
     if (gl_dim != gr_dim) {
-        detail::raise_internal("EntropyObserver",
-            "the MPS bond dimensions on the two sides of the cut disagree, "
-            "which means the chain is malformed");
+        detail::raise_internal(ctx.entry_point,
+            "EntropyObserver: the MPS bond dimensions on the two sides of the cut "
+            "disagree, which means the chain is malformed");
     }
 
     std::vector<Cplx> a_matrix(gl.size());
@@ -848,9 +851,9 @@ bool EntropyObserver::preflight(const PreflightContext& ctx) {
     // depends on the cut: a prefix or suffix of an MPS reads the bond spectrum
     // and never densifies, while any other cut falls back to the amplitudes.
     // Refusing the dense route now would refuse cuts that never need it.
-    const std::vector<int> rest = complement_of(region_, ctx.n_qubits);
+    const std::vector<int> rest = complement_of(region_, ctx.n_qubits, ctx.entry_point);
     if (rest.empty()) {
-        throw std::invalid_argument(
+        detail::raise<InvalidArgument>(ctx.entry_point,
             "EntropyObserver: the cut names every qubit, so there is no other "
             "side for the state to be entangled with");
     }
@@ -859,9 +862,9 @@ bool EntropyObserver::preflight(const PreflightContext& ctx) {
 
 void EntropyObserver::observe(const ObservationContext& ctx) {
     const int n = ctx.state.n_qubits();
-    const std::vector<int> rest = complement_of(region_, n);
+    const std::vector<int> rest = complement_of(region_, n, ctx.entry_point);
     if (rest.empty()) {
-        throw std::invalid_argument(
+        detail::raise<InvalidArgument>(ctx.entry_point,
             "EntropyObserver: the cut names every qubit, so there is no other "
             "side for the state to be entangled with");
     }

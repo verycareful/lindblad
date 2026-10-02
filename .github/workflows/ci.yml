@@ -136,6 +136,11 @@ jobs:
 
       - name: Test
         shell: bash
+        # A test that fails a run on purpose after its first gate saves that
+        # run, as every failed run is saved by default; the folders go to the
+        # runner's temporary directory, not its state directory.
+        env:
+          XDG_STATE_HOME: ${{ runner.temp }}/lindblad-state
         run: ctest --test-dir build --output-on-failure
 
   # Windows, on request only: tick `run_windows` when dispatching. Its own job
@@ -214,6 +219,11 @@ jobs:
 
       - name: Test
         shell: bash
+        # A test that fails a run on purpose after its first gate saves that
+        # run, as every failed run is saved by default; the folders go to the
+        # runner's temporary directory, not its local application data.
+        env:
+          LOCALAPPDATA: ${{ runner.temp }}\lindblad-state
         run: ctest --test-dir build --output-on-failure
 
   # Repository hygiene. No compiler, no dependencies, seconds to run.
@@ -271,6 +281,10 @@ jobs:
         run: cmake --build build-cov --parallel -- -k 0
 
       - name: Test
+        # As in build-test: saved failed runs go to the runner's temporary
+        # directory.
+        env:
+          XDG_STATE_HOME: ${{ runner.temp }}/lindblad-state
         run: ctest --test-dir build-cov --output-on-failure
 
       # --gcov-executable must match the compiler: gcov 14 (the Ubuntu 24.04

@@ -19,10 +19,11 @@ Fields:
 
 - `counts`: bitstring → count histogram (executed shots)
 - `simulation_time_seconds`: wall-clock execution time
-- `success`, `error_message`: `true` and empty on every result `run()`
-  returns. A run that fails throws instead (see [Failures](failures.md))
 - `backend_name`: name of simulator used (`"lindblad_local_simulator"`)
 - `shots`: number of samples collected
+
+A run that fails throws rather than returning a result (see
+[Failures](failures.md)), so every result `run()` returns is an answer.
 
 ## `SimType` Enum
 

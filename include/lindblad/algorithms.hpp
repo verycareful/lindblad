@@ -881,7 +881,7 @@ public:
 
     // Result returned by run().
     struct Result {
-        backends::BackendResult backend_result;  // counts, timing, success flag
+        backends::BackendResult backend_result;  // counts and timing
         int n_qubits;
         // true iff the built circuit contains only Clifford-group gates.
         // (exact QFT: true only for n ≤ 2; AQFT(m=1): always true)
@@ -1057,7 +1057,9 @@ public:
     );
 
     // Run the period-finding circuit on backend and recover r = ord_N(a)
-    // via continued-fraction expansion of the measured phase. Returns 0 on failure.
+    // via continued-fraction expansion of the measured phase. Returns 0 when no
+    // convergent of the measured phase is the order; a run that fails throws
+    // through, as backend.run() does.
     static uint64_t find_order(
         uint64_t a, uint64_t N, int n_eval,
         backends::LocalBackend& backend,

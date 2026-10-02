@@ -688,14 +688,13 @@ Statevector StabilizerState::to_statevector(QubitLimit limit) const {
     // have already been paid for.
     const int ceiling = max_statevector_qubits(limit);
     if (N < 0 || N > ceiling) {
-        std::string msg = "StabilizerState::to_statevector: a dense state of n = " +
-                          std::to_string(N) + " qubits is outside [0, " +
-                          std::to_string(ceiling) + "]";
+        std::string msg = "a dense state of n = " + std::to_string(N) +
+                          " qubits is outside [0, " + std::to_string(ceiling) + "]";
         if (limit == QubitLimit::Enforce && N > ceiling && N <= LIFTED_MAX_QUBITS) {
             msg += "; QubitLimit::Lift raises the ceiling to " +
                    std::to_string(LIFTED_MAX_QUBITS);
         }
-        throw std::invalid_argument(msg);
+        detail::raise<InvalidArgument>("StabilizerState::to_statevector", msg);
     }
     const std::size_t dim = std::size_t{1} << N;
 
@@ -1461,11 +1460,8 @@ CliffordSimulator::Result CliffordSimulator::run(
     using GT = Instruction::GateType;
     ScopedWarningFlush flush_on_exit;
     detail::check_circuit_has_qubits(circuit_in.n_qubits, "CliffordSimulator::run");
-    // Pre-flight: reject any out-of-range operand index up front (this backend
-    // surfaces errors by throwing), then everything the instructions decide on
-    // their own, including every gate with no tableau form, before any state
-    // is touched.
-    circuit_in.validate_operands();
+    // Everything the instructions decide on their own, operand indices first,
+    // including every gate with no tableau form, before any state is touched.
     detail::preflight_instructions(
         circuit_in, "CliffordSimulator::run",
         [](const Instruction& inst, int) { return clifford_rejection(inst); });
@@ -1492,6 +1488,9 @@ CliffordSimulator::Result CliffordSimulator::run(
                                      shots, plan);
     std::optional<detail::ObservationRunner> runner;
     std::optional<StabilizerState> base_slot;
+    // Whether base_slot holds the state the run is evolving. It does not while
+    // the bit-sliced gate pass runs, which evolves a column layout instead.
+    bool base_is_state = false;
     std::optional<StabilizerState> start_slot;
     std::optional<StabilizerState> state_slot;
     bool prefix_running = false;
@@ -1510,15 +1509,16 @@ CliffordSimulator::Result CliffordSimulator::run(
         // rejected rather than rounded to the nearest one whatever calls it.
         auto quarter_turn_or_throw = [](const Instruction& in) {
             if (in.params.empty()) {
-                throw std::runtime_error(
-                    "CliffordSimulator: " + in.gate_name() + " carries no angle parameter");
+                detail::raise_internal("CliffordSimulator::run",
+                    in.gate_name() + " carries no angle parameter past the pass "
+                    "before the first gate");
             }
             const int k = clifford_quarter_turn(in.params[0]);
             if (k < 0) {
-                throw std::runtime_error(
-                    "CliffordSimulator: " + in.gate_name() + "(" +
-                    std::to_string(in.params[0]) +
-                    ") is not Clifford. Only multiples of π/2 are supported.");
+                detail::raise_internal("CliffordSimulator::run",
+                    in.gate_name() + "(" + std::to_string(in.params[0]) +
+                    ") reached the tableau past the pass before the first gate, "
+                    "which refuses an angle that is not a multiple of π/2");
             }
             return k;
         };
@@ -1638,9 +1638,10 @@ CliffordSimulator::Result CliffordSimulator::run(
                     // the first gate refuses every gate that would land here, so
                     // this is the dispatcher's own guard and fires only if that
                     // classification and this switch ever disagree.
-                    throw std::invalid_argument(
-                        "CliffordSimulator: gate '" + inst.gate_name() +
-                        "' is not supported by the tableau backend");
+                    detail::raise_internal("CliffordSimulator::run",
+                        "gate '" + inst.gate_name() + "' reached the tableau dispatcher "
+                        "past the pass before the first gate, which refuses every gate "
+                        "with no tableau form");
             }
         };
 
@@ -1658,7 +1659,7 @@ CliffordSimulator::Result CliffordSimulator::run(
 
         // Anchors resolve against the circuit before any state is touched, so an
         // anchor that cannot fire stops the run here.
-        runner.emplace(plan, circuit, StateForm::Stabilizer);
+        runner.emplace(plan, circuit, StateForm::Stabilizer, "CliffordSimulator::run");
         runner->set_bundle(&result.observations);
         detail::ObservationRunner* watcher = runner->active() ? &*runner : nullptr;
         // Everything the run allocates beyond its tableaux is charged here before
@@ -1684,13 +1685,14 @@ CliffordSimulator::Result CliffordSimulator::run(
             // single transpose afterwards buys back the row-major layout that
             // measurement, the outcome slab and the returned state all read.
             StabilizerState& base = base_slot.emplace(circuit.n_qubits);
+            base_is_state = harnessed;
             if (harnessed) {
                 // Row-major, because the bit-sliced layout is not a state an
                 // observer can be handed and a supplied initial state has no
                 // column form to be seeded into. One deterministic pass serves
                 // every shot, so the observers fire once, which is what describes
                 // all of them.
-                detail::apply_initial_state(plan, base);
+                detail::apply_initial_state(plan, base, "CliffordSimulator::run");
                 const StateView view(StateForm::Stabilizer, &base, circuit.n_qubits);
                 // Named, not a temporary: begin_shot keeps a pointer to it for the
                 // whole shot so observers read the register as it stands.
@@ -1725,6 +1727,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                     apply_gate(cols, inst);
                 }
                 base = cols.to_state();
+                base_is_state = true;
             }
             failure.leave_instructions();
 
@@ -1858,7 +1861,7 @@ CliffordSimulator::Result CliffordSimulator::run(
         std::size_t prefix_end = 0;
         StabilizerState& start = start_slot.emplace(circuit.n_qubits);
         if (reuse) {
-            detail::apply_initial_state(plan, start);
+            detail::apply_initial_state(plan, start, "CliffordSimulator::run");
             prefix_running = true;
             while (prefix_end < circuit.instructions.size()) {
                 const Instruction& inst = circuit.instructions[prefix_end];
@@ -1877,7 +1880,7 @@ CliffordSimulator::Result CliffordSimulator::run(
             failure.set_shot(s);
             StabilizerState& state =
                 state_slot.emplace(reuse ? start : StabilizerState(circuit.n_qubits));
-            if (!reuse) detail::apply_initial_state(plan, state);
+            if (!reuse) detail::apply_initial_state(plan, state, "CliffordSimulator::run");
             std::vector<int> clreg(n_clbits, 0);
 
             const StateView view(StateForm::Stabilizer, &state, circuit.n_qubits);
@@ -1926,11 +1929,15 @@ CliffordSimulator::Result CliffordSimulator::run(
                     record(reg);
                 }
             }
-            result.final_state = std::move(state);
-            state_slot.reset();
         }
 
         runner->end_run();
+
+        // The last trajectory's tableau leaves its slot only once nothing after
+        // it can fail, so a failure in end_run() still finds it there for the
+        // failed-run record. trajectories >= 1, so the slot is always filled.
+        result.final_state = std::move(*state_slot);
+        state_slot.reset();
         return result;
     } catch (...) {
         // The failure path, as in the statevector backend: what the run had
@@ -1954,7 +1961,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                 state = std::move(*state_slot);
             } else if (prefix_running && start_slot) {
                 state = std::move(*start_slot);
-            } else if (base_slot) {
+            } else if (base_slot && base_is_state) {
                 state = std::move(*base_slot);
             }
         }

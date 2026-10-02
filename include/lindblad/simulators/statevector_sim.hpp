@@ -78,11 +78,6 @@ public:
         std::unordered_map<std::string, int> counts;  // if measured
         std::vector<double> expectation_values;        // if observables requested
         double simulation_time_seconds = 0.0;
-        // true and empty on every result a run returns: a run that fails
-        // throws instead, and leaves what it had computed in a FailedRun
-        // (failed_run.hpp).
-        bool success = true;
-        std::string error_message;
 
         // Whatever the run's labelled observers collected. Empty unless the
         // RunPlan attached observers carrying labels.

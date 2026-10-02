@@ -82,9 +82,10 @@ public:
 };
 
 struct PreflightContext {
-    StateForm      form;      // what this backend holds natively
-    int            n_qubits;  // the register the circuit runs on
-    const RunPlan& plan;      // the policy in force
+    StateForm        form;              // what this backend holds natively
+    int              n_qubits;          // the register the circuit runs on
+    const RunPlan&   plan;              // the policy in force
+    std::string_view entry_point = {};  // the run() asking, e.g. "MPSSimulator::run"
 };
 ```
 
@@ -97,11 +98,14 @@ which cannot work is refused before the run rather than on the first firing. It
 is called once even when the observer is attached to several anchors.
 
 Return `false` to say this observer can never produce anything on this run,
-having delivered the refusal through `response`; the runner then drops it, so it
+having delivered the refusal through `response` with
+`detail::refuse_observation(ctx, message)`; the runner then drops it, so it
 costs nothing per anchor afterwards. Throw instead when the caller made a
 mistake, such as naming an amplitude outside the register: no policy softens
-that, and reporting it early costs them nothing. The default returns `true`, so
-an observer with nothing to decide early need not implement it.
+that, and reporting it early costs them nothing. Raise it as
+`lindblad::detail::raise<InvalidArgument>(ctx.entry_point, message)` so the
+message starts with the run, as every other refusal does. The default returns
+`true`, so an observer with nothing to decide early need not implement it.
 
 `label` is the bundle key this observer writes under. Declaring it on the base
 lets the runner see two observers claiming one label before the run instead of
@@ -119,6 +123,7 @@ struct ObservationContext {
     ObservationBundle*      bundle;             // may be null
     RunPhase                phase = RunPhase::MidRun;
     detail::RunBudget*      budget = nullptr;   // the run's memory budget
+    std::string_view        entry_point = {};   // the run() that is firing
 };
 ```
 
@@ -127,11 +132,15 @@ so an observer keeping any of it must copy it.
 
 `phase` says whether stopping here would lose any work: `BeforeFirstGate` at the
 start of the first shot and just before its first instruction, `MidRun` at
-every later firing. `Response::Auto` decides by it, and an observer delivering
-its own refusal through `detail::refuse_observation` passes it on. `budget` is
-the run's memory budget; the built-in observers check the copies and
-conversions they take against it, and an observer you write has no need to
-touch it (see [The memory cap](failures.md#the-memory-cap)).
+every later firing. `Response::Auto` decides by it. An observer delivering its
+own refusal calls `detail::refuse_observation(ctx, message)`, which takes the
+knobs, the phase and the entry point from the context; `detail::produce_state`
+and `detail::charge_allocation` have the same context forms. `budget` is the
+run's memory budget; the built-in observers check the copies and conversions
+they take against it, and an observer you write has no need to touch it (see
+[The memory cap](failures.md#the-memory-cap)). `entry_point` names the run that
+is firing, which every refusal and failure raised for the observation starts
+with.
 
 ## `RunPlan::Options`
 

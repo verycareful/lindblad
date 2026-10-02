@@ -55,18 +55,22 @@ record is left.
   [QubitLimit](failures.md#qubitlimit)).
 - An option out of range, and fixed buffers that exceed the memory cap (see
   [The memory cap](failures.md#the-memory-cap)).
-- A qubit or classical-bit index out of range. This closes the ingress paths
-  that bypass the per-gate circuit builders (`compose` index remapping,
-  `control`, the QASM parsers, transpiler passes), so no out-of-range index
-  reaches a kernel.
+- A qubit, classical-bit or condition-bit index out of range, as an
+  `OutOfRange` naming the instruction, checked over the whole circuit before
+  anything else. This closes the ingress paths that bypass the per-gate circuit
+  builders (`compose` index remapping, `control`, the QASM parsers, transpiler
+  passes, direct edits of `instructions`), so no out-of-range index reaches a
+  kernel.
 - One pass over the instructions: an unbound parameter, a gate naming the wrong
-  number of qubits for its type or a qubit twice, fewer parameters than its
+  number of qubits for its type (a `MEASURE` or `RESET` acts on exactly one) or
+  a qubit twice, fewer parameters than its
   type reads, a parameter that is NaN or infinite, a `UNITARY` matrix of the
   wrong size, a `PERMUTATION` map that is not a bijection, and a gate the
   backend cannot apply (on MPS a dense fallback over the chain's limit, on
   Clifford a gate with no tableau form).
 - The physical checks below, under their own policy.
-- The run plan: anchors, labels, observers and the starting state (see
+- The run plan: anchors, labels, observers and the starting state, an MPS chain
+  supplied with no norm included (see
   [Observation and the run harness](observation.md)).
 
 Beneath these, the low-level apply-primitives (`gates::apply_*`,
@@ -261,8 +265,6 @@ struct Result {
     std::unordered_map<std::string, int> counts;      // Sampled bitstrings (if shots > 0)
     std::vector<double> expectation_values;           // Empty; use Estimator for expectations
     double simulation_time_seconds = 0.0;
-    bool success = true;         // true on every returned result
-    std::string error_message;   // empty on every returned result
     ObservationBundle observations;
 };
 ```
@@ -271,8 +273,9 @@ struct Result {
 - **final_state**: Complete quantum state after circuit execution
 - **counts**: Measurement outcome histogram; keys are bitstrings (e.g., "01"), values are occurrence counts
 - **expectation_values**: Reserved for future use (currently not populated by simulator)
-- **success**, **error_message**: `true` and empty on every result `run()` returns. A run that fails throws instead (see [Failures](failures.md)), so a returned result is always an answer
 - **observations**: whatever the run's labelled observers collected, empty unless the `RunPlan` attached observers carrying labels. A run that fails flushes its observers into the failed-run record instead
+
+A run that fails throws rather than returning a `Result` (see [Failures](failures.md)), so a returned result is always an answer.
 
 ### Workflow
 
@@ -302,6 +305,8 @@ std::unordered_map<std::string, int> counts = result.counts;
 ### Fast Expectation Values
 
 For variational inner loops, `StatevectorSimulator::eval_expectation(circuit, observable)` simulates the circuit and computes the expectation value in-place, bypassing the `Result` struct and avoiding an $O(2^n)$ allocation of the final state vector. This is used by the `Estimator` ideal path.
+
+`eval_expectation` makes the checks `run()` makes before its first gate, under its own name: the instruction pass, the qubit limit, and the memory cap for the one state it allocates. A state kept from the previous call of the same width on the same thread is reused, and allocates nothing. `simulate_circuit` evolves a state you allocated, so it allocates no state of its own and the cap has no footprint to refuse; it makes the instruction pass.
 
 ### Gate Fusion (R.1.17)
 
@@ -771,8 +776,10 @@ public:
     int n_qubits;
     int max_bond_dim;    // chi parameter
     double cutoff;       // max fraction of weight truncation may discard
-    SVDMethod svd_method = SVDMethod::BDC;     // bond-split kernel
-    bool svd_rescue = true;                    // descend the ladder on a rejected factorisation
+    SVDMethod svd_method = SVDMethod::BDC;            // bond-split kernel
+    SvdRejection svd_rejection = SvdRejection::Fix;   // what a rejected factorisation gets
+    bool svd_accept_gram = false;                     // whether the Gram rung exists
+    SvdReport svd_report = SvdReport::Warn;           // how a fix or an ignore is reported
     CanonicalForm canonical_form = CanonicalForm::Always;  // when a split moves the centre first
 
     MPSState(int n_qubits, int max_bond_dim = 64,
@@ -826,8 +833,8 @@ spectrum barely moves: on a 128x128 decaying spectrum it is 2.7x faster than
 spectrum that an absolute bound treats as noise, and is the ladder's first
 rescue (below), so it is the choice when the tail matters more than the
 clock. Selecting either Jacobi kernel emits a one-time note per MPS layer to
-the warning channel that it is the slower algorithm; selecting `EigenBDC` is
-silent. Every kernel is available in every build, so the public API does not
+the warning channel that it is the slower algorithm, and selecting `EigenBDC`
+emits one saying it is in force, since it is not the default either. Every kernel is available in every build, so the public API does not
 change shape with the build configuration.
 
 The autonne kernels take the project's floating-point flags as they are, being
@@ -850,18 +857,46 @@ class of two-site tensors Shor-style circuits produce), in failure shapes
 ranging from NaN singular vectors to a wrong-but-finite kept vector. Every
 truncation therefore: selects the kept singular values by bit-level-finite
 comparison (immune to ordering corruption), verifies the kept factorisation
-against the Frobenius identity `‖M − U·S·V†‖²_F = Σ(discarded σ²)`, and on a
-rejection descends a rescue ladder: autonne's `Jacobi` (an independent road to
-the same factorisation, skipped when it was the selected kernel), then a
-Gram-matrix eigendecomposition (sharing no code with either SVD), then
-`std::runtime_error` rather than continuing with a corrupt tensor. Every rung
-descended is reported through the warning channel, naming the layer, the block
-shape and the kernel that failed, so a run rescued on every bond reads as one.
+against the Frobenius identity `‖M − U·S·V†‖²_F = Σ(discarded σ²)`, and treats a
+factorisation that fails, or a kernel that declines the block and returns
+nothing, as a rejection.
 
-`svd_rescue = false` forbids the descent: the first rejected factorisation
-throws, for a caller who would rather stop than accept a tensor from a kernel
-they did not name. `MPSSimulator` carries the same two fields, and
-`canonical_form`, and copies all three onto every chain it builds.
+What a rejection gets is set by three fields:
+
+| Field | Values | Default |
+|---|---|---|
+| `svd_rejection` | `SvdRejection::Fix`, `Throw`, `Ignore` | `Fix` |
+| `svd_accept_gram` | `bool` | `false` |
+| `svd_report` | `SvdReport::Warn`, `Silent` | `Warn` |
+
+- **`Fix`** repairs it down a ladder: autonne's `Jacobi` (an independent road to
+  the same factorisation, skipped when it was the selected kernel), then, only
+  with `svd_accept_gram` on, a Gram-matrix eigendecomposition sharing no code
+  with either SVD. Every candidate is verified the same way, so a repaired split
+  is as trustworthy as one the kernel got right. A split no permitted rung
+  repairs throws `RuntimeFailure` rather than continuing with a corrupt tensor.
+- **`Throw`** ends the run with `RuntimeFailure` at the first rejection, for a
+  caller who would rather stop than take a tensor from a kernel they did not
+  name. `svd_report` is never read.
+- **`Ignore`** uses a rejected factorisation as it is. The state built from it
+  is **unverified** and can be wrong with nothing further to say so, and both
+  fidelity figures are withdrawn. A kernel that returned nothing still leaves
+  nothing to use, so that case descends the same ladder as `Fix`, and the first
+  rung to produce a factorisation is used whether or not it verifies. A
+  non-finite entry carried into the chain is refused where every state's is: at
+  a collapse or a sample, and in the final state.
+- **`svd_accept_gram`** is off by default because forming $M^\dagger M$ squares
+  the condition number, so the Gram route drops singular values below its
+  validity floor (see the rebuild section below).
+- **`svd_report`**, read only after a fix or an unverified use: `Warn` emits one
+  warning per rung taken and per factorisation used unverified, naming the
+  layer, the block shape, the kernel and what verification found, so a run
+  rescued on every bond reads as one; `Silent` emits none. Every fix and every
+  unverified use is counted either way.
+
+Each setting that is not its default emits a short one-time note per MPS layer
+saying it is in force. `MPSSimulator` carries the same fields, with
+`svd_method` and `canonical_form`, and copies them onto every chain it builds.
 
 That identity is an equality for a true truncated SVD, so the allowance above
 the discarded weight is only the backward error a stable SVD is entitled to.
@@ -916,20 +951,26 @@ and what it cost:
   routine. This is the denominator; a rescue count means nothing without it.
 - `jacobi_rescue_count()`: splits where the selected kernel's factorisation
   failed verification and autonne's `Jacobi` produced the accepted slice.
-- `gram_fallback_count()`: splits where the Gram route produced the accepted
-  slice, after the selected kernel and the Jacobi rescue both failed. Only
-  successful rescues are counted on either rung, because a split on which every
-  rung fails throws.
+- `gram_fallback_count()`: splits where the Gram route produced the slice,
+  after the selected kernel and the Jacobi rescue both failed. A rung is
+  counted when it produced the split, because a split no permitted rung
+  produces throws.
+- `ignored_rejection_count()`: splits `SvdRejection::Ignore` used unverified.
+  The rung that produced each is counted as well, and one such split withdraws
+  both fidelity figures.
 - `floor_rejected_weight()`: the Gram route's own cost, summed over the splits
   it rescued: singular weight below its validity floor (see the rebuild section
-  below). It is not truncation and is kept out of `truncation_error()`. Zero
-  unless some split took the Gram rung.
+  below). It is not truncation and is kept out of `truncation_error()` and
+  `fidelity_estimate()`; `fidelity_lower_bound()` counts it, so the bound stays
+  a bound. Zero unless some split took the Gram rung.
 - `max_verify_residual_excess()`: the worst factorisation error verification
   accepted, as a fraction of $\|M\|_F^2$, maximised over splits. The Frobenius
   identity holds with equality for a true truncated SVD, so this reports the
   excess over that ideal rather than the raw residual, and a healthy run sits
   near the square of machine epsilon. It says how close a run came to being
   rescued, and how much error the accepted route let through when it was not.
+  Under `SvdRejection::Ignore` it also covers the splits used unverified, and
+  reads infinite when one of them could not be measured.
 - `svd_time_ns()`: nanoseconds spent in the truncation routine, over the same
   splits `svd_call_count()` counts. The interval covers the factorisation, the
   verification deciding whether to accept it, and any Gram rescue verification
@@ -954,9 +995,10 @@ blocks with the same layer, shape and cause produce identical messages, so the
 number of warning lines is not the number of rescues; `jacobi_rescue_count()`
 and `gram_fallback_count()` are.
 
-A rescue warning needs no action from a caller. The tensor that continues has
-passed verification, and a split no rung can serve throws instead of
-continuing. The warning matters only to someone developing the kernel that
+A rescue warning under `Fix` needs no action from a caller. The tensor that
+continues has passed verification, and a split no permitted rung can serve
+throws instead of continuing. A warning that a factorisation was used
+unverified, under `Ignore`, is the opposite: the result is not verified. The warning matters only to someone developing the kernel that
 declined (autonne or Eigen) or Lindblad itself. Under the default `BDC`, some
 blocks are declined and served by the `Jacobi` rung, mostly from qudit chains
 at `d = 3`, and which blocks depends on the compiler.
@@ -1019,7 +1061,10 @@ report a bond which discarded nothing as having lost something. The floor is
 `sqrt(c·n·eps)·σ_max` with `n` the Gram dimension and `c` the same slack the
 verification grants: the top of the band the eigensolver's own error bound
 lets a null direction return in, so noise cannot pass as a direction, and a
-real singular value below it is one the route could not have resolved.
+real singular value below it is one the route could not have resolved. Because
+the route cannot tell the two apart, `fidelity_lower_bound()` counts the
+floored weight as removed while `fidelity_estimate()` does not. The route is a
+rung only when `svd_accept_gram` is on.
 
 The counters accumulate over the state's lifetime and are not reset by gate
 application. Reconstruction from a statevector runs the ladder like any other
@@ -1182,6 +1227,11 @@ Rules:
   [Unchecked Gates](#unchecked-gates) for how the chain knows)
 - `rebuild_from_statevector` counts its splits like any other; they are
   canonical by construction
+- Both are **empty** once `SvdRejection::Ignore` has used a factorisation that
+  failed verification, and stay empty: they describe truncation, and that
+  split's error is not truncation
+- Weight the Gram route's floor rejected counts toward the bound, which treats
+  it as removed, and not toward the estimate
 - `absorb_profile` does not fold them: they describe the returned tensors' own
   history, where `truncation_error()` describes the run's splits
 - A split `CanonicalForm::Auto` runs in place contributes its fraction of the
@@ -1469,10 +1519,14 @@ simulators' `run(circuit, shots, seed)`.
   for first; `Jacobi`, `EigenBDC` and `EigenJacobi` are selectable (see the
   kernel table under `MPSState`). Set on `MPSSimulator` for `run()` or on an
   `MPSState` driven directly
-- **svd_rescue** (`bool`, default `true`): whether a factorisation the verify
-  rung rejects may descend the rescue ladder, one warning per rung (identical
-  warnings collapse into a repeat count); `false`
-  turns the first rejection into a `std::runtime_error`
+- **svd_rejection** (`SvdRejection`, default `Fix`): what a factorisation the
+  verify rung rejects gets: repaired down the ladder (`Fix`), the end of the run
+  (`Throw`), or used as it is, unverified (`Ignore`)
+- **svd_accept_gram** (`bool`, default `false`): whether the Gram route is the
+  ladder's last rung
+- **svd_report** (`SvdReport`, default `Warn`): whether a fix or an unverified
+  use is reported, one warning per rung (identical warnings collapse into a
+  repeat count), or only counted (`Silent`)
 - **canonical_form** (`CanonicalForm`, default `Always`): which bond splits
   first move the orthogonality centre onto their block; `Auto` moves it only
   where truncation can bind (see [Canonical Form](#canonical-form)). Set on `MPSSimulator` for

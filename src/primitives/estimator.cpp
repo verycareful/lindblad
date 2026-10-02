@@ -204,20 +204,33 @@ std::vector<double> Estimator::run_batch(
     // depend on thread scheduling. A failed run's record lands in the slot of
     // the worker thread that ran it, so each index also takes its record there,
     // and the lowest-indexed one goes into the caller's slot with its error.
+    // An index takes a record only when its own failure stored one: a failure
+    // before the first gate stores none, and the slot may still hold an older
+    // record that belongs to another run.
     std::vector<std::exception_ptr> errors(n);
     std::vector<std::optional<FailedRun>> records(n);
     #pragma omp parallel for schedule(dynamic, 1)
     for (int i = 0; i < static_cast<int>(n); ++i) {
+        const std::uint64_t stored_before = detail::failed_run_stores();
         try {
             results[i] = run_single(circuit, observable, parameter_values[i]);
         } catch (...) {
             errors[static_cast<size_t>(i)] = std::current_exception();
-            records[static_cast<size_t>(i)] = take_failed_run();
+            // Nothing may leave the region, and moving a record can allocate.
+            try {
+                if (detail::failed_run_stores() != stored_before)
+                    records[static_cast<size_t>(i)] = take_failed_run();
+            } catch (...) {
+            }
         }
     }
     for (std::size_t i = 0; i < errors.size(); ++i) {
         if (errors[i]) {
-            if (records[i]) detail::store_failed_run(std::move(*records[i]));
+            try {
+                if (records[i]) detail::store_failed_run(std::move(*records[i]));
+            } catch (...) {
+                // The index's own error is what the caller must see.
+            }
             std::rethrow_exception(errors[i]);
         }
     }

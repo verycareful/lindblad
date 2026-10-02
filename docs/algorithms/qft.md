@@ -219,7 +219,6 @@ struct Result {
 
 - `backend_result.counts`: Measurement outcome histogram. Only populated when `shots > 0`.
 - `backend_result.simulation_time_seconds`: Wall time for the simulation step.
-- `backend_result.success`: `true` on every returned result. A run that fails throws instead, as every simulator run does (see [Failures](../api/failures.md)).
 - `n_qubits`: The number of qubits in the input circuit.
 - `clifford_compatible`: Check this before dispatching to a Clifford backend.
 

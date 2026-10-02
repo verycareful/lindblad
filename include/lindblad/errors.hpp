@@ -41,6 +41,22 @@ struct FailurePoint {
 // anchor at the start of any shot after the first.
 enum class RunPhase { BeforeFirstGate, MidRun };
 
+namespace detail {
+
+// What a failed run's failure path adds to the copy of a Lindblad exception it
+// rethrows: the folder a save wrote and a sentence naming what that folder
+// does not hold, and, for an exception that named no position of its own,
+// where the run was together with that position as a message words it
+// (" (instruction 4: cx on qubits 0, 1) at shot 7").
+struct Amendment {
+    std::optional<std::filesystem::path> saved_to;
+    std::string unsaved;
+    std::optional<FailurePoint> where;
+    std::string position;
+};
+
+}  // namespace detail
+
 // =============================================================================
 // Error - what every exception Lindblad raises itself carries
 // =============================================================================
@@ -52,7 +68,7 @@ enum class RunPhase { BeforeFirstGate, MidRun };
 // saved_to() is set when the run's partial results were saved to disk. The
 // message then ends with the same path, since what() is fixed once a std
 // exception exists; that is why the failure path throws a fresh copy through
-// rethrow_saved instead of editing this one.
+// rethrow_amended instead of editing this one.
 class Error {
 public:
     virtual ~Error() = default;
@@ -69,15 +85,25 @@ protected:
     Error(const Error&) = default;
     Error& operator=(const Error&) = default;
 
-    // Throws a copy of this object's dynamic type whose message ends with
-    // "Partial results saved to <path>." and whose saved_to() is `path`.
-    [[noreturn]] virtual void rethrow_saved(const std::filesystem::path& path) const = 0;
+    // Throws a copy of this object's dynamic type carrying `a`: its where()
+    // is a.where when set and this one's otherwise, its saved_to() is
+    // a.saved_to, and its message is amended_message(what(), a).
+    [[noreturn]] virtual void rethrow_amended(const detail::Amendment& a) const = 0;
 
-    // The message a saved copy carries: the original, then the path.
-    static std::string saved_message(const char* what, const std::filesystem::path& path) {
+    // The original message, then the position when the original named none,
+    // then "Partial results saved to <path>." and what the folder does not
+    // hold, when a save was made.
+    static std::string amended_message(const char* what, const detail::Amendment& a) {
         std::string out(what);
-        if (!out.empty() && out.back() != '.') out += '.';
-        out += " Partial results saved to " + path.string() + ".";
+        if (!a.position.empty()) {
+            if (!out.empty() && out.back() == '.') out.pop_back();
+            out += a.position;
+        }
+        if (a.saved_to) {
+            if (!out.empty() && out.back() != '.') out += '.';
+            out += " Partial results saved to " + a.saved_to->string() + ".";
+            if (!a.unsaved.empty()) out += " " + a.unsaved;
+        }
         return out;
     }
 
@@ -108,9 +134,9 @@ public:
         : std::invalid_argument(message), Error(std::move(entry_point), std::move(where)) {}
 
 protected:
-    [[noreturn]] void rethrow_saved(const std::filesystem::path& path) const override {
-        InvalidArgument copy(saved_message(what(), path), entry_point(), where());
-        copy.saved_to_ = path;
+    [[noreturn]] void rethrow_amended(const detail::Amendment& a) const override {
+        InvalidArgument copy(amended_message(what(), a), entry_point(), a.where ? a.where : where());
+        copy.saved_to_ = a.saved_to;
         throw copy;
     }
 };
@@ -122,9 +148,9 @@ public:
         : std::out_of_range(message), Error(std::move(entry_point), std::move(where)) {}
 
 protected:
-    [[noreturn]] void rethrow_saved(const std::filesystem::path& path) const override {
-        OutOfRange copy(saved_message(what(), path), entry_point(), where());
-        copy.saved_to_ = path;
+    [[noreturn]] void rethrow_amended(const detail::Amendment& a) const override {
+        OutOfRange copy(amended_message(what(), a), entry_point(), a.where ? a.where : where());
+        copy.saved_to_ = a.saved_to;
         throw copy;
     }
 };
@@ -136,9 +162,9 @@ public:
         : std::runtime_error(message), Error(std::move(entry_point), std::move(where)) {}
 
 protected:
-    [[noreturn]] void rethrow_saved(const std::filesystem::path& path) const override {
-        RuntimeFailure copy(saved_message(what(), path), entry_point(), where());
-        copy.saved_to_ = path;
+    [[noreturn]] void rethrow_amended(const detail::Amendment& a) const override {
+        RuntimeFailure copy(amended_message(what(), a), entry_point(), a.where ? a.where : where());
+        copy.saved_to_ = a.saved_to;
         throw copy;
     }
 };
@@ -150,9 +176,9 @@ public:
         : std::logic_error(message), Error(std::move(entry_point), std::move(where)) {}
 
 protected:
-    [[noreturn]] void rethrow_saved(const std::filesystem::path& path) const override {
-        InternalError copy(saved_message(what(), path), entry_point(), where());
-        copy.saved_to_ = path;
+    [[noreturn]] void rethrow_amended(const detail::Amendment& a) const override {
+        InternalError copy(amended_message(what(), a), entry_point(), a.where ? a.where : where());
+        copy.saved_to_ = a.saved_to;
         throw copy;
     }
 };

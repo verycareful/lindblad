@@ -17,6 +17,7 @@
 #include <Eigen/Core>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -44,9 +45,6 @@ static inline Complex128 from_std(const std::complex<double>& z) noexcept {
 static inline std::complex<double>* as_std(Complex128* p) noexcept {
     return reinterpret_cast<std::complex<double>*>(p);
 }
-static inline const std::complex<double>* as_std(const Complex128* p) noexcept {
-    return reinterpret_cast<const std::complex<double>*>(p);
-}
 
 using RowMajorC = Eigen::Matrix<std::complex<double>, Eigen::Dynamic,
                                 Eigen::Dynamic, Eigen::RowMajor>;
@@ -57,9 +55,8 @@ using ColMajorC = Eigen::Matrix<std::complex<double>, Eigen::Dynamic,
 // latch is per layer, so this fires even when a qubit MPS in the same process
 // has already noted its own selection. The cost figures are the qubit layer's.
 static void warn_jacobi_slower_once_qudit(SVDMethod m) {
-    static bool warned = false;
-    if (warned) return;
-    warned = true;
+    static std::atomic<bool> warned{false};
+    if (warned.exchange(true)) return;
     emit_warning(
         std::string("note: SVDMethod::") + to_string(m) +
         " selected for the qudit MPS. BDC is the default (autonne divide and conquer) "
@@ -68,6 +65,15 @@ static void warn_jacobi_slower_once_qudit(SVDMethod m) {
         "and 19x over EigenJacobi. Jacobi resolves the tail of a "
         "graded spectrum with relative accuracy, which is why it remains "
         "selectable; select it for that, not for speed.");
+}
+
+// The one other kernel that is not the default; see the qubit layer's note.
+static void note_eigen_bdc_once_qudit() {
+    static std::atomic<bool> noted{false};
+    if (noted.exchange(true)) return;
+    emit_warning("note: SVDMethod::EigenBDC selected for the qudit MPS, not the "
+                 "default (BDC): Eigen's divide and conquer runs every bond split. "
+                 "Be alert to it.");
 }
 
 // =============================================================================
@@ -169,24 +175,29 @@ detail::SvdTruncation QuditMPS::truncate_block(const detail::DenseMatrix& M,
                                                detail::FidelityLedger& ledger) {
     if (svd_method == SVDMethod::Jacobi || svd_method == SVDMethod::EigenJacobi)
         warn_jacobi_slower_once_qudit(svd_method);
+    if (svd_method == SVDMethod::EigenBDC) note_eigen_bdc_once_qudit();
+    const detail::SvdPolicy policy{svd_rejection, svd_accept_gram, svd_report};
+    detail::note_nondefault_svd_policy(detail::SvdLayer::Qudit, policy);
     // Bracketing the whole ladder, rescue included, as the qubit layer does.
     const auto svd_t0 = std::chrono::steady_clock::now();
     detail::SvdTruncation r = detail::svd_truncate_verified(
         reinterpret_cast<const Complex128*>(M.data()),
         M.rows(), M.cols(),
         detail::MatrixOrder::ColMajor, max_bond_dim, svd_cutoff, svd_method,
-        svd_rescue, ctx);
+        policy, ctx);
     svd_nanos += static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - svd_t0).count());
 
     // Counted once the ladder has returned, so every figure covers splits that
-    // completed and the rescue counts report rescues that SUCCEEDED: a failed
-    // rescue does not return. The Gram route's floor-rejected weight is booked
-    // beside the truncation total, never inside it.
+    // completed and the rescue counts report rungs that produced the split: a
+    // split no permitted rung produced does not return. The Gram route's
+    // floor-rejected weight is booked beside the truncation total, never
+    // inside it.
     ++svd_calls;
     if (r.used_jacobi_rescue) ++jacobi_rescues;
     if (r.used_gram_fallback) ++gram_fallbacks;
+    if (r.used_unverified) ++ignored_rejections;
     floor_rejected += r.floor_rejected_weight;
     total_truncation_error += r.discarded_weight;
     max_verify_resid_excess =
@@ -194,7 +205,10 @@ detail::SvdTruncation QuditMPS::truncate_block(const detail::DenseMatrix& M,
 
     double kept = 0.0;
     for (int i = 0; i < r.rank; ++i) kept += r.S(i) * r.S(i);
-    ledger.record(kept, r.discarded_weight);
+    // The Gram route's floored weight counts toward the bound alone; an
+    // unverified factorisation leaves the figures nothing they can describe.
+    ledger.record(kept, r.discarded_weight, r.floor_rejected_weight);
+    if (r.used_unverified) ledger.invalidate();
     return r;
 }
 

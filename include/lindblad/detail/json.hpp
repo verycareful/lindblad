@@ -12,6 +12,7 @@
 #include "lindblad/types.hpp"
 
 #include <cctype>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -21,6 +22,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 
 namespace lindblad {
 namespace detail {
@@ -123,10 +125,47 @@ struct JsonReader {
             if ((s[pos] == '+' || s[pos] == '-') && pos > start + 1 && s[pos-1] != 'e' && s[pos-1] != 'E') break;
             ++pos;
         }
-        return std::stod(s.substr(start, pos - start));
+        return parse_number(s.substr(start, pos - start));
     }
 
-    int read_int() { return static_cast<int>(read_number()); }
+    // A number in the C locale whatever the process's, so 0.5 reads as 0.5
+    // under a locale whose decimal separator is a comma, and a subnormal reads
+    // as itself, as json_number writes both. A token that is not wholly a
+    // number, or one outside double's range, is refused.
+    static double parse_number(const std::string& token) {
+        double value = 0.0;
+#if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
+        const char* first = token.data();
+        const char* last = first + token.size();
+        const auto [ptr, ec] = std::from_chars(first, last, value);
+        if (ec == std::errc() && ptr == last) return value;
+#else
+        std::istringstream in(token);
+        in.imbue(std::locale::classic());
+        in >> value;
+        if (!in.fail() && in.peek() == std::char_traits<char>::eof()) return value;
+#endif
+        throw std::runtime_error("JSON parse error: '" + token + "' is not a number");
+    }
+
+    // A whole number an int can hold. A fraction is refused rather than
+    // truncated, since a field that holds a count or an index has no meaning
+    // for 1.5, and converting a double outside int's range is undefined (NaN
+    // fails both range comparisons).
+    int read_int() {
+        const double d = read_number();
+        if (!(d >= static_cast<double>(std::numeric_limits<int>::min()) &&
+              d <= static_cast<double>(std::numeric_limits<int>::max()))) {
+            throw std::runtime_error("JSON parse error: " + std::to_string(d) +
+                                     " is outside the range of an int");
+        }
+        const int value = static_cast<int>(d);
+        if (static_cast<double>(value) != d) {
+            throw std::runtime_error("JSON parse error: " + std::to_string(d) +
+                                     " is not a whole number");
+        }
+        return value;
+    }
 
     // A double written by json_number: a number, or one of the strings NaN,
     // Infinity and -Infinity.

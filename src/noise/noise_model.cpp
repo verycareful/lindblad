@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -174,8 +175,9 @@ namespace {
 constexpr const char* NOISE_MODEL_FORMAT = "lindblad.noise_model";
 constexpr int NOISE_MODEL_VERSION = 1;
 
-// The widest channel whose operator length, (2^n)^2, a size_t holds.
-constexpr int MAX_CHANNEL_QUBITS = 31;
+// The widest channel whose operator length, (2^n)^2, a size_t holds: 2n has to
+// stay below its width.
+constexpr int MAX_CHANNEL_QUBITS = (std::numeric_limits<std::size_t>::digits - 1) / 2;
 
 void write_channel(std::ostringstream& o, const KrausChannel& channel) {
     o << "{\"n_qubits\":" << channel.n_qubits << ",\"operators\":[";

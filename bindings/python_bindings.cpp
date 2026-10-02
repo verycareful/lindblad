@@ -179,9 +179,7 @@ PYBIND11_MODULE(lindblad_python, m) {
     py::class_<lindblad::StatevectorSimulator::Result>(m, "StatevectorResult")
         .def_readonly("counts", &lindblad::StatevectorSimulator::Result::counts)
         .def_readonly("final_state", &lindblad::StatevectorSimulator::Result::final_state)
-        .def_readonly("simulation_time_seconds", &lindblad::StatevectorSimulator::Result::simulation_time_seconds)
-        .def_readonly("success", &lindblad::StatevectorSimulator::Result::success)
-        .def_readonly("error_message", &lindblad::StatevectorSimulator::Result::error_message);
+        .def_readonly("simulation_time_seconds", &lindblad::StatevectorSimulator::Result::simulation_time_seconds);
 
     // =========================================================================
     // PauliString
@@ -244,6 +242,5 @@ PYBIND11_MODULE(lindblad_python, m) {
 
     py::class_<lindblad::backends::BackendResult>(m, "BackendResult")
         .def_readonly("counts", &lindblad::backends::BackendResult::counts)
-        .def_readonly("success", &lindblad::backends::BackendResult::success)
         .def_readonly("simulation_time_seconds", &lindblad::backends::BackendResult::simulation_time_seconds);
 }

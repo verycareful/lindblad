@@ -45,6 +45,14 @@ std::size_t llc_bytes();
 // On Linux only a coherent reading counts: MemAvailable parsed as a number,
 // non-zero, convertible to bytes without overflow, and no larger than
 // MemTotal. Anything else is 0.
+//
+// On Linux the figure also answers to the memory limits of the cgroups the
+// process runs in (a container, a systemd slice, a batch job), which the
+// kernel enforces by ending the process: it is the smaller of MemAvailable
+// and the room left under the tightest limit from the process's own cgroup
+// up to the root, where the room is the limit less usage, not counting
+// inactive file cache. A cgroup at its limit reads as 1 byte, not 0, since
+// nothing more fits there.
 std::size_t available_memory_bytes();
 
 // The same figure, read at most once a second and shared between calls in
