@@ -17,14 +17,6 @@
 # result is always an answer. Most read the field directly; the v11261 suites
 # reach it through `v11261_observation_oracle.hpp`, whose helpers read it.
 # Uncommenting a line without removing those reads breaks the build again.
-#
-# test_v11231_svd_ladder.cpp, test_v11241_truncation.cpp,
-# test_v11281_svd_selection.cpp, test_v11291_svd_kernels.cpp,
-# test_v11301_canonical_form.cpp and test_v11301_qudit_canonical_form.cpp are
-# commented out because they set `svd_rescue` or pass a bool to
-# detail::svd_truncate_verified. Both MPS layers take `svd_rejection`,
-# `svd_accept_gram` and `svd_report` instead, and the ladder takes an
-# SvdPolicy, so those lines no longer compile.
 set(LINDBLAD_TEST_SOURCES
     test_gates.cpp
     test_circuit.cpp
@@ -150,11 +142,11 @@ set(LINDBLAD_TEST_SOURCES
     test_v11231_normalization_policy.cpp
     test_v11231_norm_sums.cpp
     test_v11231_tolerance_rules.cpp
-    # test_v11231_svd_ladder.cpp
+    test_v11231_svd_ladder.cpp
     test_v11241_eigen_backend.cpp
     test_v11241_storage.cpp
     test_v11241_unitary_repair.cpp
-    # test_v11241_truncation.cpp
+    test_v11241_truncation.cpp
     test_v11241_seam_rules.cpp
     test_eigen_svd_pin.cpp
     # test_v11242_repair_reach.cpp
@@ -184,7 +176,7 @@ set(LINDBLAD_TEST_SOURCES
     test_v11272_ignore_dispatch.cpp
     # test_v11271_mixer_dispatch.cpp
     test_v11281_bond_saturation.cpp
-    # test_v11281_svd_selection.cpp
+    test_v11281_svd_selection.cpp
     test_v11281_svd_time.cpp
     test_v11281_theta_harvest.cpp
     test_v11282_profile_totals.cpp
@@ -193,7 +185,7 @@ set(LINDBLAD_TEST_SOURCES
     test_V11283_algos.cpp
     test_v11291_optimizer_seam.cpp
     test_v11291_variational.cpp
-    # test_v11291_svd_kernels.cpp
+    test_v11291_svd_kernels.cpp
     # test_v11291_clifford_ising.cpp
     test_v11291_qasm_conditions.cpp
     # test_v11291_scheduling.cpp
@@ -204,8 +196,8 @@ set(LINDBLAD_TEST_SOURCES
     # test_v11292_pauli_rules.cpp
     test_v11292_maqaoa_gammas.cpp
     test_v11301_qr_seam.cpp
-    # test_v11301_canonical_form.cpp
-    # test_v11301_qudit_canonical_form.cpp
+    test_v11301_canonical_form.cpp
+    test_v11301_qudit_canonical_form.cpp
     test_v11301_fidelity_figures.cpp
     # test_v11301_sampling.cpp
     test_v11302_unchecked_gates.cpp

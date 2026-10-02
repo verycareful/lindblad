@@ -461,7 +461,9 @@ TEST(V11281SvdSelection, AutonnePassesTheLadderWithoutRescue) {
         const int cap = std::min(rows, cols);
         const auto split = lindblad::detail::svd_truncate_verified(
             a.data(), rows, cols, MatrixOrder::RowMajor, cap, cutoff,
-            SVDMethod::Jacobi, /*rescue=*/true, "V11281SvdSelection");
+            SVDMethod::Jacobi,
+            lindblad::detail::SvdPolicy{SvdRejection::Fix, /*accept_gram=*/true, SvdReport::Warn},
+            "V11281SvdSelection");
         EXPECT_FALSE(split.used_gram_fallback)
             << rows << "x" << cols << ": the autonne factors failed verification "
                "and the Gram route produced the slice";

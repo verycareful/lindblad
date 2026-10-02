@@ -753,7 +753,9 @@ TEST(V11301QuditOracles, APhaseOracleKeepsTheSettingsAndAccumulatesTheCounters) 
     const double cutoff = 2.0 * MPS_DEFAULT_CUTOFF;
     QuditMPS s(n, d, cap, cutoff);
     s.svd_method = SVDMethod::EigenBDC;
-    s.svd_rescue = false;
+    s.svd_rejection = SvdRejection::Throw;
+    s.svd_accept_gram = true;
+    s.svd_report = SvdReport::Silent;
     s.canonical_form = CanonicalForm::Auto;
     s.apply_1qudit(0, random_gate(d, 4500));
     s.apply_2qudit(0, 3, random_gate(d * d, 4501));
@@ -771,7 +773,9 @@ TEST(V11301QuditOracles, APhaseOracleKeepsTheSettingsAndAccumulatesTheCounters) 
     s.apply_phase_oracle(phase);
 
     EXPECT_EQ(s.svd_method, SVDMethod::EigenBDC);
-    EXPECT_FALSE(s.svd_rescue);
+    EXPECT_EQ(s.svd_rejection, SvdRejection::Throw);
+    EXPECT_TRUE(s.svd_accept_gram);
+    EXPECT_EQ(s.svd_report, SvdReport::Silent);
     EXPECT_EQ(s.canonical_form, CanonicalForm::Auto);
     EXPECT_EQ(s.max_bond_dim, cap);
     EXPECT_EQ(s.svd_cutoff, cutoff);
@@ -799,7 +803,9 @@ TEST(V11301QuditOracles, AFunctionOracleKeepsTheSettingsAndAccumulatesTheCounter
     const int n = 4, d = 3, cap = 9;
     QuditMPS s(n, d, cap);
     s.svd_method = SVDMethod::EigenBDC;
-    s.svd_rescue = false;
+    s.svd_rejection = SvdRejection::Throw;
+    s.svd_accept_gram = true;
+    s.svd_report = SvdReport::Silent;
     s.canonical_form = CanonicalForm::Auto;
     s.apply_1qudit(0, random_gate(d, 4600));
     s.apply_1qudit(1, random_gate(d, 4601));
@@ -812,7 +818,9 @@ TEST(V11301QuditOracles, AFunctionOracleKeepsTheSettingsAndAccumulatesTheCounter
     s.apply_function_oracle(2, 2, f);
 
     EXPECT_EQ(s.svd_method, SVDMethod::EigenBDC);
-    EXPECT_FALSE(s.svd_rescue);
+    EXPECT_EQ(s.svd_rejection, SvdRejection::Throw);
+    EXPECT_TRUE(s.svd_accept_gram);
+    EXPECT_EQ(s.svd_report, SvdReport::Silent);
     EXPECT_EQ(s.canonical_form, CanonicalForm::Auto);
     EXPECT_EQ(s.max_bond_dim, cap);
     EXPECT_EQ(s.open_span(), (Span{n - 1, n - 1}));

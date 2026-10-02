@@ -91,7 +91,8 @@ detail::SvdTruncation truncate(const std::vector<std::vector<double>>& m,
         (order == detail::MatrixOrder::RowMajor) ? row_major(m) : col_major(m);
     return detail::svd_truncate_verified(buf.data(), rows, cols, order,
                                          max_bond_dim, cutoff, method,
-                                         /*rescue=*/true, "V11231SvdLadder");
+                                         detail::SvdPolicy{SvdRejection::Fix, /*accept_gram=*/true, SvdReport::Warn},
+                                         "V11231SvdLadder");
 }
 
 // Sum of squares of the entries, which for a diagonal matrix is the total
