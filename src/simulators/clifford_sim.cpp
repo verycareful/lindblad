@@ -13,6 +13,11 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/detail/failure_collector.hpp"
+#include "lindblad/detail/json.hpp"
+#include "lindblad/detail/memory_budget.hpp"
+#include "lindblad/detail/preflight.hpp"
+#include "lindblad/detail/report.hpp"
 
 #include <optional>
 #include <algorithm>
@@ -673,16 +678,23 @@ static inline Complex128 i_power(int k) {
     }
 }
 
-Statevector StabilizerState::to_statevector() const {
+Statevector StabilizerState::to_statevector(QubitLimit limit) const {
     const int N = n_qubits;
 
-    // 2^N must be addressable before anything else is worth attempting. The
-    // tableau is happy at thousands of qubits; the dense form it is being asked
-    // for is not, and a caller learns that here rather than from an allocator.
-    if (N < 0 || N > 62) {
-        throw std::invalid_argument(
-            "StabilizerState::to_statevector: 2^n amplitudes are not "
-            "representable for n = " + std::to_string(N));
+    // The dense width is checked before anything else is worth attempting. The
+    // tableau is happy at thousands of qubits; the 2^N amplitudes it is being
+    // asked for are not, and a caller learns that here rather than from an
+    // allocator, or from the Statevector below after two dense scratch arrays
+    // have already been paid for.
+    const int ceiling = max_statevector_qubits(limit);
+    if (N < 0 || N > ceiling) {
+        std::string msg = "a dense state of n = " + std::to_string(N) +
+                          " qubits is outside [0, " + std::to_string(ceiling) + "]";
+        if (limit == QubitLimit::Enforce && N > ceiling && N <= LIFTED_MAX_QUBITS) {
+            msg += "; QubitLimit::Lift raises the ceiling to " +
+                   std::to_string(LIFTED_MAX_QUBITS);
+        }
+        detail::raise<InvalidArgument>("StabilizerState::to_statevector", msg);
     }
     const std::size_t dim = std::size_t{1} << N;
 
@@ -735,10 +747,9 @@ Statevector StabilizerState::to_statevector() const {
         norm_squared += amp.real * amp.real + amp.imag * amp.imag;
     }
     if (!(norm_squared > 0.0) || !is_finite_strict(norm_squared)) {
-        throw std::runtime_error(
-            "StabilizerState::to_statevector: the stabilizer projector "
-            "produced no state, which means the tableau's generators are not "
-            "independent");
+        detail::raise_internal("StabilizerState::to_statevector",
+            "the stabilizer projector produced no state, which means the "
+            "tableau's generators are not independent");
     }
     const double inv_norm = 1.0 / std::sqrt(norm_squared);
 
@@ -749,7 +760,7 @@ Statevector StabilizerState::to_statevector() const {
         imag_parts[index] = amp.imag * inv_norm;
     }
 
-    Statevector sv(N);
+    Statevector sv(N, limit);
     sv.set_amplitudes(real_parts.data(), imag_parts.data(), dim);
     return sv;
 }
@@ -1029,9 +1040,9 @@ StabilizerState::OutcomeSlab StabilizerState::outcome_slab(Elimination method) c
     // the tableau rather than an input a caller can produce.
     for (int i = rank; i < n_con; ++i) {
         if (rhs[static_cast<size_t>(i)]) {
-            throw std::logic_error(
-                "StabilizerState::outcome_slab: stabilizer constraints are "
-                "inconsistent; no computational-basis outcome satisfies them");
+            detail::raise_internal("StabilizerState::outcome_slab",
+                "stabilizer constraints are inconsistent; no "
+                "computational-basis outcome satisfies them");
         }
     }
 
@@ -1343,32 +1354,58 @@ static int clifford_quarter_turn(double angle) {
     return -1;
 }
 
-bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
+// Whether the tableau backend can apply one instruction, and if not, why.
+// is_clifford() and run()'s pass before the first gate both classify through
+// this one function, so the circuits AUTO dispatch sends here are exactly the
+// ones run() accepts.
+enum class CliffordVerdict { Clifford, NoAngle, OffGrid, NotClifford };
+
+static CliffordVerdict clifford_verdict(const Instruction& inst) {
     using GT = Instruction::GateType;
+    switch (inst.type) {
+        case GT::H: case GT::X: case GT::Y: case GT::Z:
+        case GT::S: case GT::SDG:
+        case GT::CX: case GT::CZ: case GT::SWAP:
+        case GT::MEASURE: case GT::RESET: case GT::BARRIER:
+            return CliffordVerdict::Clifford;
+        // Genuine Clifford gates whose tableau action composes from the
+        // primitives StabilizerState exposes. Rejecting them would push a
+        // circuit onto the statevector or MPS path with no diagnostic.
+        case GT::SX: case GT::SXDG:
+        case GT::CY: case GT::ISWAP: case GT::ECR:
+            return CliffordVerdict::Clifford;
+        // Rotations land in the Clifford group only at multiples of π/2.
+        // The two-qubit Ising rotations are exp(-iθ/2 P⊗Q) for Pauli P, Q
+        // and are Clifford on exactly the same grid as the one-qubit ones.
+        case GT::P: case GT::RX: case GT::RY: case GT::RZ:
+        case GT::RXX: case GT::RYY: case GT::RZZ: case GT::RZX:
+            if (inst.params.empty()) return CliffordVerdict::NoAngle;
+            if (clifford_quarter_turn(inst.params[0]) < 0) return CliffordVerdict::OffGrid;
+            return CliffordVerdict::Clifford;
+        default:
+            return CliffordVerdict::NotClifford;
+    }
+}
+
+// The reason for a verdict other than Clifford, or "" for Clifford.
+static std::string clifford_rejection(const Instruction& inst) {
+    switch (clifford_verdict(inst)) {
+        case CliffordVerdict::Clifford:
+            return {};
+        case CliffordVerdict::NoAngle:
+            return inst.gate_name() + " carries no angle parameter";
+        case CliffordVerdict::OffGrid:
+            return inst.gate_name() + "(" + std::to_string(inst.params[0]) +
+                   ") is not Clifford; only multiples of π/2 are supported";
+        case CliffordVerdict::NotClifford:
+            return "gate '" + inst.gate_name() + "' is not supported by the tableau backend";
+    }
+    return {};
+}
+
+bool CliffordSimulator::is_clifford(const QuantumCircuit& circuit) {
     for (const auto& inst : circuit.instructions) {
-        switch (inst.type) {
-            case GT::H: case GT::X: case GT::Y: case GT::Z:
-            case GT::S: case GT::SDG:
-            case GT::CX: case GT::CZ: case GT::SWAP:
-            case GT::MEASURE: case GT::RESET: case GT::BARRIER:
-                break;
-            // Genuine Clifford gates whose tableau action composes from the
-            // primitives StabilizerState exposes. Rejecting them would push a
-            // circuit onto the statevector or MPS path with no diagnostic.
-            case GT::SX: case GT::SXDG:
-            case GT::CY: case GT::ISWAP: case GT::ECR:
-                break;
-            // Rotations land in the Clifford group only at multiples of π/2.
-            // The two-qubit Ising rotations are exp(-iθ/2 P⊗Q) for Pauli P, Q
-            // and are Clifford on exactly the same grid as the one-qubit ones.
-            case GT::P: case GT::RX: case GT::RY: case GT::RZ:
-            case GT::RXX: case GT::RYY: case GT::RZZ: case GT::RZX:
-                if (inst.params.empty()) return false;
-                if (clifford_quarter_turn(inst.params[0]) < 0) return false;
-                break;
-            default:
-                return false;
-        }
+        if (clifford_verdict(inst) != CliffordVerdict::Clifford) return false;
     }
     return true;
 }
@@ -1401,6 +1438,21 @@ static bool clifford_measures_are_terminal(const QuantumCircuit& circuit,
     return true;
 }
 
+// Every field of Options, for a failed run's record.
+static void record_options(detail::FailureCollector& failure,
+                           const CliffordSimulator::Options& o) {
+    using Options = CliffordSimulator::Options;
+    const char* sampling = o.sampling == Options::Sampling::Slab      ? "Slab"
+                         : o.sampling == Options::Sampling::PerShot   ? "PerShot"
+                                                                      : "Auto";
+    const char* elimination =
+        o.elimination == StabilizerState::Elimination::FourRussians ? "FourRussians"
+                                                                     : "Plain";
+    failure.add_option("sampling", detail::json_escape(sampling));
+    failure.add_option("elimination", detail::json_escape(elimination));
+    failure.add_option("max_memory_mb", detail::option_value(o.max_memory_mb));
+}
+
 CliffordSimulator::Result CliffordSimulator::run(
     const QuantumCircuit& circuit_in, int shots, uint64_t seed,
     const RunPlan& plan
@@ -1408,11 +1460,18 @@ CliffordSimulator::Result CliffordSimulator::run(
     using GT = Instruction::GateType;
     ScopedWarningFlush flush_on_exit;
     detail::check_circuit_has_qubits(circuit_in.n_qubits, "CliffordSimulator::run");
+    // Everything the instructions decide on their own, operand indices first,
+    // including every gate with no tableau form, before any state is touched.
+    detail::preflight_instructions(
+        circuit_in, "CliffordSimulator::run",
+        [](const Instruction& inst, int) { return clifford_rejection(inst); });
+    // Checked before the Result below allocates its own tableau.
+    const std::uint64_t three_tableaux = detail::saturating_mul(
+        3, detail::form_bytes(StateForm::Stabilizer, circuit_in.n_qubits));
+    const std::uint64_t cap_bytes = detail::require_memory_budget(
+        three_tableaux, options.max_memory_mb, "CliffordSimulator::run");
     Result result(circuit_in.n_qubits);
 
-    // Pre-flight: reject any out-of-range operand index up front (this backend
-    // surfaces errors by throwing).
-    circuit_in.validate_operands();
     // Under Repair::Attempt a repaired copy is executed and the caller's
     // circuit is left exactly as it was handed over; Repair::None binds
     // straight to it and nothing is copied.
@@ -1421,418 +1480,494 @@ CliffordSimulator::Result CliffordSimulator::run(
     const QuantumCircuit& circuit =
         repaired_storage ? *repaired_storage : circuit_in;
 
+    // Declared outside the try block so the failure path can still reach them:
+    // the collector, the harness, and every tableau the run may be evolving
+    // when it fails (the terminal path's base, the shared start while its
+    // prefix runs, a shot's own).
+    detail::FailureCollector failure("CliffordSimulator::run", "clifford", circuit_in,
+                                     shots, plan);
+    std::optional<detail::ObservationRunner> runner;
+    std::optional<StabilizerState> base_slot;
+    // Whether base_slot holds the state the run is evolving. It does not while
+    // the bit-sliced gate pass runs, which evolves a column layout instead.
+    bool base_is_state = false;
+    std::optional<StabilizerState> start_slot;
+    std::optional<StabilizerState> state_slot;
+    bool prefix_running = false;
 
-    const int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
+    try {
+        const int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
 
-    std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
+        const uint64_t base_seed =
+            seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed;
+        failure.set_seed(base_seed);
+        std::mt19937_64 rng(base_seed);
 
-    // Angles reaching here have normally passed is_clifford(), which classifies
-    // through the same function. A DIRECT run() on a circuit that never went
-    // through that gate can still arrive carrying any angle, so one that is not
-    // a quarter turn is rejected rather than rounded to the nearest one.
-    auto quarter_turn_or_throw = [](const Instruction& in) {
-        if (in.params.empty()) {
-            throw std::runtime_error(
-                "CliffordSimulator: " + in.gate_name() + " carries no angle parameter");
-        }
-        const int k = clifford_quarter_turn(in.params[0]);
-        if (k < 0) {
-            throw std::runtime_error(
-                "CliffordSimulator: " + in.gate_name() + "(" +
-                std::to_string(in.params[0]) +
-                ") is not Clifford. Only multiples of π/2 are supported.");
-        }
-        return k;
-    };
+        // Angles reaching here have passed clifford_verdict() in the pass before
+        // the first gate, which classifies through the same function; this stays
+        // as the dispatcher's own guard, so an angle that is not a quarter turn is
+        // rejected rather than rounded to the nearest one whatever calls it.
+        auto quarter_turn_or_throw = [](const Instruction& in) {
+            if (in.params.empty()) {
+                detail::raise_internal("CliffordSimulator::run",
+                    in.gate_name() + " carries no angle parameter past the pass "
+                    "before the first gate");
+            }
+            const int k = clifford_quarter_turn(in.params[0]);
+            if (k < 0) {
+                detail::raise_internal("CliffordSimulator::run",
+                    in.gate_name() + "(" + std::to_string(in.params[0]) +
+                    ") reached the tableau past the pass before the first gate, "
+                    "which refuses an angle that is not a multiple of π/2");
+            }
+            return k;
+        };
 
-    // RZZ(kπ/2) on the tableau. exp(-iθ/2 Z⊗Z) is diagonal with phase
-    // exp(-iθ/2 z_a z_b); relative to |00⟩ that is (1, i, i, 1) at θ = π/2,
-    // which is cx(a,b) . s(b) . cx(a,b): the CX folds a⊕b onto b, S puts i on
-    // b = 1, the CX unfolds. θ = π is Z⊗Z up to a global phase the formalism
-    // does not carry, and θ = 3π/2 is the θ = -π/2 rotation up to the same,
-    // so it is the S† form. The other three Ising rotations are this one
-    // conjugated by the single-qubit Cliffords that rotate Z into X or Y.
-    auto apply_rzz_k = [](auto& state, int a, int b, int k) {
-        switch (k) {
-            case 0:  break;
-            case 1:  state.apply_cx(a, b); state.apply_s(b);   state.apply_cx(a, b); break;
-            case 2:  state.apply_z(a);     state.apply_z(b);   break;
-            default: state.apply_cx(a, b); state.apply_sdg(b); state.apply_cx(a, b); break;
-        }
-    };
+        // RZZ(kπ/2) on the tableau. exp(-iθ/2 Z⊗Z) is diagonal with phase
+        // exp(-iθ/2 z_a z_b); relative to |00⟩ that is (1, i, i, 1) at θ = π/2,
+        // which is cx(a,b) . s(b) . cx(a,b): the CX folds a⊕b onto b, S puts i on
+        // b = 1, the CX unfolds. θ = π is Z⊗Z up to a global phase the formalism
+        // does not carry, and θ = 3π/2 is the θ = -π/2 rotation up to the same,
+        // so it is the S† form. The other three Ising rotations are this one
+        // conjugated by the single-qubit Cliffords that rotate Z into X or Y.
+        auto apply_rzz_k = [](auto& state, int a, int b, int k) {
+            switch (k) {
+                case 0:  break;
+                case 1:  state.apply_cx(a, b); state.apply_s(b);   state.apply_cx(a, b); break;
+                case 2:  state.apply_z(a);     state.apply_z(b);   break;
+                default: state.apply_cx(a, b); state.apply_sdg(b); state.apply_cx(a, b); break;
+            }
+        };
 
-    // Apply one non-measurement Clifford gate to `state` (MEASURE/RESET/BARRIER
-    // handled by the callers). Shared by both execution paths.
-    // Generic over the tableau layout: the bit-sliced ColumnTableau and the
-    // row-major StabilizerState expose the same gate names, and the terminal
-    // path runs its gate pass on the former while the general path, which
-    // interleaves measurement, stays on the latter.
-    auto apply_gate = [&](auto& state, const Instruction& inst) {
-        switch (inst.type) {
-            case GT::H: state.apply_h(inst.qubits[0]); break;
-            case GT::S: state.apply_s(inst.qubits[0]); break;
-            case GT::SDG: state.apply_sdg(inst.qubits[0]); break;
-            case GT::X: state.apply_x(inst.qubits[0]); break;
-            case GT::Y: state.apply_y(inst.qubits[0]); break;
-            case GT::Z: state.apply_z(inst.qubits[0]); break;
-            case GT::SX:   state.apply_sx(inst.qubits[0]); break;
-            case GT::SXDG: state.apply_sxdg(inst.qubits[0]); break;
-            // P and RZ share a dispatch: rz(π/2) equals s and rz(3π/2) equals
-            // sdg up to a global phase, which the stabilizer formalism does not
-            // represent, so the two gates act identically on a tableau.
-            case GT::P:
-            case GT::RZ: {
-                switch (quarter_turn_or_throw(inst)) {
-                    case 0:  break;                                   // identity
-                    case 1:  state.apply_s(inst.qubits[0]);   break;
-                    case 2:  state.apply_z(inst.qubits[0]);   break;
-                    default: state.apply_sdg(inst.qubits[0]); break;
+        // Apply one non-measurement Clifford gate to `state` (MEASURE/RESET/BARRIER
+        // handled by the callers). Shared by both execution paths.
+        // Generic over the tableau layout: the bit-sliced ColumnTableau and the
+        // row-major StabilizerState expose the same gate names, and the terminal
+        // path runs its gate pass on the former while the general path, which
+        // interleaves measurement, stays on the latter.
+        auto apply_gate = [&](auto& state, const Instruction& inst) {
+            switch (inst.type) {
+                case GT::H: state.apply_h(inst.qubits[0]); break;
+                case GT::S: state.apply_s(inst.qubits[0]); break;
+                case GT::SDG: state.apply_sdg(inst.qubits[0]); break;
+                case GT::X: state.apply_x(inst.qubits[0]); break;
+                case GT::Y: state.apply_y(inst.qubits[0]); break;
+                case GT::Z: state.apply_z(inst.qubits[0]); break;
+                case GT::SX:   state.apply_sx(inst.qubits[0]); break;
+                case GT::SXDG: state.apply_sxdg(inst.qubits[0]); break;
+                // P and RZ share a dispatch: rz(π/2) equals s and rz(3π/2) equals
+                // sdg up to a global phase, which the stabilizer formalism does not
+                // represent, so the two gates act identically on a tableau.
+                case GT::P:
+                case GT::RZ: {
+                    switch (quarter_turn_or_throw(inst)) {
+                        case 0:  break;                                   // identity
+                        case 1:  state.apply_s(inst.qubits[0]);   break;
+                        case 2:  state.apply_z(inst.qubits[0]);   break;
+                        default: state.apply_sdg(inst.qubits[0]); break;
+                    }
+                    break;
                 }
-                break;
-            }
-            case GT::RX: {
-                switch (quarter_turn_or_throw(inst)) {
-                    case 0:  break;
-                    case 1:  state.apply_sx(inst.qubits[0]);   break;
-                    case 2:  state.apply_x(inst.qubits[0]);    break;
-                    default: state.apply_sxdg(inst.qubits[0]); break;
+                case GT::RX: {
+                    switch (quarter_turn_or_throw(inst)) {
+                        case 0:  break;
+                        case 1:  state.apply_sx(inst.qubits[0]);   break;
+                        case 2:  state.apply_x(inst.qubits[0]);    break;
+                        default: state.apply_sxdg(inst.qubits[0]); break;
+                    }
+                    break;
                 }
-                break;
-            }
-            case GT::RY: {
-                // ry(π/2) = h . x and ry(3π/2) = h . z, in circuit order.
-                switch (quarter_turn_or_throw(inst)) {
-                    case 0:  break;
-                    case 1:  state.apply_h(inst.qubits[0]);
-                             state.apply_x(inst.qubits[0]); break;
-                    case 2:  state.apply_y(inst.qubits[0]); break;
-                    default: state.apply_h(inst.qubits[0]);
-                             state.apply_z(inst.qubits[0]); break;
+                case GT::RY: {
+                    // ry(π/2) = h . x and ry(3π/2) = h . z, in circuit order.
+                    switch (quarter_turn_or_throw(inst)) {
+                        case 0:  break;
+                        case 1:  state.apply_h(inst.qubits[0]);
+                                 state.apply_x(inst.qubits[0]); break;
+                        case 2:  state.apply_y(inst.qubits[0]); break;
+                        default: state.apply_h(inst.qubits[0]);
+                                 state.apply_z(inst.qubits[0]); break;
+                    }
+                    break;
                 }
-                break;
+                case GT::RZZ: {
+                    apply_rzz_k(state, inst.qubits[0], inst.qubits[1], quarter_turn_or_throw(inst));
+                    break;
+                }
+                case GT::RXX: {
+                    // X = H Z H on both operands: exp(-iθ/2 X⊗X) = (H⊗H) RZZ(θ) (H⊗H).
+                    const int a = inst.qubits[0], b = inst.qubits[1];
+                    const int k = quarter_turn_or_throw(inst);
+                    if (k == 0) break;
+                    state.apply_h(a); state.apply_h(b);
+                    apply_rzz_k(state, a, b, k);
+                    state.apply_h(a); state.apply_h(b);
+                    break;
+                }
+                case GT::RYY: {
+                    // Y = S X S†, so exp(-iθ/2 Y⊗Y) = (S⊗S) RXX(θ) (S†⊗S†): in
+                    // circuit order S† first, then the RXX sequence, then S.
+                    const int a = inst.qubits[0], b = inst.qubits[1];
+                    const int k = quarter_turn_or_throw(inst);
+                    if (k == 0) break;
+                    state.apply_sdg(a); state.apply_sdg(b);
+                    state.apply_h(a);   state.apply_h(b);
+                    apply_rzz_k(state, a, b, k);
+                    state.apply_h(a);   state.apply_h(b);
+                    state.apply_s(a);   state.apply_s(b);
+                    break;
+                }
+                case GT::RZX: {
+                    // Z on qubits[0], X on qubits[1] (see apply_rzx): conjugate
+                    // the second operand alone.
+                    const int a = inst.qubits[0], b = inst.qubits[1];
+                    const int k = quarter_turn_or_throw(inst);
+                    if (k == 0) break;
+                    state.apply_h(b);
+                    apply_rzz_k(state, a, b, k);
+                    state.apply_h(b);
+                    break;
+                }
+                case GT::CX:    state.apply_cx(inst.qubits[0], inst.qubits[1]); break;
+                case GT::CY:    state.apply_cy(inst.qubits[0], inst.qubits[1]); break;
+                case GT::CZ:    state.apply_cz(inst.qubits[0], inst.qubits[1]); break;
+                case GT::SWAP:  state.apply_swap(inst.qubits[0], inst.qubits[1]); break;
+                case GT::ISWAP: state.apply_iswap(inst.qubits[0], inst.qubits[1]); break;
+                case GT::ECR:   state.apply_ecr(inst.qubits[0], inst.qubits[1]); break;
+                default:
+                    // Fail loud instead of silently no-op'ing. run()'s pass before
+                    // the first gate refuses every gate that would land here, so
+                    // this is the dispatcher's own guard and fires only if that
+                    // classification and this switch ever disagree.
+                    detail::raise_internal("CliffordSimulator::run",
+                        "gate '" + inst.gate_name() + "' reached the tableau dispatcher "
+                        "past the pass before the first gate, which refuses every gate "
+                        "with no tableau form");
             }
-            case GT::RZZ: {
-                apply_rzz_k(state, inst.qubits[0], inst.qubits[1], quarter_turn_or_throw(inst));
-                break;
-            }
-            case GT::RXX: {
-                // X = H Z H on both operands: exp(-iθ/2 X⊗X) = (H⊗H) RZZ(θ) (H⊗H).
-                const int a = inst.qubits[0], b = inst.qubits[1];
-                const int k = quarter_turn_or_throw(inst);
-                if (k == 0) break;
-                state.apply_h(a); state.apply_h(b);
-                apply_rzz_k(state, a, b, k);
-                state.apply_h(a); state.apply_h(b);
-                break;
-            }
-            case GT::RYY: {
-                // Y = S X S†, so exp(-iθ/2 Y⊗Y) = (S⊗S) RXX(θ) (S†⊗S†): in
-                // circuit order S† first, then the RXX sequence, then S.
-                const int a = inst.qubits[0], b = inst.qubits[1];
-                const int k = quarter_turn_or_throw(inst);
-                if (k == 0) break;
-                state.apply_sdg(a); state.apply_sdg(b);
-                state.apply_h(a);   state.apply_h(b);
-                apply_rzz_k(state, a, b, k);
-                state.apply_h(a);   state.apply_h(b);
-                state.apply_s(a);   state.apply_s(b);
-                break;
-            }
-            case GT::RZX: {
-                // Z on qubits[0], X on qubits[1] (see apply_rzx): conjugate
-                // the second operand alone.
-                const int a = inst.qubits[0], b = inst.qubits[1];
-                const int k = quarter_turn_or_throw(inst);
-                if (k == 0) break;
-                state.apply_h(b);
-                apply_rzz_k(state, a, b, k);
-                state.apply_h(b);
-                break;
-            }
-            case GT::CX:    state.apply_cx(inst.qubits[0], inst.qubits[1]); break;
-            case GT::CY:    state.apply_cy(inst.qubits[0], inst.qubits[1]); break;
-            case GT::CZ:    state.apply_cz(inst.qubits[0], inst.qubits[1]); break;
-            case GT::SWAP:  state.apply_swap(inst.qubits[0], inst.qubits[1]); break;
-            case GT::ISWAP: state.apply_iswap(inst.qubits[0], inst.qubits[1]); break;
-            case GT::ECR:   state.apply_ecr(inst.qubits[0], inst.qubits[1]); break;
-            default:
-                // Fail loud instead of silently no-op'ing. Reachable only by a
-                // DIRECT run() on a non-Clifford circuit; the AUTO dispatch is
-                // gated by is_clifford(), so this never fires on that path.
-                throw std::invalid_argument(
-                    "CliffordSimulator: gate '" + inst.gate_name() +
-                    "' is not supported by the tableau backend");
-        }
-    };
+        };
 
-    // Records one shot, bit 0 of `reg` the rightmost character: the classical
-    // register (n_clbits wide) when the circuit measures, the whole qubit
-    // register (n_qubits wide) when it does not.
-    auto record = [&](const std::vector<int>& reg) {
-        const std::size_t width = reg.size();
-        std::string bitstring(width, '0');
-        for (std::size_t c = 0; c < width; ++c)
-            if (reg[c]) bitstring[width - 1 - c] = '1';
-        result.counts[bitstring]++;
-    };
+        // Records one shot, bit 0 of `reg` the rightmost character: the classical
+        // register (n_clbits wide) when the circuit measures, the whole qubit
+        // register (n_qubits wide) when it does not.
+        auto record = [&](const std::vector<int>& reg) {
+            const std::size_t width = reg.size();
+            std::string bitstring(width, '0');
+            for (std::size_t c = 0; c < width; ++c)
+                if (reg[c]) bitstring[width - 1 - c] = '1';
+            result.counts[bitstring]++;
+            failure.shot_done();
+        };
 
-    // Anchors resolve against the circuit before any state is touched, so an
-    // anchor that cannot fire stops the run here.
-    detail::ObservationRunner runner(plan, circuit, StateForm::Stabilizer);
-    runner.set_bundle(&result.observations);
-    detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
-    const bool harnessed = !plan.empty();
+        // Anchors resolve against the circuit before any state is touched, so an
+        // anchor that cannot fire stops the run here.
+        runner.emplace(plan, circuit, StateForm::Stabilizer, "CliffordSimulator::run");
+        runner->set_bundle(&result.observations);
+        detail::ObservationRunner* watcher = runner->active() ? &*runner : nullptr;
+        // Everything the run allocates beyond its tableaux is charged here before
+        // it is allocated: the conversions its observers ask for, which reach
+        // 16 * 2^n bytes for a dense state.
+        detail::RunBudget budget(cap_bytes, three_tableaux, "CliffordSimulator::run");
+        runner->set_budget(&budget);
+        const bool harnessed = !plan.empty();
 
-    const std::vector<bool> trivial = detail::trivial_resets(
-        circuit, detail::zero_at_start(plan.initial, circuit.n_qubits));
-    bool has_measure = false;
-    for (const auto& inst : circuit.instructions)
-        if (inst.type == GT::MEASURE) has_measure = true;
+        const std::vector<bool> trivial = detail::trivial_resets(
+            circuit, detail::zero_at_start(plan.initial, circuit.n_qubits));
+        bool has_measure = false;
+        for (const auto& inst : circuit.instructions)
+            if (inst.type == GT::MEASURE) has_measure = true;
 
-    if (clifford_measures_are_terminal(circuit, trivial)) {
-        // The gate pass is deterministic and runs ONCE. Only the sampling that
-        // follows it differs from shot to shot, and how it does so is what
-        // Options::sampling selects.
-        //
-        // Gates run bit-sliced, where each one is a few word operations over
-        // the columns it touches rather than a strided visit to every row. The
-        // single transpose afterwards buys back the row-major layout that
-        // measurement, the outcome slab and the returned state all read.
-        StabilizerState base(circuit.n_qubits);
-        if (harnessed) {
-            // Row-major, because the bit-sliced layout is not a state an
-            // observer can be handed and a supplied initial state has no
-            // column form to be seeded into. One deterministic pass serves
-            // every shot, so the observers fire once, which is what describes
-            // all of them.
-            detail::apply_initial_state(plan, base);
-            const StateView view(StateForm::Stabilizer, &base, circuit.n_qubits);
-            // Named, not a temporary: begin_shot keeps a pointer to it for the
-            // whole shot so observers read the register as it stands.
-            const std::vector<int> no_clreg;
-            runner.begin_run(circuit.n_qubits, 1);
-            runner.begin_shot(0, no_clreg);
-            if (watcher) watcher->at_start(view);
+        if (clifford_measures_are_terminal(circuit, trivial)) {
+            // The gate pass is deterministic and runs ONCE. Only the sampling that
+            // follows it differs from shot to shot, and how it does so is what
+            // Options::sampling selects.
+            //
+            // Gates run bit-sliced, where each one is a few word operations over
+            // the columns it touches rather than a strided visit to every row. The
+            // single transpose afterwards buys back the row-major layout that
+            // measurement, the outcome slab and the returned state all read.
+            StabilizerState& base = base_slot.emplace(circuit.n_qubits);
+            base_is_state = harnessed;
+            if (harnessed) {
+                // Row-major, because the bit-sliced layout is not a state an
+                // observer can be handed and a supplied initial state has no
+                // column form to be seeded into. One deterministic pass serves
+                // every shot, so the observers fire once, which is what describes
+                // all of them.
+                detail::apply_initial_state(plan, base, "CliffordSimulator::run");
+                const StateView view(StateForm::Stabilizer, &base, circuit.n_qubits);
+                // Named, not a temporary: begin_shot keeps a pointer to it for the
+                // whole shot so observers read the register as it stands.
+                const std::vector<int> no_clreg;
+                runner->begin_run(circuit.n_qubits, 1);
+                runner->begin_shot(0, no_clreg);
+                if (watcher) watcher->at_start(view);
 
-            int index = -1;
-            for (const auto& inst : circuit.instructions) {
-                ++index;
-                if (watcher) watcher->before_instruction(index, inst, view);
-                detail::FiringGuard fire(watcher, index, inst, view);
-                // A RESET here is on a qubit known to be |0> and changes
-                // nothing (clifford_measures_are_terminal lets no other in).
-                if (inst.type == GT::MEASURE || inst.type == GT::BARRIER ||
-                    inst.type == GT::RESET)
-                    continue;
-                apply_gate(base, inst);
+                int index = -1;
+                for (const auto& inst : circuit.instructions) {
+                    ++index;
+                    if (watcher) watcher->before_instruction(index, inst, view);
+                    failure.at_instruction(index, &inst);
+                    detail::FiringGuard fire(watcher, index, inst, view);
+                    // A RESET here is on a qubit known to be |0> and changes
+                    // nothing (clifford_measures_are_terminal lets no other in).
+                    if (inst.type == GT::MEASURE || inst.type == GT::BARRIER ||
+                        inst.type == GT::RESET)
+                        continue;
+                    apply_gate(base, inst);
+                }
+                if (watcher) watcher->at_end(view, index);
+            } else {
+                StabilizerState::ColumnTableau cols(circuit.n_qubits);
+                int index = -1;
+                for (const auto& inst : circuit.instructions) {
+                    ++index;
+                    if (inst.type == GT::MEASURE || inst.type == GT::BARRIER ||
+                        inst.type == GT::RESET)
+                        continue;
+                    failure.at_instruction(index, &inst);
+                    apply_gate(cols, inst);
+                }
+                base = cols.to_state();
+                base_is_state = true;
             }
-            if (watcher) watcher->at_end(view, index);
-        } else {
-            StabilizerState::ColumnTableau cols(circuit.n_qubits);
-            for (const auto& inst : circuit.instructions) {
-                if (inst.type == GT::MEASURE || inst.type == GT::BARRIER ||
-                    inst.type == GT::RESET)
-                    continue;
-                apply_gate(cols, inst);
-            }
-            base = cols.to_state();
-        }
+            failure.leave_instructions();
 
-        // shots == 0 is ONE seeded trajectory, and the only thing it produces
-        // is the returned state, so the measurements have to be drawn into it.
-        // Terminal Z measurements commute, so the order they are drawn in does
-        // not matter. counts stays empty, which is the rest of the contract.
-        if (shots == 0) {
-            for (const auto& inst : circuit.instructions) {
-                if (inst.type != GT::MEASURE) continue;
-                (void)base.measure(inst.qubits[0], true, rng);
+            // shots == 0 is ONE seeded trajectory, and the only thing it produces
+            // is the returned state, so the measurements have to be drawn into it.
+            // Terminal Z measurements commute, so the order they are drawn in does
+            // not matter. counts stays empty, which is the rest of the contract.
+            if (shots == 0) {
+                for (const auto& inst : circuit.instructions) {
+                    if (inst.type != GT::MEASURE) continue;
+                    (void)base.measure(inst.qubits[0], true, rng);
+                }
+                runner->end_run();
+                result.final_state = std::move(base);
+                return result;
             }
-            runner.end_run();
+
+            // Auto picks the slab here, which is where it applies.
+            if (options.sampling != Options::Sampling::PerShot) {
+                // Where each outcome is recorded, read once. Terminal Z
+                // measurements commute, so their order does not affect the
+                // distribution, only the qubit-to-clbit mapping.
+                //
+                // A circuit with no MEASURE samples the whole register, qubit q
+                // at key position q, n_qubits wide, as every other backend
+                // samples such a circuit.
+                std::vector<std::pair<int, int>> measured;  // (qubit, key bit)
+                for (const auto& inst : circuit.instructions) {
+                    if (inst.type != GT::MEASURE) continue;
+                    const int q = inst.qubits[0];
+                    measured.emplace_back(q, inst.clbits.empty() ? q : inst.clbits[0]);
+                }
+                if (!has_measure)
+                    for (int q = 0; q < circuit.n_qubits; ++q) measured.emplace_back(q, q);
+                const int key_width = has_measure ? n_clbits : circuit.n_qubits;
+
+                const int W = base.words_per_vector();
+
+                // Extracting the slab is one elimination over the whole tableau,
+                // paid once for every shot.
+                const StabilizerState::OutcomeSlab slab = base.outcome_slab(options.elimination);
+                std::vector<uint64_t> y(static_cast<size_t>(W), 0ULL);
+                std::vector<int> clreg(static_cast<size_t>(key_width), 0);
+
+                // The generator yields 64 bits at a time and they are spent one
+                // free direction at a time, so a shot costs one draw per 64
+                // dimensions rather than one draw per dimension.
+                uint64_t pool = 0;
+                int pool_left = 0;
+
+                for (int s = 0; s < shots; ++s) {
+                    y = slab.offset;
+                    for (int d = 0; d < slab.dim; ++d) {
+                        if (pool_left == 0) { pool = rng(); pool_left = 64; }
+                        const bool take = (pool & 1ULL) != 0;
+                        pool >>= 1;
+                        --pool_left;
+                        if (take) {
+                            const std::vector<uint64_t>& v = slab.basis[static_cast<size_t>(d)];
+                            for (int w = 0; w < W; ++w) {
+                                y[static_cast<size_t>(w)] ^= v[static_cast<size_t>(w)];
+                            }
+                        }
+                    }
+                    std::fill(clreg.begin(), clreg.end(), 0);
+                    for (const auto& qc : measured) {
+                        const int q = qc.first, clbit = qc.second;
+                        if (clbit < 0 || clbit >= key_width) continue;
+                        clreg[static_cast<size_t>(clbit)] = static_cast<int>(
+                            (y[static_cast<size_t>(q / 64)] >> (q % 64)) & 1ULL);
+                    }
+                    record(clreg);
+                }
+            } else {
+                for (int s = 0; s < shots; ++s) {
+                    StabilizerState state = base;
+                    if (!has_measure) {
+                        // The whole register, qubit q at key position q.
+                        std::vector<int> reg(static_cast<size_t>(circuit.n_qubits), 0);
+                        for (int q = 0; q < circuit.n_qubits; ++q)
+                            reg[static_cast<size_t>(q)] = state.measure(q, true, rng);
+                        record(reg);
+                        continue;
+                    }
+                    std::vector<int> clreg(n_clbits, 0);
+                    for (const auto& inst : circuit.instructions) {
+                        if (inst.type != GT::MEASURE) continue;
+                        int q = inst.qubits[0];
+                        int clbit = inst.clbits.empty() ? q : inst.clbits[0];
+                        int outcome = state.measure(q, true, rng);
+                        if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
+                    }
+                    record(clreg);
+                }
+            }
+
+            runner->end_run();
             result.final_state = std::move(base);
             return result;
         }
 
-        // Auto picks the slab here, which is where it applies.
-        if (options.sampling != Options::Sampling::PerShot) {
-            // Where each outcome is recorded, read once. Terminal Z
-            // measurements commute, so their order does not affect the
-            // distribution, only the qubit-to-clbit mapping.
-            //
-            // A circuit with no MEASURE samples the whole register, qubit q
-            // at key position q, n_qubits wide, as every other backend
-            // samples such a circuit.
-            std::vector<std::pair<int, int>> measured;  // (qubit, key bit)
-            for (const auto& inst : circuit.instructions) {
-                if (inst.type != GT::MEASURE) continue;
-                const int q = inst.qubits[0];
-                measured.emplace_back(q, inst.clbits.empty() ? q : inst.clbits[0]);
+        // General path: mid-circuit measurement / feedforward / reset need a fresh
+        // trajectory per shot.
+
+        // The slab describes a terminal measurement of a fixed state, and this
+        // route has no fixed state to describe: each trajectory diverges at its
+        // first collapse. A caller who asked for it anyway gets the per-shot route
+        // and is told so, rather than being left to infer from a timing that the
+        // request was dropped. Auto asked for nothing and is not told anything.
+        if (options.sampling == Options::Sampling::Slab) {
+            emit_warning(
+                "note: Sampling::Slab requires terminal measurements, and this "
+                "circuit has mid-circuit measurement, feedforward or reset. The "
+                "outcome slab describes a terminal measurement of a fixed state, "
+                "which such a circuit does not have, so the per-shot route was used "
+                "instead. Counts are unaffected.");
+        }
+
+        // shots == 0 is ONE seeded trajectory whose outcome lives in the returned
+        // state, so the body runs once and records nothing.
+        const int trajectories = shots > 0 ? shots : 1;
+        runner->begin_run(circuit.n_qubits, trajectories);
+
+        // Everything before the first MEASURE, RESET or conditioned instruction is
+        // the same in every shot and draws nothing, so an unobserved run of more
+        // than one shot runs it once into a start tableau every shot copies; the
+        // random stream, so the seeded counts, are those of a rerun. A tableau is
+        // small beside the gates it saves. An observed run reruns every shot, so
+        // each anchor fires once per shot with that shot's index.
+        const bool reuse = !watcher && trajectories > 1;
+        std::size_t prefix_end = 0;
+        StabilizerState& start = start_slot.emplace(circuit.n_qubits);
+        if (reuse) {
+            detail::apply_initial_state(plan, start, "CliffordSimulator::run");
+            prefix_running = true;
+            while (prefix_end < circuit.instructions.size()) {
+                const Instruction& inst = circuit.instructions[prefix_end];
+                if (inst.type == GT::MEASURE || inst.type == GT::RESET ||
+                    inst.condition_clbit >= 0)
+                    break;
+                failure.at_instruction(static_cast<int>(prefix_end), &inst);
+                if (inst.type != GT::BARRIER) apply_gate(start, inst);
+                ++prefix_end;
             }
-            if (!has_measure)
-                for (int q = 0; q < circuit.n_qubits; ++q) measured.emplace_back(q, q);
-            const int key_width = has_measure ? n_clbits : circuit.n_qubits;
+            prefix_running = false;
+            failure.leave_instructions();
+        }
 
-            const int W = base.words_per_vector();
+        for (int s = 0; s < trajectories; ++s) {
+            failure.set_shot(s);
+            StabilizerState& state =
+                state_slot.emplace(reuse ? start : StabilizerState(circuit.n_qubits));
+            if (!reuse) detail::apply_initial_state(plan, state, "CliffordSimulator::run");
+            std::vector<int> clreg(n_clbits, 0);
 
-            // Extracting the slab is one elimination over the whole tableau,
-            // paid once for every shot.
-            const StabilizerState::OutcomeSlab slab = base.outcome_slab(options.elimination);
-            std::vector<uint64_t> y(static_cast<size_t>(W), 0ULL);
-            std::vector<int> clreg(static_cast<size_t>(key_width), 0);
+            const StateView view(StateForm::Stabilizer, &state, circuit.n_qubits);
+            runner->begin_shot(s, clreg);
+            if (watcher) watcher->at_start(view);
 
-            // The generator yields 64 bits at a time and they are spent one
-            // free direction at a time, so a shot costs one draw per 64
-            // dimensions rather than one draw per dimension.
-            uint64_t pool = 0;
-            int pool_left = 0;
-
-            for (int s = 0; s < shots; ++s) {
-                y = slab.offset;
-                for (int d = 0; d < slab.dim; ++d) {
-                    if (pool_left == 0) { pool = rng(); pool_left = 64; }
-                    const bool take = (pool & 1ULL) != 0;
-                    pool >>= 1;
-                    --pool_left;
-                    if (take) {
-                        const std::vector<uint64_t>& v = slab.basis[static_cast<size_t>(d)];
-                        for (int w = 0; w < W; ++w) {
-                            y[static_cast<size_t>(w)] ^= v[static_cast<size_t>(w)];
-                        }
-                    }
+            int index = static_cast<int>(prefix_end) - 1;
+            for (std::size_t i = prefix_end; i < circuit.instructions.size(); ++i) {
+                const Instruction& inst = circuit.instructions[i];
+                ++index;
+                if (watcher) watcher->before_instruction(index, inst, view);
+                failure.at_instruction(index, &inst);
+                detail::FiringGuard fire(watcher, index, inst, view);
+                if (inst.condition_clbit >= 0) {
+                    int cv = (inst.condition_clbit < n_clbits)
+                             ? clreg[inst.condition_clbit] : 0;
+                    if (cv != inst.condition_value) continue;
                 }
-                std::fill(clreg.begin(), clreg.end(), 0);
-                for (const auto& qc : measured) {
-                    const int q = qc.first, clbit = qc.second;
-                    if (clbit < 0 || clbit >= key_width) continue;
-                    clreg[static_cast<size_t>(clbit)] = static_cast<int>(
-                        (y[static_cast<size_t>(q / 64)] >> (q % 64)) & 1ULL);
-                }
-                record(clreg);
-            }
-        } else {
-            for (int s = 0; s < shots; ++s) {
-                StabilizerState state = base;
-                if (!has_measure) {
-                    // The whole register, qubit q at key position q.
-                    std::vector<int> reg(static_cast<size_t>(circuit.n_qubits), 0);
-                    for (int q = 0; q < circuit.n_qubits; ++q)
-                        reg[static_cast<size_t>(q)] = state.measure(q, true, rng);
-                    record(reg);
-                    continue;
-                }
-                std::vector<int> clreg(n_clbits, 0);
-                for (const auto& inst : circuit.instructions) {
-                    if (inst.type != GT::MEASURE) continue;
+                if (inst.type == GT::MEASURE) {
                     int q = inst.qubits[0];
                     int clbit = inst.clbits.empty() ? q : inst.clbits[0];
                     int outcome = state.measure(q, true, rng);
                     if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
+                } else if (inst.type == GT::RESET) {
+                    int q = inst.qubits[0];
+                    if (state.measure(q, true, rng) == 1) state.apply_x(q);
+                } else if (inst.type != GT::BARRIER) {
+                    apply_gate(state, inst);
                 }
-                record(clreg);
+            }
+
+            if (watcher) watcher->at_end(view, index);
+            failure.leave_instructions();
+
+            if (shots > 0) {
+                if (has_measure) {
+                    record(clreg);
+                } else {
+                    // No MEASURE: one sample of the whole register from this
+                    // trajectory's end state, drawn on a copy so the returned
+                    // state is the trajectory's own.
+                    StabilizerState probe = state;
+                    std::vector<int> reg(static_cast<size_t>(circuit.n_qubits), 0);
+                    for (int q = 0; q < circuit.n_qubits; ++q)
+                        reg[static_cast<size_t>(q)] = probe.measure(q, true, rng);
+                    record(reg);
+                }
             }
         }
 
-        runner.end_run();
-        result.final_state = std::move(base);
+        runner->end_run();
+
+        // The last trajectory's tableau leaves its slot only once nothing after
+        // it can fail, so a failure in end_run() still finds it there for the
+        // failed-run record. trajectories >= 1, so the slot is always filled.
+        result.final_state = std::move(*state_slot);
+        state_slot.reset();
         return result;
-    }
-
-    // General path: mid-circuit measurement / feedforward / reset need a fresh
-    // trajectory per shot.
-
-    // The slab describes a terminal measurement of a fixed state, and this
-    // route has no fixed state to describe: each trajectory diverges at its
-    // first collapse. A caller who asked for it anyway gets the per-shot route
-    // and is told so, rather than being left to infer from a timing that the
-    // request was dropped. Auto asked for nothing and is not told anything.
-    if (options.sampling == Options::Sampling::Slab) {
-        emit_warning(
-            "note: Sampling::Slab requires terminal measurements, and this "
-            "circuit has mid-circuit measurement, feedforward or reset. The "
-            "outcome slab describes a terminal measurement of a fixed state, "
-            "which such a circuit does not have, so the per-shot route was used "
-            "instead. Counts are unaffected.");
-    }
-
-    // shots == 0 is ONE seeded trajectory whose outcome lives in the returned
-    // state, so the body runs once and records nothing.
-    const int trajectories = shots > 0 ? shots : 1;
-    runner.begin_run(circuit.n_qubits, trajectories);
-
-    // Everything before the first MEASURE, RESET or conditioned instruction is
-    // the same in every shot and draws nothing, so an unobserved run of more
-    // than one shot runs it once into a start tableau every shot copies; the
-    // random stream, so the seeded counts, are those of a rerun. A tableau is
-    // small beside the gates it saves. An observed run reruns every shot, so
-    // each anchor fires once per shot with that shot's index.
-    const bool reuse = !watcher && trajectories > 1;
-    std::size_t prefix_end = 0;
-    StabilizerState start(circuit.n_qubits);
-    if (reuse) {
-        detail::apply_initial_state(plan, start);
-        while (prefix_end < circuit.instructions.size()) {
-            const Instruction& inst = circuit.instructions[prefix_end];
-            if (inst.type == GT::MEASURE || inst.type == GT::RESET ||
-                inst.condition_clbit >= 0)
-                break;
-            if (inst.type != GT::BARRIER) apply_gate(start, inst);
-            ++prefix_end;
-        }
-    }
-
-    for (int s = 0; s < trajectories; ++s) {
-        StabilizerState state = reuse ? start : StabilizerState(circuit.n_qubits);
-        if (!reuse) detail::apply_initial_state(plan, state);
-        std::vector<int> clreg(n_clbits, 0);
-
-        const StateView view(StateForm::Stabilizer, &state, circuit.n_qubits);
-        runner.begin_shot(s, clreg);
-        if (watcher) watcher->at_start(view);
-
-        int index = static_cast<int>(prefix_end) - 1;
-        for (std::size_t i = prefix_end; i < circuit.instructions.size(); ++i) {
-            const Instruction& inst = circuit.instructions[i];
-            ++index;
-            if (watcher) watcher->before_instruction(index, inst, view);
-            detail::FiringGuard fire(watcher, index, inst, view);
-            if (inst.condition_clbit >= 0) {
-                int cv = (inst.condition_clbit < n_clbits)
-                         ? clreg[inst.condition_clbit] : 0;
-                if (cv != inst.condition_value) continue;
+    } catch (...) {
+        // The failure path, as in the statevector backend: what the run had
+        // computed goes into the failed-run record and the failure is
+        // rethrown; one before the first instruction is rethrown untouched. A
+        // failure inside the bit-sliced gate pass leaves no tableau to keep,
+        // since that layout is not a StabilizerState.
+        FailedRun::State state;
+        if (failure.work_started()) {
+            try {
+                std::vector<std::string> notes;
+                if (runner) runner->flush_on_failure(notes);
+                for (auto& text : notes) failure.note(std::move(text));
+                record_options(failure, options);
+            } catch (...) {
+                // These allocate, and may fail under the memory pressure that
+                // failed the run; the run's own failure is what the caller
+                // must see.
             }
-            if (inst.type == GT::MEASURE) {
-                int q = inst.qubits[0];
-                int clbit = inst.clbits.empty() ? q : inst.clbits[0];
-                int outcome = state.measure(q, true, rng);
-                if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
-            } else if (inst.type == GT::RESET) {
-                int q = inst.qubits[0];
-                if (state.measure(q, true, rng) == 1) state.apply_x(q);
-            } else if (inst.type != GT::BARRIER) {
-                apply_gate(state, inst);
+            if (state_slot) {
+                state = std::move(*state_slot);
+            } else if (prefix_running && start_slot) {
+                state = std::move(*start_slot);
+            } else if (base_slot && base_is_state) {
+                state = std::move(*base_slot);
             }
         }
-
-        if (watcher) watcher->at_end(view, index);
-
-        if (shots > 0) {
-            if (has_measure) {
-                record(clreg);
-            } else {
-                // No MEASURE: one sample of the whole register from this
-                // trajectory's end state, drawn on a copy so the returned
-                // state is the trajectory's own.
-                StabilizerState probe = state;
-                std::vector<int> reg(static_cast<size_t>(circuit.n_qubits), 0);
-                for (int q = 0; q < circuit.n_qubits; ++q)
-                    reg[static_cast<size_t>(q)] = probe.measure(q, true, rng);
-                record(reg);
-            }
-        }
-        result.final_state = std::move(state);
+        failure.fail(std::current_exception(), std::move(result.counts),
+                     std::move(result.observations), std::move(state));
     }
-
-    runner.end_run();
-    return result;
 }
 
 } // namespace lindblad

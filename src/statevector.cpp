@@ -32,22 +32,35 @@ namespace {
 // behaviour (shift-width overflow), so the guard must run first — a body check
 // after the init list is too late. Called from the n_qubits member initializer,
 // which precedes `dim` in declaration order, so a bad n throws before the shift.
-inline int validated_n_qubits(int n) {
-    if (n < 1 || n > 30)
-        throw std::invalid_argument(
-            "Statevector: n_qubits must be in [1, 30], got " + std::to_string(n));
+inline int validated_n_qubits(int n, QubitLimit limit) {
+    const int ceiling = max_statevector_qubits(limit);
+    if (n < 1 || n > ceiling) {
+        std::string msg = "n_qubits must be in [1, " + std::to_string(ceiling) +
+                          "], got " + std::to_string(n);
+        if (limit == QubitLimit::Enforce && n > ceiling && n <= LIFTED_MAX_QUBITS)
+            msg += "; QubitLimit::Lift raises the ceiling to " +
+                   std::to_string(LIFTED_MAX_QUBITS);
+        detail::raise<InvalidArgument>("Statevector", msg);
+    }
     return n;
 }
 } // namespace
 
-Statevector::Statevector(int n_qubits)
-    : n_qubits(validated_n_qubits(n_qubits))
+Statevector::Statevector(int n_qubits, QubitLimit limit)
+    : n_qubits(validated_n_qubits(n_qubits, limit))
     , dim(1ULL << this->n_qubits)   // this->n_qubits is already validated
     , real_parts(nullptr)
     , imag_parts(nullptr)
 {
     real_parts = aligned_alloc_doubles(dim);
-    imag_parts = aligned_alloc_doubles(dim);
+    // A constructor that throws runs no destructor, so the first buffer is
+    // freed here when the second cannot be had.
+    try {
+        imag_parts = aligned_alloc_doubles(dim);
+    } catch (...) {
+        aligned_free(real_parts);
+        throw;
+    }
 
     initialize();
 }
@@ -230,9 +243,8 @@ void Statevector::normalize() {
     // and the two states this rejects (zero, and non-finite) are precisely the
     // ones where dividing by the norm produces garbage rather than a state.
     if (!is_normalizable(n)) {
-        throw std::runtime_error(
-            "Statevector::normalize: no norm to divide out; the state is zero "
-            "or non-finite");
+        detail::raise<RuntimeFailure>("Statevector::normalize",
+            "no norm to divide out; the state is zero or non-finite");
     }
     const double inv_n = 1.0 / n;
 
@@ -398,5 +410,22 @@ std::string Statevector::to_string(int precision) const {
     return oss.str();
 }
 
-} // namespace lindblad
+namespace detail {
 
+bool state_is_finite_and_nonzero(const Statevector& sv) noexcept {
+    const std::size_t dim = sv.dim;
+    const double* re = sv.real_parts;
+    const double* im = sv.imag_parts;
+    double norm_sq = 0.0;
+    int non_finite = 0;
+    #pragma omp parallel for schedule(static) reduction(+:norm_sq, non_finite) if(dim >= (1<<20))
+    for (std::size_t i = 0; i < dim; ++i) {
+        if (!is_finite_strict(re[i]) || !is_finite_strict(im[i])) ++non_finite;
+        norm_sq += re[i] * re[i] + im[i] * im[i];
+    }
+    return non_finite == 0 && norm_sq > 0.0;
+}
+
+}  // namespace detail
+
+} // namespace lindblad

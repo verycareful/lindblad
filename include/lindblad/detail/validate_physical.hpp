@@ -11,6 +11,7 @@
 
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
+#include "lindblad/detail/report.hpp"
 #include "lindblad/detail/unitary_repair.hpp"
 
 #include <array>
@@ -98,24 +99,30 @@ inline std::string format_residual(double x) {
     return std::string(buf);
 }
 
-inline std::string physical_message(const char* ctx, const PhysicalProperty& p,
-                                    double deviation, double atol) {
-    return std::string(ctx) + ": " + p.subject + " (" + p.residual + " = " +
-           format_residual(deviation) + ", atol = " + format_residual(atol) +
-           ")";
+// What is wrong and by how much, without the requester.
+inline std::string physical_finding(const PhysicalProperty& p, double deviation,
+                                    double atol) {
+    return std::string(p.subject) + " (" + p.residual + " = " +
+           format_residual(deviation) + ", atol = " + format_residual(atol) + ")";
 }
 
+inline std::string physical_message(const char* ctx, const PhysicalProperty& p,
+                                    double deviation, double atol) {
+    return std::string(ctx) + ": " + physical_finding(p, deviation, atol);
+}
+
+// Both refusals are InvalidArgument with `ctx`, the requester, as the entry
+// point, so the message reads "<ctx>: ...".
 [[noreturn]] inline void throw_not_physical(const char* ctx,
                                             const PhysicalProperty& p,
                                             double deviation, double atol) {
-    throw std::invalid_argument(physical_message(ctx, p, deviation, atol));
+    raise<InvalidArgument>(ctx, physical_finding(p, deviation, atol));
 }
 
 [[noreturn]] inline void throw_no_repair(const char* ctx,
                                          const PhysicalProperty& p) {
-    throw std::invalid_argument(std::string(ctx) +
-                                ": Repair::Attempt has no repair defined for " +
-                                p.noun);
+    raise<InvalidArgument>(ctx, std::string("Repair::Attempt has no repair defined for ") +
+                                    p.noun);
 }
 
 // -----------------------------------------------------------------------------
@@ -217,18 +224,17 @@ inline bool enforce_physical_repairable(double deviation,
 inline void respond_unrepaired(const ValidationOptions& v, const char* ctx,
                                const PhysicalProperty& p,
                                const std::string& why) {
-    const std::string msg =
-        std::string(ctx) + ": could not repair " + p.noun + ", " + why;
+    const std::string finding = std::string("could not repair ") + p.noun + ", " + why;
     switch (v.policy) {
         case Validation::Warn:
-            emit_warning(msg);
+            emit_warning(std::string(ctx) + ": " + finding);
             return;
         case Validation::Ignore:
             return;
         case Validation::Throw:
             break;
     }
-    throw std::invalid_argument(msg);
+    raise<InvalidArgument>(ctx, finding);
 }
 
 // -----------------------------------------------------------------------------
@@ -534,7 +540,8 @@ inline bool gate_keeps_unitarity(const Complex128* U, std::size_t rows,
 // distribution, each outcome's weight divided by the total, which exists only
 // while there is a norm to divide out. A zero or non-finite state has none, so
 // each of them calls this BEFORE drawing, leaving the caller's engine as it
-// was, and raises the type normalize() raises on the same states.
+// was. It raises lindblad::RuntimeFailure, a std::runtime_error as
+// normalize()'s refusal of the same states is.
 //
 // `measure` is what the class's own normalize() divides by, so the two refuse
 // on the same threshold (is_normalizable's): the norm, not its square, for a
@@ -543,9 +550,7 @@ inline bool gate_keeps_unitarity(const Complex128* U, std::size_t rows,
 // could leave nothing to draw from.
 inline void require_norm_to_sample(double measure, const char* ctx) {
     if (!is_normalizable(measure)) {
-        throw std::runtime_error(std::string(ctx) +
-                                 ": no norm to sample from; the state is zero "
-                                 "or non-finite");
+        raise<RuntimeFailure>(ctx, "no norm to sample from; the state is zero or non-finite");
     }
 }
 

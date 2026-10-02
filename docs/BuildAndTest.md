@@ -209,6 +209,11 @@ threading, Lindblad keeps its compiled flags.
 
 ## Python Binding Build
 
+The Python bindings are unmaintained. No CI leg and no test builds them
+(`LINDBLAD_BUILD_PYTHON` is `OFF` everywhere), so nothing checks that they
+compile against the current C++ API or that what they expose behaves as the C++
+does. They expose no failed-run record. Use the C++ API.
+
 Enable bindings:
 
 ```powershell

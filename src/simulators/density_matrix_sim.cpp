@@ -17,7 +17,9 @@
 #include "lindblad/circuit.hpp"
 #include "lindblad/detail/pauli_rules.hpp"
 #include "lindblad/detail/born_draw.hpp"
+#include "lindblad/detail/failure_collector.hpp"
 #include "lindblad/detail/memory_budget.hpp"
+#include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/noise.hpp"
@@ -81,9 +83,8 @@ void DensityMatrix::normalize() {
     // The two states rejected here, zero and non-finite, are the ones where
     // dividing by the trace yields garbage rather than a density matrix.
     if (!is_normalizable(std::abs(tr))) {
-        throw std::runtime_error(
-            "DensityMatrix::normalize: no trace to divide out; it is zero or "
-            "non-finite");
+        detail::raise<RuntimeFailure>("DensityMatrix::normalize",
+            "no trace to divide out; it is zero or non-finite");
     }
     const double inv = 1.0 / tr;
     for (auto& z : data) {
@@ -854,6 +855,26 @@ static bool dm_measures_are_terminal(const QuantumCircuit& circuit) {
     return true;
 }
 
+// Whether `dm` is a state a run may hand back: every entry finite and the
+// real trace above zero. A zero or non-finite final state can only come from
+// a matrix or channel whose physical check was waived.
+static bool dm_is_finite_with_trace(const DensityMatrix& dm) noexcept {
+    for (const Complex128& entry : dm.data) {
+        if (!is_finite_strict(entry.real) || !is_finite_strict(entry.imag)) return false;
+    }
+    double trace = 0.0;
+    for (size_t i = 0; i < dm.dim; ++i) trace += dm.data[i * dm.dim + i].real;
+    return trace > 0.0;
+}
+
+// Every field of Options, for a failed run's record.
+static void record_options(detail::FailureCollector& failure,
+                           const DensityMatrixSimulator::Options& o) {
+    using detail::option_value;
+    failure.add_option("max_memory_mb", option_value(o.max_memory_mb));
+    failure.add_option("prefix_reuse", option_value(o.prefix_reuse));
+}
+
 DensityMatrixSimulator::Result DensityMatrixSimulator::run(
     const QuantumCircuit& circuit_in,
     const NoiseModel& noise_model,
@@ -864,26 +885,40 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
     ScopedWarningFlush flush_on_exit;
     Result result;
 
+    // Declared outside the try block so the failure path can still reach them:
+    // the collector, the harness, the matrix being evolved, and the circuit an
+    // instruction the collector names may belong to.
+    detail::FailureCollector failure("DensityMatrixSimulator::run", "density_matrix",
+                                     circuit_in, shots, plan);
+    failure.set_noise_model(noise_model);
+    std::optional<detail::ObservationRunner> runner;
+    std::optional<DensityMatrix> dm_slot;
+    std::optional<QuantumCircuit> repaired_storage;
+
     try {
         detail::check_circuit_has_qubits(circuit_in.n_qubits,
                                          "DensityMatrixSimulator::run");
         // A run holds one density matrix; a prefix snapshot, when taken, is
         // judged on its own below.
-        detail::require_memory_budget(
-            detail::complex_bytes(detail::pow2_saturating(2 * circuit_in.n_qubits)),
-            options.max_memory_mb, "DensityMatrixSimulator::run");
+        const std::uint64_t one_matrix =
+            detail::complex_bytes(detail::pow2_saturating(2 * circuit_in.n_qubits));
+        const std::uint64_t cap_bytes = detail::require_memory_budget(
+            one_matrix, options.max_memory_mb, "DensityMatrixSimulator::run");
         auto t_start = std::chrono::high_resolution_clock::now();
 
-        // Pre-flight: reject any out-of-range operand index up front so the
-        // failure surfaces through Result rather than reaching a kernel.
-        circuit_in.validate_operands();
+        // Everything the instructions decide on their own, operand indices
+        // first, before any state is touched, each refusal naming its
+        // instruction.
+        detail::preflight_instructions(circuit_in, "DensityMatrixSimulator::run");
         // Under Repair::Attempt a repaired copy is executed and the caller's
         // circuit is left exactly as it was handed over; Repair::None binds
         // straight to it and nothing is copied.
-        std::optional<QuantumCircuit> repaired_storage =
-            circuit_in.validated_physical();
+        repaired_storage = circuit_in.validated_physical();
         const QuantumCircuit& circuit =
             repaired_storage ? *repaired_storage : circuit_in;
+        const uint64_t base_seed =
+            seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed;
+        failure.set_seed(base_seed);
 
         // Execution strategy (see docs/api/simulators.md, Execution semantics):
         // per-shot trajectories whenever a classical condition exists OR a
@@ -1006,7 +1041,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                             // the channel. Handed a channel of the wrong width
                             // it reads past the operators it was given and
                             // produces a density matrix that is entirely NaN,
-                            // with a run that reports success. The operator size
+                            // returned as if it were an answer. The operator size
                             // is the authority here rather than the channel's
                             // own n_qubits, since a hand-built channel can
                             // disagree with itself.
@@ -1014,14 +1049,20 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                                 (std::size_t{1} << ek) * (std::size_t{1} << ek);
                             for (const auto& K : ge.channel.operators) {
                                 if (K.size() != expected) {
-                                    throw std::invalid_argument(
-                                        "NoiseModel: the channel attached to '" +
-                                        inst.gate_name() + "' acts on " +
-                                        std::to_string(ge.channel.n_qubits) +
-                                        " qubit(s), but it is being applied to " +
-                                        std::to_string(ek) +
-                                        ". A channel and the gate it is attached "
-                                        "to have to cover the same qubits.");
+                                    FailurePoint point;
+                                    point.instruction = static_cast<int>(ii);
+                                    point.gate = inst.gate_name();
+                                    point.qubits = inst.qubits;
+                                    detail::raise<InvalidArgument>(
+                                        "DensityMatrixSimulator::run",
+                                        "the noise model's channel attached to '" +
+                                            inst.gate_name() + "' acts on " +
+                                            std::to_string(ge.channel.n_qubits) +
+                                            " qubit(s), but it is being applied to " +
+                                            std::to_string(ek) +
+                                            ". A channel and the gate it is attached "
+                                            "to have to cover the same qubits.",
+                                        point);
                                 }
                             }
 
@@ -1070,16 +1111,20 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
 
         // Anchors resolve against the circuit before any state is touched, so
         // an anchor that cannot fire stops the run here.
-        detail::ObservationRunner runner(plan, circuit, StateForm::DensityMatrix);
-        runner.set_bundle(&result.observations);
-        detail::ObservationRunner* watcher = runner.active() ? &runner : nullptr;
+        runner.emplace(plan, circuit, StateForm::DensityMatrix, "DensityMatrixSimulator::run");
+        runner->set_bundle(&result.observations);
+        detail::ObservationRunner* watcher = runner->active() ? &*runner : nullptr;
+        // Everything the run allocates beyond its matrix is charged here before
+        // it is allocated: the copies and conversions its observers take.
+        detail::RunBudget budget(cap_bytes, one_matrix, "DensityMatrixSimulator::run");
+        runner->set_budget(&budget);
 
         if (needs_per_shot) {
             // Per-shot trajectory path (feedforward and/or mid-circuit
             // measurement). Each shot: fresh DM, iterate instructions with
             // condition checks, collapse DM on MEASURE, record to clreg.
             // shots == 0 runs exactly one seeded trajectory for final_state.
-            std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
+            std::mt19937_64 rng(base_seed);
             std::uniform_real_distribution<double> udist(0.0, 1.0);
             std::vector<int> clreg(n_clbits, 0);
 
@@ -1088,9 +1133,9 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             // re-initialise to |0><0| per shot instead of allocating a fresh
             // 4^N matrix each time. After the loop `dm` holds the last shot's
             // (collapsed) state, which becomes final_state.
-            DensityMatrix dm(circuit.n_qubits);
+            DensityMatrix& dm = dm_slot.emplace(circuit.n_qubits);
             const StateView view(StateForm::DensityMatrix, &dm, circuit.n_qubits);
-            runner.begin_run(circuit.n_qubits, n_shots);
+            runner->begin_run(circuit.n_qubits, n_shots);
 
             // The stretch before the first MEASURE or conditioned instruction
             // is the same in every shot and draws nothing (RESET and noise are
@@ -1107,25 +1152,29 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             std::size_t prefix_end = 0;
             std::unique_ptr<DensityMatrix> snapshot;
             if (reuse) {
-                detail::apply_initial_state(plan, dm);
+                detail::apply_initial_state(plan, dm, "DensityMatrixSimulator::run");
                 using GT = Instruction::GateType;
                 while (prefix_end < n_inst) {
                     const auto& inst = circuit.instructions[prefix_end];
                     if (inst.type == GT::MEASURE || inst.condition_clbit >= 0) break;
+                    failure.at_instruction(static_cast<int>(prefix_end), &inst);
                     if (inst.type != GT::BARRIER) apply_inst(dm, prefix_end);
                     ++prefix_end;
                 }
+                failure.leave_instructions();
                 snapshot = std::make_unique<DensityMatrix>(dm);
+                budget.set_held(detail::saturating_mul(2, matrix_bytes));
             }
 
             for (int shot = 0; shot < n_shots; ++shot) {
+                failure.set_shot(shot);
                 if (snapshot) {
                     dm = *snapshot;
                 } else {
-                    detail::apply_initial_state(plan, dm);
+                    detail::apply_initial_state(plan, dm, "DensityMatrixSimulator::run");
                 }
                 clreg.assign(n_clbits, 0);
-                runner.begin_shot(shot, clreg);
+                runner->begin_shot(shot, clreg);
                 if (watcher) watcher->at_start(view);
 
                 for (size_t ii = prefix_end; ii < n_inst; ++ii) {
@@ -1134,6 +1183,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                     if (watcher) {
                         watcher->before_instruction(static_cast<int>(ii), inst, view);
                     }
+                    failure.at_instruction(static_cast<int>(ii), &inst);
                     detail::FiringGuard fire(watcher, static_cast<int>(ii), inst, view);
                     if (inst.type == GT::BARRIER) continue;
 
@@ -1210,6 +1260,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 if (watcher) {
                     watcher->at_end(view, static_cast<int>(n_inst) - 1);
                 }
+                failure.leave_instructions();
 
                 // Record shot result
                 if (shots > 0) {
@@ -1218,23 +1269,29 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                         if (clreg[c]) bits[n_clbits - 1 - c] = '1';
                     }
                     result.counts[bits]++;
+                    failure.shot_done();
                 }
             }
 
             // `dm` is the last shot's final (collapsed) state.
-            result.final_state = std::move(dm);
+            if (!dm_is_finite_with_trace(dm)) {
+                detail::raise<RuntimeFailure>("DensityMatrixSimulator::run",
+                    "the final state is zero or not finite, so there is no state to "
+                    "return; a matrix or channel let through by ValidationOptions Warn "
+                    "or Ignore can do this");
+            }
 
         } else {
             // Standard single-pass mode: gates applied once, MEASURE deferred.
-            DensityMatrix dm(circuit.n_qubits);
-            detail::apply_initial_state(plan, dm);
+            DensityMatrix& dm = dm_slot.emplace(circuit.n_qubits);
+            detail::apply_initial_state(plan, dm, "DensityMatrixSimulator::run");
 
             // Nothing before the deferred measurements is stochastic, so this
             // one evolution describes every shot and the observers fire once.
             const StateView view(StateForm::DensityMatrix, &dm, circuit.n_qubits);
             const std::vector<int> no_clreg;
-            runner.begin_run(circuit.n_qubits, 1);
-            runner.begin_shot(0, no_clreg);
+            runner->begin_run(circuit.n_qubits, 1);
+            runner->begin_shot(0, no_clreg);
             if (watcher) watcher->at_start(view);
 
             for (size_t ii = 0; ii < n_inst; ++ii) {
@@ -1243,12 +1300,14 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 if (watcher) {
                     watcher->before_instruction(static_cast<int>(ii), inst, view);
                 }
+                failure.at_instruction(static_cast<int>(ii), &inst);
                 detail::FiringGuard fire(watcher, static_cast<int>(ii), inst, view);
                 if (inst.type == GT::BARRIER) continue;
                 if (inst.type == GT::MEASURE) continue;  // deferred to sampling below
                 apply_inst(dm, ii);
             }
             if (watcher) watcher->at_end(view, static_cast<int>(n_inst) - 1);
+            failure.leave_instructions();
 
             // Sample measurements from the diagonal of the density matrix.
             // Keys follow the qubit -> clbit mapping of the (terminal)
@@ -1273,7 +1332,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 std::vector<double> cum(probs.size());
                 std::partial_sum(probs.begin(), probs.end(), cum.begin());
 
-                std::mt19937_64 rng(seed == 0 ? std::random_device{}() : seed);
+                std::mt19937_64 rng(base_seed);
                 std::uniform_real_distribution<double> udist(0.0, 1.0);
 
                 for (int s = 0; s < shots; ++s) {
@@ -1309,24 +1368,50 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 }
             }
 
-            result.final_state = std::move(dm);
+            if (!dm_is_finite_with_trace(dm)) {
+                detail::raise<RuntimeFailure>("DensityMatrixSimulator::run",
+                    "the final state is zero or not finite, so there is no state to "
+                    "return; a matrix or channel let through by ValidationOptions Warn "
+                    "or Ignore can do this");
+            }
         }
 
         // Flushes every labelled observer into result.observations, before the
         // timer stops: collecting what was observed is part of the work.
-        runner.end_run();
+        runner->end_run();
+
+        // The matrix leaves its slot only once nothing after it can fail, so a
+        // failure in end_run() still finds it there for the failed-run record.
+        result.final_state = std::move(*dm_slot);
+        dm_slot.reset();
 
         auto t_end = std::chrono::high_resolution_clock::now();
         result.simulation_time_seconds =
             std::chrono::duration<double>(t_end - t_start).count();
-        result.success = true;
 
-    } catch (const std::exception& e) {
-        result.success = false;
-        result.error_message = e.what();
-        // A failed run hands back nothing: see the note in the statevector
-        // backend's catch. A partly written bundle reads as a complete answer.
-        result.observations = ObservationBundle();
+    } catch (...) {
+        // The failure path, as in the statevector backend: what the run had
+        // computed goes into the failed-run record and the failure is
+        // rethrown; one before the first instruction is rethrown untouched.
+        FailedRun::State state;
+        if (failure.work_started()) {
+            try {
+                std::vector<std::string> notes;
+                if (runner) runner->flush_on_failure(notes);
+                for (auto& text : notes) failure.note(std::move(text));
+                record_options(failure, options);
+            } catch (...) {
+                // These allocate, and may fail under the memory pressure that
+                // failed the run; the run's own failure is what the caller
+                // must see.
+            }
+            if (dm_slot) {
+                state = std::move(*dm_slot);
+                dm_slot.reset();
+            }
+        }
+        failure.fail(std::current_exception(), std::move(result.counts),
+                     std::move(result.observations), std::move(state));
     }
 
     return result;

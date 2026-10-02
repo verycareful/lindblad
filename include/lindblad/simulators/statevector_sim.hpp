@@ -40,12 +40,19 @@ public:
         // primitive, runs under the caller's setting. Negative values are
         // refused.
         int max_parallel_threads = 0;
-        // The most memory the caller gives a run, in MiB (2^20 bytes); 0 = no
-        // limit. It caps the states a run holds at once, which for this
-        // simulator is always two (the working buffer and the copy returned in
-        // Result::final_state): a run needing more is refused up front,
-        // through Result, before anything is allocated.
+        // The most memory a run may use, in MiB (2^20 bytes). 0, the default,
+        // is automatic: the memory this machine reports available, or
+        // FALLBACK_MEMORY_CAP_MB when it gives no coherent reading.
+        // NO_MEMORY_CAP means no cap. It caps the states a run holds at once,
+        // which for this simulator is always two (the working buffer and the
+        // copy returned in Result::final_state): a run needing more is refused
+        // before anything is allocated, and every copy an observer takes is
+        // charged against it while the run goes on.
         uint64_t max_memory_mb = 0;
+        // The widest register a run accepts: 30 qubits under Enforce, 59 under
+        // Lift (see QubitLimit in types.hpp). Lifting never bypasses
+        // max_memory_mb.
+        QubitLimit qubit_limit = QubitLimit::Enforce;
         // Whether a per-shot run keeps a snapshot of the stretch before its
         // first MEASURE, RESET or conditioned instruction; see PrefixReuse in
         // types.hpp. The snapshot is released before the result's copy is
@@ -71,8 +78,6 @@ public:
         std::unordered_map<std::string, int> counts;  // if measured
         std::vector<double> expectation_values;        // if observables requested
         double simulation_time_seconds = 0.0;
-        bool success = true;
-        std::string error_message;
 
         // Whatever the run's labelled observers collected. Empty unless the
         // RunPlan attached observers carrying labels.

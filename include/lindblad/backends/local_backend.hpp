@@ -28,8 +28,6 @@ namespace backends {
 struct BackendResult {
     std::unordered_map<std::string, int> counts;
     double simulation_time_seconds = 0.0;
-    bool success = true;
-    std::string error_message;
     std::string backend_name;
     int shots = 0;
 };
@@ -53,8 +51,14 @@ public:
         // The most OpenMP threads the run may use on whichever backend it
         // reaches; 0 leaves OpenMP's own choice. Restored on return.
         int max_parallel_threads = 0;
+        // The memory cap, passed to whichever backend the run reaches; see
+        // StatevectorSimulator::Options::max_memory_mb. 0 is automatic.
         uint64_t max_memory_mb = 0;
         int mps_bond_dim = 64;
+        // Passed to the backend the run reaches: the statevector limit (30
+        // qubits under Enforce, 59 under Lift) and the MPS dense-fallback limit
+        // (25 and 31). See QubitLimit in types.hpp.
+        QubitLimit qubit_limit = QubitLimit::Enforce;
     };
 
     Config config;
@@ -77,7 +81,9 @@ public:
 
     std::string name() const { return "lindblad_local_simulator"; }
     std::string version() const { return LINDBLAD_VERSION_LABEL; }
-    int max_qubits() const { return 30; }
+    // The widest register the statevector backend accepts under
+    // config.qubit_limit.
+    int max_qubits() const { return max_statevector_qubits(config.qubit_limit); }
 };
 
 } // namespace backends

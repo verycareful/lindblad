@@ -1,9 +1,11 @@
 # Hardware Info
 
 Best-effort runtime detection of hardware properties that change how the library
-tunes itself. There is exactly one query today, the last-level cache size, and it
-exists because the statevector simulator decides whether to fuse gates by asking
-whether the state still fits in cache.
+tunes itself. There are two: the last-level cache size, which the statevector
+simulator asks to decide whether to fuse gates, and the memory the operating
+system reports available, which sets the memory cap a run answers to when
+`max_memory_mb` is 0 and decides whether a per-shot run keeps its prefix
+snapshot.
 
 The whole module is built on one rule: **nothing here guesses silently.** Every
 query has an explicit "unknown" return, and the caller picks its own documented
@@ -45,6 +47,47 @@ detection uniform across platforms.
 Detected once and cached thread-safely through a function-local static, so every
 call after the first is a load.
 
+### `available_memory_bytes`
+
+```cpp
+std::size_t available_memory_bytes();
+```
+
+Memory the operating system reports it could hand out now without swapping, in
+bytes, or `0` when unknown. Read afresh on every call, since it changes as the
+process and the machine allocate.
+
+- **Linux**: `MemAvailable` from `/proc/meminfo`, the kernel's own estimate,
+  which counts page cache it can drop. Only a coherent reading counts: the field
+  must parse as a number, be non-zero, convert to bytes without overflow, and be
+  no larger than `MemTotal`, read in the same pass. Anything else is `0`.
+  When the process runs under a cgroup memory limit (a container, a systemd
+  slice, a batch scheduler's job), the figure is the smaller of `MemAvailable`
+  and the room under the tightest limit from the process's own cgroup up to the
+  root: that limit less the cgroup's usage, not counting inactive file cache.
+  The kernel ends a process that goes over its cgroup's limit without an
+  exception, so the machine's figure alone would overstate what a run can use.
+  The limits are read at `/sys/fs/cgroup` (cgroup version 2) or
+  `/sys/fs/cgroup/memory` (the version 1 memory controller), where they are
+  normally mounted. A cgroup at its limit reads as 1 byte rather than `0`,
+  since that is an answer: nothing more fits.
+- **Windows**: the available physical memory from `GlobalMemoryStatusEx`.
+- **macOS**: free pages plus inactive ones, which the kernel reclaims before it
+  swaps.
+
+### `recent_available_memory_bytes`
+
+```cpp
+std::size_t recent_available_memory_bytes();
+```
+
+The same figure, read at most once a second and shared between the calls in
+between. Every simulator run takes its automatic memory cap from this: a run asks
+once, before it starts, and reading `/proc/meminfo` on every call would cost
+more than a small run does. The cap is a snapshot either way, since another
+process can allocate the moment after any reading (see
+[The memory cap](failures.md#the-memory-cap)).
+
 ## Detection and its limits
 
 Three platform paths, each asking the operating system rather than the CPU:
@@ -61,8 +104,8 @@ it, which is why the return is documented rather than hidden behind a default.
 
 ## Exceptions
 
-None. `llc_bytes` does not throw and does not report failure through an error
-code. Failure is the `0` return.
+None. No function here throws or reports failure through an error code. Failure
+is the `0` return.
 
 ## Example
 
@@ -123,3 +166,4 @@ rather than hardcoded.
   `fusion_enable`, `fusion_threshold` and `fusion_max_qubit` fields override the
   automatic engagement point described above.
 - `docs/Architecture.md` for where fusion sits in the execution pipeline.
+- `docs/api/failures.md` for the memory cap the available-memory reading feeds.

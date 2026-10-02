@@ -217,6 +217,9 @@ Responsibilities:
 - Execute circuits against selected state model
 - Provide deterministic and sampled outputs depending on options
 - Integrate with noise and measurement flows where applicable
+- Refuse, before the first gate, everything the circuit, options and run plan
+  decide on their own, and hand any later failure to the failure path (see
+  Errors and Failed Runs below)
 
 ### 4. Noise and Quantum Information
 
@@ -266,8 +269,28 @@ Responsibilities:
 Responsibilities:
 
 - Backend selection strategy for local execution
-- Optional Python module exposure
+- Optional Python module exposure (unmaintained: no CI leg or test builds it)
 - QASM import/export pathway
+
+### 8. Errors and Failed Runs
+
+- `include/lindblad/errors.hpp`, `include/lindblad/detail/report.hpp`,
+  `src/report.cpp`
+- `include/lindblad/detail/preflight.hpp`, `src/preflight.cpp`
+- `include/lindblad/detail/memory_budget.hpp`
+- `include/lindblad/failed_run.hpp`, `include/lindblad/detail/failure_collector.hpp`,
+  `src/failed_run.cpp`, `src/failed_run_io.cpp`
+
+Responsibilities:
+
+- The exception types every refusal and failure raises, and the one place
+  their messages are formatted (entry point, instruction, shot)
+- The pass over a circuit's instructions that every backend runs before its
+  first gate
+- The memory cap a run answers to, checked before the first gate against the
+  run's fixed buffers and during the run against everything it allocates
+- The failed-run record: collected on a run's failure path, kept in a per-thread
+  slot, saved to a checksummed folder, and read back by `load_failed_run`
 
 ## Runtime Flow
 
@@ -276,7 +299,10 @@ Typical runtime flow for an algorithm run:
 1. User constructs or loads a `QuantumCircuit`.
 2. Parameters are bound (if symbolic).
 3. Optional transpilation transforms circuit structure.
-4. Primitive executes using a selected simulator backend.
+4. Primitive executes using a selected simulator backend. The backend first
+   refuses everything the circuit, options and plan decide on their own, then
+   evolves; a failure throws, and one after the first gate leaves a failed-run
+   record behind.
 5. Results are post-processed by algorithm logic.
 
 ## Build and Dependency Model
@@ -286,7 +312,8 @@ The top-level CMake project produces:
 - `lindblad_core` static library (always)
 - `lindblad_tests` executable (always)
 - `bench_*` executables (when benchmarks are enabled)
-- `lindblad` Python extension module (when Python bindings are enabled)
+- `lindblad` Python extension module (when Python bindings are enabled; they
+  are unmaintained, and no CI leg or test builds them)
 
 Third-party dependencies are declared centrally in `CMakeLists.txt` and fetched at configure time.
 

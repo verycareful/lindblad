@@ -8,9 +8,9 @@
 # Commercial License Agreement with the Author.
 
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.30.3 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.31.0 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "1.1.30.3")
+set(LINDBLAD_VERSION_LABEL "1.1.31.0")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -75,10 +75,12 @@ set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
 # The pinned release predates several clang diagnostics, so a sufficiently new
 # compiler fails the dependency build on code we do not own and cannot patch:
 # clang 20 reports -Winvalid-offsetof inside its State cache-line assertions, and
-# clang 22 reports -Wc2y-extensions on its __COUNTER__ probe. Neither is a defect
-# we can act on, and neither says anything about this project's own sources, which
-# keep -Wall -Wextra -Wpedantic. Turning the dependency's -Werror off is the
-# upstream-provided knob for exactly this situation.
+# clang 22 and later report -Wc2y-extensions on its __COUNTER__ probe. Neither is
+# a defect we can act on, and neither says anything about this project's own
+# sources, which keep -Wall -Wextra -Wpedantic. Turning the dependency's -Werror
+# off is the upstream-provided knob for the warnings it promotes; the two its
+# unconditional -pedantic-errors promotes are cleared where the target is made
+# available, below.
 set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
 
 # pybind11
@@ -233,6 +235,22 @@ if(LINDBLAD_BUILD_BENCHMARKS)
     if(TARGET benchmark AND (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
         target_compile_options(benchmark PRIVATE -Wno-invalid-offsetof)
     endif()
+    # The same promotion turns clang's -Wc2y-extensions into an error on
+    # Benchmark's __COUNTER__ probe in benchmark.h, which clang 23 classes as
+    # pedantic, so every Benchmark source that includes the header fails.
+    # Clang releases that predate the group do not know the flag, so it is
+    # added only where the compiler accepts it.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        include(CheckCXXCompilerFlag)
+        check_cxx_compiler_flag(-Wc2y-extensions LINDBLAD_CXX_HAS_WC2Y_EXTENSIONS)
+        if(LINDBLAD_CXX_HAS_WC2Y_EXTENSIONS)
+            foreach(benchmark_target benchmark benchmark_main)
+                if(TARGET ${benchmark_target})
+                    target_compile_options(${benchmark_target} PRIVATE -Wno-c2y-extensions)
+                endif()
+            endforeach()
+        endif()
+    endif()
 endif()
 if(LINDBLAD_BUILD_PYTHON)
     FetchContent_MakeAvailable(pybind11)
@@ -264,6 +282,10 @@ add_library(lindblad_core STATIC
     src/statevector.cpp
     src/observation.cpp
     src/observers.cpp
+    src/failed_run.cpp
+    src/failed_run_io.cpp
+    src/preflight.cpp
+    src/report.cpp
     src/gates/single_qubit.cpp
     src/gates/two_qubit.cpp
     src/gates/multi_qubit.cpp

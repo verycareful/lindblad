@@ -18,14 +18,24 @@ The class is move-only; copy construction and copy assignment are disabled.
 ## Construction and Initialization
 
 ```cpp
-explicit Statevector(int n_qubits);
+explicit Statevector(int n_qubits, QubitLimit limit = QubitLimit::Enforce);
 ```
 
 Behavior:
 
-- Accepts `n_qubits` in **[1, 30]**
-- Throws `std::invalid_argument` outside that range
-- Allocates aligned buffers and initializes to |0...0>
+- Accepts `n_qubits` in **[1, 30]** under `QubitLimit::Enforce`, the default,
+  and in **[1, 59]** under `QubitLimit::Lift`. 59 is the widest state whose
+  byte count, $16 \cdot 2^{59}$, still fits 64 bits, and nothing lifts it
+  further
+- Throws `std::invalid_argument` outside that range; when the width is over 30
+  but no more than 59, the message says `QubitLimit::Lift` raises the ceiling
+- Allocates aligned buffers and initializes to |0...0>. The width is checked
+  before anything is allocated, and a buffer that cannot be allocated throws
+  `std::bad_alloc` with nothing left behind
+- Lifting the limit does not make the memory available: a simulator run checks
+  the state against its memory cap before allocating it (see
+  [QubitLimit](failures.md#qubitlimit) and
+  [The memory cap](failures.md#the-memory-cap))
 
 Initialization helpers:
 
@@ -116,8 +126,9 @@ Behavior:
   $|a_i|^2 / \sum_j |a_j|^2$, so a state short of unit norm (one set under
   `Validation::Ignore`) is sampled as the state it holds. An outcome of
   probability zero is never drawn
-- A state with no norm, zero or non-finite, throws `std::runtime_error` before
-  anything is drawn, on the threshold `normalize()` refuses at
+- A state with no norm, zero or non-finite, throws `lindblad::RuntimeFailure`
+  (a `std::runtime_error`) before anything is drawn, on the threshold
+  `normalize()` refuses at
 - `measure_once` does a linear scan of cumulative probability; `sample_counts`
   precomputes the cumulative probabilities once and binary-searches them per
   shot
@@ -149,3 +160,4 @@ int main() {
 
 - [docs/APIOverview.md](../APIOverview.md)
 - [docs/api/simulators.md](simulators.md)
+- [docs/api/failures.md](failures.md)

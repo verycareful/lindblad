@@ -4,6 +4,334 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.31.0] - 2026-10-02
+
+Every `run()` of the four qubit simulators and `LocalBackend` now either
+returns an answer or throws (#121). Until now the statevector and density-matrix
+simulators and `LocalBackend` reported a failure by returning a result with
+`success == false`, which kept the counts of the shots that had finished and
+read as an answer to any caller that did not check the flag. The MPS and
+Clifford simulators threw, but refused some circuits only when the failing gate
+was reached. Every failure a run can meet is now one of four Lindblad exception
+types whose message names the run. Everything the circuit, the options and the
+run plan decide on their own is checked before the first gate, on every
+backend, including a check that did not exist: a gate parameter that is NaN or
+infinite. A run that fails after its first gate keeps what it computed, in a
+per-thread slot and by default in a folder on disk that the exception names and
+`load_failed_run()` reads back. The result types lose their success flag, since
+a returned result is always an answer. The qubit limit, the memory cap and the
+MPS factorisation's handling of a rejected split become explicit settings. The
+change is breaking: 52 test sources that no longer compile are out of this
+release's build, and two tests ship red; both are listed under Known red.
+Closes #121.
+
+### Added
+
+- **Four exception types, in `errors.hpp`.** `InvalidArgument`, `OutOfRange`,
+  `RuntimeFailure` and `InternalError` each derive from their standard
+  counterpart (`std::invalid_argument`, `std::out_of_range`,
+  `std::runtime_error`, `std::logic_error`), so existing handlers keep
+  matching, and from the mixin `lindblad::Error`, which carries
+  `entry_point()`, `where()` and `saved_to()`. `where()` is a `FailurePoint`:
+  the shot, the instruction index, its gate and its qubits.
+  `catch (const lindblad::Error&)` catches every failure a `run()` of these
+  backends raises, including every refusal before its first gate. A message
+  starts with the run that failed and, when one instruction is at fault, ends
+  with it: `(instruction 4: cx on qubits 0, 1) at shot 7`. A failure met during
+  the run that names no instruction of its own, such as a state left with no
+  norm, reaches the caller naming the shot and instruction the run had reached.
+  `InternalError` is raised only for a defect in Lindblad, and its message asks
+  for a report. `RunPhase` (`BeforeFirstGate`, `MidRun`) says whether stopping
+  now would lose any work.
+
+- **A failed run is kept: `FailedRun`, `take_failed_run()` and
+  `load_failed_run()`**, in `failed_run.hpp`. A run that fails after its first
+  instruction has executed leaves a record holding:
+  - the counts of the shots that finished;
+  - every observation made, with each observer's buffered firings flushed;
+  - the state being evolved, moved rather than copied;
+  - the circuit, and the noise model of a density-matrix run;
+  - the seed actually used, every option, and where the run was.
+
+  The record goes into a per-thread slot, which `take_failed_run()` empties.
+  By default it is also saved to a new folder under
+  `$XDG_STATE_HOME/lindblad/failed-runs` (else
+  `~/.local/state/lindblad/failed-runs`, or `%LOCALAPPDATA%` on Windows):
+  - a Lindblad exception is rethrown naming that folder in its message and in
+    `saved_to()`, followed by a sentence naming any part the folder does not
+    hold; any other exception keeps its type and object, and the record in the
+    slot names the folder;
+  - the folder is written as `<name>.partial` and renamed when complete, a part
+    that cannot be written whole is removed, and on POSIX systems only its
+    owner can read it;
+  - the manifest holds each file's size and CRC-32C, and `manifest.crc32c`
+    holds the manifest's. `load_failed_run()` checks the manifest first, then
+    every listed file, before reading any, and refuses a state file or circuit
+    that disagrees with the manifest on its width or form;
+  - state files are little-endian on every host, so a folder loads on any
+    machine.
+
+  What was written is released from memory. A state too large for the free
+  space stays in memory, with a note saying so, and a record that cannot be
+  assembled under memory exhaustion still keeps the state, the counts and the
+  observations. `RunPlan::Options::save_failed_runs` turns saving off, and
+  `failed_run_dir` chooses the folder. Lindblad never deletes a saved run; the
+  failures page says how much disk one can take.
+
+- **`QubitLimit` (`Enforce`, `Lift`)** on `StatevectorSimulator::Options`,
+  `MPSSimulator`, `MPSState` and `LocalBackend::Config`, and as an argument to
+  the `Statevector` constructor and `StabilizerState::to_statevector()`.
+  `Enforce`, the default, keeps a statevector at 30 qubits and the MPS dense
+  fallback at 25. `Lift` raises them to 59 and 31: 59 is the widest state whose
+  byte count fits 64 bits, and the MPS fallback stops at 31 because it
+  factorises a `2 x 2^(n-1)` block with `int` dimensions. Widening that
+  factorisation is tracked in TODO. A register over the limit is refused before
+  the first gate, with a message naming the setting that lifts it, and
+  `LocalBackend::max_qubits()` follows the config.
+
+- **A run budget.** After the checks before the first gate, a run checks every
+  further allocation against the memory cap before making it: an MPS chain's
+  two-site updates, its dense fallbacks and its dense sampling, every state
+  conversion an observer asks for, and the copies a `StateObserver` keeps. Going
+  over raises `RuntimeFailure` naming the allocation, its size, the peak it
+  would reach and the cap, and the run is kept like any other failed run.
+
+- **`max_memory_mb` on `CliffordSimulator::Options` and `MPSSimulator`**, with
+  `NO_MEMORY_CAP` and `FALLBACK_MEMORY_CAP_MB` in `types.hpp`. `LocalBackend`
+  passes its cap to every backend it runs.
+
+- **What an MPS split does with a factorisation it rejects**:
+  `svd_rejection`, `svd_accept_gram` and `svd_report` on `MPSState`,
+  `MPSSimulator` and `QuditMPS`, with `SvdRejection` and `SvdReport` in
+  `types.hpp`. Every factorisation is verified, and a kernel can also decline a
+  block:
+  - `SvdRejection::Fix`, the default, repairs a rejection with autonne's Jacobi
+    and then, only when `svd_accept_gram` is on, the Gram route, verifying each,
+    and throws when no permitted rung repairs it;
+  - `Throw` ends the run at the first rejection;
+  - `Ignore` uses a rejected factorisation as it is, unverified, and withdraws
+    both fidelity figures; a declined block still descends the ladder, since
+    there is nothing to use;
+  - `SvdReport::Warn`, the default, warns at each rung taken and each
+    unverified use, and `Silent` only counts them;
+    `ignored_rejection_count()` joins the rescue counters.
+
+  Every setting that is not its default, and every non-default `SVDMethod`
+  (`EigenBDC` included), emits a one-time note per MPS layer saying it is in
+  force.
+
+- **`Response::Auto`**, now the default `RunPlan::Options::response`. It throws
+  when a refusal is decided before any instruction of any shot has run. After
+  that it warns and leaves the observation out. Observers read the phase from
+  `ObservationContext::phase`, and the run's name from the new `entry_point`
+  on `ObservationContext` and `PreflightContext`;
+  `detail::refuse_observation(ctx, message)` delivers a refusal from either.
+
+- **`NoiseModel::to_json()` and `NoiseModel::from_json()`**, a lossless round
+  trip with operators at 17 significant digits. `from_json()` refuses a wrong
+  format, version, channel width or operator length.
+
+- **`hw::recent_available_memory_bytes()`**, the available-memory reading
+  refreshed at most once a second. The automatic memory cap reads it, so a
+  small run does not pay for reading `/proc/meminfo`.
+
+- **`ObservationBundle::payload(label)`**, the payload under a label whatever
+  its kind, which a saved bundle is written and read back through.
+
+### Changed
+
+- **Breaking: every `run()` throws on failure, and the result types have no
+  success flag.** `StatevectorSimulator`, `DensityMatrixSimulator` and
+  `LocalBackend` no longer return a failed result; the failure propagates with
+  its own type, and `success` and `error_message` are gone from their result
+  types and from the Python bindings. An exception from the caller's own
+  observer, and `std::bad_alloc`, arrive as themselves. The two simulators used
+  to reduce both to a flag and a message.
+
+- **Breaking: everything the circuit decides is refused before the first gate,
+  on every backend.** Every qubit, classical-bit and condition-bit index is
+  checked first, over the whole circuit, as an `OutOfRange` naming the run and
+  the instruction. Then one pass over the instructions checks, in this order:
+  - unbound parameters;
+  - the operand count for each gate type (a MEASURE or RESET acts on exactly
+    one), and repeated operands;
+  - the parameter count, and parameters that are not finite;
+  - a `UNITARY` matrix of the wrong size, and a `PERMUTATION` map that is not a
+    bijection;
+  - what the backend cannot apply. On MPS, that is a dense-fallback gate wider
+    than the chain's limit. On Clifford, a gate with no tableau form, or a
+    rotation that is not a multiple of pi/2.
+
+  Each raises `InvalidArgument`, or `OutOfRange` for an index. The MPS and
+  Clifford checks among them raised `std::runtime_error` when the gate was
+  reached, so a `catch (const std::runtime_error&)` around such a run no longer
+  matches. `StatevectorSimulator::simulate_circuit()` and `eval_expectation()`
+  run the same pass, and `eval_expectation()` checks the qubit limit and the
+  memory cap for the state it allocates.
+
+- **Breaking: every other refusal a run meets is a Lindblad type naming the
+  run**: a noise channel of the wrong width, an anchor or label that does not
+  resolve and two observers on one label, an observer asking for something
+  that does not exist (including an observable with no terms, the wrong width,
+  or not Hermitian), and a starting state that cannot be produced, an MPS chain
+  with no norm included. Physical validation and the observable checks raise
+  `InvalidArgument` naming what asked; the SVD ladder and every `normalize()`
+  raise `RuntimeFailure`. `MPSState::to_statevector()` refuses a chain over its
+  dense limit with `InvalidArgument`, where it raised `std::runtime_error`.
+
+- **Breaking: `max_memory_mb = 0` is automatic, not unlimited.** It resolves to
+  the memory the machine reports available, or to 4096 MiB when the machine
+  gives no coherent reading. On Linux that reading answers to the memory limits
+  of the cgroups the process runs in (a container, a systemd slice, a batch
+  job): the smaller of `MemAvailable` and the room under the tightest limit.
+  Before the first gate, a run is refused when its fixed buffers exceed that
+  cap:
+  - on the statevector simulator, two states;
+  - on the density-matrix simulator, one matrix;
+  - on the Clifford simulator, three tableaux.
+
+  Pass `NO_MEMORY_CAP` for no cap.
+
+- **Breaking: `svd_rescue` is replaced** by `svd_rejection`, `svd_accept_gram`
+  and `svd_report` (see Added). Under the defaults the Gram route is no longer a
+  rung, so a block that both the selected kernel and Jacobi fail to factorise
+  ends the run instead of being rescued; `svd_accept_gram = true` restores the
+  rung. When the Gram route is used, the weight below its validity floor counts
+  toward `fidelity_lower_bound()`, so the bound stays a bound.
+
+- **Breaking for observer authors: `detail::refuse_observation`,
+  `detail::produce_state` and `detail::charge_allocation` take the run phase**,
+  and take the run's entry point as a last argument. The context forms
+  (`refuse_observation(ctx, message)`, `produce_state(ctx, ...)`,
+  `charge_allocation(ctx, ...)`) take both from the context.
+
+- **Refusals met mid-run warn by default.** The old default `response` was
+  `Throw`; under `Auto`, refusals decided before the first gate still throw.
+  A refusal met later leaves that observation out with a warning, instead of
+  ending a run that has already paid for its shots. Examples are an MPS
+  observation over the memory guard at its anchor, and an anchor at the start
+  of a later shot. The same knob now governs the entropy observer's
+  eigensolver failing mid-run, which threw `std::runtime_error`.
+
+- **`Estimator` and `Sampler` let a failed run's exception through with its own
+  type.** They used to rethrow it as `std::runtime_error` with a prefix.
+  `Estimator::run_batch` moves the lowest-indexed failure's record into the
+  calling thread's slot along with its exception, and only when that failure
+  stored one.
+
+- **MA-QAOA refuses a parameter that is NaN or infinite** with
+  `InvalidArgument`, with or without a noise model.
+
+- **Internal consistency checks raise `InternalError`**: the MPS chain's
+  centring before sampling, the stabilizer projector's and outcome slab's
+  checks, the entropy observer's bond-cut check, and the Clifford and MPS gate
+  dispatchers' guards behind the pass before the first gate. Each raised a
+  standard exception.
+
+- **`hw::available_memory_bytes()` counts only a coherent reading.** The
+  `MemAvailable` figure must parse, be non-zero, convert to bytes without
+  overflow, and be no larger than `MemTotal`; on Linux it also answers to the
+  process's cgroup memory limits. Any other reading counts as 0.
+
+- **CI** points saved failed runs at the runner's temporary directory.
+
+- **Documentation**: a new failures page covers:
+  - the exception types, and every failure a run can meet with its knob;
+  - the qubit limit, the memory cap and its cgroup limits, and why an
+    out-of-memory kill cannot be caught;
+  - the failed-run record, its folder and its loader.
+
+  These pages follow it: simulators (including the factorisation settings),
+  qudit simulators, observation, backends, statevector, noise, hardware info,
+  estimator, sampler, gates and QFT, and so do the nine algorithm pages, the
+  API overview, the architecture page and the development guide. The README
+  drops the Python bindings from its feature list. The build, architecture and
+  visualisation pages say the bindings are unmaintained: nothing builds or
+  tests them.
+
+### Fixed
+
+- **A NaN or infinite gate parameter reached the state.** Nothing checked gate
+  parameters for finiteness, so `rx(q, NaN)` ran and filled the state with NaN.
+  It is refused before the first gate.
+
+- **A final state that is zero or not finite was returned as an answer** when
+  the circuit had no measurement. The statevector, density-matrix and MPS
+  simulators now refuse it with `RuntimeFailure` and keep the run. Only input
+  let through by `Validation::Warn` or `Validation::Ignore` can produce one.
+
+- **An instruction built by hand with too few operands or parameters for its
+  type** was read past the end of its lists by the gate kernels, and on MPS
+  could run as the identity; a MEASURE or RESET given several qubits measured
+  only the first. All are refused before the first gate.
+
+- **A failed noisy evaluation inside MA-QAOA was scored as `1e12`**, and the
+  optimiser carried on as if the point were merely bad. The failure now ends
+  the optimisation with the run's exception.
+
+- **`Shor` read a failed order-finding run as "no order found"**, from its
+  empty counts. The run's exception now propagates.
+
+- **The `Statevector` constructor leaked its first buffer** when allocating the
+  second one failed.
+
+- **`StabilizerState::to_statevector()` allocated two scratch arrays of `2^n`
+  entries before the width was refused**: 32 GiB at 31 qubits. The limit is
+  checked first.
+
+- **`QuantumCircuit::from_json()` read numbers in the process's locale**, so
+  under a locale with a decimal comma it misread every angle, and it
+  truncated a fractional value where an integer belongs. Numbers are read in
+  the C locale, a subnormal reads as itself, and a fraction or an out-of-range
+  value where an integer belongs is refused. `NoiseModel::from_json()` and the
+  failed-run files read the same way.
+
+- **The Google Benchmark dependency failed to build under clang 23**, which
+  classes its `__COUNTER__` probe as a pedantic extension that Benchmark's
+  unconditional `-pedantic-errors` makes an error. Its targets build with
+  `-Wno-c2y-extensions` wherever the compiler knows the flag.
+
+### Known red
+
+Two tests fail on purpose; each pins behaviour this release changes, and the
+test release that follows corrects them:
+
+- `R1121Mps.ToStatevectorThrowsAboveQubitLimit` expects `std::runtime_error`
+  from a chain over the dense limit, which is now `InvalidArgument`.
+- `V11251CliffordRandom.OneNonCliffordInstructionSpoilsTheWholeCircuit` expects
+  `std::runtime_error` for a non-Clifford rotation, which is now an
+  `InvalidArgument` raised before the first gate.
+
+52 test sources are commented out of the test build (975 tests in 101 suites),
+because they no longer compile: 46 read `success` or `error_message`, directly
+or through a shared helper, and 6 set `svd_rescue` or call the SVD ladder with a
+bool. They return, respelled, in the test release that follows.
+
+### Known behaviour
+
+Every test that fails a run on purpose after its first gate is among the
+sources out of this build, so this release's suite saves no failed-run folder,
+and the saving and loading paths are not exercised by it.
+
+### Results
+
+Six configurations, every leg failing exactly the two tests listed under Known
+red and nothing else (CachyOS Linux, native):
+
+| Compiler | Target | Options | Tests | Passed | Skipped | Failed | Time |
+|---|---|---|---:|---:|---:|---:|---:|
+| Clang 23.1.1 | native | none (the documented build) | 2519 | 2510 | 7 | 2 | 13.7 s |
+| Clang 23.1.1 | native | harvest | 2519 | 2517 | 0 | 2 | 14.3 s |
+| Clang 23.1.1 | x86-64-v3 | harvest | 2519 | 2517 | 0 | 2 | 13.0 s |
+| GCC 14.3.1 | native | harvest | 2519 | 2517 | 0 | 2 | 15.7 s |
+| GCC 14.3.1 | x86-64-v3 | harvest | 2519 | 2517 | 0 | 2 | 15.4 s |
+| Clang 20.1.8 | native | harvest | 2519 | 2517 | 0 | 2 | 15.1 s |
+
+2519 tests across 223 suites. The documented build skips the seven
+theta-harvest tests; the large register-size margin test is among the sources
+out of this build. The Python tool suites pass: 66 tests (5 skipped) and the 5
+histogram tests.
+
 ## [1.1.30.3] - 2026-09-29
 
 The patch that lets the test suite build on Clang 18 again. One test in the

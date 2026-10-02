@@ -19,10 +19,11 @@ Fields:
 
 - `counts`: bitstring → count histogram (executed shots)
 - `simulation_time_seconds`: wall-clock execution time
-- `success`: true if execution completed without error
-- `error_message`: populated if `success == false`
 - `backend_name`: name of simulator used (`"lindblad_local_simulator"`)
 - `shots`: number of samples collected
+
+A run that fails throws rather than returning a result (see
+[Failures](failures.md)), so every result `run()` returns is an answer.
 
 ## `SimType` Enum
 
@@ -55,13 +56,16 @@ Fields and defaults:
 - `max_parallel_threads = 0`: the most OpenMP threads a run may use, on
   whichever backend it reaches; 0 leaves OpenMP's own choice
   (`OMP_NUM_THREADS`, else every core). The caller's setting is back when the
-  run returns. A negative value is refused (`success` false)
-- `max_memory_mb = 0`: the most memory the caller gives a run, in MiB
-  (2^20 bytes); 0 means no limit. Passed to the statevector and
-  density-matrix simulators, which count the states a run holds at once and
-  refuse a run over the cap before allocating (see their `Options`). The MPS
-  and Clifford backends hold no dense state and do not read it
+  run returns. A negative value is refused with `std::invalid_argument`
+- `max_memory_mb = 0`: the most memory a run may use, in MiB (2^20 bytes); 0
+  is automatic, the memory the machine reports available (see
+  [The memory cap](failures.md#the-memory-cap)). Passed to whichever backend
+  the run reaches
 - `mps_bond_dim = 64`: bond dimension for MPS simulator
+- `qubit_limit = QubitLimit::Enforce`: passed to the statevector simulator (30
+  qubits, or 59 under `QubitLimit::Lift`) and to the MPS simulator's dense
+  fallback (25, or 31 under `Lift`); `max_qubits()` follows it (see
+  [QubitLimit](failures.md#qubitlimit))
 
 ## Construction
 
@@ -114,6 +118,16 @@ Behavior:
 3. Execute circuit for `shots` samples
 4. Return counts histogram and timing
 
+Exceptions:
+
+- A run that fails throws the exception of the backend it reached, which
+  `run()` does not catch: `lindblad::InvalidArgument` for anything refused
+  before the first gate, `lindblad::RuntimeFailure` for a failure met while
+  running, and so on (see [Failures](failures.md)). A failure after the first
+  gate leaves its record in this thread's slot, where `take_failed_run()`
+  hands it back.
+- A dispatcher that reaches no simulator type raises `lindblad::InternalError`.
+
 ### `run_batch()`
 
 Execute multiple circuits (for parallel/batch execution patterns).
@@ -160,7 +174,7 @@ Returns: `"lindblad_local_simulator"`
 std::string version() const;
 ```
 
-Returns the build version string derived from the CMake `LINDBLAD_VERSION_LABEL` compile definition (e.g. `"1.1.30.3"`). The value tracks `LINDBLAD_VERSION_LABEL` in `CMakeLists.txt` and cannot drift from the project version.
+Returns the build version string derived from the CMake `LINDBLAD_VERSION_LABEL` compile definition (e.g. `"1.1.31.0"`). The value tracks `LINDBLAD_VERSION_LABEL` in `CMakeLists.txt` and cannot drift from the project version.
 
 ### `max_qubits()`
 
@@ -168,7 +182,9 @@ Returns the build version string derived from the CMake `LINDBLAD_VERSION_LABEL`
 int max_qubits() const;
 ```
 
-Returns: `30` (maximum recommended qubits for accurate simulation)
+Returns: `max_statevector_qubits(config.qubit_limit)`: `30` under
+`QubitLimit::Enforce` (the default), `59` under `QubitLimit::Lift`. The widest
+register the statevector backend accepts.
 
 Note: For larger systems or approximate solutions, use `SimType::MPS` with bond dimension tuning.
 
@@ -252,10 +268,10 @@ for (int i = 0; i < 10; i++) {
     circuits.push_back(qc);
 }
 
-auto results = backend.run_batch(circuits, 512);
+auto results = backend.run_batch(circuits, 512);  // throws if any circuit fails
 for (size_t i = 0; i < results.size(); ++i) {
-    std::cout << "Circuit " << i << " success: " 
-              << results[i].success << "\n";
+    std::cout << "Circuit " << i << ": " << results[i].counts.size()
+              << " distinct outcomes\n";
 }
 ```
 

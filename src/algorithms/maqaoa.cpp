@@ -10,6 +10,7 @@
 #include "lindblad/algorithms.hpp"
 #include "lindblad/detail/optimizer.hpp"
 #include "lindblad/detail/pauli_rules.hpp"
+#include "lindblad/detail/report.hpp"
 #include "lindblad/gates.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
@@ -488,7 +489,23 @@ struct MAQAOACallbackData {
     const std::vector<std::vector<int>>* active_qubits;
 };
 
+// A non-finite parameter is refused on both paths, as every simulator run
+// refuses one before its first gate. The noisy path's density-matrix run would
+// refuse it anyway; the noiseless path evolves its state directly and would
+// otherwise turn it into a NaN energy scored as the sentinel, so whether the
+// optimisation stopped would depend on whether a noise model was set.
+static void require_finite_parameters(std::span<const double> x) {
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        if (!is_finite_strict(x[i])) {
+            detail::raise<InvalidArgument>("MAQAOA::optimize",
+                "the optimiser proposed parameter " + std::to_string(i) + " = " +
+                    std::to_string(x[i]) + "; every parameter must be finite");
+        }
+    }
+}
+
 static double maqaoa_objective(MAQAOACallbackData* cb, std::span<const double> x) {
+    require_finite_parameters(x);
     if (cb->params_buf.size() != x.size()) {
         cb->params_buf.resize(x.size());
     }
@@ -499,9 +516,8 @@ static double maqaoa_objective(MAQAOACallbackData* cb, std::span<const double> x
         lindblad::DensityMatrixSimulator dm_sim;
         auto dm_result = dm_sim.run(
             circuit, cb->maqaoa->estimator.options.noise_model, 0, 0);
-        const double value = dm_result.success
-            ? dm_result.final_state.expectation_value_sparse(*cb->cost_hamiltonian)
-            : 1e12;
+        const double value =
+            dm_result.final_state.expectation_value_sparse(*cb->cost_hamiltonian);
         const double v = is_finite_strict(value) ? value : 1e12;
         ++cb->nfev;
         if (!cb->best_val_valid || v < cb->best_val) {
@@ -555,6 +571,7 @@ struct LayerCBData {
 };
 
 static double layer_objective(LayerCBData* d, std::span<const double> x) {
+    require_finite_parameters(x);
     // Update free portion in-place (Change 7: no allocation, no copy)
     std::copy(x.begin(), x.end(), d->all_params.begin() + d->free_start);
     if (!d->maqaoa->estimator.options.noise_model.is_ideal()) {
@@ -563,9 +580,8 @@ static double layer_objective(LayerCBData* d, std::span<const double> x) {
         lindblad::DensityMatrixSimulator dm_sim;
         auto dm_result = dm_sim.run(
             circuit, d->maqaoa->estimator.options.noise_model, 0, 0);
-        const double value = dm_result.success
-            ? dm_result.final_state.expectation_value_sparse(*d->cost_hamiltonian)
-            : 1e12;
+        const double value =
+            dm_result.final_state.expectation_value_sparse(*d->cost_hamiltonian);
         const double v     = is_finite_strict(value) ? value : 1e12;
         ++d->nfev;
         if (!d->best_val_valid || v < d->best_val) {
@@ -832,9 +848,8 @@ MAQAOA::Result MAQAOA::optimize(
             auto circuit = build_circuit(cost_hamiltonian, mixer, all_params);
             lindblad::DensityMatrixSimulator dm_sim;
             auto dm_result = dm_sim.run(circuit, estimator.options.noise_model, 0, 0);
-            result.optimal_value = dm_result.success
-                ? dm_result.final_state.expectation_value_sparse(cost_hamiltonian)
-                : 1e12;
+            result.optimal_value =
+                dm_result.final_state.expectation_value_sparse(cost_hamiltonian);
         } else {
             evolve_into(inner_sv, cost_hamiltonian, mixer, mixer_layout,
                         all_params, options.p,

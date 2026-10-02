@@ -57,7 +57,8 @@ Behavior (verified against the implementation):
 - If `options.noise_model` is non-ideal, uses `DensityMatrixSimulator`
 - If `options.noise_model` is ideal, uses `StatevectorSimulator`
 - Passes `options.shots` and `options.seed` into the simulator run
-- Throws `std::runtime_error` if simulation fails
+- A simulation that fails throws the simulator's own exception, which reaches
+  the caller unchanged (see [Failures](failures.md))
 
 ## Example
 

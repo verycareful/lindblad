@@ -117,6 +117,40 @@ Attaches noise channels to gate names and qubit patterns.
   - If a gate is missing from `gate_qubits`, it applies to all qubits
   - Adds one error per (gate, qubit) pair
 
+### JSON
+
+```cpp
+std::string to_json() const;
+static NoiseModel from_json(const std::string& json);
+```
+
+A lossless round trip, in the style of `QuantumCircuit::to_json()`:
+
+- every channel's Kraus operators at full double precision (17 significant
+  digits), each operator its $(2^n)^2$ entries in storage order as
+  `[real, imag]` pairs, with the channel's width, its qubits and whether it acts
+  before or after the gate
+- every readout error, and the noisy-gate list in its stored order
+- gate names and readout qubits written sorted, so the same model always
+  produces the same text
+
+```text
+{"format":"lindblad.noise_model","version":1,
+ "basis_gate_errors":[{"gate":"cx","errors":[{"qubits":[0,1],"after_gate":true,
+   "channel":{"n_qubits":2,"operators":[[[1,0],[0,0],...],...]}}]}],
+ "readout_errors":[{"qubit":0,"prob_meas_0_prep_1":0.01,"prob_meas_1_prep_0":0.02}],
+ "noisy_gates":["cx"]}
+```
+
+`from_json` restores the members exactly as they were written, without running
+`add_quantum_error`'s checks again. It throws `lindblad::InvalidArgument` (a
+`std::invalid_argument`) for a document of another format or version, a channel
+width outside [1, 31], or an operator whose length does not match its channel's
+width. A document that is not well-formed JSON throws the reader's
+`std::runtime_error`, as `QuantumCircuit::from_json` does. A failed
+density-matrix run saves its noise model this way (see
+[Failures](failures.md)).
+
 ## Example
 
 ```cpp
@@ -143,3 +177,4 @@ Relevant tests live in:
 ## Related Pages
 
 - [docs/APIOverview.md](../APIOverview.md)
+- [docs/api/failures.md](failures.md)

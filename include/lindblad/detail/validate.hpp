@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include "lindblad/detail/report.hpp"
+
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -27,7 +29,9 @@
 // These helpers make Class A (index bounds) and Class B (operand structure)
 // fail-loud at every primitive, matching the circuit layer's contract
 // (QuantumCircuit::validate_qubit): std::out_of_range for bounds,
-// std::invalid_argument for structure, same message wording.
+// std::invalid_argument for structure, same message wording. They raise
+// lindblad::OutOfRange and lindblad::InvalidArgument, which are those std
+// types.
 //
 // Cost: each check is a handful of integer comparisons at the O(2^n) kernel
 // entry, NOT per-amplitude. Next to the amplitude sweep it is a rounding error.
@@ -47,25 +51,23 @@ namespace detail {
 
 [[noreturn]] inline void throw_index_oor(const char* ctx, const char* noun,
                                          long long idx, long long n) {
-    throw std::out_of_range(std::string(ctx) + ": " + noun + " index " +
-                            std::to_string(idx) + " out of range [0, " +
-                            std::to_string(n) + ")");
+    raise<OutOfRange>(ctx, std::string(noun) + " index " + std::to_string(idx) +
+                               " out of range [0, " + std::to_string(n) + ")");
 }
 
 [[noreturn]] inline void throw_not_distinct(const char* ctx, const char* noun) {
-    throw std::invalid_argument(std::string(ctx) + ": " + noun +
-                                " must be distinct");
+    raise<InvalidArgument>(ctx, std::string(noun) + " must be distinct");
 }
 
 [[noreturn]] inline void throw_bad_size(const char* ctx, const char* what,
                                         long long expected, long long got) {
-    throw std::invalid_argument(std::string(ctx) + ": " + what + " must have " +
-                                std::to_string(expected) + " entries, got " +
-                                std::to_string(got));
+    raise<InvalidArgument>(ctx, std::string(what) + " must have " +
+                                    std::to_string(expected) + " entries, got " +
+                                    std::to_string(got));
 }
 
 [[noreturn]] inline void throw_structure(const char* ctx, const std::string& msg) {
-    throw std::invalid_argument(std::string(ctx) + ": " + msg);
+    raise<InvalidArgument>(ctx, msg);
 }
 
 // -----------------------------------------------------------------------------

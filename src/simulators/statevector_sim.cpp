@@ -9,7 +9,10 @@
 
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/detail/born_draw.hpp"
+#include "lindblad/detail/failure_collector.hpp"
 #include "lindblad/detail/memory_budget.hpp"
+#include "lindblad/detail/preflight.hpp"
+#include "lindblad/detail/report.hpp"
 #include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate.hpp"
@@ -230,6 +233,8 @@ static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng,
 // has already run.
 // ctx = the public entry point a refused collapse names.
 // runner = the run's observation harness, or null when nothing is watching.
+// failure = the run's failure path, told which instruction is about to
+//           execute; null outside run().
 // An instruction that is skipped (a barrier, or a conditioned gate whose
 // condition does not hold) still fires its anchors: the anchor names a point
 // the run reached, and a caller watching every instruction wants to see the
@@ -239,7 +244,8 @@ static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
                               std::vector<int>& clreg, int n_clbits,
                               std::mt19937_64& rng, std::size_t first,
                               const char* ctx,
-                              detail::ObservationRunner* runner = nullptr) {
+                              detail::ObservationRunner* runner = nullptr,
+                              detail::FailureCollector* failure = nullptr) {
     using GT = Instruction::GateType;
 
     const StateView view(StateForm::Statevector, &sv, sv.n_qubits);
@@ -250,6 +256,7 @@ static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
         const Instruction& inst = circuit.instructions[i];
         ++index;
         if (runner) runner->before_instruction(index, inst, view);
+        if (failure) failure->at_instruction(index, &inst);
 
         bool skip = inst.type == GT::BARRIER;
         if (!skip && inst.condition_clbit >= 0) {
@@ -274,6 +281,7 @@ static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
     }
 
     if (runner) runner->at_end(view, index);
+    if (failure) failure->leave_instructions();
 }
 
 // One sample of the whole register from `sv`'s own normalised distribution,
@@ -315,23 +323,39 @@ static bool sv_measures_are_terminal(const QuantumCircuit& circuit) {
 // simulate_circuit
 // =============================================================================
 
-void StatevectorSimulator::simulate_circuit(
-    Statevector& sv,
-    const QuantumCircuit& circuit_in
-) {
-    const detail::ScopedThreadCap threads(options.max_parallel_threads,
-                                          "StatevectorSimulator::simulate_circuit");
-    // Trajectory semantics (docs/api/simulators.md, Execution semantics):
-    // classical conditions are honoured against a local register and MEASURE
-    // outcomes are recorded into it (collapse drawn from the thread-local
-    // RNG). For circuits without measurement or conditioning this reduces to
-    // the plain forward pass.
-    // A public entry that does not pass through run(), so it owns the physical
-    // pre-flight itself. The trajectory below then applies under Ignore, the
-    // same division run() uses.
-    // Under Repair::Attempt a repaired copy is executed and the caller's
-    // circuit is left exactly as it was handed over; Repair::None binds
-    // straight to it and nothing is copied.
+// The body of simulate_circuit, shared with eval_expectation so that each
+// refusal names the entry point its caller actually called.
+//
+// Trajectory semantics (docs/api/simulators.md, Execution semantics):
+// classical conditions are honoured against a local register and MEASURE
+// outcomes are recorded into it (collapse drawn from the thread-local RNG).
+// For circuits without measurement or conditioning this reduces to the plain
+// forward pass.
+//
+// Both are public entries that do not pass through run(), so they own the
+// checks run() makes before its first gate: the instruction pass, then the
+// physical pre-flight. The trajectory below then applies under Ignore, the
+// same division run() uses. Under Repair::Attempt a repaired copy is executed
+// and the caller's circuit is left exactly as it was handed over;
+// Repair::None binds straight to it and nothing is copied.
+// A register over the statevector limit, refused by name before any state is
+// sized, so the caller is told about the limit and the setting that lifts it
+// rather than about memory.
+static void check_qubit_limit(int n_qubits, QubitLimit limit, const char* entry_point) {
+    const int ceiling = max_statevector_qubits(limit);
+    if (n_qubits <= ceiling) return;
+    std::string what = "the circuit has " + std::to_string(n_qubits) +
+                       " qubits, over the statevector limit of " + std::to_string(ceiling);
+    if (limit == QubitLimit::Enforce && n_qubits <= LIFTED_MAX_QUBITS) {
+        what += "; Options::qubit_limit = QubitLimit::Lift raises it to " +
+                std::to_string(LIFTED_MAX_QUBITS);
+    }
+    detail::raise<InvalidArgument>(entry_point, what);
+}
+
+static void sv_simulate(StatevectorSimulator& sim, Statevector& sv,
+                        const QuantumCircuit& circuit_in, const char* ctx) {
+    detail::preflight_instructions(circuit_in, ctx);
     std::optional<QuantumCircuit> repaired_storage =
         circuit_in.validated_physical();
     const QuantumCircuit& circuit =
@@ -340,8 +364,16 @@ void StatevectorSimulator::simulate_circuit(
     const int n_clbits =
         circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
     std::vector<int> clreg(static_cast<size_t>(n_clbits), 0);
-    sv_run_trajectory(*this, sv, circuit, clreg, n_clbits, sv_sim_rng, 0,
-                      "StatevectorSimulator::simulate_circuit");
+    sv_run_trajectory(sim, sv, circuit, clreg, n_clbits, sv_sim_rng, 0, ctx);
+}
+
+void StatevectorSimulator::simulate_circuit(
+    Statevector& sv,
+    const QuantumCircuit& circuit_in
+) {
+    const detail::ScopedThreadCap threads(options.max_parallel_threads,
+                                          "StatevectorSimulator::simulate_circuit");
+    sv_simulate(*this, sv, circuit_in, "StatevectorSimulator::simulate_circuit");
 }
 
 // =============================================================================
@@ -354,9 +386,12 @@ double StatevectorSimulator::eval_expectation(
 ) {
     const detail::ScopedThreadCap threads(options.max_parallel_threads,
                                           "StatevectorSimulator::eval_expectation");
-    if (circuit.n_qubits < 1)
-        throw std::invalid_argument(
-            "StatevectorSimulator::eval_expectation: circuit must have at least 1 qubit");
+    if (circuit.n_qubits < 1) {
+        detail::raise<InvalidArgument>("StatevectorSimulator::eval_expectation",
+                                       "circuit must have at least 1 qubit");
+    }
+    check_qubit_limit(circuit.n_qubits, options.qubit_limit,
+                      "StatevectorSimulator::eval_expectation");
 
     // Strict exact-evaluation rule (docs/api/simulators.md): an exact
     // expectation value is undefined for stochastic evolution. Circuits with
@@ -365,22 +400,28 @@ double StatevectorSimulator::eval_expectation(
     for (const auto& inst : circuit.instructions) {
         if (inst.type == Instruction::GateType::MEASURE ||
             inst.condition_clbit >= 0) {
-            throw std::invalid_argument(
-                "StatevectorSimulator::eval_expectation: circuit contains "
-                "measurement or classically-conditioned instructions; the "
-                "exact expectation of a stochastic trajectory is undefined. "
-                "Use run() with shots > 0 and estimate from counts.");
+            detail::raise<InvalidArgument>("StatevectorSimulator::eval_expectation",
+                "circuit contains measurement or classically-conditioned "
+                "instructions; the exact expectation of a stochastic trajectory is "
+                "undefined. Use run() with shots > 0 and estimate from counts.");
         }
     }
 
     thread_local std::unique_ptr<Statevector> sv_work;
     if (!sv_work || sv_work->n_qubits != circuit.n_qubits) {
-        sv_work = std::make_unique<Statevector>(circuit.n_qubits);
+        // The one state this evaluation allocates, judged against the same cap
+        // run() answers to. A state kept from the last call of this width is
+        // reused and allocates nothing.
+        (void)detail::require_memory_budget(
+            detail::complex_bytes(detail::pow2_saturating(circuit.n_qubits)),
+            options.max_memory_mb, "StatevectorSimulator::eval_expectation");
+        sv_work.reset();
+        sv_work = std::make_unique<Statevector>(circuit.n_qubits, options.qubit_limit);
     } else {
         sv_work->initialize();
     }
 
-    simulate_circuit(*sv_work, circuit);
+    sv_simulate(*this, *sv_work, circuit, "StatevectorSimulator::eval_expectation");
     return observable.expectation_value(*sv_work);
 }
 
@@ -568,6 +609,22 @@ QuantumCircuit sv_fuse_circuit(StatevectorSimulator& sim,
 
 }  // namespace
 
+// Every field of Options, for a failed run's record.
+static void record_options(detail::FailureCollector& failure,
+                           const StatevectorSimulator::Options& o) {
+    using detail::option_value;
+    failure.add_option("max_parallel_threads", option_value(o.max_parallel_threads));
+    failure.add_option("max_memory_mb", option_value(o.max_memory_mb));
+    failure.add_option("qubit_limit", option_value(o.qubit_limit));
+    failure.add_option("prefix_reuse", option_value(o.prefix_reuse));
+    failure.add_option("precision", option_value(o.precision));
+    failure.add_option("zero_threshold", option_value(o.zero_threshold));
+    failure.add_option("threshold", option_value(o.threshold));
+    failure.add_option("fusion_enable", option_value(o.fusion_enable));
+    failure.add_option("fusion_threshold", option_value(o.fusion_threshold));
+    failure.add_option("fusion_max_qubit", option_value(o.fusion_max_qubit));
+}
+
 StatevectorSimulator::Result StatevectorSimulator::run(
     const QuantumCircuit& circuit_in,
     int shots,
@@ -577,9 +634,26 @@ StatevectorSimulator::Result StatevectorSimulator::run(
     ScopedWarningFlush flush_on_exit;
     Result result;
 
+    // Declared outside the try block so the failure path can still reach them:
+    // the collector, the harness, the working buffer, and the circuits an
+    // instruction the collector names may belong to.
+    detail::FailureCollector failure("StatevectorSimulator::run", "statevector",
+                                     circuit_in, shots, plan);
+    std::optional<detail::ObservationRunner> runner;
+    // Reused across calls on this thread, which spares variational hot paths
+    // (VQE, QAOA) calling run() thousands of times an aligned alloc and free
+    // each.
+    thread_local std::unique_ptr<Statevector> sv_work;
+    std::optional<QuantumCircuit> repaired_storage;
+    QuantumCircuit fused_storage;
+
     try {
         detail::check_circuit_has_qubits(circuit_in.n_qubits,
                                          "StatevectorSimulator::run");
+        // The widest register this run accepts, checked before anything is
+        // sized from the width, so the refusal names the limit and how to lift
+        // it rather than a memory figure.
+        check_qubit_limit(circuit_in.n_qubits, options.qubit_limit, "StatevectorSimulator::run");
         // Every parallel region of the run below takes Options::
         // max_parallel_threads; the caller's own setting is back on return.
         const detail::ScopedThreadCap threads(options.max_parallel_threads,
@@ -587,42 +661,42 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // A run holds two states at once: the working buffer and the copy
         // returned in Result::final_state. A prefix snapshot, when taken, is
         // released before that copy is made, so it does not raise the count.
-        detail::require_memory_budget(
-            detail::saturating_mul(2, detail::complex_bytes(
-                                          detail::pow2_saturating(circuit_in.n_qubits))),
-            options.max_memory_mb, "StatevectorSimulator::run");
-        // Pre-flight: reject any out-of-range operand index up front so the
-        // failure surfaces through Result rather than reaching a kernel.
-        circuit_in.validate_operands();
+        const std::uint64_t two_states = detail::saturating_mul(
+            2, detail::complex_bytes(detail::pow2_saturating(circuit_in.n_qubits)));
+        const std::uint64_t cap_bytes = detail::require_memory_budget(
+            two_states, options.max_memory_mb, "StatevectorSimulator::run");
+        // Everything the instructions decide on their own, operand indices
+        // first, before any state is touched, each refusal naming its
+        // instruction.
+        detail::preflight_instructions(circuit_in, "StatevectorSimulator::run");
         // Under Repair::Attempt a repaired copy is executed and the caller's
         // circuit is left exactly as it was handed over; Repair::None binds
         // straight to it and nothing is copied. Same shape as the fused-circuit
         // swap below, and it runs first so fusion consumes repaired matrices.
-        std::optional<QuantumCircuit> repaired_storage =
-            circuit_in.validated_physical();
+        repaired_storage = circuit_in.validated_physical();
         const QuantumCircuit& circuit =
             repaired_storage ? *repaired_storage : circuit_in;
         if (options.fusion_max_qubit < 2 ||
             options.fusion_max_qubit > SV_FUSION_MAX_QUBIT_LIMIT) {
-            throw std::invalid_argument(
-                "Options::fusion_max_qubit must be in [2, 6]");
+            detail::raise<InvalidArgument>("StatevectorSimulator::run",
+                "Options::fusion_max_qubit must be in [2, " +
+                    std::to_string(SV_FUSION_MAX_QUBIT_LIMIT) + "], got " +
+                    std::to_string(options.fusion_max_qubit));
         }
         if (options.fusion_threshold < 0) {
-            throw std::invalid_argument(
-                "Options::fusion_threshold must be >= 0 (0 = auto)");
+            detail::raise<InvalidArgument>("StatevectorSimulator::run",
+                "Options::fusion_threshold must be >= 0 (0 = auto), got " +
+                    std::to_string(options.fusion_threshold));
         }
 
         auto t_start = std::chrono::high_resolution_clock::now();
 
-        // Reuse a thread-local working buffer to avoid repeated aligned alloc/free
-        // on variational hot paths (VQE, QAOA) that call run() thousands of times.
-        thread_local std::unique_ptr<Statevector> sv_work;
         if (!sv_work || sv_work->n_qubits != circuit.n_qubits) {
-            sv_work = std::make_unique<Statevector>(circuit.n_qubits);
+            sv_work = std::make_unique<Statevector>(circuit.n_qubits, options.qubit_limit);
         }
         // Writes |0...0> for the default plan, so a reused buffer is cleared on
         // the same call that seeds a supplied initial state.
-        detail::apply_initial_state(plan, *sv_work);
+        detail::apply_initial_state(plan, *sv_work, "StatevectorSimulator::run");
         // Derive a per-thread seed so parallel batches (e.g. Estimator::run_batch)
         // produce statistically independent RNG streams rather than every thread
         // reseeding to the same Mersenne Twister state. The single-threaded path
@@ -631,6 +705,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         const uint64_t base_seed = (seed == 0)
             ? static_cast<uint64_t>(std::random_device{}())
             : seed;
+        failure.set_seed(base_seed);
 #ifdef _OPENMP
         const uint32_t tid = static_cast<uint32_t>(omp_get_thread_num());
 #else
@@ -652,7 +727,6 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // it every shot. Strategy detection stays on the original circuit —
         // fusion preserves measures, conditions, and their ordering by
         // construction, so the classification is identical.
-        QuantumCircuit fused_storage;
         const QuantumCircuit* exec = &circuit;
         // An observed run suppresses fusion by default, so that anchors keep
         // naming the instructions the caller wrote. Options::Fusion::Keep opts
@@ -678,8 +752,12 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // plan that does not match its circuit is a mistake in the caller's
         // code, not a capability the backend lacks, so no response knob softens
         // it.
-        detail::ObservationRunner runner(plan, *exec, StateForm::Statevector);
-        runner.set_bundle(&result.observations);
+        runner.emplace(plan, *exec, StateForm::Statevector, "StatevectorSimulator::run");
+        runner->set_bundle(&result.observations);
+        // Everything the run allocates beyond its two states is charged here
+        // before it is allocated: the copies and conversions its observers take.
+        detail::RunBudget budget(cap_bytes, two_states, "StatevectorSimulator::run");
+        runner->set_budget(&budget);
 
         // Execution strategy (docs/api/simulators.md, Execution semantics):
         //   1. Terminal-only measurements (no feedforward, nothing acting on
@@ -719,11 +797,11 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             // this block, so it is gone before the result's copy is made.
             result.counts.clear();
             std::vector<int> clreg(n_clbits, 0);
-            runner.begin_run(circuit.n_qubits, shots);
+            runner->begin_run(circuit.n_qubits, shots);
 
             const std::uint64_t state_bytes = detail::complex_bytes(sv_work->dim);
             const bool reuse =
-                !runner.active() && shots > 1 &&
+                !runner->active() && shots > 1 &&
                 detail::take_prefix_snapshot(options.prefix_reuse, state_bytes,
                                              detail::saturating_mul(2, state_bytes),
                                              options.max_memory_mb);
@@ -732,6 +810,8 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             if (reuse) {
                 using GT = Instruction::GateType;
                 while (prefix_end < exec->instructions.size()) {
+                    failure.at_instruction(static_cast<int>(prefix_end),
+                                           &exec->instructions[prefix_end]);
                     const Instruction& inst = exec->instructions[prefix_end];
                     if (inst.type == GT::MEASURE || inst.type == GT::RESET ||
                         inst.condition_clbit >= 0)
@@ -740,7 +820,9 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                         apply_instruction(*sv_work, inst, {Validation::Ignore});
                     ++prefix_end;
                 }
-                snapshot = std::make_unique<Statevector>(circuit.n_qubits);
+                failure.leave_instructions();
+                snapshot = std::make_unique<Statevector>(circuit.n_qubits,
+                                                         options.qubit_limit);
                 std::memcpy(snapshot->real_parts, sv_work->real_parts,
                             sv_work->dim * sizeof(double));
                 std::memcpy(snapshot->imag_parts, sv_work->imag_parts,
@@ -748,19 +830,20 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             }
 
             for (int shot = 0; shot < shots; ++shot) {
+                failure.set_shot(shot);
                 if (snapshot) {
                     std::memcpy(sv_work->real_parts, snapshot->real_parts,
                                 sv_work->dim * sizeof(double));
                     std::memcpy(sv_work->imag_parts, snapshot->imag_parts,
                                 sv_work->dim * sizeof(double));
                 } else {
-                    detail::apply_initial_state(plan, *sv_work);
+                    detail::apply_initial_state(plan, *sv_work, "StatevectorSimulator::run");
                 }
                 clreg.assign(n_clbits, 0);
-                runner.begin_shot(shot, clreg);
+                runner->begin_shot(shot, clreg);
                 sv_run_trajectory(*this, *sv_work, *exec, clreg, n_clbits,
                                   sv_sim_rng, prefix_end, "StatevectorSimulator::run",
-                                  runner.active() ? &runner : nullptr);
+                                  runner->active() ? &*runner : nullptr, &failure);
 
                 std::string bits;
                 if (has_measure) {
@@ -777,6 +860,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                     bits = sv_sample_register(*sv_work, sv_sim_rng);
                 }
                 result.counts[bits]++;
+                failure.shot_done();
             }
         } else if (shots > 0 && terminal_only) {
             // Terminal-measurement fast path: a single evolution with MEASURE
@@ -788,21 +872,23 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             const std::vector<int> no_clreg;
             const StateView view(StateForm::Statevector, sv_work.get(),
                                  sv_work->n_qubits);
-            runner.begin_run(circuit.n_qubits, 1);
-            runner.begin_shot(0, no_clreg);
-            if (runner.active()) runner.at_start(view);
+            runner->begin_run(circuit.n_qubits, 1);
+            runner->begin_shot(0, no_clreg);
+            if (runner->active()) runner->at_start(view);
 
             int index = -1;
             for (const auto& inst : exec->instructions) {
                 ++index;
-                if (runner.active()) runner.before_instruction(index, inst, view);
+                if (runner->active()) runner->before_instruction(index, inst, view);
+                failure.at_instruction(index, &inst);
                 if (inst.type != Instruction::GateType::MEASURE &&
                     inst.type != Instruction::GateType::BARRIER) {
                     apply_instruction(*sv_work, inst, {Validation::Ignore});
                 }
-                if (runner.active()) runner.after_instruction(index, inst, view);
+                if (runner->active()) runner->after_instruction(index, inst, view);
             }
-            if (runner.active()) runner.at_end(view, index);
+            if (runner->active()) runner->at_end(view, index);
+            failure.leave_instructions();
 
             std::vector<std::pair<int, int>> meas;  // (qubit, clbit)
             for (const auto& inst : exec->instructions)
@@ -844,11 +930,11 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             // Single seeded trajectory (shots == 0 semantics; also the plain
             // forward pass for measurement-free circuits with shots > 0).
             std::vector<int> clreg(n_clbits, 0);
-            runner.begin_run(circuit.n_qubits, 1);
-            runner.begin_shot(0, clreg);
+            runner->begin_run(circuit.n_qubits, 1);
+            runner->begin_shot(0, clreg);
             sv_run_trajectory(*this, *sv_work, *exec, clreg, n_clbits,
                               sv_sim_rng, 0, "StatevectorSimulator::run",
-                              runner.active() ? &runner : nullptr);
+                              runner->active() ? &*runner : nullptr, &failure);
             if (shots > 0) {
                 result.counts = sv_work->sample_counts(shots, seed);
             }
@@ -857,7 +943,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // Flushes every labelled observer into result.observations. Runs before
         // the timer stops, since collecting what was observed is part of the
         // work the run was asked to do.
-        runner.end_run();
+        runner->end_run();
 
         auto t_end = std::chrono::high_resolution_clock::now();
         result.simulation_time_seconds =
@@ -871,20 +957,45 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // circuit accumulated. Checking here would judge a circuit's arithmetic
         // against a caller's tolerance and could make run() throw on a
         // simulation that did nothing wrong.
-        result.final_state = Statevector(circuit.n_qubits);
+        //
+        // What it does refuse is no state at all: zero or non-finite, which
+        // only a matrix let through under ValidationOptions Warn or Ignore can
+        // produce. Returned, it would be taken for an answer.
+        if (!detail::state_is_finite_and_nonzero(*sv_work)) {
+            detail::raise<RuntimeFailure>("StatevectorSimulator::run",
+                "the final state is zero or not finite, so there is no state to return; "
+                "a matrix let through by ValidationOptions Warn or Ignore can do this");
+        }
+        result.final_state = Statevector(circuit.n_qubits, options.qubit_limit);
         result.final_state.set_amplitudes(sv_work->real_parts, sv_work->imag_parts,
                                           sv_work->dim, {Validation::Ignore});
-        result.success = true;
 
-    } catch (const std::exception& e) {
-        result.success = false;
-        result.error_message = e.what();
-        // Observers write into the bundle as end_run walks them, so a failure
-        // partway through that walk leaves entries from the ones ahead of it. A
-        // caller checking the flag would be told the run failed while a caller
-        // reading the bundle found real observations in it, and one of the two
-        // would be acting on a run that did not happen.
-        result.observations = ObservationBundle();
+    } catch (...) {
+        // The failure path: whatever the run had computed goes into the
+        // failed-run record, which fail() saves, puts in this thread's slot and
+        // rethrows with. Nothing is caught to be converted; a failure before
+        // the first instruction is rethrown untouched.
+        FailedRun::State state;
+        if (failure.work_started()) {
+            try {
+                std::vector<std::string> notes;
+                if (runner) runner->flush_on_failure(notes);
+                for (auto& text : notes) failure.note(std::move(text));
+                record_options(failure, options);
+            } catch (...) {
+                // These allocate, and may fail under the memory pressure that
+                // failed the run; the run's own failure is what the caller
+                // must see.
+            }
+            if (sv_work) {
+                // The buffer moves into the record, so the next run on this
+                // thread allocates a fresh one.
+                state = std::move(*sv_work);
+                sv_work.reset();
+            }
+        }
+        failure.fail(std::current_exception(), std::move(result.counts),
+                     std::move(result.observations), std::move(state));
     }
 
     return result;

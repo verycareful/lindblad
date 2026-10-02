@@ -542,13 +542,15 @@ public:
     // and docs migrate.
     std::string to_ascii() const;
 
-    // Pre-flight validation for backend run(): checks that every instruction's
-    // qubit and classical-bit indices are in range. The per-gate builders
-    // already validate at construction time, but instructions can also enter a
-    // circuit via compose() index remapping, control(), the QASM parsers, and
-    // transpiler passes; this sweep guarantees no out-of-range index reaches a
-    // kernel regardless of ingress. Throws std::out_of_range on the first bad
-    // index (backends run it inside run()'s try, so it surfaces through Result).
+    // Checks that every instruction's qubit and classical-bit indices, and any
+    // condition bit, are in range. The per-gate builders already validate at
+    // construction time, but instructions can also enter a circuit via
+    // compose() index remapping, control(), the QASM parsers, transpiler passes
+    // and direct edits of `instructions`. Throws std::out_of_range on the first
+    // bad index. Every backend run() makes the same check itself before its
+    // first gate, raising lindblad::OutOfRange that names the run and the
+    // instruction, so a caller needs this only to check a circuit before
+    // handing it on.
     void validate_operands() const;
 
     // Pre-flight validation for backend run(): checks that every instruction

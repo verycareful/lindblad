@@ -254,13 +254,17 @@ counters and fidelity figures. `MPS_DEFAULT_CUTOFF` (`1e-16`) is declared in
   discard; default `MPS_DEFAULT_CUTOFF`
 - `svd_method` (`SVDMethod`, default `BDC`, autonne's divide and conquer): the
   bond-split kernel. `Jacobi` (autonne), `EigenBDC` and `EigenJacobi` are
-  selectable, and either Jacobi emits a one-time note that it is the slower
-  algorithm. Same meaning as the qubit `MPSState::svd_method`; declared in
+  selectable; either Jacobi emits a one-time note that it is the slower
+  algorithm, and `EigenBDC` one that it is in force. Same meaning as the qubit `MPSState::svd_method`; declared in
   `lindblad/types.hpp`
-- `svd_rescue` (`bool`, default `true`): whether a factorisation the verify
-  rung rejects descends the rescue ladder (autonne `Jacobi`, then the Gram
-  route), one warning per rung (identical warnings collapse into a repeat
-  count). `false` makes the first rejection throw
+- `svd_rejection` (`SvdRejection`, default `Fix`), `svd_accept_gram` (`bool`,
+  default `false`) and `svd_report` (`SvdReport`, default `Warn`): what a
+  factorisation the verify rung rejects gets (repaired down the ladder,
+  autonne `Jacobi` and then the Gram route when it is accepted; the end of the
+  run; or used as it is, unverified), and whether a fix or an unverified use is
+  reported. Same meaning as the qubit `MPSState`'s fields of the same names;
+  the enums are declared in `lindblad/types.hpp`. Each non-default setting
+  emits a one-time note for the qudit layer
 - `canonical_form` (`CanonicalForm`, default `Always`): every bond split moves
   the orthogonality centre onto its block first. `Auto` moves it only when the
   bond cap can bind or the cutoff is above `MPS_DEFAULT_CUTOFF`, which skips QR
@@ -401,6 +405,7 @@ double truncation_error() const;
 std::size_t svd_call_count() const;
 std::size_t jacobi_rescue_count() const;
 std::size_t gram_fallback_count() const;
+std::size_t ignored_rejection_count() const;
 double floor_rejected_weight() const;
 std::uint64_t svd_time_ns() const;
 double max_verify_residual_excess() const;
@@ -410,8 +415,9 @@ The same figures the qubit `MPSState` exposes, with the same meanings (see
 Fidelity Figures and the truncation text in the
 [simulators reference](simulators.md#fidelity-figures)): how close the chain is
 to the state an untruncated evolution would hold, as an estimate that is not a
-bound and a rigorous lower bound, both empty after any collapse; the truncation
-total; splits performed, how many were rescued on each rung, the Gram route's
+bound and a rigorous lower bound, both empty after any collapse and after an
+unverified factorisation is used; the truncation total; splits performed, how
+many were rescued on each rung, how many were used unverified, the Gram route's
 floor-rejected weight, nanoseconds spent in the whole ladder
 over those splits, and the worst factorisation error the verify rung accepted.
 `svd_time_ns()` brackets the ladder the way the qubit layer does, so the two

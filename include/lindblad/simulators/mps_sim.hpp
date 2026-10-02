@@ -31,8 +31,39 @@ class QuantumCircuit;
 
 namespace detail {
 struct SvdTruncation;
+struct SvdPolicy;
 struct MPSDispatch;
-}
+struct StateFileAccess;
+class RunBudget;
+
+// =============================================================================
+// BudgetLink - a chain's tie to the run evolving it
+// =============================================================================
+// Which run budget this chain's growth is charged against, and where that run
+// has got to, while an MPSSimulator run evolves it. The link belongs to the
+// object, not to its value: copying or moving a chain never carries it, and
+// assigning to one keeps the target's own. So a chain an observer copied, or
+// the one a run hands back, never refers to a budget that has gone.
+class BudgetLink {
+public:
+    BudgetLink() = default;
+    BudgetLink(const BudgetLink&) noexcept {}
+    BudgetLink& operator=(const BudgetLink&) noexcept { return *this; }
+
+    void attach(RunBudget* run_budget) noexcept {
+        budget = run_budget;
+        shot = -1;
+        instruction = -1;
+        inst = nullptr;
+    }
+    void detach() noexcept { attach(nullptr); }
+
+    RunBudget* budget = nullptr;
+    int shot = -1;                       // -1 outside a per-shot trajectory
+    int instruction = -1;                // -1 before the first instruction
+    const Instruction* inst = nullptr;   // the instruction being applied
+};
+}  // namespace detail
 
 // =============================================================================
 // MPSTensor — tensor for one qubit site
@@ -96,12 +127,26 @@ public:
     // conquer) by default; the alternatives and what each promises are with the
     // enum in types.hpp.
     SVDMethod svd_method = SVDMethod::BDC;
-    // Whether a factorisation the VERIFY rung rejects may descend the rescue
-    // ladder (autonne Jacobi, then the Gram route), each descent reported
-    // through the warning channel. false: the first rejection throws, for a
-    // caller who would rather stop than accept a tensor from a kernel they did
-    // not name.
-    bool svd_rescue = true;
+    // What a bond split does with a factorisation verification rejects, and
+    // how it says so (SvdRejection and SvdReport in types.hpp). Fix, the
+    // default, repairs it down the ladder: autonne's Jacobi, then the Gram
+    // route only when svd_accept_gram is on (off by default), throwing when no
+    // permitted rung repairs it. Throw ends the run at the first rejection;
+    // Ignore uses the factorisation as it is, unverified. svd_report governs
+    // the warnings a repair or an unverified use emits. Each non-default
+    // setting emits a one-time note.
+    SvdRejection svd_rejection = SvdRejection::Fix;
+    bool svd_accept_gram = false;
+    SvdReport svd_report = SvdReport::Warn;
+    // The widest register this chain may expand into a dense array: a gate
+    // over three or more qubits, MCX, MCP and PERMUTATION (applied to the
+    // amplitudes and the chain rebuilt), and to_statevector. 25 qubits under
+    // Enforce, 31 under Lift (see QubitLimit in types.hpp).
+    QubitLimit qubit_limit = QubitLimit::Enforce;
+    // Set only while an MPSSimulator run evolves this chain; see BudgetLink.
+    // Every two-site update and dense fallback is checked against the run's
+    // memory budget before it allocates.
+    detail::BudgetLink budget_link;
     // Which bond splits first move the orthogonality centre onto their block.
     // Always by default; the two policies and what each costs are with the
     // enum in types.hpp.
@@ -268,16 +313,20 @@ public:
     //
     // svd_call_count() is the denominator: a bond split calls svd_truncate once,
     // so a bare rescue count means nothing without it. jacobi_rescue_count()
-    // and gram_fallback_count() count only the rescues that SUCCEEDED, one or
-    // the other per rescued split; a split on which every rung fails throws
-    // rather than returning.
+    // and gram_fallback_count() count the splits a rung produced, one or the
+    // other per rescued split; a split on which every permitted rung fails
+    // throws rather than returning. ignored_rejection_count() counts the
+    // splits SvdRejection::Ignore used unverified, the rung that produced each
+    // counted as well; one of them withdraws the fidelity figures.
     //
     // floor_rejected_weight() is the Gram route's own cost: the sigma weight
     // below its validity floor on every split it rescued (see
     // SvdTruncation::floor_rejected_weight). It is NOT truncation and is kept
-    // out of truncation_error(), which would otherwise report a bond that
-    // discarded nothing as having lost something. Zero unless some split took
-    // the Gram rung.
+    // out of truncation_error() and fidelity_estimate(), which would otherwise
+    // report a bond that discarded nothing as having lost something. The route
+    // cannot tell that weight from real weight it failed to resolve, so
+    // fidelity_lower_bound() counts it as removed and stays a bound. Zero
+    // unless some split took the Gram rung, which svd_accept_gram allows.
     //
     // On a chain MPSSimulator::run returns, every figure here covers every
     // split the run performed on every path, the per-shot trajectories
@@ -286,6 +335,7 @@ public:
     // unobserved run of several shots computes once (see absorb_profile).
     std::size_t jacobi_rescue_count() const { return jacobi_rescues; }
     std::size_t gram_fallback_count() const { return gram_fallbacks; }
+    std::size_t ignored_rejection_count() const { return ignored_rejections; }
     double floor_rejected_weight() const { return floor_rejected; }
     std::size_t svd_call_count() const { return svd_calls; }
 
@@ -319,7 +369,9 @@ public:
     // ideal rather than the raw residual, and a clean run sits at the square
     // of machine epsilon (~1e-32). It is the ladder's own decision variable:
     // how close a run came to being rescued, and how much error the accepted
-    // route let through when it was not.
+    // route let through when it was not. Under SvdRejection::Ignore it also
+    // covers the splits used unverified, infinite when one could not be
+    // measured.
     double max_verify_residual_excess() const { return max_verify_resid_excess; }
 
     // Fold another chain's five profile figures into this one: the four tallies
@@ -393,6 +445,8 @@ private:
     // construction, through gate_one_site and gate_two_site without measuring
     // them, and a circuit's own matrices under that instruction's policy.
     friend struct detail::MPSDispatch;
+    // The failed-run state file writes and rebuilds the chain's storage.
+    friend struct detail::StateFileAccess;
 
     std::vector<MPSTensor> tensors_;
     // The open span; see the class comment. {0, -1} when there are no sites.
@@ -403,6 +457,7 @@ private:
     double total_truncation_error = 0.0;
     std::size_t jacobi_rescues = 0;
     std::size_t gram_fallbacks = 0;
+    std::size_t ignored_rejections = 0;
     double floor_rejected = 0.0;
     std::size_t svd_calls = 0;
     std::uint64_t svd_nanos = 0;
@@ -417,6 +472,8 @@ private:
     // Folds one split's outcome into the profile counters. Every split this
     // class performs reports through here, so no route can count differently.
     void account_split(const detail::SvdTruncation& split, std::uint64_t nanos);
+    // The SVD settings as the shared ladder takes them.
+    detail::SvdPolicy svd_policy() const;
 
     // SVD helper
     void svd_truncate(
@@ -493,12 +550,23 @@ public:
     // them the choices are reachable only by driving MPSState directly, since
     // run() constructs its own chain and a chain built inside a call cannot be
     // configured from outside it. Meaning of each: MPSState::svd_method,
-    // MPSState::svd_rescue, MPSState::canonical_form and
-    // MPSState::unchecked_gates.
+    // MPSState::svd_rejection, MPSState::svd_accept_gram, MPSState::svd_report,
+    // MPSState::canonical_form, MPSState::unchecked_gates and
+    // MPSState::qubit_limit.
     SVDMethod svd_method = SVDMethod::BDC;
-    bool svd_rescue = true;
+    SvdRejection svd_rejection = SvdRejection::Fix;
+    bool svd_accept_gram = false;
+    SvdReport svd_report = SvdReport::Warn;
     CanonicalForm canonical_form = CanonicalForm::Always;
     UncheckedGates unchecked_gates = UncheckedGates::Track;
+    QubitLimit qubit_limit = QubitLimit::Enforce;
+    // The most memory a run may use, in MiB (2^20 bytes). 0, the default, is
+    // automatic: the memory this machine reports available, or
+    // FALLBACK_MEMORY_CAP_MB when it gives no coherent reading. NO_MEMORY_CAP
+    // means no cap. An MPS run has no fixed footprint to refuse up front; the
+    // cap is the budget every two-site update, dense fallback and observer
+    // copy is checked against before it allocates.
+    uint64_t max_memory_mb = 0;
 
     struct Result {
         MPSState final_state;

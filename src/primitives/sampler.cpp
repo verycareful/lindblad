@@ -68,18 +68,11 @@ std::unordered_map<std::string, int> Sampler::run_single_seeded(
         DensityMatrixSimulator dm_sim;
         auto result = dm_sim.run(bound_circuit, options.noise_model,
                                  options.shots, seed);
-        if (!result.success)
-            throw std::runtime_error("Noisy simulation failed: " + result.error_message);
         return result.counts;
     }
 
     StatevectorSimulator sim;
     auto result = sim.run(bound_circuit, options.shots, seed);
-
-    if (!result.success) {
-        throw std::runtime_error("Simulation failed: " + result.error_message);
-    }
-
     return result.counts;
 }
 

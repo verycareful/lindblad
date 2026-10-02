@@ -37,15 +37,17 @@
 // The ladder is: the selected kernel, then autonne's Jacobi (an independent
 // road to the same factorisation, skipped when it WAS the selected kernel),
 // then the Gram route (a self-adjoint eigendecomposition of M†M, sharing no
-// code with either SVD), then THROW. Every candidate passes the same SELECT and
-// VERIFY before it is accepted. Each rung is documented at its implementation.
+// code with either SVD) when the caller accepts it, then THROW. Every candidate
+// passes the same SELECT and VERIFY. Each rung is documented at its
+// implementation.
 //
-// Descending a rung is reported, not hidden: one warning through the warning
-// channel per rung taken, naming the caller, the block shape and the kernel
-// that failed, so a run that was rescued on every bond reads as one. A caller
-// that wants no rescue at all passes rescue = false and the first failure
-// throws. Which rung produced an accepted factorisation is also returned, so a
-// caller that counts rescues can.
+// What a rejection gets is the caller's SvdPolicy (SvdRejection and SvdReport
+// in types.hpp): repaired by the ladder, a throw, or used as it is. Under the
+// default, descending a rung is reported, not hidden: one warning through the
+// warning channel per rung taken, naming the caller, the block shape and the
+// kernel that failed, so a run that was rescued on every bond reads as one.
+// Which rung produced the returned factorisation, and whether it was used
+// unverified, is also returned, so a caller can count both.
 //
 // DEFINED in src/svd_truncate.cpp, under the project-wide flags. The pieces
 // this ladder cannot afford to have optimised are quarantined where they live
@@ -100,12 +102,45 @@ struct SvdTruncation {
 
     // Which rescue rung produced the returned slice, when the selected kernel's
     // factorisation failed verification: autonne's Jacobi, or the Gram route
-    // after that failed too. At most one is set. All three outcomes are equally
-    // valid tensors, so these flags are the only way to tell a state that took
-    // the primary path throughout from one that was rescued on every bond.
+    // after that failed too. At most one is set. A verified rescue is as valid
+    // a tensor as the primary path's, so these flags are the only way to tell a
+    // state that took the primary path throughout from one that was rescued on
+    // every bond.
     bool used_jacobi_rescue = false;
     bool used_gram_fallback = false;
+
+    // Set when SvdRejection::Ignore returned a factorisation that FAILED
+    // verification. Its slice is whatever the rung produced, selected and
+    // budgeted as usual but not proven to rebuild the block, and
+    // residual_excess is the measured excess (infinite when it could not be
+    // measured). A state built from it is unverified.
+    bool used_unverified = false;
 };
+
+// -----------------------------------------------------------------------------
+// SvdPolicy - what a rejected factorisation gets, as the caller configured it
+// -----------------------------------------------------------------------------
+// rejection   = Fix, Throw or Ignore (SvdRejection in types.hpp)
+// accept_gram = whether the Gram route is a rung of the ladder. Off by default:
+//               forming M†M squares the condition number, so the route drops
+//               singular values below its validity floor, and a caller opts
+//               into that knowingly.
+// report      = Warn or Silent (SvdReport in types.hpp), read only after a
+//               repair or an unverified use
+struct SvdPolicy {
+    SvdRejection rejection = SvdRejection::Fix;
+    bool accept_gram = false;
+    SvdReport report = SvdReport::Warn;
+};
+
+// The MPS layer a split belongs to, for the one-time notes below.
+enum class SvdLayer { Qubit, Qudit };
+
+// Emits, once per process for each layer, a short note for every setting of
+// `policy` that is not its default, so a caller who chose one is reminded that
+// it is in force. Thread-safe; costs a few atomic loads once every note has
+// been emitted.
+void note_nondefault_svd_policy(SvdLayer layer, const SvdPolicy& policy);
 
 // -----------------------------------------------------------------------------
 // svd_truncate_verified
@@ -121,19 +156,17 @@ struct SvdTruncation {
 //          spectrum there is nothing between the noise and the budget, so
 //          nothing extra is discarded.
 // method = the kernel the caller selected for the first rung.
-// rescue = whether a rejected factorisation may descend the ladder. false
-//          turns the first rejection into the throw below, for a caller who
-//          would rather stop than accept a tensor from a kernel it did not
-//          name.
+// policy = what a rejection gets (SvdPolicy above).
 // ctx    = caller name, used in the warning and exception messages so a
 //          rescue or a failure names the layer it came from.
 //
-// Throws std::runtime_error when every permitted rung fails verification,
-// rather than returning a corrupt tensor.
+// Throws RuntimeFailure, rather than returning a corrupt tensor, under Throw at
+// the first rejection, under Fix when no permitted rung produces a verified
+// factorisation, and under Ignore when no permitted rung produces one at all.
 SvdTruncation svd_truncate_verified(const Complex128* data, int rows, int cols,
                                     MatrixOrder order, int max_bond_dim,
-                                    double cutoff, SVDMethod method, bool rescue,
-                                    const char* ctx);
+                                    double cutoff, SVDMethod method,
+                                    const SvdPolicy& policy, const char* ctx);
 
 } // namespace detail
 } // namespace lindblad

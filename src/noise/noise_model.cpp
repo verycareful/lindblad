@@ -8,10 +8,18 @@
 // Commercial License Agreement with the Author.
 
 #include "lindblad/noise.hpp"
+#include "lindblad/detail/json.hpp"
+#include "lindblad/detail/report.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
+#include <limits>
+#include <sstream>
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace lindblad {
 
@@ -144,6 +152,276 @@ NoiseModel NoiseModel::from_t1_t2(
         }
     }
 
+    return model;
+}
+
+// =============================================================================
+// NoiseModel::to_json / from_json - a lossless round trip
+// =============================================================================
+// Format, version 1:
+//
+//   {"format":"lindblad.noise_model","version":1,
+//    "basis_gate_errors":[{"gate":"cx","errors":[{"qubits":[0,1],
+//        "after_gate":true,"channel":{"n_qubits":2,
+//        "operators":[[[re,im],[re,im],...],...]}}]}],
+//    "readout_errors":[{"qubit":0,"prob_meas_0_prep_1":0.01,
+//        "prob_meas_1_prep_0":0.02}],
+//    "noisy_gates":["cx"]}
+//
+// An operator is its (2^n)^2 entries in storage order, each [real, imag].
+
+namespace {
+
+constexpr const char* NOISE_MODEL_FORMAT = "lindblad.noise_model";
+constexpr int NOISE_MODEL_VERSION = 1;
+
+// The widest channel whose operator length, (2^n)^2, a size_t holds: 2n has to
+// stay below its width.
+constexpr int MAX_CHANNEL_QUBITS = (std::numeric_limits<std::size_t>::digits - 1) / 2;
+
+void write_channel(std::ostringstream& o, const KrausChannel& channel) {
+    o << "{\"n_qubits\":" << channel.n_qubits << ",\"operators\":[";
+    for (std::size_t k = 0; k < channel.operators.size(); ++k) {
+        if (k > 0) o << ',';
+        o << '[';
+        const std::vector<Complex128>& op = channel.operators[k];
+        for (std::size_t e = 0; e < op.size(); ++e) {
+            if (e > 0) o << ',';
+            o << '[' << detail::json_number(op[e].real) << ','
+              << detail::json_number(op[e].imag) << ']';
+        }
+        o << ']';
+    }
+    o << "]}";
+}
+
+KrausChannel read_channel(detail::JsonReader& r) {
+    KrausChannel channel;
+    bool have_width = false;
+    r.expect('{');
+    while (r.peek() != '}') {
+        if (r.peek() == ',') r.next();
+        const std::string key = r.read_string();
+        r.expect(':');
+        if (key == "n_qubits") {
+            channel.n_qubits = r.read_int();
+            have_width = true;
+        } else if (key == "operators") {
+            r.expect('[');
+            while (r.peek() != ']') {
+                if (r.peek() == ',') r.next();
+                std::vector<Complex128> op;
+                r.expect('[');
+                while (r.peek() != ']') {
+                    if (r.peek() == ',') r.next();
+                    r.expect('[');
+                    const double re = r.read_double();
+                    r.expect(',');
+                    const double im = r.read_double();
+                    r.expect(']');
+                    op.emplace_back(re, im);
+                }
+                r.expect(']');
+                channel.operators.push_back(std::move(op));
+            }
+            r.expect(']');
+        } else {
+            r.skip_value();
+        }
+    }
+    r.expect('}');
+
+    if (!have_width || channel.n_qubits < 1 || channel.n_qubits > MAX_CHANNEL_QUBITS) {
+        detail::raise<InvalidArgument>("NoiseModel::from_json",
+            "a channel's n_qubits must be in [1, " + std::to_string(MAX_CHANNEL_QUBITS) +
+                "], got " + (have_width ? std::to_string(channel.n_qubits) : "none"));
+    }
+    const std::size_t side = std::size_t{1} << channel.n_qubits;
+    for (std::size_t k = 0; k < channel.operators.size(); ++k) {
+        if (channel.operators[k].size() != side * side) {
+            detail::raise<InvalidArgument>("NoiseModel::from_json",
+                "operator " + std::to_string(k) + " of a " +
+                    std::to_string(channel.n_qubits) + "-qubit channel has " +
+                    std::to_string(channel.operators[k].size()) + " entries; it must have " +
+                    std::to_string(side * side));
+        }
+    }
+    return channel;
+}
+
+std::vector<int> read_int_array(detail::JsonReader& r) {
+    std::vector<int> out;
+    r.expect('[');
+    while (r.peek() != ']') {
+        if (r.peek() == ',') r.next();
+        out.push_back(r.read_int());
+    }
+    r.expect(']');
+    return out;
+}
+
+}  // namespace
+
+std::string NoiseModel::to_json() const {
+    std::ostringstream o;
+    o << "{\"format\":" << detail::json_escape(NOISE_MODEL_FORMAT)
+      << ",\"version\":" << NOISE_MODEL_VERSION << ",\"basis_gate_errors\":[";
+
+    std::vector<std::string> gates;
+    gates.reserve(basis_gate_errors.size());
+    for (const auto& entry : basis_gate_errors) gates.push_back(entry.first);
+    std::sort(gates.begin(), gates.end());
+    for (std::size_t g = 0; g < gates.size(); ++g) {
+        if (g > 0) o << ',';
+        o << "{\"gate\":" << detail::json_escape(gates[g]) << ",\"errors\":[";
+        const std::vector<GateError>& errors = basis_gate_errors.at(gates[g]);
+        for (std::size_t e = 0; e < errors.size(); ++e) {
+            if (e > 0) o << ',';
+            o << "{\"qubits\":[";
+            for (std::size_t q = 0; q < errors[e].qubits.size(); ++q) {
+                if (q > 0) o << ',';
+                o << errors[e].qubits[q];
+            }
+            o << "],\"after_gate\":" << (errors[e].after_gate ? "true" : "false")
+              << ",\"channel\":";
+            write_channel(o, errors[e].channel);
+            o << '}';
+        }
+        o << "]}";
+    }
+
+    o << "],\"readout_errors\":[";
+    std::vector<int> qubits;
+    qubits.reserve(readout_errors.size());
+    for (const auto& entry : readout_errors) qubits.push_back(entry.first);
+    std::sort(qubits.begin(), qubits.end());
+    for (std::size_t i = 0; i < qubits.size(); ++i) {
+        if (i > 0) o << ',';
+        const ReadoutError& err = readout_errors.at(qubits[i]);
+        o << "{\"qubit\":" << qubits[i]
+          << ",\"prob_meas_0_prep_1\":" << detail::json_number(err.prob_meas_0_prep_1)
+          << ",\"prob_meas_1_prep_0\":" << detail::json_number(err.prob_meas_1_prep_0) << '}';
+    }
+
+    o << "],\"noisy_gates\":[";
+    for (std::size_t i = 0; i < noisy_gates.size(); ++i) {
+        if (i > 0) o << ',';
+        o << detail::json_escape(noisy_gates[i]);
+    }
+    o << "]}";
+    return o.str();
+}
+
+NoiseModel NoiseModel::from_json(const std::string& json) {
+    detail::JsonReader r{json};
+    NoiseModel model;
+    std::string format;
+    int version = 0;
+    bool have_version = false;
+
+    r.expect('{');
+    while (r.peek() != '}') {
+        if (r.peek() == ',') r.next();
+        const std::string key = r.read_string();
+        r.expect(':');
+        if (key == "format") {
+            format = r.read_string();
+        } else if (key == "version") {
+            version = r.read_int();
+            have_version = true;
+        } else if (key == "basis_gate_errors") {
+            r.expect('[');
+            while (r.peek() != ']') {
+                if (r.peek() == ',') r.next();
+                std::string gate;
+                std::vector<GateError> errors;
+                r.expect('{');
+                while (r.peek() != '}') {
+                    if (r.peek() == ',') r.next();
+                    const std::string gkey = r.read_string();
+                    r.expect(':');
+                    if (gkey == "gate") {
+                        gate = r.read_string();
+                    } else if (gkey == "errors") {
+                        r.expect('[');
+                        while (r.peek() != ']') {
+                            if (r.peek() == ',') r.next();
+                            GateError ge;
+                            r.expect('{');
+                            while (r.peek() != '}') {
+                                if (r.peek() == ',') r.next();
+                                const std::string ekey = r.read_string();
+                                r.expect(':');
+                                if (ekey == "qubits") {
+                                    ge.qubits = read_int_array(r);
+                                } else if (ekey == "after_gate") {
+                                    ge.after_gate = r.read_bool();
+                                } else if (ekey == "channel") {
+                                    ge.channel = read_channel(r);
+                                } else {
+                                    r.skip_value();
+                                }
+                            }
+                            r.expect('}');
+                            errors.push_back(std::move(ge));
+                        }
+                        r.expect(']');
+                    } else {
+                        r.skip_value();
+                    }
+                }
+                r.expect('}');
+                model.basis_gate_errors[gate] = std::move(errors);
+            }
+            r.expect(']');
+        } else if (key == "readout_errors") {
+            r.expect('[');
+            while (r.peek() != ']') {
+                if (r.peek() == ',') r.next();
+                int qubit = 0;
+                ReadoutError err{0.0, 0.0};
+                r.expect('{');
+                while (r.peek() != '}') {
+                    if (r.peek() == ',') r.next();
+                    const std::string rkey = r.read_string();
+                    r.expect(':');
+                    if (rkey == "qubit") {
+                        qubit = r.read_int();
+                    } else if (rkey == "prob_meas_0_prep_1") {
+                        err.prob_meas_0_prep_1 = r.read_double();
+                    } else if (rkey == "prob_meas_1_prep_0") {
+                        err.prob_meas_1_prep_0 = r.read_double();
+                    } else {
+                        r.skip_value();
+                    }
+                }
+                r.expect('}');
+                model.readout_errors[qubit] = err;
+            }
+            r.expect(']');
+        } else if (key == "noisy_gates") {
+            r.expect('[');
+            while (r.peek() != ']') {
+                if (r.peek() == ',') r.next();
+                model.noisy_gates.push_back(r.read_string());
+            }
+            r.expect(']');
+        } else {
+            r.skip_value();
+        }
+    }
+    r.expect('}');
+
+    if (format != NOISE_MODEL_FORMAT) {
+        detail::raise<InvalidArgument>("NoiseModel::from_json",
+            "the document's format is \"" + format + "\", not \"" +
+                std::string(NOISE_MODEL_FORMAT) + "\"");
+    }
+    if (!have_version || version != NOISE_MODEL_VERSION) {
+        detail::raise<InvalidArgument>("NoiseModel::from_json",
+            "the document is version " + (have_version ? std::to_string(version) : "none") +
+                "; this build reads version " + std::to_string(NOISE_MODEL_VERSION));
+    }
     return model;
 }
 

@@ -152,12 +152,12 @@ performance-sensitive or scripted workflow, call `QuantumCircuit::draw()` /
 
 ## Python bindings
 
-The Python bindings expose `DrawMode`, `ParamFormat`, `DrawOptions`,
-`QuantumCircuit.draw()`, and `QuantumCircuit.draw_to_file()` so the
-visualiser is reachable from `import lindblad as lb`. The bindings stay in
-sync with the C++ API as a convenience, but direct C++ is the recommended
-path for any performance-sensitive or batch workflow: the Python wrapper
-unavoidably crosses the binding boundary and serialises through the GIL.
+The Python bindings declare `DrawMode`, `ParamFormat`, `DrawOptions`,
+`QuantumCircuit.draw()`, and `QuantumCircuit.draw_to_file()`. They are
+unmaintained: no CI leg and no test builds them, so nothing checks that they
+compile against the current C++ API (see
+[Python Binding Build](../BuildAndTest.md#python-binding-build)). Call the
+visualiser from C++.
 
 ## Examples
 
@@ -235,6 +235,5 @@ the c-wire.
 - **LaTeX barriers** emit `\barrier[\dashed]{N}` only on the topmost barrier
   row of a glyph; multi-row barriers in Quantikz are not directly modelled
 - **Matplotlib (mpl) mode** is deliberately omitted from `DrawMode`. The
-  matplotlib `Figure` object can only be constructed from Python, so MPL
-  support will be a future Python bindings deliverable on top of the SVG
-  renderer
+  matplotlib `Figure` object can only be constructed from Python, so there is
+  no MPL mode

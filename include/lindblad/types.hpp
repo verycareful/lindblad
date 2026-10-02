@@ -272,7 +272,8 @@ inline void aligned_free(void* ptr) noexcept {
 // strict-FP translation unit in src/eigen_backend.cpp. Every kernel is
 // available in every build, so the public API does not change shape with the
 // build configuration. Selecting either Jacobi emits a one-time note per MPS
-// layer that it is the slower algorithm; selecting EigenBDC is silent.
+// layer that it is the slower algorithm, and selecting EigenBDC emits one
+// saying it is in force, since it is not the default either.
 enum class SVDMethod { Jacobi, BDC, EigenJacobi, EigenBDC };
 
 // The enumerator's name, for diagnostics.
@@ -284,6 +285,66 @@ constexpr const char* to_string(SVDMethod m) noexcept {
         case SVDMethod::EigenBDC:    return "EigenBDC";
     }
     return "SVDMethod(?)";
+}
+
+// =============================================================================
+// SvdRejection - what a bond split does with a factorisation it rejects
+// =============================================================================
+// Every factorisation a bond split receives is verified before it is used (see
+// detail/svd_truncate.hpp): its kept factors must be finite and must rebuild
+// the block to within the truncation it reports plus the backward error a
+// stable SVD is allowed. A kernel can also decline a block and return nothing.
+//
+// Fix, the DEFAULT, repairs a rejection by descending the ladder: autonne's
+// Jacobi (skipped when Jacobi was the kernel that failed), then the Gram route
+// when svd_accept_gram allows it, each candidate verified the same way. A
+// split that no permitted rung repairs throws. A repaired split is as
+// trustworthy as one the kernel got right, so the answer is intact.
+//
+// Throw ends the run with RuntimeFailure at the first rejection, for a caller
+// who would rather stop than take a tensor from a kernel they did not name.
+//
+// Ignore uses a rejected factorisation as it is. The state built from it is
+// UNVERIFIED and can be wrong with nothing further to say so; the fidelity
+// figures are withdrawn, since they would describe a factorisation that did
+// not happen. A kernel that returned nothing still leaves nothing to use, so
+// that case descends the ladder as under Fix, and whatever the first rung to
+// produce a factorisation gives is used, verified or not. A non-finite entry
+// carried into the chain is still refused where every state's is: at a
+// collapse or a sample, and in the final state.
+//
+// Throw and Ignore are not the default, and each emits a one-time note per MPS
+// layer saying so.
+enum class SvdRejection { Fix, Throw, Ignore };
+
+constexpr const char* to_string(SvdRejection r) noexcept {
+    switch (r) {
+        case SvdRejection::Fix:    return "Fix";
+        case SvdRejection::Throw:  return "Throw";
+        case SvdRejection::Ignore: return "Ignore";
+    }
+    return "SvdRejection(?)";
+}
+
+// =============================================================================
+// SvdReport - how a repaired or ignored rejection is reported
+// =============================================================================
+// Read only after SvdRejection::Fix repaired a factorisation or Ignore used one;
+// Throw ends the run before there is anything to report. Warn, the DEFAULT,
+// emits one warning per rung taken and per factorisation used unverified,
+// naming the layer, the block shape, the kernel and what verification found.
+// Silent emits none. Either way every repair and every unverified use is
+// counted on the chain (jacobi_rescue_count(), gram_fallback_count(),
+// ignored_rejection_count()). Silent is not the default and emits a one-time
+// note per MPS layer saying so.
+enum class SvdReport { Warn, Silent };
+
+constexpr const char* to_string(SvdReport r) noexcept {
+    switch (r) {
+        case SvdReport::Warn:   return "Warn";
+        case SvdReport::Silent: return "Silent";
+    }
+    return "SvdReport(?)";
 }
 
 // Default weight cutoff of both MPS layers: a bond split may discard at most
@@ -407,10 +468,10 @@ constexpr const char* to_string(UncheckedGates g) noexcept {
 //   Hardware = take it when the memory the operating system reports available
 //              at that moment (hw::available_memory_bytes) is at least twice
 //              the snapshot, so the machine keeps as much free as the copy
-//              takes, and the run still fits max_memory_mb when one is set.
-//              No reading means no snapshot. The default.
-//   Manual   = take it when the run, snapshot included, fits max_memory_mb;
-//              with no max_memory_mb set, always.
+//              takes, and the run still fits its memory cap (max_memory_mb,
+//              or the automatic cap when that is 0). No reading means no
+//              snapshot. The default.
+//   Manual   = take it when the run, snapshot included, fits its memory cap.
 //   Off      = never; every shot reruns its prefix.
 //
 // An observed run never takes one, whatever this says: anchors inside the
@@ -426,6 +487,42 @@ constexpr const char* to_string(PrefixReuse r) noexcept {
     }
     return "PrefixReuse(?)";
 }
+
+// =============================================================================
+// QubitLimit - how wide a register a dense representation may be
+// =============================================================================
+// Enforce keeps the default ceilings, sized so a dense state fits a
+// workstation. Lift raises the statevector ceilings to LIFTED_MAX_QUBITS, the
+// widest statevector whose byte count (16 * 2^n) fits 64 bits, and the MPS
+// dense fallback to LIFTED_MPS_DENSE_MAX_QUBITS; nothing lifts either.
+// Lifting never bypasses the memory check.
+//
+// The MPS ceiling is lower because the fallback rebuilds the chain by
+// factorising a 2 x 2^(n-1) block, and the factorisation takes its dimensions
+// as int: 2^30 columns (n = 31) is the widest block it can address.
+enum class QubitLimit { Enforce, Lift };
+
+inline constexpr int ENFORCED_MAX_QUBITS = 30;
+inline constexpr int ENFORCED_MPS_DENSE_MAX_QUBITS = 25;
+inline constexpr int LIFTED_MAX_QUBITS = 59;
+inline constexpr int LIFTED_MPS_DENSE_MAX_QUBITS = 31;
+
+// The widest statevector a limit allows, and the widest register the MPS
+// backend may expand into a dense array (a gate over three or more qubits, a
+// statevector read).
+inline constexpr int max_statevector_qubits(QubitLimit limit) {
+    return limit == QubitLimit::Lift ? LIFTED_MAX_QUBITS : ENFORCED_MAX_QUBITS;
+}
+inline constexpr int max_mps_dense_qubits(QubitLimit limit) {
+    return limit == QubitLimit::Lift ? LIFTED_MPS_DENSE_MAX_QUBITS
+                                     : ENFORCED_MPS_DENSE_MAX_QUBITS;
+}
+
+// max_memory_mb values. 0 means automatic (the machine's available memory,
+// else FALLBACK_MEMORY_CAP_MB). NO_MEMORY_CAP is only ever passed by a
+// caller, to say there is no cap.
+inline constexpr std::uint64_t NO_MEMORY_CAP = std::numeric_limits<std::uint64_t>::max();
+inline constexpr std::uint64_t FALLBACK_MEMORY_CAP_MB = 4096;
 
 // Mathematical constants (PI, INV_SQRT2, ...) live in constants.hpp, included
 // at the top of this header, so every one of those names is visible to anything

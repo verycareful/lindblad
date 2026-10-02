@@ -78,6 +78,11 @@ Behavior:
 - Whatever `run_single` throws for any parameter vector reaches the caller.
   When several fail, the exception for the lowest-indexed vector is the one
   thrown, so the result does not depend on thread scheduling.
+- A simulator run that fails after its first gate leaves its failed-run record
+  in the slot of the worker thread that ran it. `run_batch` moves the
+  lowest-indexed failure's record into the calling thread's slot along with its
+  exception, so `take_failed_run()` on your thread returns it (see
+  [Failures](failures.md)).
 
 ## `run_single`
 

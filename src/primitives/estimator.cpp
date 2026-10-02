@@ -8,6 +8,8 @@
 // Commercial License Agreement with the Author.
 
 #include "lindblad/primitives.hpp"
+#include "lindblad/failed_run.hpp"
+#include "lindblad/detail/failure_collector.hpp"
 #include "lindblad/detail/pauli_rules.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
@@ -19,6 +21,7 @@
 
 #include <cmath>
 #include <exception>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -47,14 +50,10 @@ std::unordered_map<std::string, int> run_in_basis(
     if (!noise_model.is_ideal()) {
         DensityMatrixSimulator dm_sim;
         auto res = dm_sim.run(meas, noise_model, shots, seed);
-        if (!res.success)
-            throw std::runtime_error("Estimator sampling failed: " + res.error_message);
         return std::move(res.counts);
     }
     StatevectorSimulator sv_sim;
     auto res = sv_sim.run(meas, shots, seed);
-    if (!res.success)
-        throw std::runtime_error("Estimator sampling failed: " + res.error_message);
     return std::move(res.counts);
 }
 
@@ -202,18 +201,38 @@ std::vector<double> Estimator::run_batch(
     // (a mismatched observable, a measured circuit at shots == 0) would end the
     // process. Each index keeps its own exception, and the lowest-indexed one
     // is rethrown after the region, so which error the caller sees does not
-    // depend on thread scheduling.
+    // depend on thread scheduling. A failed run's record lands in the slot of
+    // the worker thread that ran it, so each index also takes its record there,
+    // and the lowest-indexed one goes into the caller's slot with its error.
+    // An index takes a record only when its own failure stored one: a failure
+    // before the first gate stores none, and the slot may still hold an older
+    // record that belongs to another run.
     std::vector<std::exception_ptr> errors(n);
+    std::vector<std::optional<FailedRun>> records(n);
     #pragma omp parallel for schedule(dynamic, 1)
     for (int i = 0; i < static_cast<int>(n); ++i) {
+        const std::uint64_t stored_before = detail::failed_run_stores();
         try {
             results[i] = run_single(circuit, observable, parameter_values[i]);
         } catch (...) {
             errors[static_cast<size_t>(i)] = std::current_exception();
+            // Nothing may leave the region, and moving a record can allocate.
+            try {
+                if (detail::failed_run_stores() != stored_before)
+                    records[static_cast<size_t>(i)] = take_failed_run();
+            } catch (...) {
+            }
         }
     }
-    for (const std::exception_ptr& error : errors) {
-        if (error) std::rethrow_exception(error);
+    for (std::size_t i = 0; i < errors.size(); ++i) {
+        if (errors[i]) {
+            try {
+                if (records[i]) detail::store_failed_run(std::move(*records[i]));
+            } catch (...) {
+                // The index's own error is what the caller must see.
+            }
+            std::rethrow_exception(errors[i]);
+        }
     }
 
     return results;
@@ -329,9 +348,6 @@ double Estimator::run_single(
     if (!options.noise_model.is_ideal()) {
         DensityMatrixSimulator dm_sim;
         auto dm_result = dm_sim.run(to_simulate, options.noise_model, /*shots=*/0, options.seed);
-        if (!dm_result.success) {
-            throw std::runtime_error("Simulation failed: " + dm_result.error_message);
-        }
         return dm_result.final_state.expectation_value_sparse(observable);
     }
 

@@ -9,6 +9,7 @@
 
 #include "lindblad/observers.hpp"
 #include "lindblad/detail/pauli_rules.hpp"
+#include "lindblad/detail/report.hpp"
 
 #include "lindblad/statevector.hpp"
 #include "lindblad/detail/eigen_backend.hpp"
@@ -41,8 +42,7 @@ void check_index(std::size_t k, std::size_t count, const char* who) {
 // Returns null when the observation is to be omitted.
 std::shared_ptr<const Statevector> dense_state(const ObservationContext& ctx,
                                                const std::string& what) {
-    auto produced = detail::produce_state(ctx.state, StateForm::Statevector,
-                                          ctx.plan.options, what);
+    auto produced = detail::produce_state(ctx, StateForm::Statevector, what);
     return std::static_pointer_cast<const Statevector>(produced);
 }
 
@@ -99,9 +99,11 @@ bool StateObserver::preflight(const PreflightContext& ctx) {
 void StateObserver::observe(const ObservationContext& ctx) {
     const StateForm wanted = native_ ? ctx.state.form() : form_;
 
-    auto produced = detail::produce_state(ctx.state, wanted, ctx.plan.options,
-                                          "StateObserver");
+    auto produced = detail::produce_state(ctx, wanted, "StateObserver");
     if (!produced) return;
+    // Kept to the end of the run, unlike every other observer's conversion,
+    // so the run's budget counts it from here on.
+    detail::retain_allocation(ctx, ctx.state.conversion_bytes(wanted), "StateObserver");
 
     states_.emplace_back(wanted, produced);
     record(ctx, ObservationBundle::StatePayload{wanted, produced});
@@ -214,7 +216,7 @@ bool AmplitudeObserver::preflight(const PreflightContext& ctx) {
     if (dim != 0) {
         for (const std::size_t index : indices_) {
             if (index >= dim) {
-                throw std::invalid_argument(
+                detail::raise<InvalidArgument>(ctx.entry_point,
                     "AmplitudeObserver: index " + std::to_string(index) +
                     " is outside a " + std::to_string(dim) +
                     " amplitude state");
@@ -233,7 +235,7 @@ void AmplitudeObserver::observe(const ObservationContext& ctx) {
         const Statevector& sv = ctx.state.statevector();
         for (const std::size_t index : indices_) {
             if (index >= sv.dimension()) {
-                throw std::invalid_argument(
+                detail::raise<InvalidArgument>(ctx.entry_point,
                     "AmplitudeObserver: index " + std::to_string(index) +
                     " is outside a " + std::to_string(sv.dimension()) +
                     " amplitude state");
@@ -245,7 +247,7 @@ void AmplitudeObserver::observe(const ObservationContext& ctx) {
         if (!dense) return;
         for (const std::size_t index : indices_) {
             if (index >= dense->dimension()) {
-                throw std::invalid_argument(
+                detail::raise<InvalidArgument>(ctx.entry_point,
                     "AmplitudeObserver: index " + std::to_string(index) +
                     " is outside a " + std::to_string(dense->dimension()) +
                     " amplitude state");
@@ -271,7 +273,8 @@ bool ExpectationObserver::preflight(const PreflightContext& ctx) {
     // The observable was fixed at construction and the register when the
     // circuit was written, so a width that disagrees is wrong before anything
     // runs. Every firing still checks against the state it is handed.
-    detail::check_observable(observable_, ctx.n_qubits, "ExpectationObserver");
+    detail::check_observable(observable_, ctx.n_qubits, "ExpectationObserver", "state",
+                             ctx.entry_point);
     return Observer::preflight(ctx);
 }
 
@@ -293,7 +296,7 @@ void ExpectationObserver::observe(const ObservationContext& ctx) {
             // ever built.
             const StabilizerState& tableau = ctx.state.stabilizer();
             detail::check_observable(observable_, tableau.n_qubits,
-                                           "ExpectationObserver");
+                                     "ExpectationObserver", "state", ctx.entry_point);
             for (const PauliString& term : observable_.terms) {
                 value += term.coeff.real *
                          static_cast<double>(tableau.expectation_pauli(term.pauli));
@@ -379,7 +382,7 @@ const std::vector<int>& ClassicalRegisterObserver::clbits(std::size_t k) const {
 bool BondDimensionObserver::preflight(const PreflightContext& ctx) {
     if (ctx.form == StateForm::MPS) return true;
     return detail::refuse_observation(
-        ctx.plan.options,
+        ctx,
         std::string("BondDimensionObserver asks for bond dimensions from a "
                     "backend holding a ") + to_string(ctx.form) +
         ", which has no bonds to report.");
@@ -388,7 +391,7 @@ bool BondDimensionObserver::preflight(const PreflightContext& ctx) {
 void BondDimensionObserver::observe(const ObservationContext& ctx) {
     if (ctx.state.form() != StateForm::MPS) {
         detail::refuse_observation(
-            ctx.plan.options,
+            ctx,
             std::string("BondDimensionObserver asks for bond dimensions from a "
                         "backend holding a ") + to_string(ctx.state.form()) +
             ", which has no bonds to report.");
@@ -412,7 +415,7 @@ const std::vector<int>& BondDimensionObserver::bond_dimensions(std::size_t k) co
 bool TruncationObserver::preflight(const PreflightContext& ctx) {
     if (ctx.form == StateForm::MPS) return true;
     return detail::refuse_observation(
-        ctx.plan.options,
+        ctx,
         std::string("TruncationObserver asks for discarded weight from a "
                     "backend holding a ") + to_string(ctx.form) +
         ", which discards nothing.");
@@ -421,7 +424,7 @@ bool TruncationObserver::preflight(const PreflightContext& ctx) {
 void TruncationObserver::observe(const ObservationContext& ctx) {
     if (ctx.state.form() != StateForm::MPS) {
         detail::refuse_observation(
-            ctx.plan.options,
+            ctx,
             std::string("TruncationObserver asks for discarded weight from a "
                         "backend holding a ") + to_string(ctx.state.form()) +
             ", which discards nothing.");
@@ -441,9 +444,17 @@ namespace {
 
 using Cplx = std::complex<double>;
 
-bool charge_bytes(const StateView& view, std::size_t bytes,
-                  const RunPlan::Options& options) {
-    return detail::charge_allocation(view, bytes, options, "EntropyObserver");
+bool charge_bytes(const ObservationContext& ctx, std::size_t bytes) {
+    return detail::charge_allocation(ctx, bytes, "EntropyObserver");
+}
+
+// An eigensolver that fails leaves the run's answer intact: only this firing
+// has no reading. So it answers to the response knob like any other refusal,
+// and under Warn or Ignore the observer records nothing and the run goes on.
+// Returns false whenever it returns.
+bool eigensolver_failed(const ObservationContext& ctx, const char* on) {
+    return detail::respond(ctx.plan.options.response, ctx.phase, ctx.entry_point,
+                           std::string("EntropyObserver: the eigensolver failed on ") + on);
 }
 
 // Entropy in bits from a spectrum that need not be normalised. Weights at or
@@ -475,16 +486,18 @@ double entropy_bits(std::vector<double> weights, double order) {
 }
 
 // The qubits NOT in region, ascending.
-std::vector<int> complement_of(const std::vector<int>& region, int n_qubits) {
+// `entry_point` is the run() asking, which a refusal starts with.
+std::vector<int> complement_of(const std::vector<int>& region, int n_qubits,
+                               std::string_view entry_point) {
     std::vector<bool> named(static_cast<std::size_t>(n_qubits), false);
     for (const int q : region) {
         if (q < 0 || q >= n_qubits) {
-            throw std::invalid_argument(
+            detail::raise<InvalidArgument>(entry_point,
                 "EntropyObserver: qubit " + std::to_string(q) +
                 " is outside a " + std::to_string(n_qubits) + " qubit register");
         }
         if (named[static_cast<std::size_t>(q)]) {
-            throw std::invalid_argument(
+            detail::raise<InvalidArgument>(entry_point,
                 "EntropyObserver: qubit " + std::to_string(q) +
                 " is named twice; a cut has each qubit on one side of it");
         }
@@ -513,16 +526,14 @@ inline std::size_t gather(std::size_t index, const std::vector<int>& positions) 
 std::vector<double> reduced_spectrum_dense(const Statevector& sv,
                                            const std::vector<int>& side,
                                            const std::vector<int>& other,
-                                           const StateView& view,
-                                           const RunPlan::Options& options,
+                                           const ObservationContext& ctx,
                                            bool& produced) {
     produced = false;
     const std::size_t dim_side = std::size_t{1} << side.size();
     const std::size_t dim_other = std::size_t{1} << other.size();
 
-    if (!charge_bytes(view, sv.dimension() * sizeof(Cplx) +
-                                dim_side * dim_side * sizeof(Cplx),
-                      options)) {
+    if (!charge_bytes(ctx, sv.dimension() * sizeof(Cplx) +
+                               dim_side * dim_side * sizeof(Cplx))) {
         return {};
     }
 
@@ -550,8 +561,8 @@ std::vector<double> reduced_spectrum_dense(const Statevector& sv,
     std::vector<double> evals(dim_side, 0.0);
     if (!detail::eigh(rho.data(), static_cast<int>(dim_side),
                       detail::MatrixOrder::RowMajor, evals.data(), nullptr)) {
-        throw std::runtime_error(
-            "EntropyObserver: the eigensolver failed on the reduced state");
+        eigensolver_failed(ctx, "the reduced state");
+        return {};
     }
     produced = true;
     return evals;
@@ -579,8 +590,7 @@ std::optional<std::vector<double>> dm_reduced_spectrum(
     const std::size_t dim_side = std::size_t{1} << side.size();
     const std::size_t dim_other = std::size_t{1} << other.size();
 
-    if (!charge_bytes(ctx.state, dim_side * dim_side * sizeof(Cplx),
-                      ctx.plan.options)) {
+    if (!charge_bytes(ctx, dim_side * dim_side * sizeof(Cplx))) {
         return std::nullopt;
     }
 
@@ -602,22 +612,24 @@ std::optional<std::vector<double>> dm_reduced_spectrum(
     std::vector<double> evals(dim_side, 0.0);
     if (!detail::eigh(rho.data(), static_cast<int>(dim_side),
                       detail::MatrixOrder::RowMajor, evals.data(), nullptr)) {
-        throw std::runtime_error(
-            "EntropyObserver: the eigensolver failed on the reduced state");
+        eigensolver_failed(ctx, "the reduced state");
+        return std::nullopt;
     }
     return evals;
 }
 
 // Hermitian square root of an n x n Hermitian positive semi-definite matrix,
 // row-major in and out. Negative eigenvalues are rounding around zero and are
-// clamped: their square root is what does not exist, not the matrix.
-std::vector<Cplx> hermitian_sqrt(const std::vector<Cplx>& matrix, int n) {
+// clamped: their square root is what does not exist, not the matrix. Empty
+// when the eigensolver fails, having delivered that through the response knob.
+std::optional<std::vector<Cplx>> hermitian_sqrt(const ObservationContext& ctx,
+                                                const std::vector<Cplx>& matrix, int n) {
     std::vector<double> evals(static_cast<std::size_t>(n), 0.0);
     std::vector<Cplx> evecs(static_cast<std::size_t>(n) * n, Cplx(0.0, 0.0));
     if (!detail::eigh(matrix.data(), n, detail::MatrixOrder::RowMajor,
                       evals.data(), evecs.data())) {
-        throw std::runtime_error(
-            "EntropyObserver: the eigensolver failed on an environment matrix");
+        eigensolver_failed(ctx, "an environment matrix");
+        return std::nullopt;
     }
 
     std::vector<Cplx> root(static_cast<std::size_t>(n) * n, Cplx(0.0, 0.0));
@@ -669,7 +681,8 @@ std::vector<Cplx> matmul(const std::vector<Cplx>& a, const std::vector<Cplx>& b,
 // Both Grams are positive semi-definite, so the product's spectrum equals that
 // of the Hermitian A^(1/2) G_R A^(1/2) with A = conj(G_L), which is what keeps
 // this on the self-adjoint eigensolver.
-std::optional<std::vector<double>> mps_bond_spectrum(const MPSState& mps, int cut) {
+std::optional<std::vector<double>> mps_bond_spectrum(const ObservationContext& ctx,
+                                                     const MPSState& mps, int cut) {
     const std::vector<MPSTensor>& tensors = mps.tensors();
     const int n_sites = static_cast<int>(tensors.size());
     // No sites: both sides of any cut are empty, and the one reduced state is
@@ -751,22 +764,23 @@ std::optional<std::vector<double>> mps_bond_spectrum(const MPSState& mps, int cu
     }
 
     if (gl_dim != gr_dim) {
-        throw std::runtime_error(
-            "EntropyObserver: the MPS bond dimensions on the two sides of the "
-            "cut disagree, which means the chain is malformed");
+        detail::raise_internal(ctx.entry_point,
+            "EntropyObserver: the MPS bond dimensions on the two sides of the cut "
+            "disagree, which means the chain is malformed");
     }
 
     std::vector<Cplx> a_matrix(gl.size());
     for (std::size_t i = 0; i < gl.size(); ++i) a_matrix[i] = std::conj(gl[i]);
 
-    const std::vector<Cplx> root = hermitian_sqrt(a_matrix, gl_dim);
-    const std::vector<Cplx> product = matmul(matmul(root, gr, gl_dim), root, gl_dim);
+    const std::optional<std::vector<Cplx>> root = hermitian_sqrt(ctx, a_matrix, gl_dim);
+    if (!root) return std::nullopt;
+    const std::vector<Cplx> product = matmul(matmul(*root, gr, gl_dim), *root, gl_dim);
 
     std::vector<double> evals(static_cast<std::size_t>(gl_dim), 0.0);
     if (!detail::eigh(product.data(), gl_dim, detail::MatrixOrder::RowMajor,
                       evals.data(), nullptr)) {
-        throw std::runtime_error(
-            "EntropyObserver: the eigensolver failed on the MPS bond spectrum");
+        eigensolver_failed(ctx, "the MPS bond spectrum");
+        return std::nullopt;
     }
     return evals;
 }
@@ -796,19 +810,17 @@ std::optional<std::vector<double>> mps_bipartition_spectrum(
     if (is_prefix || is_suffix) {
         const int cut = is_prefix ? static_cast<int>(sorted.size())
                                   : n - static_cast<int>(sorted.size());
-        return mps_bond_spectrum(ctx.state.mps(), cut);
+        return mps_bond_spectrum(ctx, ctx.state.mps(), cut);
     }
 
-    auto dense = detail::produce_state(ctx.state, StateForm::Statevector,
-                                       ctx.plan.options, "EntropyObserver");
+    auto dense = detail::produce_state(ctx, StateForm::Statevector, "EntropyObserver");
     if (!dense) return std::nullopt;
 
     const Statevector& sv = *static_cast<const Statevector*>(dense.get());
     const bool region_smaller = region.size() <= rest.size();
     bool produced = false;
     auto evals = reduced_spectrum_dense(sv, region_smaller ? region : rest,
-                                        region_smaller ? rest : region,
-                                        ctx.state, ctx.plan.options, produced);
+                                        region_smaller ? rest : region, ctx, produced);
     if (!produced) return std::nullopt;
     return evals;
 }
@@ -839,9 +851,9 @@ bool EntropyObserver::preflight(const PreflightContext& ctx) {
     // depends on the cut: a prefix or suffix of an MPS reads the bond spectrum
     // and never densifies, while any other cut falls back to the amplitudes.
     // Refusing the dense route now would refuse cuts that never need it.
-    const std::vector<int> rest = complement_of(region_, ctx.n_qubits);
+    const std::vector<int> rest = complement_of(region_, ctx.n_qubits, ctx.entry_point);
     if (rest.empty()) {
-        throw std::invalid_argument(
+        detail::raise<InvalidArgument>(ctx.entry_point,
             "EntropyObserver: the cut names every qubit, so there is no other "
             "side for the state to be entangled with");
     }
@@ -850,9 +862,9 @@ bool EntropyObserver::preflight(const PreflightContext& ctx) {
 
 void EntropyObserver::observe(const ObservationContext& ctx) {
     const int n = ctx.state.n_qubits();
-    const std::vector<int> rest = complement_of(region_, n);
+    const std::vector<int> rest = complement_of(region_, n, ctx.entry_point);
     if (rest.empty()) {
-        throw std::invalid_argument(
+        detail::raise<InvalidArgument>(ctx.entry_point,
             "EntropyObserver: the cut names every qubit, so there is no other "
             "side for the state to be entangled with");
     }
@@ -883,8 +895,7 @@ void EntropyObserver::observe(const ObservationContext& ctx) {
             const std::vector<int>& other = region_smaller ? rest : region_;
             bool produced = false;
             auto evals = reduced_spectrum_dense(ctx.state.statevector(), side,
-                                                other, ctx.state,
-                                                ctx.plan.options, produced);
+                                                other, ctx, produced);
             if (!produced) return;
             value = entropy_bits(std::move(evals), order_);
             break;
