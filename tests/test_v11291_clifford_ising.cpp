@@ -304,7 +304,6 @@ TEST(V11291CliffordIsing, AutomaticSelectionRunsThemExactlyBeyondTheStatevectorR
     ASSERT_TRUE(CliffordSimulator::is_clifford(qc));
     backends::LocalBackend backend;
     const auto r = backend.run(qc, 200, 3);
-    ASSERT_TRUE(r.success) << r.error_message;
     ASSERT_EQ(r.counts.size(), 1u);
     EXPECT_EQ(r.counts.begin()->first, std::string(n, '0'));
     EXPECT_EQ(r.counts.begin()->second, 200);

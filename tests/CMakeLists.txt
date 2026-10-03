@@ -10,13 +10,6 @@
 # Tests CMakeLists.txt
 
 # Register all test source files
-#
-# The commented-out sources below are excluded from the target because they
-# read `success` or `error_message` on a simulator's or LocalBackend's result,
-# which those result types do not have: a run that fails throws, so a returned
-# result is always an answer. Most read the field directly; the v11261 suites
-# reach it through `v11261_observation_oracle.hpp`, whose helpers read it.
-# Uncommenting a line without removing those reads breaks the build again.
 set(LINDBLAD_TEST_SOURCES
     test_gates.cpp
     test_circuit.cpp
@@ -150,7 +143,7 @@ set(LINDBLAD_TEST_SOURCES
     test_v11241_seam_rules.cpp
     test_eigen_svd_pin.cpp
     test_v11242_repair_reach.cpp
-    # test_v11251_clifford_gates.cpp
+    test_v11251_clifford_gates.cpp
     test_v11251_clifford_transpose.cpp
     test_v11251_clifford_slab.cpp
     test_v11251_clifford_sampling.cpp
@@ -174,7 +167,7 @@ set(LINDBLAD_TEST_SOURCES
     test_v11271_repair_impossible.cpp
     test_v11271_validation_serialisation.cpp
     test_v11272_ignore_dispatch.cpp
-    # test_v11271_mixer_dispatch.cpp
+    test_v11271_mixer_dispatch.cpp
     test_v11281_bond_saturation.cpp
     test_v11281_svd_selection.cpp
     test_v11281_svd_time.cpp
@@ -186,7 +179,7 @@ set(LINDBLAD_TEST_SOURCES
     test_v11291_optimizer_seam.cpp
     test_v11291_variational.cpp
     test_v11291_svd_kernels.cpp
-    # test_v11291_clifford_ising.cpp
+    test_v11291_clifford_ising.cpp
     test_v11291_qasm_conditions.cpp
     test_v11291_scheduling.cpp
     test_v11292_observable_width.cpp
@@ -199,11 +192,11 @@ set(LINDBLAD_TEST_SOURCES
     test_v11301_canonical_form.cpp
     test_v11301_qudit_canonical_form.cpp
     test_v11301_fidelity_figures.cpp
-    # test_v11301_sampling.cpp
+    test_v11301_sampling.cpp
     test_v11302_unchecked_gates.cpp
-    # test_v11302_normalised_draws.cpp
-    # test_v11302_reset_sampling.cpp
-    # test_v11302_thread_cap.cpp
+    test_v11302_normalised_draws.cpp
+    test_v11302_reset_sampling.cpp
+    test_v11302_thread_cap.cpp
     v11311_failed_run_env.cpp
 )
 

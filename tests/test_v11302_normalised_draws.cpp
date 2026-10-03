@@ -41,12 +41,14 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/types.hpp"
+#include "v11311_helpers.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -212,14 +214,12 @@ TEST(V11302ShortStates, TheDenseSimulatorsSampleAndCollapseAShortState) {
         SCOPED_TRACE(mid ? "per-shot collapse" : "terminal sampling");
         StatevectorSimulator sv;
         const auto sr = sv.run(short_state_circuit(mid), shots, 23);
-        ASSERT_TRUE(sr.success) << sr.error_message;
         ASSERT_EQ(sr.counts.size(), 1u);
         EXPECT_EQ(sr.counts.begin()->first, key);
         EXPECT_EQ(sr.counts.begin()->second, shots);
 
         DensityMatrixSimulator dm;
         const auto dr = dm.run(short_state_circuit(mid), NoiseModel{}, shots, 23);
-        ASSERT_TRUE(dr.success) << dr.error_message;
         ASSERT_EQ(dr.counts.size(), 1u);
         EXPECT_EQ(dr.counts.begin()->first, key);
         EXPECT_EQ(dr.counts.begin()->second, shots);
@@ -229,7 +229,6 @@ TEST(V11302ShortStates, TheDenseSimulatorsSampleAndCollapseAShortState) {
     // trajectory ends as |111> at unit norm.
     StatevectorSimulator sv;
     const auto sr = sv.run(short_state_circuit(true), 1, 29);
-    ASSERT_TRUE(sr.success) << sr.error_message;
     EXPECT_NEAR(sr.final_state.amplitudes()[7].norm_sq(), 1.0, kSlack * kEps);
 }
 
@@ -321,6 +320,19 @@ TEST(V11302TinyNorm, AChainOfTinyNormIsMeasuredAsItsOwnState) {
     }
 }
 
+namespace {
+
+// Exactly RuntimeFailure from `entry_point`, with the message `what` after it.
+void expect_runtime_failure(const std::string& entry_point, const std::string& what,
+                            const std::function<void()>& call) {
+    const auto e = v11311::thrown<RuntimeFailure>(call);
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), entry_point);
+    EXPECT_EQ(std::string(e->what()), entry_point + ": " + what);
+}
+
+}  // namespace
+
 TEST(V11302TinyNorm, EveryDrawRefusesExactlyWhereNormalizeRefuses) {
     for (const double t : {kTinyNorm, kNoNorm}) {
         SCOPED_TRACE("norm " + std::to_string(t / kEps) + " eps");
@@ -330,7 +342,9 @@ TEST(V11302TinyNorm, EveryDrawRefusesExactlyWhereNormalizeRefuses) {
         if (has_norm) {
             EXPECT_NO_THROW(ref.normalize());
         } else {
-            EXPECT_THROW(ref.normalize(), std::runtime_error);
+            expect_runtime_failure("MPSState::normalize",
+                                   "no norm to divide out; the state is zero or non-finite",
+                                   [&] { ref.normalize(); });
         }
 
         MPSState a = tiny_qubit_chain(t);
@@ -349,10 +363,15 @@ TEST(V11302TinyNorm, EveryDrawRefusesExactlyWhereNormalizeRefuses) {
             EXPECT_NO_THROW(q.measure_qudit(0, rq));
             EXPECT_NO_THROW(sv.sample_counts(4, 3));
         } else {
-            EXPECT_THROW(a.measure_qubit(0, ra), std::runtime_error);
-            EXPECT_THROW(b.measure_sequential(rb), std::runtime_error);
-            EXPECT_THROW(q.measure_qudit(0, rq), std::runtime_error);
-            EXPECT_THROW(sv.sample_counts(4, 3), std::runtime_error);
+            const std::string no_norm = "no norm to sample from; the state is zero or non-finite";
+            expect_runtime_failure("MPSState::measure_qubit", no_norm,
+                                   [&] { (void)a.measure_qubit(0, ra); });
+            expect_runtime_failure("MPSState::measure_sequential", no_norm,
+                                   [&] { (void)b.measure_sequential(rb); });
+            expect_runtime_failure("QuditMPS::measure_qudit", no_norm,
+                                   [&] { (void)q.measure_qudit(0, rq); });
+            expect_runtime_failure("Statevector::sample_counts", no_norm,
+                                   [&] { (void)sv.sample_counts(4, 3); });
         }
     }
 }

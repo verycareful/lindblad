@@ -26,7 +26,10 @@
 #include "lindblad/observation.hpp"
 #include "lindblad/operators.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
+#include "v11311_helpers.hpp"
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -77,7 +80,7 @@ TEST(V11302ThreadCap, TheCapHoldsInsideARunAndTheCallersSettingReturns) {
 
     StatevectorSimulator capped;
     capped.options.max_parallel_threads = 2;
-    ASSERT_TRUE(capped.run(small_circuit(), 16, 1, plan).success);
+    ASSERT_NO_THROW((void)capped.run(small_circuit(), 16, 1, plan));
     ASSERT_FALSE(reading->seen.empty());
     for (int t : reading->seen) EXPECT_EQ(t, 2);
     EXPECT_EQ(omp_get_max_threads(), 3) << "the caller's setting was not put back";
@@ -85,7 +88,7 @@ TEST(V11302ThreadCap, TheCapHoldsInsideARunAndTheCallersSettingReturns) {
     // 0 leaves the caller's setting in force inside the run.
     reading->seen.clear();
     StatevectorSimulator open;
-    ASSERT_TRUE(open.run(small_circuit(), 16, 1, plan).success);
+    ASSERT_NO_THROW((void)open.run(small_circuit(), 16, 1, plan));
     for (int t : reading->seen) EXPECT_EQ(t, 3);
 }
 
@@ -107,7 +110,7 @@ TEST(V11302ThreadCap, TheOtherEntryPointsPutTheCallersSettingBack) {
     backends::LocalBackend::Config cfg;
     cfg.max_parallel_threads = 2;
     backends::LocalBackend backend(cfg);
-    EXPECT_TRUE(backend.run(small_circuit(), 16, 1).success);
+    EXPECT_NO_THROW((void)backend.run(small_circuit(), 16, 1));
     EXPECT_EQ(omp_get_max_threads(), 3) << "LocalBackend::run";
 }
 
@@ -124,15 +127,24 @@ TEST(V11302ThreadCap, TheGuardRestoresEvenWhenTheCallThrows) {
 #endif
 
 TEST(V11302ThreadCap, ANegativeCapIsRefused) {
+    // Each refuses by its own name: the statevector run checks its option,
+    // and LocalBackend checks its own before reaching any backend.
+    const auto expect_refused = [](const std::string& entry, const std::function<void()>& run) {
+        const std::uint64_t stores = detail::failed_run_stores();
+        const auto e = v11311::thrown<InvalidArgument>(run);
+        EXPECT_EQ(detail::failed_run_stores(), stores) << "a refusal left a failed-run record";
+        ASSERT_TRUE(e.has_value());
+        EXPECT_EQ(e->entry_point(), entry);
+        EXPECT_EQ(std::string(e->what()),
+                  entry + ": max_parallel_threads must be >= 0 (0 = the OpenMP default), got -1");
+        EXPECT_FALSE(e->where().has_value());
+    };
     StatevectorSimulator sim;
     sim.options.max_parallel_threads = -1;
-    const auto r = sim.run(small_circuit(), 16, 1);
-    EXPECT_FALSE(r.success);
-    EXPECT_EQ(r.error_message.rfind("StatevectorSimulator::run: ", 0), 0u) << r.error_message;
-    EXPECT_NE(r.error_message.find("max_parallel_threads"), std::string::npos);
+    expect_refused("StatevectorSimulator::run", [&] { (void)sim.run(small_circuit(), 16, 1); });
 
     backends::LocalBackend::Config cfg;
     cfg.max_parallel_threads = -1;
     backends::LocalBackend backend(cfg);
-    EXPECT_FALSE(backend.run(small_circuit(), 16, 1).success);
+    expect_refused("LocalBackend::run", [&] { (void)backend.run(small_circuit(), 16, 1); });
 }

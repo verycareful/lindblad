@@ -36,6 +36,10 @@
 #include "lindblad/circuit.hpp"
 #include "lindblad/constants.hpp"
 #include "lindblad/simulators/clifford_sim.hpp"
+#include "v11311_helpers.hpp"
+
+#include <cstddef>
+#include <cstdint>
 
 #include <stdexcept>
 #include <string>
@@ -79,6 +83,31 @@ Instruction::GateType rot_type(Rot r) {
         case Rot::P:  return Instruction::GateType::P;
     }
     return Instruction::GateType::RX;
+}
+
+// A direct run's refusal of the instruction at `index` of `qc`: exactly
+// InvalidArgument from CliffordSimulator::run, before the first gate (so no
+// failed-run record), whose message is the run's name, `reason`, and the
+// instruction's position.
+void expect_refused(const QuantumCircuit& qc, int shots, std::size_t index,
+                    const std::string& reason) {
+    const Instruction& inst = qc.instructions[index];
+    CliffordSimulator sim;
+    const std::uint64_t stores = detail::failed_run_stores();
+    const auto e = v11311::thrown<InvalidArgument>([&] { (void)sim.run(qc, shots, 1); });
+    EXPECT_EQ(detail::failed_run_stores(), stores) << "a refusal left a failed-run record";
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), "CliffordSimulator::run");
+    EXPECT_EQ(std::string(e->what()), "CliffordSimulator::run: " + reason + " (instruction " +
+                                          std::to_string(index) + ": " + inst.gate_name() +
+                                          " on qubit " + std::to_string(inst.qubits[0]) + ")");
+    v11311::expect_point(e->where(), -1, static_cast<int>(index), inst.gate_name(), inst.qubits);
+}
+
+// The reason a direct run gives for a rotation off the quarter-turn grid.
+std::string off_grid(const Instruction& inst) {
+    return inst.gate_name() + "(" + std::to_string(inst.params[0]) +
+           ") is not Clifford; only multiples of π/2 are supported";
 }
 
 void add_rotation(QuantumCircuit& qc, Rot r, double angle, int q) {
@@ -393,7 +422,6 @@ TEST(V11251CliffordGates, AutoBackendRoutesCircuitsWithTheNewGatesToTheTableau) 
         backends::LocalBackend backend;
         ASSERT_EQ(backend.config.simulator, backends::LocalBackend::SimType::AUTO);
         const auto res = backend.run(qc, /*shots=*/4096, /*seed=*/11);
-        ASSERT_TRUE(res.success) << res.error_message;
 
         // The support must be exactly the support of the true distribution, and
         // that is read off the tableau's slab rather than sampled.
@@ -626,8 +654,7 @@ TEST(V11251CliffordGates, AcceptanceAndDispatchAgreeOnAngleGrid) {
                 EXPECT_NO_THROW(sim.run(qc, /*shots=*/1, /*seed=*/1))
                     << "is_clifford accepted an angle run() cannot execute";
             } else {
-                EXPECT_THROW(sim.run(qc, /*shots=*/1, /*seed=*/1), std::runtime_error)
-                    << "run() executed an angle is_clifford rejected";
+                expect_refused(qc, /*shots=*/1, 0, off_grid(qc.instructions[0]));
             }
         }
     }
@@ -650,52 +677,32 @@ TEST(V11251CliffordGates, NonCliffordAngleInDirectRunThrowsNamingGateAndAngle) {
             qc.measure(0, 0);
             ASSERT_FALSE(qc.instructions.empty());
             const std::string name = qc.instructions.front().gate_name();
-
-            CliffordSimulator sim;
-            try {
-                sim.run(qc, /*shots=*/4, /*seed=*/1);
-                ADD_FAILURE() << "run() accepted a non-Clifford angle";
-            } catch (const std::runtime_error& e) {
-                const std::string msg = e.what();
-                EXPECT_NE(msg.find("CliffordSimulator"), std::string::npos) << msg;
-                EXPECT_NE(msg.find(name), std::string::npos)
-                    << "message does not name the gate: " << msg;
-                EXPECT_NE(msg.find(std::to_string(a)), std::string::npos)
-                    << "message does not name the angle: " << msg;
-                EXPECT_NE(msg.find("not Clifford"), std::string::npos) << msg;
-            }
+            EXPECT_EQ(name, rot_name(r));
+            // The message names the gate and the angle exactly as given.
+            expect_refused(qc, /*shots=*/4, 0,
+                           name + "(" + std::to_string(a) +
+                               ") is not Clifford; only multiples of π/2 are supported");
         }
     }
 }
 
 TEST(V11251CliffordGates, RotationWithNoAngleInDirectRunThrows) {
+    // A gate carrying fewer parameters than its type reads is refused by the
+    // pass every run makes before its first gate, the same way on every
+    // backend, before the tableau's own classification is asked.
     for (Rot r : kRotations) {
         SCOPED_TRACE(rot_name(r));
         QuantumCircuit qc = rotation_without_params(r, 1, 0);
-        const std::string name = qc.instructions.front().gate_name();
-
-        CliffordSimulator sim;
-        try {
-            sim.run(qc, /*shots=*/4, /*seed=*/1);
-            ADD_FAILURE() << "run() accepted a rotation carrying no angle";
-        } catch (const std::runtime_error& e) {
-            const std::string msg = e.what();
-            EXPECT_NE(msg.find("CliffordSimulator"), std::string::npos) << msg;
-            EXPECT_NE(msg.find(name), std::string::npos)
-                << "message does not name the gate: " << msg;
-            EXPECT_NE(msg.find("no angle parameter"), std::string::npos) << msg;
-        }
+        expect_refused(qc, /*shots=*/4, 0, "the gate reads 1 parameter; it carries 0");
     }
 }
 
-// A gate outside the Clifford group entirely still reaches the dispatch default
-// and must throw there, which is a different message and a different exception
-// type from the angle rejection.
+// A gate outside the Clifford group entirely is refused with a different
+// message from the angle rejection, naming the gate.
 TEST(V11251CliffordGates, NonCliffordGateInDirectRunThrowsInvalidArgument) {
     QuantumCircuit qc(1, 1);
     qc.t(0);
     qc.measure(0, 0);
-    CliffordSimulator sim;
-    EXPECT_THROW(sim.run(qc, /*shots=*/4, /*seed=*/1), std::invalid_argument);
+    expect_refused(qc, /*shots=*/4, 0, "gate 't' is not supported by the tableau backend");
     EXPECT_FALSE(CliffordSimulator::is_clifford(qc));
 }
