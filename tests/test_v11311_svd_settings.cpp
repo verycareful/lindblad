@@ -47,6 +47,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <algorithm>
 #include <limits>
@@ -227,7 +228,16 @@ std::size_t qutrit_chain_rescues(SvdReport report, std::size_t& retry_warnings) 
         if (c1 == c0) c1 = (c1 + 1) % n;
         mps.apply_2qudit(c0, c1, (step % 3 == 0) ? CP : SUM);
     }
-    retry_warnings = warnings.count(kRetry);
+    // The channel delivers a repeated message once and then a tally,
+    // "<message> [repeated K more times]", so a tally stands for K more.
+    retry_warnings = 0;
+    for (const std::string& m : warnings.messages()) {
+        if (m.find(kRetry) == std::string::npos) continue;
+        const std::size_t at = m.find(" [repeated ");
+        retry_warnings += at == std::string::npos
+                              ? 1
+                              : std::stoul(m.substr(at + std::strlen(" [repeated ")));
+    }
     return mps.jacobi_rescue_count();
 }
 
