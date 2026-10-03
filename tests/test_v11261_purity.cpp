@@ -113,7 +113,6 @@ TEST(V11261Purity, PurityIsOneAtEveryFiringOnTheStatevector) {
 
     StatevectorSimulator sim;
     auto r = sim.run(watched_circuit(), 4, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
 
     ASSERT_GT(obs->count(), 0u);
     for (std::size_t k = 0; k < obs->values().size(); ++k) {
@@ -156,7 +155,6 @@ TEST(V11261Purity, TheNormIsOneAtEveryFiring) {
 
     StatevectorSimulator sim;
     auto r = sim.run(watched_circuit(), 4, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
 
     ASSERT_GT(spy->count(), 0u);
     for (std::size_t k = 0; k < spy->norms().size(); ++k) {
@@ -178,7 +176,6 @@ TEST(V11261Purity, TheDensityMatrixKeepsUnitTraceAtEveryFiring) {
 
     DensityMatrixSimulator sim;
     auto r = sim.run(watched_circuit(), noise, 4, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
 
     ASSERT_FALSE(traces.empty());
     // Noise mixes the state; it does not destroy probability.
@@ -202,8 +199,6 @@ TEST(V11261Purity, WatchingANoisyRunDoesNotChangeHowMixedItGets) {
     auto watched = sim.run(bell(), noise, 8, 20261, plan);
     auto unwatched = sim.run(bell(), noise, 8, 20261);
 
-    ASSERT_TRUE(watched.success) << watched.error_message;
-    ASSERT_TRUE(unwatched.success) << unwatched.error_message;
 
     ASSERT_EQ(obs->count(), 1u);
     EXPECT_LT(obs->value(), 1.0);
@@ -229,7 +224,6 @@ TEST(V11261Purity, ConvertingToADensityMatrixLeavesTheStatevectorIntact) {
     auto watched = sim.run(bell(), 0, 20261, plan);
     auto unwatched = sim.run(bell(), 0, 20261);
 
-    ASSERT_TRUE(watched.success) << watched.error_message;
     ASSERT_GT(converted->count(), 0u);
 
     // produce_state clones on every route. This pins the clone rather than
@@ -285,7 +279,6 @@ TEST(V11261Purity, EachCapturedStateIsTheStateAsItStoodAtThatFiring) {
 
     StatevectorSimulator sim;
     auto r = sim.run(qc, 0, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
     ASSERT_EQ(obs->count(), 3u);
 
     EXPECT_NEAR(obs->statevector(0).probability(0), 1.0 / 2.0, kLoose);
@@ -306,7 +299,6 @@ TEST(V11261Purity, CapturedStatesOutliveTheRunThatProducedThem) {
         plan.observations.observe(Anchor::at_end(), obs);
         StatevectorSimulator sim;
         auto r = sim.run(bell(), 0, 20261, plan);
-        ASSERT_TRUE(r.success) << r.error_message;
     }
     // The simulator, the plan and the Result are all gone. The capture is held
     // by shared pointer and is still readable, which is what makes it a
@@ -360,7 +352,6 @@ TEST(V11261Purity, AWatchedStatevectorRunAgreesWithAnUnwatchedOne) {
     auto watched = sim.run(qc, 256, 20261, plan);
     auto unwatched = sim.run(qc, 256, 20261);
 
-    ASSERT_TRUE(watched.success) << watched.error_message;
     EXPECT_EQ(watched.counts, unwatched.counts);
 }
 
@@ -401,8 +392,6 @@ TEST(V11261Purity, TheWatchedUnfusedStatevectorRunMatchesTheUnfusedOne) {
     auto watched = sim.run(qc, 0, 20261, plan);
     auto unwatched = sim.run(qc, 0, 20261);
 
-    ASSERT_TRUE(watched.success) << watched.error_message;
-    ASSERT_TRUE(unwatched.success) << unwatched.error_message;
     ASSERT_EQ(watched.final_state.dim, unwatched.final_state.dim);
     for (std::size_t i = 0; i < watched.final_state.dim; ++i) {
         EXPECT_NEAR(watched.final_state.probability(i),
@@ -452,7 +441,6 @@ TEST(V11261Purity, OneEvolutionServingEveryShotFiresOnce) {
 
     StatevectorSimulator sim;
     auto r = sim.run(qc, 64, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
 
     EXPECT_EQ(rec->count(), 1u);
     EXPECT_EQ(rec->firings()[0].n_shots, 1);
@@ -473,7 +461,6 @@ TEST(V11261Purity, APerShotTrajectoryFiresOncePerShot) {
     const int shots = 7;
     StatevectorSimulator sim;
     auto r = sim.run(qc, shots, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
 
     EXPECT_EQ(rec->count(), static_cast<std::size_t>(shots));
     EXPECT_EQ(rec->shots(), (std::vector<int>{0, 1, 2, 3, 4, 5, 6}));
@@ -487,7 +474,6 @@ TEST(V11261Purity, ShotsZeroIsOneSeededTrajectory) {
 
     StatevectorSimulator sim;
     auto r = sim.run(bell(), 0, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
 
     EXPECT_EQ(rec->count(), 1u);
     EXPECT_EQ(rec->firings()[0].shot, 0);

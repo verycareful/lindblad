@@ -39,6 +39,8 @@
 
 #include <gtest/gtest.h>
 
+#include "lindblad/failed_run.hpp"
+
 #include "v11261_observation_oracle.hpp"
 
 #include "lindblad/circuit.hpp"
@@ -62,10 +64,13 @@ namespace {
 // Runs `plan` on the four-qubit six-instruction circuit and reports how much of
 // the run happened before the plan was refused. The witness is attached here so
 // no test can forget it.
+// A refused run returns nothing, so what it hands back is whatever its failed-
+// run record holds; a refusal before the first gate leaves no record at all.
 struct Verdict {
     bool failed = false;
     std::string message;
     std::size_t witness_firings = 0;
+    bool left_a_record = false;
     std::size_t bundle_entries = 0;
 };
 
@@ -73,20 +78,29 @@ Verdict run_and_watch(RunPlan plan) {
     RecorderPtr witness = recorder();
     plan.observations.observe(Anchor::every_instruction(), witness);
 
+    // The slot is emptied first, so what it holds afterwards is this run's.
+    (void)lindblad::take_failed_run();
     StatevectorSimulator sim;
-    auto result = sim.run(layered_circuit(), 0, 20261, plan);
+    const auto e = v11311::thrown<lindblad::InvalidArgument>(
+        [&] { (void)sim.run(layered_circuit(), 0, 20261, plan); });
 
     Verdict v;
-    v.failed = !result.success;
-    v.message = result.error_message;
+    v.failed = e.has_value();
+    if (e) {
+        v.message = e->what();
+        EXPECT_EQ(e->entry_point(), "StatevectorSimulator::run");
+    }
     v.witness_firings = witness->count();
-    v.bundle_entries = result.observations.size();
+    const auto record = lindblad::take_failed_run();
+    v.left_a_record = record.has_value();
+    v.bundle_entries = record ? record->observations.size() : 0u;
     return v;
 }
 
 // The plan is refused, and refused before the circuit ran at all.
 void expect_refused_at_preflight(const Verdict& v) {
     EXPECT_TRUE(v.failed) << "the plan was accepted";
+    EXPECT_FALSE(v.left_a_record) << "a refusal before the first gate left a failed-run record";
     EXPECT_EQ(v.witness_firings, 0u)
         << "the plan was refused only after " << v.witness_firings
         << " instructions had already run; the verdict was available before any "
@@ -160,10 +174,10 @@ TEST(V11261PreflightContract, ADuplicateLabelIsRefusedBeforeTheRun) {
 
 TEST(V11261PreflightContract, AFailedRunLeavesTheBundleEmpty) {
     // end_run walks the observers in order, so the ones ahead of a collision
-    // have already written their entries. The result then carries success ==
-    // false beside a partly populated bundle: a caller checking the flag learns
-    // the run failed, and a caller reading the bundle finds real entries in it.
-    // Whichever of the two they trust, one of them is lying.
+    // would have written their entries by the time it is found. A refused run
+    // must hand back none of them: a caller reading the bundle would find real
+    // entries beside an error saying the run failed, and one of the two would
+    // be lying.
     RunPlan plan;
     plan.observations.observe(Anchor::at_end(), std::make_shared<PurityObserver>("same"));
     plan.observations.observe(Anchor::at_end(), std::make_shared<ProbabilityObserver>("same"));
@@ -171,6 +185,7 @@ TEST(V11261PreflightContract, AFailedRunLeavesTheBundleEmpty) {
     const Verdict v = run_and_watch(std::move(plan));
 
     ASSERT_TRUE(v.failed);
+    EXPECT_FALSE(v.left_a_record);
     EXPECT_EQ(v.bundle_entries, 0u)
         << "a failed run handed back " << v.bundle_entries
         << " observations, which read as a complete answer";
@@ -230,7 +245,6 @@ TEST(V11261PreflightContract, WarnOmitsTheObservationAndCompletesTheRun) {
         result = sim.run(layered_circuit(), 0, 20261, plan);
     });
 
-    EXPECT_TRUE(result.success) << result.error_message;
     EXPECT_FALSE(result.observations.contains("st"));
     EXPECT_FALSE(msgs.empty()) << "Warn produced no warning";
 }
@@ -247,7 +261,6 @@ TEST(V11261PreflightContract, IgnoreOmitsTheObservationSilently) {
         result = sim.run(layered_circuit(), 0, 20261, plan);
     });
 
-    EXPECT_TRUE(result.success) << result.error_message;
     EXPECT_FALSE(result.observations.contains("st"));
     EXPECT_TRUE(msgs.empty()) << msgs.front();
 }
@@ -265,7 +278,6 @@ TEST(V11261PreflightContract, AnOmittedObservationDoesNotStopTheOthers) {
     StatevectorSimulator sim;
     auto result = sim.run(layered_circuit(), 0, 20261, plan);
 
-    ASSERT_TRUE(result.success) << result.error_message;
     EXPECT_FALSE(result.observations.contains("refused"));
     EXPECT_TRUE(result.observations.contains("kept"));
 }

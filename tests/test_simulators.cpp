@@ -21,7 +21,6 @@ TEST(SimulatorTest, BasicSimulation) {
 
     StatevectorSimulator sim;
     auto result = sim.run(qc);
-    EXPECT_TRUE(result.success);
 
     EXPECT_NEAR(result.final_state.probability(0), 0.5, 1e-10);
     EXPECT_NEAR(result.final_state.probability(3), 0.5, 1e-10);
@@ -33,7 +32,6 @@ TEST(SimulatorTest, ShotSampling) {
 
     StatevectorSimulator sim;
     auto result = sim.run(qc, 1000, 42);
-    EXPECT_TRUE(result.success);
     EXPECT_EQ(result.counts["1"], 1000);
 }
 
@@ -43,7 +41,6 @@ TEST(SimulatorTest, GHZState) {
 
     StatevectorSimulator sim;
     auto result = sim.run(qc, 10000, 42);
-    EXPECT_TRUE(result.success);
 
     // Should only see |000⟩ and |111⟩
     for (const auto& [bits, count] : result.counts) {

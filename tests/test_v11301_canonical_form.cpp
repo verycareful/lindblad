@@ -226,14 +226,18 @@ TEST(V11301CanonicalForm, TheSimulatorCopiesItsSettingsOntoEveryChainItBuilds) {
     MPSSimulator sim;
     sim.canonical_form = CanonicalForm::Auto;
     sim.svd_method = SVDMethod::EigenBDC;
-    sim.svd_rescue = false;
+    sim.svd_rejection = SvdRejection::Throw;
+    sim.svd_accept_gram = true;
+    sim.svd_report = SvdReport::Silent;
     constexpr int kCap = 6;
 
     const auto expect_sim_settings = [&](const MPSState& s, const char* route) {
         SCOPED_TRACE(route);
         EXPECT_EQ(s.canonical_form, CanonicalForm::Auto);
         EXPECT_EQ(s.svd_method, SVDMethod::EigenBDC);
-        EXPECT_FALSE(s.svd_rescue);
+        EXPECT_EQ(s.svd_rejection, SvdRejection::Throw);
+        EXPECT_TRUE(s.svd_accept_gram);
+        EXPECT_EQ(s.svd_report, SvdReport::Silent);
         EXPECT_EQ(s.max_bond_dim, kCap);
         EXPECT_EQ(s.cutoff, MPS_DEFAULT_CUTOFF);
     };
@@ -269,14 +273,18 @@ TEST(V11301CanonicalForm, TheSimulatorCopiesItsSettingsOntoEveryChainItBuilds) {
         auto source = std::make_shared<MPSState>(4, 3);
         source->canonical_form = CanonicalForm::Always;
         source->svd_method = SVDMethod::BDC;
-        source->svd_rescue = true;
+        source->svd_rejection = SvdRejection::Ignore;
+        source->svd_accept_gram = false;
+        source->svd_report = SvdReport::Warn;
         RunPlan plan;
         plan.initial = InitialState::from(std::shared_ptr<const MPSState>(source));
         const MPSState out = sim.run(gates, kCap, 0, 3, plan).final_state;
         EXPECT_EQ(out.canonical_form, CanonicalForm::Always)
             << "a chain supplied as an MPS brings its own policy";
         EXPECT_EQ(out.svd_method, SVDMethod::BDC);
-        EXPECT_TRUE(out.svd_rescue);
+        EXPECT_EQ(out.svd_rejection, SvdRejection::Ignore);
+        EXPECT_FALSE(out.svd_accept_gram);
+        EXPECT_EQ(out.svd_report, SvdReport::Warn);
         EXPECT_EQ(out.max_bond_dim, 3) << "and its own bond cap";
     }
 }

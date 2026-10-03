@@ -72,7 +72,6 @@ TEST(V11261Observers, StateObserverCapturesTheNativeFormOnEveryBackend) {
         plan.observations.observe(Anchor::at_end(), obs);
         StatevectorSimulator sim;
         auto r = sim.run(bell(), 0, 20261, plan);
-        ASSERT_TRUE(r.success) << r.error_message;
         EXPECT_EQ(obs->form(), StateForm::Statevector);
         EXPECT_NEAR(obs->statevector().probability(3), 1.0 / 2.0, kTol);
     }
@@ -83,7 +82,6 @@ TEST(V11261Observers, StateObserverCapturesTheNativeFormOnEveryBackend) {
         DensityMatrixSimulator sim;
         const NoiseModel noise;
         auto r = sim.run(bell(), noise, 8, 20261, plan);
-        ASSERT_TRUE(r.success) << r.error_message;
         EXPECT_EQ(obs->form(), StateForm::DensityMatrix);
         EXPECT_NEAR(obs->density_matrix().trace(), 1.0, kTol);
     }
@@ -148,7 +146,6 @@ TEST(V11261Observers, ProbabilityObserverAgreesWithTheBackendsOwnProbabilities) 
 
     StatevectorSimulator sim;
     auto r = sim.run(bell(), 0, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
 
     const std::vector<double> reference = r.final_state.probabilities();
     ASSERT_EQ(obs->probabilities().size(), reference.size());
@@ -220,7 +217,6 @@ TEST(V11261Observers, ExpectationObserverMatchesTheIndependentEvaluation) {
 
     StatevectorSimulator sim;
     auto r = sim.run(bell(), 0, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
 
     EXPECT_NEAR(obs->value(), zz.expectation_value(r.final_state), kTol);
     EXPECT_NEAR(obs->value(), 1.0, kTol);
@@ -316,7 +312,6 @@ TEST(V11261Observers, PurityFallsBelowOneUnderNoise) {
 
     DensityMatrixSimulator sim;
     auto r = sim.run(bell(), noise, 8, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
 
     ASSERT_EQ(obs->count(), 1u);
     EXPECT_LT(obs->value(), 1.0);
@@ -347,7 +342,6 @@ TEST(V11261Observers, TheClassicalRegisterIsReadAsItStoodMidRun) {
 
     StatevectorSimulator sim;
     auto r = sim.run(qc, 1, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
 
     ASSERT_EQ(before->count(), 1u);
     ASSERT_EQ(after->count(), 1u);
@@ -389,7 +383,6 @@ TEST(V11261Observers, BondAndTruncationObserversRefuseTheOtherBackends) {
         StatevectorSimulator sim;
         auto r = sim.run(bell(), 0, 20261, plan);
 
-        EXPECT_TRUE(r.success) << r.error_message;
         EXPECT_EQ(bonds->count(), 0u);
         EXPECT_EQ(trunc->count(), 0u);
     }
@@ -398,9 +391,10 @@ TEST(V11261Observers, BondAndTruncationObserversRefuseTheOtherBackends) {
     RunPlan plan;
     plan.options.response = Response::Throw;
     plan.observations.observe(Anchor::at_end(), bonds);
-    StatevectorSimulator sim;
-    auto r = sim.run(bell(), 0, 20261, plan);
-    EXPECT_FALSE(r.success);
+    const std::string message = v11261::sv_run_failure(bell(), plan);
+    EXPECT_NE(message.find("BondDimensionObserver asks for bond dimensions"), std::string::npos)
+        << message;
+    EXPECT_EQ(bonds->count(), 0u);
 }
 
 TEST(V11261Observers, TruncationIsReportedOnAnMps) {
@@ -507,7 +501,6 @@ TEST(V11261Observers, AnObserverWrittenHereIsAFirstClassCitizen) {
     StatevectorSimulator sim;
     auto r = sim.run(qc, 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(obs->qubits(), 2);
     EXPECT_EQ(obs->shots(), 1);
     ASSERT_EQ(obs->heaviest().size(), 1u);

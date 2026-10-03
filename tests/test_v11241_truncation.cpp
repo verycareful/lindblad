@@ -64,6 +64,9 @@ using lindblad::SVDMethod;
 using lindblad::Statevector;
 using lindblad::StatevectorSimulator;
 using lindblad::detail::MatrixOrder;
+using lindblad::SvdRejection;
+using lindblad::SvdReport;
+using lindblad::detail::SvdPolicy;
 using lindblad::detail::SvdTruncation;
 using lindblad::detail::svd_truncate_verified;
 
@@ -108,7 +111,8 @@ SvdTruncation truncate(const std::vector<Complex128>& block, int n,
                        int max_bond_dim, double cutoff,
                        SVDMethod method = SVDMethod::EigenBDC) {
     return svd_truncate_verified(block.data(), n, n, MatrixOrder::RowMajor,
-                                 max_bond_dim, cutoff, method, /*rescue=*/true,
+                                 max_bond_dim, cutoff, method,
+                                 SvdPolicy{SvdRejection::Fix, /*accept_gram=*/true, SvdReport::Warn},
                                  "v11241");
 }
 

@@ -37,7 +37,6 @@ constexpr double kTol = 1e-10;
 Statevector run_sv(const QuantumCircuit& qc) {
     StatevectorSimulator sim;
     auto res = sim.run(qc, 0, 1);
-    EXPECT_TRUE(res.success) << res.error_message;
     return std::move(res.final_state);
 }
 

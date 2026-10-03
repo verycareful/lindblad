@@ -317,7 +317,6 @@ TEST(R1171DmChannelSuperop, ResetInstructionPathAnalytic) {
     qc.h(0).x(1).reset(1);  // q1 driven to |1⟩ then reset → |0⟩; q0 = |+⟩
     NoiseModel ideal;
     const auto res = DensityMatrixSimulator().run(qc, ideal, /*shots=*/0, /*seed=*/0);
-    ASSERT_TRUE(res.success);
 
     // Analytic: |+⟩_q0 ⊗ |0⟩_q1 = H(0)|00⟩.
     QuantumCircuit expect_qc(2);

@@ -39,7 +39,6 @@ namespace {
 std::vector<Complex128> final_amps(const QuantumCircuit& qc) {
     StatevectorSimulator sim;
     auto res = sim.run(qc, 0, 1);
-    EXPECT_TRUE(res.success) << res.error_message;
     return res.final_state.amplitudes();
 }
 

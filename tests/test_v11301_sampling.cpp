@@ -44,6 +44,7 @@
 
 #include "lindblad/circuit.hpp"
 #include "lindblad/constants.hpp"
+#include "lindblad/failed_run.hpp"
 #include "lindblad/hw_info.hpp"
 #include "lindblad/noise.hpp"
 #include "lindblad/observation.hpp"
@@ -56,15 +57,18 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/types.hpp"
+#include "v11311_helpers.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -301,48 +305,37 @@ TEST(V11301SamplingPath, TheDensePathStopsAtOneLastLevelCacheInstance) {
 TEST(V11301SamplingPath, AZeroQubitRunIsRefusedUpFrontOnEveryBackend) {
     // A circuit over no qubits has one state and one outcome, and nothing a
     // caller sends on purpose. Every simulator refuses to run one, at every
-    // shot count, before touching any state, with the structural refusal every
-    // run() argument guard raises: std::invalid_argument, its message opening
-    // with the entry point that refused. The statevector and density-matrix
-    // simulators report through Result::success, the MPS and Clifford ones
-    // throw. A zero-qubit MPSState stays a valid object; only the run refuses.
+    // shot count, before touching any state, with the one refusal every run()
+    // gives it: exactly lindblad::InvalidArgument from that run, the same
+    // wording on all four, no position and no failed-run record. A zero-qubit
+    // MPSState stays a valid object; only the run refuses.
     for (const int clbits : {0, 2}) {
         for (const int shots : {0, 1, 1000}) {
             SCOPED_TRACE("clbits " + std::to_string(clbits) + ", shots " +
                          std::to_string(shots));
             const QuantumCircuit empty(0, clbits);
 
-            const auto expect_refusal = [](const std::string& what,
-                                           const std::string& entry) {
-                EXPECT_EQ(what.rfind(entry + ": ", 0), 0u)
-                    << "the refusal does not open with " << entry << ": " << what;
+            const auto expect_refusal = [](const std::string& entry,
+                                           const std::function<void()>& run) {
+                const std::uint64_t stores = detail::failed_run_stores();
+                const auto e = v11311::thrown<InvalidArgument>(run);
+                EXPECT_EQ(detail::failed_run_stores(), stores) << entry << " left a record";
+                ASSERT_TRUE(e.has_value()) << entry << " ran a zero-qubit circuit";
+                EXPECT_EQ(e->entry_point(), entry);
+                EXPECT_EQ(std::string(e->what()),
+                          entry + ": the circuit must have at least 1 qubit (got 0)");
+                EXPECT_FALSE(e->where().has_value());
             };
 
             MPSSimulator mps;
-            try {
-                mps.run(empty, 4, shots, 1);
-                ADD_FAILURE() << "MPSSimulator ran a zero-qubit circuit";
-            } catch (const std::invalid_argument& e) {
-                expect_refusal(e.what(), "MPSSimulator::run");
-            }
-
+            expect_refusal("MPSSimulator::run", [&] { (void)mps.run(empty, 4, shots, 1); });
             CliffordSimulator clifford;
-            try {
-                clifford.run(empty, shots, 1);
-                ADD_FAILURE() << "CliffordSimulator ran a zero-qubit circuit";
-            } catch (const std::invalid_argument& e) {
-                expect_refusal(e.what(), "CliffordSimulator::run");
-            }
-
+            expect_refusal("CliffordSimulator::run", [&] { (void)clifford.run(empty, shots, 1); });
             StatevectorSimulator sv;
-            const auto sr = sv.run(empty, shots, 1);
-            EXPECT_FALSE(sr.success) << "StatevectorSimulator ran a zero-qubit circuit";
-            expect_refusal(sr.error_message, "StatevectorSimulator::run");
-
+            expect_refusal("StatevectorSimulator::run", [&] { (void)sv.run(empty, shots, 1); });
             DensityMatrixSimulator dm;
-            const auto dr = dm.run(empty, NoiseModel{}, shots, 1);
-            EXPECT_FALSE(dr.success) << "DensityMatrixSimulator ran a zero-qubit circuit";
-            expect_refusal(dr.error_message, "DensityMatrixSimulator::run");
+            expect_refusal("DensityMatrixSimulator::run",
+                           [&] { (void)dm.run(empty, NoiseModel{}, shots, 1); });
         }
     }
 
@@ -719,6 +712,17 @@ std::vector<std::pair<std::string, QuditMPS>> normless_qudit_chains(int n, int d
     return out;
 }
 
+// A direct call on a state with no norm: exactly RuntimeFailure naming the
+// call, whose message is the call's name and `what`.
+void expect_no_norm(const std::string& entry_point, const std::function<void()>& call,
+                    const std::string& what = "no norm to sample from; the state is zero or "
+                                              "non-finite") {
+    const auto e = v11311::thrown<RuntimeFailure>(call);
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), entry_point);
+    EXPECT_EQ(std::string(e->what()), entry_point + ": " + what);
+}
+
 std::vector<std::pair<std::string, std::vector<Complex128>>> normless_amplitudes(std::size_t dim) {
     std::vector<Complex128> zero(dim, Complex128(0.0, 0.0));
     std::vector<Complex128> nan(dim, Complex128(0.0, 0.0));
@@ -736,13 +740,14 @@ TEST(V11301NoNorm, TheQubitChainRefusesEveryCollapse) {
             MPSState s = chain;
             std::mt19937_64 rng(6);
             const std::mt19937_64 untouched = rng;
-            EXPECT_THROW(s.measure_qubit(q, rng), std::runtime_error) << "qubit " << q;
+            SCOPED_TRACE("qubit " + std::to_string(q));
+            expect_no_norm("MPSState::measure_qubit", [&] { (void)s.measure_qubit(q, rng); });
             EXPECT_EQ(rng, untouched) << "a refused measurement drew from the engine";
         }
         MPSState s = chain;
         std::mt19937_64 rng(7);
         const std::mt19937_64 untouched = rng;
-        EXPECT_THROW(s.measure_sequential(rng), std::runtime_error);
+        expect_no_norm("MPSState::measure_sequential", [&] { (void)s.measure_sequential(rng); });
         EXPECT_EQ(rng, untouched);
     }
 }
@@ -755,19 +760,22 @@ TEST(V11301NoNorm, TheQuditChainRefusesEveryCollapseAndSample) {
             QuditMPS s = chain;
             std::mt19937_64 rng(6);
             const std::mt19937_64 untouched = rng;
-            EXPECT_THROW(s.measure_qudit(q, rng), std::runtime_error) << "qudit " << q;
+            SCOPED_TRACE("qudit " + std::to_string(q));
+            expect_no_norm("QuditMPS::measure_qudit", [&] { (void)s.measure_qudit(q, rng); });
             EXPECT_EQ(rng, untouched);
         }
         QuditMPS s = chain;
-        EXPECT_THROW(s.measure(7), std::runtime_error);
+        expect_no_norm("QuditMPS::measure", [&] { (void)s.measure(7); });
     }
 }
 
-TEST(V11301NoNorm, AnMpsRunRefusesToSampleOrCollapseIt) {
-    // Handed to a run as its initial state, which copies it unchecked: a
-    // terminal run must refuse on either sampling path, and a trajectory must
-    // refuse at its MEASURE and at its RESET. Without a measurement the same
-    // run completes, so each refusal belongs to the collapse.
+TEST(V11301NoNorm, AnMpsRunRefusesANormlessStartingChainBeforeTheFirstGate) {
+    // A chain with no norm handed to a run as its initial state is refused
+    // before the first gate, whatever the circuit: there is no state to start
+    // from. The refusal is exactly InvalidArgument from the run and leaves no
+    // failed-run record, since nothing was computed. Every path that would
+    // otherwise meet the missing norm later (either sampler, a MEASURE or a
+    // RESET in a trajectory, or none at all) is refused the same way.
     const int n = 3;
     for (auto& [name, chain] : normless_qubit_chains(n)) {
         SCOPED_TRACE(name);
@@ -776,25 +784,60 @@ TEST(V11301NoNorm, AnMpsRunRefusesToSampleOrCollapseIt) {
         plan.initial = InitialState::from(std::shared_ptr<const MPSState>(source));
         MPSSimulator sim;
 
+        const auto expect_refused = [&](const QuantumCircuit& qc, int shots, const char* path) {
+            SCOPED_TRACE(path);
+            const std::uint64_t stores = detail::failed_run_stores();
+            const auto e = v11311::thrown<InvalidArgument>(
+                [&] { (void)sim.run(qc, 8, shots, 1, plan); });
+            EXPECT_EQ(detail::failed_run_stores(), stores) << "a refusal left a record";
+            ASSERT_TRUE(e.has_value());
+            EXPECT_EQ(e->entry_point(), "MPSSimulator::run");
+            EXPECT_EQ(std::string(e->what()),
+                      "MPSSimulator::run: InitialState: the supplied chain has no norm (it is "
+                      "zero or not finite), so a run cannot start from it");
+            EXPECT_FALSE(e->where().has_value());
+        };
+
         QuantumCircuit gates(n);
         gates.x(0);
-        EXPECT_NO_THROW(sim.run(gates, 8, 0, 1, plan)) << "the control run failed";
-
+        expect_refused(gates, 0, "gates only");
         QuantumCircuit measured = gates;
         measured.measure_all();
-        EXPECT_THROW(sim.run(measured, 8, 1, 1, plan), std::runtime_error)
-            << "the sampler path";
-        EXPECT_THROW(sim.run(measured, 8, 1 << 20, 1, plan), std::runtime_error)
-            << "the dense path";
-        EXPECT_THROW(sim.run(gates, 8, 1 << 20, 1, plan), std::runtime_error)
-            << "sampling the whole register with no MEASURE";
-        EXPECT_THROW(sim.run(measured, 8, 0, 1, plan), std::runtime_error)
-            << "a MEASURE in a single trajectory";
-
+        expect_refused(measured, 1, "the sampler path");
+        expect_refused(measured, 1 << 20, "the dense path");
+        expect_refused(gates, 1 << 20, "sampling the whole register with no MEASURE");
+        expect_refused(measured, 0, "a MEASURE in a single trajectory");
         QuantumCircuit reset(n);
         reset.reset(1);
-        EXPECT_THROW(sim.run(reset, 8, 0, 1, plan), std::runtime_error) << "a RESET";
+        expect_refused(reset, 0, "a RESET");
     }
+}
+
+TEST(V11301NoNorm, AnMpsRunStartsFromAChainWhoseNormFellBelowOne) {
+    // The other side of the refusal: a chain that kept some norm, as a
+    // truncated chain from an earlier run does, is a state a run can start
+    // from. Its weight is halved here, on the site that carries |1> on qubit 0.
+    const int n = 3;
+    MPSState chain(n, 8);
+    const std::array<Complex128, 4> x = {Complex128(0.0, 0.0), Complex128(1.0, 0.0),
+                                         Complex128(1.0, 0.0), Complex128(0.0, 0.0)};
+    chain.apply_single_qubit_gate(x, 0);
+    std::vector<MPSTensor> sites = chain.tensors();
+    for (auto& z : sites[0].data) z = Complex128(z.real * INV_SQRT2, z.imag * INV_SQRT2);
+    chain.set_tensors(sites);
+    ASSERT_GT(chain.norm_sq(), 0.0);
+    ASSERT_LT(chain.norm_sq(), 1.0);
+
+    RunPlan plan;
+    plan.initial = InitialState::from(std::make_shared<const MPSState>(chain));
+    QuantumCircuit measured(n, n);
+    measured.measure_all();
+    MPSSimulator sim;
+    std::optional<MPSSimulator::Result> r;
+    ASSERT_NO_THROW(r.emplace(sim.run(measured, 8, 64, 1, plan)));
+    ASSERT_EQ(r->counts.size(), 1u);
+    EXPECT_EQ(r->counts.begin()->first, "001");
+    EXPECT_EQ(r->counts.begin()->second, 64);
 }
 
 TEST(V11301NoNorm, TheDenseStatesRefuseEverySample) {
@@ -803,8 +846,8 @@ TEST(V11301NoNorm, TheDenseStatesRefuseEverySample) {
         SCOPED_TRACE(name);
         Statevector sv(n);
         sv.set_amplitudes(amps, {Validation::Ignore});
-        EXPECT_THROW(sv.sample_counts(10, 5), std::runtime_error);
-        EXPECT_THROW(sv.measure_once(5), std::runtime_error);
+        expect_no_norm("Statevector::sample_counts", [&] { (void)sv.sample_counts(10, 5); });
+        expect_no_norm("Statevector::measure_once", [&] { (void)sv.measure_once(5); });
 
         // The simulator's own collapse, reached one instruction at a time.
         QuantumCircuit ops(n, n);
@@ -814,30 +857,36 @@ TEST(V11301NoNorm, TheDenseStatesRefuseEverySample) {
             SCOPED_TRACE(inst.gate_name());
             Statevector s(n);
             s.set_amplitudes(amps, {Validation::Ignore});
-            EXPECT_THROW(ssim.apply_instruction(s, inst), std::runtime_error);
+            expect_no_norm("StatevectorSimulator::apply_instruction",
+                           [&] { ssim.apply_instruction(s, inst); });
         }
     }
     for (const auto& [name, amps] : normless_amplitudes(27)) {
         SCOPED_TRACE(std::string("qudit ") + name);
         QuditStatevector q(3, 3);
         q.amplitudes = amps;
-        EXPECT_THROW(q.measure(5), std::runtime_error);
+        expect_no_norm("QuditStatevector::measure", [&] { (void)q.measure(5); });
 
         QuditDensityMatrix rho(3, 3);
         std::fill(rho.rho.begin(), rho.rho.end(), Complex128(0.0, 0.0));
         if (name == "non-finite") rho.rho[0] = Complex128(quiet_nan_strict(), 0.0);
-        EXPECT_THROW(rho.measure(5), std::runtime_error);
+        expect_no_norm("QuditDensityMatrix::measure", [&] { (void)rho.measure(5); });
     }
 }
 
 TEST(V11301NoNorm, DenseRunsReportTheRefusal) {
-    // The statevector and density-matrix simulators report a failure through
-    // Result::success rather than throwing. A normless state cannot be handed
-    // to either as its initial state, since seeding judges normalisation, so it
+    // A normless state cannot be handed to the statevector or density-matrix
+    // simulator as its initial state, since seeding judges normalisation, so it
     // arises the one way a run allows: a matrix the caller marked Ignore, here
     // a zero matrix or diag(NaN, 1), applied as the circuit's first
-    // instruction. Without a measurement the run completes; with one, the
-    // sample or the collapse must be refused.
+    // instruction. Every run of it then fails mid-run with RuntimeFailure and
+    // leaves a failed-run record: with no measurement at the end-of-run check
+    // on the final state, with one at the sample or the collapse.
+    //
+    // Where it fails follows the walk. Terminal sampling and the end-of-run
+    // check come after the instructions, so they name no instruction and no
+    // shot. A trajectory walked shot by shot names the MEASURE and the shot it
+    // is in, and a shots == 0 run is one trajectory: shot 0.
     const int n = 3;
     const std::vector<std::pair<std::string, std::vector<Complex128>>> killers = {
         {"zero", std::vector<Complex128>(4, Complex128(0.0, 0.0))},
@@ -852,20 +901,74 @@ TEST(V11301NoNorm, DenseRunsReportTheRefusal) {
         QuantumCircuit trajectory = gates;
         trajectory.measure(1, 1).x(1);  // a gate after the MEASURE: per shot
 
+        const std::string no_norm = "no norm to sample from; the state is zero or non-finite";
+        const auto expect_failed = [](const std::string& entry, const std::string& what,
+                                      std::optional<std::pair<int, int>> shot_instruction,
+                                      const std::function<void()>& run) {
+            const std::uint64_t stores = detail::failed_run_stores();
+            const auto e = v11311::thrown<RuntimeFailure>(run);
+            EXPECT_EQ(detail::failed_run_stores(), stores + 1) << "a mid-run failure left no record";
+            (void)take_failed_run();
+            ASSERT_TRUE(e.has_value());
+            EXPECT_EQ(e->entry_point(), entry);
+            EXPECT_EQ(std::string(e->what()).rfind(entry + ": " + what, 0), 0u) << e->what();
+            if (!shot_instruction) {
+                EXPECT_FALSE(e->where().has_value());
+            } else {
+                v11311::expect_point(e->where(), shot_instruction->first,
+                                     shot_instruction->second, "measure", {1});
+            }
+        };
+        const std::string sv_final =
+            "the final state is zero or not finite, so there is no state to return; a matrix "
+            "let through by ValidationOptions Warn or Ignore can do this";
+        const std::string dm_final =
+            "the final state is zero or not finite, so there is no state to return; a matrix or "
+            "channel let through by ValidationOptions Warn or Ignore can do this";
+
         StatevectorSimulator ssim;
-        const auto control = ssim.run(gates, 0, 1);
-        ASSERT_TRUE(control.success) << "the control run failed: " << control.error_message;
-        EXPECT_FALSE(ssim.run(terminal, 16, 1).success) << "terminal sampling";
-        EXPECT_FALSE(ssim.run(trajectory, 16, 1).success) << "per-shot collapse";
-        EXPECT_FALSE(ssim.run(trajectory, 0, 1).success) << "a single trajectory";
+        const std::string sv = "StatevectorSimulator::run";
+        {
+            SCOPED_TRACE("statevector, no measurement");
+            expect_failed(sv, sv_final, std::nullopt, [&] { (void)ssim.run(gates, 0, 1); });
+        }
+        {
+            SCOPED_TRACE("statevector, terminal sampling");
+            expect_failed(sv, no_norm, std::nullopt, [&] { (void)ssim.run(terminal, 16, 1); });
+        }
+        {
+            SCOPED_TRACE("statevector, per-shot collapse");
+            expect_failed(sv, no_norm, std::pair{0, 2}, [&] { (void)ssim.run(trajectory, 16, 1); });
+        }
+        {
+            // KNOWN RED until 1.1.31.2: the statevector's single trajectory
+            // names no shot, where every other per-shot walk names the one it
+            // is in, and its observers are told shot 0.
+            SCOPED_TRACE("statevector, a single trajectory");
+            expect_failed(sv, no_norm, std::pair{0, 2}, [&] { (void)ssim.run(trajectory, 0, 1); });
+        }
 
         DensityMatrixSimulator dsim;
         const NoiseModel quiet{};
-        const auto dm_control = dsim.run(gates, quiet, 0, 1);
-        ASSERT_TRUE(dm_control.success) << "the control run failed: " << dm_control.error_message;
-        EXPECT_FALSE(dsim.run(terminal, quiet, 16, 1).success) << "terminal sampling";
-        EXPECT_FALSE(dsim.run(trajectory, quiet, 16, 1).success) << "per-shot collapse";
-        EXPECT_FALSE(dsim.run(trajectory, quiet, 0, 1).success) << "a single trajectory";
+        const std::string dm = "DensityMatrixSimulator::run";
+        {
+            SCOPED_TRACE("density matrix, no measurement");
+            expect_failed(dm, dm_final, std::nullopt, [&] { (void)dsim.run(gates, quiet, 0, 1); });
+        }
+        {
+            SCOPED_TRACE("density matrix, terminal sampling");
+            expect_failed(dm, no_norm, std::nullopt, [&] { (void)dsim.run(terminal, quiet, 16, 1); });
+        }
+        {
+            SCOPED_TRACE("density matrix, per-shot collapse");
+            expect_failed(dm, no_norm, std::pair{0, 2},
+                          [&] { (void)dsim.run(trajectory, quiet, 16, 1); });
+        }
+        {
+            SCOPED_TRACE("density matrix, a single trajectory");
+            expect_failed(dm, no_norm, std::pair{0, 2},
+                          [&] { (void)dsim.run(trajectory, quiet, 0, 1); });
+        }
     }
 }
 
@@ -909,7 +1012,6 @@ TEST(V11301ResetSampling, TheStatevectorBackendCollapsesEveryShot) {
     const auto p = reset_distribution(theta);
     StatevectorSimulator sim;
     const auto r = sim.run(reset_then_measure(theta), kResetShots, 61);
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_LT(tvd(r.counts, p), tvd_bound(p, kResetShots));
     EXPECT_EQ(r.counts.size(), 2u) << "one collapse served every shot";
 }
@@ -924,7 +1026,6 @@ TEST(V11301ResetSampling, TheDensityMatrixAndCliffordBackendsAgree) {
         const auto p = reset_distribution(theta);
         DensityMatrixSimulator sim;
         const auto r = sim.run(reset_then_measure(theta), NoiseModel{}, kResetShots, 61);
-        ASSERT_TRUE(r.success) << r.error_message;
         EXPECT_LT(tvd(r.counts, p), tvd_bound(p, kResetShots));
     }
     {

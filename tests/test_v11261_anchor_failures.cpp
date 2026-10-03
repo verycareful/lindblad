@@ -60,8 +60,10 @@ using v11261::layered_circuit;
 using v11261::plan_with;
 using v11261::RecorderPtr;
 using v11261::recorder;
+using v11261::clifford_run_failure;
+using v11261::dm_run_failure;
+using v11261::mps_run_failure;
 using v11261::sv_run_failure;
-using v11261::throwing_run_failure;
 
 namespace {
 
@@ -79,7 +81,8 @@ RunPlan plan_with_response(Anchor anchor, Response response) {
     return plan;
 }
 
-const Response kAllResponses[] = {Response::Throw, Response::Warn, Response::Ignore};
+const Response kAllResponses[] = {Response::Throw, Response::Warn, Response::Ignore,
+                                  Response::Auto};
 
 bool mentions(const std::string& message, const std::string& needle) {
     return message.find(needle) != std::string::npos;
@@ -230,18 +233,16 @@ TEST(V11261AnchorFailures, AFailedRunCollectsNoObservations) {
     const QuantumCircuit qc = two_instructions();
 
     RunPlan plan;
-    plan.observations.observe(Anchor::at_start(),
-                              std::make_shared<StateObserver>("start"));
+    const auto start = std::make_shared<StateObserver>("start");
+    plan.observations.observe(Anchor::at_start(), start);
     plan.observations.observe(Anchor::after_instruction(50), recorder());
 
-    StatevectorSimulator sim;
-    auto result = sim.run(qc, 0, 20261, plan);
-
-    ASSERT_FALSE(result.success);
-    // An empty bundle on a failed run is the point: a bundle holding the one
-    // anchor that did resolve would read as a complete answer to a plan that
-    // was never run.
-    EXPECT_EQ(result.observations.size(), 0u);
+    // The refusal comes before the first gate, so it leaves no failed-run
+    // record (sv_run_failure asserts that), and the observer whose anchor did
+    // resolve holds nothing: a partial collection would read as a complete
+    // answer to a plan that was never run.
+    sv_run_failure(qc, plan);
+    EXPECT_EQ(start->count(), 0u);
 }
 
 // =============================================================================
@@ -284,8 +285,7 @@ TEST(V11261AnchorFailures, TheEndpointsResolveOnAnEmptyCircuit) {
     plan.observations.observe(Anchor::after_each_measurement(), recorder());
 
     StatevectorSimulator sim;
-    auto result = sim.run(qc, 0, 20261, plan);
-    EXPECT_TRUE(result.success) << result.error_message;
+    EXPECT_NO_THROW((void)sim.run(qc, 0, 20261, plan));
 }
 
 // =============================================================================
@@ -301,26 +301,18 @@ TEST(V11261AnchorFailures, EveryBackendRefusesAnUnresolvableAnchor) {
         EXPECT_TRUE(mentions(message, "after_instruction(5)")) << message;
     }
     {
-        DensityMatrixSimulator sim;
-        const NoiseModel noise;
-        auto result = sim.run(qc, noise, 16, 20261,
-                              plan_with(Anchor::after_instruction(5), recorder()));
-        ASSERT_FALSE(result.success);
-        EXPECT_TRUE(mentions(result.error_message, "after_instruction(5)"))
-            << result.error_message;
-    }
-    {
-        const std::string message = throwing_run_failure([&] {
-            CliffordSimulator sim;
-            sim.run(qc, 16, 20261, plan_with(Anchor::after_instruction(5), recorder()));
-        });
+        const std::string message =
+            dm_run_failure(qc, plan_with(Anchor::after_instruction(5), recorder()));
         EXPECT_TRUE(mentions(message, "after_instruction(5)")) << message;
     }
     {
-        const std::string message = throwing_run_failure([&] {
-            MPSSimulator sim;
-            sim.run(qc, 8, 16, 20261, plan_with(Anchor::after_instruction(5), recorder()));
-        });
+        const std::string message =
+            clifford_run_failure(qc, plan_with(Anchor::after_instruction(5), recorder()));
+        EXPECT_TRUE(mentions(message, "after_instruction(5)")) << message;
+    }
+    {
+        const std::string message =
+            mps_run_failure(qc, plan_with(Anchor::after_instruction(5), recorder()));
         EXPECT_TRUE(mentions(message, "after_instruction(5)")) << message;
     }
 }
@@ -334,26 +326,18 @@ TEST(V11261AnchorFailures, EveryBackendRefusesAnAbsentLabel) {
         EXPECT_TRUE(mentions(message, "after_label(nope)")) << message;
     }
     {
-        DensityMatrixSimulator sim;
-        const NoiseModel noise;
-        auto result =
-            sim.run(qc, noise, 16, 20261, plan_with(Anchor::after_label("nope"), recorder()));
-        ASSERT_FALSE(result.success);
-        EXPECT_TRUE(mentions(result.error_message, "after_label(nope)"))
-            << result.error_message;
-    }
-    {
-        const std::string message = throwing_run_failure([&] {
-            CliffordSimulator sim;
-            sim.run(qc, 16, 20261, plan_with(Anchor::after_label("nope"), recorder()));
-        });
+        const std::string message =
+            dm_run_failure(qc, plan_with(Anchor::after_label("nope"), recorder()));
         EXPECT_TRUE(mentions(message, "after_label(nope)")) << message;
     }
     {
-        const std::string message = throwing_run_failure([&] {
-            MPSSimulator sim;
-            sim.run(qc, 8, 16, 20261, plan_with(Anchor::after_label("nope"), recorder()));
-        });
+        const std::string message =
+            clifford_run_failure(qc, plan_with(Anchor::after_label("nope"), recorder()));
+        EXPECT_TRUE(mentions(message, "after_label(nope)")) << message;
+    }
+    {
+        const std::string message =
+            mps_run_failure(qc, plan_with(Anchor::after_label("nope"), recorder()));
         EXPECT_TRUE(mentions(message, "after_label(nope)")) << message;
     }
 }

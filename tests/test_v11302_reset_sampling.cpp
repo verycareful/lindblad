@@ -48,11 +48,13 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/transpiler.hpp"
 #include "lindblad/types.hpp"
+#include "v11311_helpers.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string>
@@ -180,11 +182,9 @@ TEST(V11302ResetRouting, ALeadingResetKeepsTheSinglePass) {
 
     StatevectorSimulator sv;
     const auto a = sv.run(leading, shots, 3);
-    ASSERT_TRUE(a.success) << a.error_message;
     EXPECT_NEAR(a.final_state.amplitudes()[1].norm_sq(), 0.5, kSlack * kEps)
         << "the returned state was collapsed, so the run went shot by shot";
     const auto b = sv.run(late, shots, 3);
-    ASSERT_TRUE(b.success) << b.error_message;
     const double w1 = b.final_state.amplitudes()[1].norm_sq();
     EXPECT_TRUE(w1 < kSlack * kEps || w1 > 1.0 - kSlack * kEps)
         << "a RESET after an H must send the run shot by shot";
@@ -215,7 +215,6 @@ TEST(V11302ResetRouting, AResetWithNoMeasureIsACollapseInEveryShot) {
 
     StatevectorSimulator sv;
     const auto s = sv.run(qc, shots, 11);
-    ASSERT_TRUE(s.success) << s.error_message;
     EXPECT_LT(tvd(s.counts, want), tvd_bound(want, shots)) << "statevector";
 
     MPSSimulator mps;
@@ -223,7 +222,6 @@ TEST(V11302ResetRouting, AResetWithNoMeasureIsACollapseInEveryShot) {
 
     DensityMatrixSimulator dm;
     const auto d = dm.run(qc, NoiseModel{}, shots, 11);
-    ASSERT_TRUE(d.success) << d.error_message;
     EXPECT_LT(tvd(d.counts, want), tvd_bound(want, shots)) << "density matrix";
 
     // Clifford takes H for the rotation, a stabilizer gate: p = 1/2.
@@ -272,7 +270,6 @@ TEST(V11302PrefixReuse, TheSharedStartLeavesTheSeededCountsOfARerun) {
         rerun.options.prefix_reuse = PrefixReuse::Off;
         const auto a = reuse.run(qc, shots, 17);
         const auto b = rerun.run(qc, shots, 17);
-        ASSERT_TRUE(a.success && b.success);
         EXPECT_EQ(a.counts, b.counts) << "statevector";
 
         DensityMatrixSimulator dreuse, drerun;
@@ -280,7 +277,6 @@ TEST(V11302PrefixReuse, TheSharedStartLeavesTheSeededCountsOfARerun) {
         drerun.options.prefix_reuse = PrefixReuse::Off;
         const auto c = dreuse.run(qc, NoiseModel{}, shots, 17);
         const auto d = drerun.run(qc, NoiseModel{}, shots, 17);
-        ASSERT_TRUE(c.success && d.success);
         EXPECT_EQ(c.counts, d.counts) << "density matrix";
     }
 
@@ -339,6 +335,35 @@ TEST(V11302MemoryBudget, TheDefaultsAndNames) {
     EXPECT_STREQ(to_string(PrefixReuse::Off), "Off");
 }
 
+namespace {
+
+// Bytes in a dense array of 2^n complex amplitudes.
+std::uint64_t state_bytes(int n) { return (std::uint64_t{1} << n) * sizeof(Complex128); }
+
+// A byte count as the refusal words it: exact, with the MiB beside it.
+std::string bytes_text(std::uint64_t bytes) {
+    return std::to_string(bytes) + " bytes (" + std::to_string(bytes >> 20) + " MiB)";
+}
+
+// A run whose state buffers exceed the cap is refused before the first gate:
+// exactly InvalidArgument from the run, naming both figures and where the cap
+// came from, with no position and no failed-run record.
+void expect_over_cap(const std::string& entry_point, std::uint64_t need, std::uint64_t cap_mb,
+                     const std::function<void()>& run) {
+    const std::uint64_t stores = detail::failed_run_stores();
+    const auto e = v11311::thrown<InvalidArgument>(run);
+    EXPECT_EQ(detail::failed_run_stores(), stores) << "a refusal left a failed-run record";
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), entry_point);
+    EXPECT_EQ(std::string(e->what()),
+              entry_point + ": the run needs " + bytes_text(need) +
+                  " for its state buffers, over the cap of " + bytes_text(cap_mb << 20) +
+                  " from max_memory_mb = " + std::to_string(cap_mb));
+    EXPECT_FALSE(e->where().has_value());
+}
+
+}  // namespace
+
 TEST(V11302MemoryBudget, AStatevectorRunCountsTwoStates) {
     // 16 qubits: 2^16 amplitudes of 16 bytes, one MiB per state, two held.
     const int n = 16;
@@ -346,14 +371,12 @@ TEST(V11302MemoryBudget, AStatevectorRunCountsTwoStates) {
     qc.h(0).measure_all();
     StatevectorSimulator tight;
     tight.options.max_memory_mb = 1;
-    const auto r = tight.run(qc, 8, 1);
-    EXPECT_FALSE(r.success);
-    EXPECT_EQ(r.error_message.rfind("StatevectorSimulator::run: ", 0), 0u) << r.error_message;
-    EXPECT_NE(r.error_message.find("max_memory_mb = 1"), std::string::npos) << r.error_message;
+    expect_over_cap("StatevectorSimulator::run", 2 * state_bytes(n), 1,
+                    [&] { (void)tight.run(qc, 8, 1); });
 
     StatevectorSimulator enough;
     enough.options.max_memory_mb = 2;
-    EXPECT_TRUE(enough.run(qc, 8, 1).success);
+    EXPECT_NO_THROW((void)enough.run(qc, 8, 1));
 }
 
 TEST(V11302MemoryBudget, ADensityMatrixRunCountsOneMatrix) {
@@ -362,12 +385,11 @@ TEST(V11302MemoryBudget, ADensityMatrixRunCountsOneMatrix) {
     qc.h(0).measure_all();
     DensityMatrixSimulator tight;
     tight.options.max_memory_mb = 3;
-    const auto r = tight.run(qc, NoiseModel{}, 8, 1);
-    EXPECT_FALSE(r.success);
-    EXPECT_EQ(r.error_message.rfind("DensityMatrixSimulator::run: ", 0), 0u) << r.error_message;
+    expect_over_cap("DensityMatrixSimulator::run", state_bytes(2 * 9), 3,
+                    [&] { (void)tight.run(qc, NoiseModel{}, 8, 1); });
     DensityMatrixSimulator enough;
     enough.options.max_memory_mb = 4;
-    EXPECT_TRUE(enough.run(qc, NoiseModel{}, 8, 1).success);
+    EXPECT_NO_THROW((void)enough.run(qc, NoiseModel{}, 8, 1));
 }
 
 TEST(V11302MemoryBudget, ASnapshotThatWouldNotFitIsNotTaken) {
@@ -383,8 +405,6 @@ TEST(V11302MemoryBudget, ASnapshotThatWouldNotFitIsNotTaken) {
     rerun.options.prefix_reuse = PrefixReuse::Off;
     const auto a = capped.run(qc, NoiseModel{}, 64, 19);
     const auto b = rerun.run(qc, NoiseModel{}, 64, 19);
-    ASSERT_TRUE(a.success) << a.error_message;
-    ASSERT_TRUE(b.success) << b.error_message;
     EXPECT_EQ(a.counts, b.counts);
 }
 
@@ -395,7 +415,9 @@ TEST(V11302MemoryBudget, TheLocalBackendPassesTheCapThrough) {
     backends::LocalBackend backend(cfg);
     QuantumCircuit qc(16);
     qc.h(0).measure_all();
-    EXPECT_FALSE(backend.run(qc, 8, 1).success);
+    // The backend the run reaches refuses it, by its own name.
+    expect_over_cap("StatevectorSimulator::run", 2 * state_bytes(16), 1,
+                    [&] { (void)backend.run(qc, 8, 1); });
 }
 
 #if defined(__linux__) || defined(_WIN32)
@@ -427,7 +449,6 @@ TEST(V11302ResetPass, AConditionedResetDoesNotLicenseRemovingTheNext) {
 
     StatevectorSimulator sv;
     const auto r = sv.run(out, 64, 23);
-    ASSERT_TRUE(r.success) << r.error_message;
     ASSERT_EQ(r.counts.size(), 1u);
     EXPECT_EQ(r.counts.begin()->first, "00");
 }

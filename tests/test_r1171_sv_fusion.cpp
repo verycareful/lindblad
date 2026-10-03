@@ -44,9 +44,11 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/types.hpp"
+#include "v11311_helpers.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -79,6 +81,20 @@ StatevectorSimulator::Result run_with(const QuantumCircuit& qc, const Options& o
                                       int shots = 0, uint64_t seed = 0) {
     StatevectorSimulator sim(o);
     return sim.run(qc, shots, seed);
+}
+
+// An option out of range is refused before the first gate: exactly
+// InvalidArgument from the run, whose message is the run's name and `what`,
+// with no position and no failed-run record.
+void expect_option_refused(const QuantumCircuit& qc, const Options& o, const std::string& what) {
+    StatevectorSimulator sim(o);
+    const std::uint64_t stores = detail::failed_run_stores();
+    const auto e = v11311::thrown<InvalidArgument>([&] { (void)sim.run(qc, 0, 0); });
+    EXPECT_EQ(detail::failed_run_stores(), stores) << "a refusal left a failed-run record";
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), "StatevectorSimulator::run");
+    EXPECT_EQ(std::string(e->what()), "StatevectorSimulator::run: " + what);
+    EXPECT_FALSE(e->where().has_value());
 }
 
 // Per-amplitude closeness + fidelity, for fused-vs-unfused equivalence.
@@ -146,8 +162,6 @@ TEST(R1171SvFusion, DenseCircuitEquivalence) {
     const auto qc = dense6();
     const auto fused = run_with(qc, opt_forced());
     const auto ref = run_with(qc, opt_unfused());
-    ASSERT_TRUE(fused.success);
-    ASSERT_TRUE(ref.success);
     expect_states_close(fused.final_state, ref.final_state);
 }
 
@@ -156,10 +170,8 @@ TEST(R1171SvFusion, DenseCircuitEquivalence) {
 TEST(R1171SvFusion, MaxQubitSweepEquivalence) {
     const auto qc = dense6();
     const auto ref = run_with(qc, opt_unfused());
-    ASSERT_TRUE(ref.success);
     for (int mq = 2; mq <= 6; ++mq) {
         const auto fused = run_with(qc, opt_forced(mq));
-        ASSERT_TRUE(fused.success) << "max_qubit = " << mq;
         SCOPED_TRACE("fusion_max_qubit = " + std::to_string(mq));
         expect_states_close(fused.final_state, ref.final_state);
     }
@@ -175,7 +187,6 @@ TEST(R1171SvFusion, DisjointSupportEquivalence) {
     qc.rz(0.9, 0).ry(0.4, 5).rx(0.6, 3); // re-touch, forces regrowth
     const auto fused = run_with(qc, opt_forced());
     const auto ref = run_with(qc, opt_unfused());
-    ASSERT_TRUE(fused.success && ref.success);
     expect_states_close(fused.final_state, ref.final_state);
 }
 
@@ -188,7 +199,6 @@ TEST(R1171SvFusion, OverlappingChainOverflowFlush) {
     qc.rz(0.5, 0).rz(0.5, 3).ry(0.8, 5);
     const auto fused = run_with(qc, opt_forced(3));  // narrow window forces overflow
     const auto ref = run_with(qc, opt_unfused());
-    ASSERT_TRUE(fused.success && ref.success);
     expect_states_close(fused.final_state, ref.final_state);
 }
 
@@ -225,7 +235,6 @@ TEST(R1171SvFusion, UnitaryMemberGatesEquivalence) {
 
     const auto fused = run_with(qc, opt_forced());
     const auto ref = run_with(qc, opt_unfused());
-    ASSERT_TRUE(fused.success && ref.success);
     expect_states_close(fused.final_state, ref.final_state);
 }
 
@@ -242,7 +251,6 @@ TEST(R1171SvFusion, SingleMemberBlocksBitIdentical) {
     qc.cx(2, 3);
     const auto fused = run_with(qc, opt_forced());
     const auto ref = run_with(qc, opt_unfused());
-    ASSERT_TRUE(fused.success && ref.success);
     expect_states_exact(fused.final_state, ref.final_state);
 }
 
@@ -257,7 +265,6 @@ TEST(R1171SvFusion, ConventionBasisStateK5) {
     QuantumCircuit qc(4);
     qc.x(0).x(2);  // disjoint fusable gates → one fused block on {0,2}
     const auto fused = run_with(qc, opt_forced());
-    ASSERT_TRUE(fused.success);
     const auto amps = fused.final_state.amplitudes();
     for (size_t i = 0; i < amps.size(); ++i) {
         const double want = (i == 5) ? 1.0 : 0.0;
@@ -285,7 +292,6 @@ TEST(R1171SvFusion, ConventionFusedQftNonSymmetric) {
 
     const auto fused = run_with(qc, opt_forced());
     const auto ref = run_with(qc, opt_unfused());
-    ASSERT_TRUE(fused.success && ref.success);
     expect_states_close(fused.final_state, ref.final_state);
 
     // Peak at amp index 11 in both.
@@ -358,7 +364,6 @@ TEST(R1171SvFusion, ResetMidCircuitMatchesUnfused) {
     qc.ry(0.6, 2).cx(2, 3).rz(0.4, 0);
     const auto fused = run_with(qc, opt_forced(), 0, 555);
     const auto ref = run_with(qc, opt_unfused(), 0, 555);
-    ASSERT_TRUE(fused.success && ref.success);
     expect_states_close(fused.final_state, ref.final_state);
 }
 
@@ -375,7 +380,6 @@ TEST(R1171SvFusion, StructuredOpsPassthrough) {
     qc.rx(0.7, 0).cx(2, 5).rz(0.9, 4);
     const auto fused = run_with(qc, opt_forced());
     const auto ref = run_with(qc, opt_unfused());
-    ASSERT_TRUE(fused.success && ref.success);
     expect_states_close(fused.final_state, ref.final_state);
 }
 
@@ -391,7 +395,6 @@ TEST(R1171SvFusion, ShotsZeroTrajectoryMatchesUnfused) {
     qc.ry(0.9, 2).cx(1, 2);
     const auto fused = run_with(qc, opt_forced(), 0, 31337);
     const auto ref = run_with(qc, opt_unfused(), 0, 31337);
-    ASSERT_TRUE(fused.success && ref.success);
     expect_states_close(fused.final_state, ref.final_state);
 }
 
@@ -399,31 +402,25 @@ TEST(R1171SvFusion, ShotsZeroTrajectoryMatchesUnfused) {
 // Options surface
 // -----------------------------------------------------------------------------
 
-// 14. fusion_max_qubit outside [2,6] → an error Result (success = false, non-
-//     empty message), not a throw to the caller.
-TEST(R1171SvFusion, MaxQubitOutOfRangeErrorResult) {
+// 14. fusion_max_qubit outside its documented range [2, 6] is refused before
+//     the first gate, naming the option and the value given.
+TEST(R1171SvFusion, MaxQubitOutOfRangeIsRefused) {
     const auto qc = dense6();
-    Options lo = opt_forced();
-    lo.fusion_max_qubit = 1;
-    const auto rlo = run_with(qc, lo);
-    EXPECT_FALSE(rlo.success);
-    EXPECT_FALSE(rlo.error_message.empty());
-
-    Options hi = opt_forced();
-    hi.fusion_max_qubit = 7;
-    const auto rhi = run_with(qc, hi);
-    EXPECT_FALSE(rhi.success);
-    EXPECT_FALSE(rhi.error_message.empty());
+    for (const int width : {1, 7}) {
+        SCOPED_TRACE(width);
+        Options o = opt_forced();
+        o.fusion_max_qubit = width;
+        expect_option_refused(qc, o, "Options::fusion_max_qubit must be in [2, 6], got " +
+                                         std::to_string(width));
+    }
 }
 
-// 15. fusion_threshold < 0 → error Result.
-TEST(R1171SvFusion, NegativeThresholdErrorResult) {
+// 15. fusion_threshold < 0 is refused the same way.
+TEST(R1171SvFusion, NegativeThresholdIsRefused) {
     const auto qc = dense6();
     Options o = opt_forced();
     o.fusion_threshold = -1;
-    const auto r = run_with(qc, o);
-    EXPECT_FALSE(r.success);
-    EXPECT_FALSE(r.error_message.empty());
+    expect_option_refused(qc, o, "Options::fusion_threshold must be >= 0 (0 = auto), got -1");
 }
 
 // 16. fusion_enable = false with threshold = 1 at n = 6 is BIT-IDENTICAL to a
@@ -435,7 +432,6 @@ TEST(R1171SvFusion, EnableFalseIsBitIdenticalToDefault) {
     off.fusion_enable = false;  // master switch off despite threshold = 1
     const auto disabled = run_with(qc, off);
     const auto def = run_with(qc, Options{});  // defaults: auto (≥17) never fires at n=6
-    ASSERT_TRUE(disabled.success && def.success);
     expect_states_exact(disabled.final_state, def.final_state);
 }
 
@@ -449,7 +445,6 @@ TEST(R1171SvFusion, AutoFloorNoEngagementAtN10) {
     Options autoo;  // fusion_enable = true, fusion_threshold = 0 (auto)
     const auto a = run_with(qc, autoo);
     const auto b = run_with(qc, opt_unfused());
-    ASSERT_TRUE(a.success && b.success);
     expect_states_exact(a.final_state, b.final_state);
 }
 
@@ -459,18 +454,15 @@ TEST(R1171SvFusion, AutoFloorNoEngagementAtN10) {
 TEST(R1171SvFusion, ThresholdBoundaryEngagement) {
     const auto qc = dense6();  // n = 6
     const auto ref = run_with(qc, opt_unfused());
-    ASSERT_TRUE(ref.success);
 
     Options at;
     at.fusion_threshold = 6;  // n ≥ 6 → engages
     const auto engaged = run_with(qc, at);
-    ASSERT_TRUE(engaged.success);
     expect_states_close(engaged.final_state, ref.final_state);
 
     Options above;
     above.fusion_threshold = 7;  // n = 6 < 7 → no engagement
     const auto not_engaged = run_with(qc, above);
-    ASSERT_TRUE(not_engaged.success);
     expect_states_exact(not_engaged.final_state, ref.final_state);
 }
 

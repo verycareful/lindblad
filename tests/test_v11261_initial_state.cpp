@@ -43,8 +43,10 @@
 
 using namespace lindblad;
 
+using v11261::clifford_run_failure;
+using v11261::dm_run_failure;
+using v11261::mps_run_failure;
 using v11261::sv_run_failure;
-using v11261::throwing_run_failure;
 
 namespace {
 
@@ -127,7 +129,6 @@ TEST(V11261InitialState, BasisFiveOnThreeQubitsIsTheStateOneZeroOne) {
     StatevectorSimulator sim;
     auto r = sim.run(QuantumCircuit(3), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     // Qubit 0 carries the ones place, so K = 5 is q0 = 1, q1 = 0, q2 = 1.
     EXPECT_NEAR(r.final_state.probability(5), 1.0, DEFAULT_PHYSICAL_ATOL);
 }
@@ -169,10 +170,7 @@ TEST(V11261InitialState, ABasisIndexOutsideTheRegisterFails) {
     const std::string message = sv_run_failure(QuantumCircuit(3), plan);
     EXPECT_NE(message.find("8"), std::string::npos) << message;
 
-    const std::string clifford = throwing_run_failure([&] {
-        CliffordSimulator sim;
-        sim.run(QuantumCircuit(3), 8, 20261, plan);
-    });
+    const std::string clifford = clifford_run_failure(QuantumCircuit(3), plan, 8);
     EXPECT_NE(clifford.find("8"), std::string::npos) << clifford;
 }
 
@@ -190,7 +188,6 @@ TEST(V11261InitialState, ASuppliedStatevectorSeedsTheStatevectorBackend) {
     StatevectorSimulator sim;
     auto r = sim.run(QuantumCircuit(3), 0, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_NEAR(r.final_state.probability(5), 1.0, DEFAULT_PHYSICAL_ATOL);
 }
 
@@ -235,7 +232,6 @@ TEST(V11261InitialState, ASuppliedStatevectorIsConvertedForTheDensityMatrixBacke
     const NoiseModel noise;
     auto r = sim.run(measure_only(3), noise, 32, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(r.counts.at(kFiveOnThree), 32);
 }
 
@@ -259,10 +255,7 @@ TEST(V11261InitialState, AStatevectorCannotSeedTheCliffordBackend) {
     RunPlan plan;
     plan.initial = InitialState::from(five_on_three());
 
-    const std::string message = throwing_run_failure([&] {
-        CliffordSimulator sim;
-        sim.run(measure_only(3), 8, 20261, plan);
-    });
+    const std::string message = clifford_run_failure(measure_only(3), plan, 8);
     EXPECT_NE(message.find("stabilizer"), std::string::npos) << message;
 }
 
@@ -271,8 +264,13 @@ TEST(V11261InitialState, ADensityMatrixCannotSeedTheStatevectorBackend) {
     RunPlan plan;
     plan.initial = InitialState::from(dm);
 
+    // No route exists, whatever the knobs say, and the refusal says exactly
+    // that.
     const std::string message = sv_run_failure(QuantumCircuit(2), plan);
-    EXPECT_FALSE(message.empty());
+    EXPECT_NE(message.find(std::string("InitialState: a ") + to_string(StateForm::DensityMatrix) +
+                           " cannot be turned into the statevector"),
+              std::string::npos)
+        << message;
 }
 
 TEST(V11261InitialState, AnUnproducibleInitialStateFailsUnderWarnAndIgnoreToo) {
@@ -280,30 +278,63 @@ TEST(V11261InitialState, AnUnproducibleInitialStateFailsUnderWarnAndIgnoreToo) {
     // omissible. A run has to start somewhere, so there is nothing to omit
     // here: the only alternative to the caller's state is silently simulating a
     // different circuit.
-    for (const Response response : {Response::Throw, Response::Warn, Response::Ignore}) {
+    for (const Response response :
+         {Response::Throw, Response::Warn, Response::Ignore, Response::Auto}) {
         RunPlan plan;
         plan.initial = InitialState::from(five_on_three());
         plan.options.response = response;
 
-        const std::string message = throwing_run_failure([&] {
-            CliffordSimulator sim;
-            sim.run(measure_only(3), 8, 20261, plan);
-        });
-        EXPECT_FALSE(message.empty());
+        const std::string message = clifford_run_failure(measure_only(3), plan, 8);
+        EXPECT_NE(message.find("stabilizer"), std::string::npos) << message;
+        EXPECT_NE(message.find("cannot be turned into a stabilizer tableau"),
+                  std::string::npos)
+            << message;
     }
 }
 
+// KNOWN RED until 1.1.31.2. Each backend below CAN convert the state it is
+// handed, and does under Conversion::Convert (the control in each block);
+// Conversion::Never is what declines it, so that is what the refusal has to
+// name. Today all three say the state "cannot be turned into" the backend's
+// form, which sends the caller looking for a route that exists instead of at
+// the setting that refused it.
 TEST(V11261InitialState, AnUnproducibleInitialStateFailsUnderConversionNever) {
-    RunPlan plan;
-    plan.initial = InitialState::from(five_on_three());
-    plan.options.conversion = Conversion::Never;
+    const auto expect_names_never = [](const std::string& message) {
+        EXPECT_NE(message.find("Conversion::Never"), std::string::npos) << message;
+        EXPECT_EQ(message.find("cannot be turned into"), std::string::npos) << message;
+    };
+    auto stabilizer_seed = std::make_shared<StabilizerState>(3);
+    stabilizer_seed->apply_x(0);
+    stabilizer_seed->apply_x(2);  // |101>
 
-    // The density matrix backend CAN take a statevector, but not when the
-    // caller has declined conversion.
-    DensityMatrixSimulator sim;
-    const NoiseModel noise;
-    auto r = sim.run(measure_only(3), noise, 8, 20261, plan);
-    EXPECT_FALSE(r.success);
+    {
+        SCOPED_TRACE("density matrix backend, statevector seed");
+        RunPlan plan;
+        plan.initial = InitialState::from(five_on_three());
+        DensityMatrixSimulator sim;
+        const NoiseModel noise;
+        EXPECT_EQ(sim.run(measure_only(3), noise, 8, 20261, plan).counts.at(kFiveOnThree), 8);
+        plan.options.conversion = Conversion::Never;
+        expect_names_never(dm_run_failure(measure_only(3), plan, 8));
+    }
+    {
+        SCOPED_TRACE("statevector backend, stabilizer seed");
+        RunPlan plan;
+        plan.initial = InitialState::from(stabilizer_seed);
+        StatevectorSimulator sim;
+        EXPECT_EQ(sim.run(measure_only(3), 8, 20261, plan).counts.at(kFiveOnThree), 8);
+        plan.options.conversion = Conversion::Never;
+        expect_names_never(sv_run_failure(measure_only(3), plan, 8));
+    }
+    {
+        SCOPED_TRACE("MPS backend, stabilizer seed");
+        RunPlan plan;
+        plan.initial = InitialState::from(stabilizer_seed);
+        MPSSimulator sim;
+        EXPECT_EQ(sim.run(measure_only(3), 8, 8, 20261, plan).counts.at(kFiveOnThree), 8);
+        plan.options.conversion = Conversion::Never;
+        expect_names_never(mps_run_failure(measure_only(3), plan, 8));
+    }
 }
 
 TEST(V11261InitialState, ASuppliedStateOfTheWrongWidthFails) {
@@ -393,6 +424,5 @@ TEST(V11261InitialState, APlanCarryingOnlyAnInitialStateIsNotEmpty) {
 
     StatevectorSimulator sim;
     auto r = sim.run(QuantumCircuit(3), 0, 20261, plan);
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_NEAR(r.final_state.probability(5), 1.0, DEFAULT_PHYSICAL_ATOL);
 }

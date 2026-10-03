@@ -56,7 +56,6 @@ void expect_same_state_up_to_phase(const QuantumCircuit& qc) {
 
     StatevectorSimulator sv;
     auto dense = sv.run(qc, 0, 20261);
-    ASSERT_TRUE(dense.success) << dense.error_message;
 
     const std::vector<Complex128> a = from_tableau.amplitudes();
     const std::vector<Complex128> b = dense.final_state.amplitudes();

@@ -32,8 +32,10 @@
 #include "lindblad/circuit.hpp"
 #include "lindblad/noise.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
+#include "v11311_helpers.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <vector>
 
@@ -48,6 +50,22 @@ QuantumCircuit bell() {
     qc.h(0);
     qc.cx(0, 1);
     return qc;
+}
+
+// A channel whose width disagrees with its gate is a refusal before the first
+// gate: exactly InvalidArgument from the run, naming the gate and where it
+// sits, with no failed-run record, since no state was ever evolved.
+void expect_width_refused(const NoiseModel& noise) {
+    DensityMatrixSimulator sim;
+    const std::uint64_t stores = detail::failed_run_stores();
+    const auto e = v11311::thrown<InvalidArgument>([&] { (void)sim.run(bell(), noise, 8, 20261); });
+    EXPECT_EQ(detail::failed_run_stores(), stores) << "a refusal before the first gate left a record";
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), "DensityMatrixSimulator::run");
+    v11311::expect_message(*e, {"DensityMatrixSimulator::run: the noise model's channel attached "
+                                "to 'cx' acts on 1 qubit(s), but it is being applied to 2",
+                                "(instruction 1: cx on qubits 0, 1)"});
+    v11311::expect_point(e->where(), -1, 1, "cx", {0, 1});
 }
 
 }  // namespace
@@ -114,27 +132,18 @@ TEST(V11262NoiseWidth, AnUnqualifiedOneQubitChannelOnATwoQubitGateFailsTheRun) {
     noise.add_quantum_error(NoiseChannels::depolarizing(0.2), "h");
     noise.add_quantum_error(NoiseChannels::depolarizing(0.1), "cx");
 
-    DensityMatrixSimulator sim;
-    auto r = sim.run(bell(), noise, 8, 20261);
-
-    EXPECT_FALSE(r.success);
-    EXPECT_NE(r.error_message.find("cx"), std::string::npos) << r.error_message;
+    expect_width_refused(noise);
 }
 
 TEST(V11262NoiseWidth, TheRunNeverReturnsANonFiniteState) {
-    // What the defect actually looked like from outside, asserted directly:
-    // a run that reports success must not hand back NaN.
+    // What the defect looked like from outside was a NaN state handed back as
+    // an answer. The run now refuses before any state exists, so there is no
+    // state to return and none in a failed-run record either.
     NoiseModel noise;
     noise.add_quantum_error(NoiseChannels::depolarizing(0.2), "h");
     noise.add_quantum_error(NoiseChannels::depolarizing(0.1), "cx");
 
-    DensityMatrixSimulator sim;
-    auto r = sim.run(bell(), noise, 8, 20261);
-
-    if (r.success) {
-        EXPECT_TRUE(std::isfinite(r.final_state.trace()));
-        EXPECT_TRUE(std::isfinite(r.final_state.purity()));
-    }
+    expect_width_refused(noise);
 }
 
 TEST(V11262NoiseWidth, TheCorrectlySizedChannelRunsAndMixesTheState) {
@@ -147,7 +156,6 @@ TEST(V11262NoiseWidth, TheCorrectlySizedChannelRunsAndMixesTheState) {
     DensityMatrixSimulator sim;
     auto r = sim.run(bell(), noise, 8, 20261);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_NEAR(r.final_state.trace(), 1.0, kTol);
     EXPECT_TRUE(std::isfinite(r.final_state.purity()));
     // Noise mixes it, so this is strictly below a pure state's 1.
@@ -160,7 +168,6 @@ TEST(V11262NoiseWidth, AnIdealRunIsUnaffectedByTheCheck) {
     DensityMatrixSimulator sim;
     auto r = sim.run(bell(), noise, 8, 20261);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_NEAR(r.final_state.trace(), 1.0, kTol);
     EXPECT_NEAR(r.final_state.purity(), 1.0, kTol);
 }

@@ -81,8 +81,6 @@ TEST(R1121NoiseModel, BeforeVsAfterGateOrderingIsObservable) {
     DensityMatrixSimulator sim;
     auto ra = sim.run(qc, after, 1, 42);
     auto rb = sim.run(qc, before, 1, 42);
-    ASSERT_TRUE(ra.success);
-    ASSERT_TRUE(rb.success);
 
     // after:  |0> -X-> |1> -damp-> population 0.5 in |1>.
     // before: |0> -damp-> |0> (fixed point) -X-> |1> with population 1.

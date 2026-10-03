@@ -429,10 +429,11 @@ TEST(V11292ObservableWidth, TheObserverRefusesAWrongWidthBeforeTheRun) {
                                   std::make_shared<ExpectationObserver>(single(label)));
 
         StatevectorSimulator sim;
-        const auto result = sim.run(v11261::layered_circuit(), 0, 11292, plan);
-        EXPECT_FALSE(result.success) << "a " << label << " observable ran on four qubits";
-        EXPECT_NE(result.error_message.find("ExpectationObserver"), std::string::npos)
-            << result.error_message;
+        const std::string message = v11261::run_refusal(
+            "StatevectorSimulator::run",
+            [&] { (void)sim.run(v11261::layered_circuit(), 0, 11292, plan); });
+        EXPECT_NE(message.find("ExpectationObserver"), std::string::npos)
+            << "a " << label << " observable ran on four qubits: " << message;
         EXPECT_EQ(witness->count(), 0u) << "instructions ran before the refusal";
     }
 }
@@ -442,8 +443,10 @@ TEST(V11292ObservableWidth, TheObserverRefusesAWrongWidthOnTheTableauToo) {
     plan.observations.observe(Anchor::at_end(),
                               std::make_shared<ExpectationObserver>(single("ZZZ")));
     CliffordSimulator clifford;
-    EXPECT_THROW((void)clifford.run(v11261::layered_circuit(), 8, 11292, plan),
-                 std::invalid_argument);
+    const std::string message = v11261::run_refusal(
+        "CliffordSimulator::run",
+        [&] { (void)clifford.run(v11261::layered_circuit(), 8, 11292, plan); });
+    EXPECT_NE(message.find("ExpectationObserver"), std::string::npos) << message;
 }
 
 TEST(V11292ObservableWidth, TheObserverRefusesAnObservableWithNoTerms) {
@@ -451,7 +454,8 @@ TEST(V11292ObservableWidth, TheObserverRefusesAnObservableWithNoTerms) {
     plan.observations.observe(Anchor::at_end(),
                               std::make_shared<ExpectationObserver>(SparsePauliOp()));
     StatevectorSimulator sim;
-    const auto result = sim.run(v11261::layered_circuit(), 0, 11292, plan);
-    EXPECT_FALSE(result.success);
-    EXPECT_NE(result.error_message.find("no terms"), std::string::npos) << result.error_message;
+    const std::string message = v11261::run_refusal(
+        "StatevectorSimulator::run",
+        [&] { (void)sim.run(v11261::layered_circuit(), 0, 11292, plan); });
+    EXPECT_NE(message.find("no terms"), std::string::npos) << message;
 }

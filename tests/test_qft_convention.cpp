@@ -399,7 +399,6 @@ TEST(QFTConvention, QPE_SGate_PhaseQuarter_N2eval_TopBitstringIs_101) {
 
     StatevectorSimulator sim;
     auto result = sim.run(qc, 1024, 42);
-    ASSERT_TRUE(result.success);
 
     // Sort counts descending.
     std::vector<std::pair<std::string, int>> sorted(result.counts.begin(),

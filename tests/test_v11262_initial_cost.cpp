@@ -107,7 +107,6 @@ TEST(V11262InitialCost, ATableauSeedsAStatevectorRunAtDefaultOptions) {
     StatevectorSimulator sim;
     auto r = sim.run(measure_only(3), 32, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(r.counts.at(kFiveOnThree), 32);
 }
 
@@ -118,7 +117,6 @@ TEST(V11262InitialCost, AChainSeedsAStatevectorRunAtDefaultOptions) {
     StatevectorSimulator sim;
     auto r = sim.run(measure_only(3), 32, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(r.counts.at(kFiveOnThree), 32);
 }
 
@@ -133,7 +131,6 @@ TEST(V11262InitialCost, AStatevectorSeedsADensityMatrixRunAtDefaultOptions) {
     const NoiseModel noise;
     auto r = sim.run(measure_only(3), noise, 32, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(r.counts.at(kFiveOnThree), 32);
 }
 
@@ -145,7 +142,6 @@ TEST(V11262InitialCost, ATableauSeedsADensityMatrixRunAtDefaultOptions) {
     const NoiseModel noise;
     auto r = sim.run(measure_only(3), noise, 32, 20261, plan);
 
-    ASSERT_TRUE(r.success) << r.error_message;
     EXPECT_EQ(r.counts.at(kFiveOnThree), 32);
 }
 
@@ -171,8 +167,7 @@ TEST(V11262InitialCost, EverySupportedRouteRunsAtDefaultOptions) {
             RunPlan plan;
             plan.initial = route.state;
             auto r = sim.run(qc, 16, 20261, plan);
-            EXPECT_TRUE(r.success) << route.name << ": " << r.error_message;
-            if (r.success) EXPECT_EQ(r.counts.at(kFiveOnThree), 16) << route.name;
+            EXPECT_EQ(r.counts.at(kFiveOnThree), 16) << route.name;
         }
     }
     {
@@ -184,8 +179,7 @@ TEST(V11262InitialCost, EverySupportedRouteRunsAtDefaultOptions) {
             RunPlan plan;
             plan.initial = route.state;
             auto r = sim.run(qc, noise, 16, 20261, plan);
-            EXPECT_TRUE(r.success) << route.name << ": " << r.error_message;
-            if (r.success) EXPECT_EQ(r.counts.at(kFiveOnThree), 16) << route.name;
+            EXPECT_EQ(r.counts.at(kFiveOnThree), 16) << route.name;
         }
     }
     {
@@ -222,11 +216,10 @@ TEST(V11262InitialCost, TheReadSideGuardIsUnchanged) {
     qc.h(0);
     qc.cx(0, 1);
 
-    StatevectorSimulator sim;
-    auto r = sim.run(qc, 0, 20261, plan);
-
-    EXPECT_FALSE(r.success);
-    EXPECT_NE(r.error_message.find("guard"), std::string::npos) << r.error_message;
+    // Under the default response, Auto, a refusal decided before the first
+    // gate throws.
+    const std::string message = v11261::sv_run_failure(qc, plan);
+    EXPECT_NE(message.find("guard"), std::string::npos) << message;
 }
 
 TEST(V11262InitialCost, ConversionNeverStillRefusesTheWriteSide) {
@@ -236,23 +229,21 @@ TEST(V11262InitialCost, ConversionNeverStillRefusesTheWriteSide) {
     plan.initial = InitialState::from(sv_five_on_three());
     plan.options.conversion = Conversion::Never;
 
-    DensityMatrixSimulator sim;
-    const NoiseModel noise;
-    auto r = sim.run(measure_only(3), noise, 8, 20261, plan);
-
-    EXPECT_FALSE(r.success);
+    (void)v11261::dm_run_failure(measure_only(3), plan, 8);
 }
 
 TEST(V11262InitialCost, AnImpossibleWriteStillFailsUnderEveryResponse) {
     // Unchanged and worth re-pinning beside the loosening: a run has to start
     // somewhere, so there is nothing here for Warn or Ignore to omit.
-    for (const Response response : {Response::Throw, Response::Warn, Response::Ignore}) {
+    for (const Response response :
+         {Response::Throw, Response::Warn, Response::Ignore, Response::Auto}) {
         RunPlan plan;
         plan.initial = InitialState::from(sv_five_on_three());
         plan.options.response = response;
 
-        CliffordSimulator sim;
-        EXPECT_THROW(sim.run(measure_only(3), 8, 20261, plan), std::invalid_argument);
+        const std::string message = v11261::clifford_run_failure(measure_only(3), plan, 8);
+        EXPECT_NE(message.find("cannot be turned into a stabilizer tableau"), std::string::npos)
+            << message;
     }
 }
 
@@ -266,8 +257,10 @@ TEST(V11262InitialCost, AGuardedWriteRefusesTheOneAllocationThatSurprises) {
     plan.options.initial_cost = Cost::Guarded;
     plan.options.guard_multiple = 1.0;
 
-    MPSSimulator sim;
-    EXPECT_THROW(sim.run(measure_only(3), 8, 16, 20261, plan), std::invalid_argument);
+    const std::string message = v11261::mps_run_failure(measure_only(3), plan, 16);
+    EXPECT_NE(message.find("over the guard"), std::string::npos) << message;
+    EXPECT_NE(message.find("Options::initial_cost is Cost::Guarded"), std::string::npos)
+        << message;
 }
 
 TEST(V11262InitialCost, AGuardedWriteAllowsWhatTheRunWouldHoldAnyway) {
@@ -281,13 +274,13 @@ TEST(V11262InitialCost, AGuardedWriteAllowsWhatTheRunWouldHoldAnyway) {
     {
         StatevectorSimulator sim;
         auto r = sim.run(measure_only(3), 16, 20261, plan);
-        EXPECT_TRUE(r.success) << r.error_message;
+        EXPECT_EQ(r.counts.at(kFiveOnThree), 16);
     }
     {
         DensityMatrixSimulator sim;
         const NoiseModel noise;
         auto r = sim.run(measure_only(3), noise, 16, 20261, plan);
-        EXPECT_TRUE(r.success) << r.error_message;
+        EXPECT_EQ(r.counts.at(kFiveOnThree), 16);
     }
 }
 

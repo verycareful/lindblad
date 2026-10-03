@@ -45,12 +45,14 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
+#include "v11311_helpers.hpp"
 
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <optional>
 #include <random>
 #include <regex>
 #include <stdexcept>
@@ -89,6 +91,28 @@ std::size_t count_containing(const std::vector<std::string>& msgs, const std::st
     return n;
 }
 
+// The one-time notes a non-default rejection setting emits the first time a
+// layer uses it in the process. Whether one arrives inside a given test
+// depends on which test chose the setting first, so a test about the ladder's
+// own reporting takes them out, after checking each names a setting the test
+// did choose (`chosen`).
+std::vector<std::string> without_setting_notes(const std::vector<std::string>& msgs,
+                                               const char* layer,
+                                               std::initializer_list<const char*> chosen) {
+    std::vector<std::string> out;
+    const std::string prefix = std::string("note: the ") + layer + " MPS has ";
+    for (const std::string& m : msgs) {
+        if (m.rfind(prefix, 0) != 0) {
+            out.push_back(m);
+            continue;
+        }
+        bool named = false;
+        for (const char* setting : chosen) named = named || m.find(setting) != std::string::npos;
+        EXPECT_TRUE(named) << "a note for a setting this test did not choose: " << m;
+    }
+    return out;
+}
+
 double nan_bits() { return quiet_nan_strict(); }
 
 // |<a|b>|^2 over two amplitude lists of equal length.
@@ -118,10 +142,11 @@ QuantumCircuit qubit_chain(std::uint64_t seed) {
     return qc;
 }
 
-double mps_fidelity(const QuantumCircuit& qc, SVDMethod method, bool rescue = true) {
+double mps_fidelity(const QuantumCircuit& qc, SVDMethod method,
+                    SvdRejection rejection = SvdRejection::Fix) {
     MPSSimulator mps;
     mps.svd_method = method;
-    mps.svd_rescue = rescue;
+    mps.svd_rejection = rejection;
     auto mr = mps.run(qc, /*max_bond_dim=*/64, /*shots=*/0, /*seed=*/1);
     StatevectorSimulator sv;
     auto sr = sv.run(qc, /*shots=*/0, /*seed=*/1);
@@ -230,17 +255,26 @@ std::array<Complex128, 16> nan_gate() {
 // =============================================================================
 
 TEST(V11291SvdKernels, BdcAndRescueAreTheDefaultOnEverySurface) {
+    // The rescue is SvdRejection::Fix: a rejected factorisation is repaired by
+    // the ladder, which by default stops before the Gram route and reports
+    // every rung it takes.
     const MPSState state(4);
     EXPECT_EQ(state.svd_method, SVDMethod::BDC);
-    EXPECT_TRUE(state.svd_rescue);
+    EXPECT_EQ(state.svd_rejection, SvdRejection::Fix);
+    EXPECT_FALSE(state.svd_accept_gram);
+    EXPECT_EQ(state.svd_report, SvdReport::Warn);
 
     const MPSSimulator sim{};
     EXPECT_EQ(sim.svd_method, SVDMethod::BDC);
-    EXPECT_TRUE(sim.svd_rescue);
+    EXPECT_EQ(sim.svd_rejection, SvdRejection::Fix);
+    EXPECT_FALSE(sim.svd_accept_gram);
+    EXPECT_EQ(sim.svd_report, SvdReport::Warn);
 
     const QuditMPS qudit(3, 3);
     EXPECT_EQ(qudit.svd_method, SVDMethod::BDC);
-    EXPECT_TRUE(qudit.svd_rescue);
+    EXPECT_EQ(qudit.svd_rejection, SvdRejection::Fix);
+    EXPECT_FALSE(qudit.svd_accept_gram);
+    EXPECT_EQ(qudit.svd_report, SvdReport::Warn);
 }
 
 TEST(V11291SvdKernels, EachKernelHasTheNameTheDocumentationUses) {
@@ -252,15 +286,29 @@ TEST(V11291SvdKernels, EachKernelHasTheNameTheDocumentationUses) {
 
 TEST(V11291SvdKernels, TheSimulatorHandsItsSelectionToTheChainItBuilds) {
     const QuantumCircuit qc = qubit_chain(3);
+    // Every combination of the three rejection settings, so no one of them
+    // can be dropped on the way to the chain while the others arrive. The
+    // non-default ones emit their one-time notes, which are not under test
+    // here and are kept off the terminal.
+    v11311::WarningCapture quiet;
     for (SVDMethod m : kKernels) {
-        for (bool rescue : {true, false}) {
-            SCOPED_TRACE(std::string(to_string(m)) + (rescue ? " rescue" : " no rescue"));
-            MPSSimulator sim;
-            sim.svd_method = m;
-            sim.svd_rescue = rescue;
-            const auto r = sim.run(qc, 64, 0, 1);
-            EXPECT_EQ(r.final_state.svd_method, m);
-            EXPECT_EQ(r.final_state.svd_rescue, rescue);
+        for (SvdRejection rejection : {SvdRejection::Fix, SvdRejection::Throw, SvdRejection::Ignore}) {
+            for (bool gram : {false, true}) {
+                for (SvdReport report : {SvdReport::Warn, SvdReport::Silent}) {
+                    SCOPED_TRACE(std::string(to_string(m)) + " " + to_string(rejection) +
+                                 (gram ? " gram " : " no gram ") + to_string(report));
+                    MPSSimulator sim;
+                    sim.svd_method = m;
+                    sim.svd_rejection = rejection;
+                    sim.svd_accept_gram = gram;
+                    sim.svd_report = report;
+                    const auto r = sim.run(qc, 64, 0, 1);
+                    EXPECT_EQ(r.final_state.svd_method, m);
+                    EXPECT_EQ(r.final_state.svd_rejection, rejection);
+                    EXPECT_EQ(r.final_state.svd_accept_gram, gram);
+                    EXPECT_EQ(r.final_state.svd_report, report);
+                }
+            }
         }
     }
 }
@@ -283,7 +331,7 @@ TEST(V11291SvdKernels, EveryKernelReproducesTheStatevectorWithRescueOff) {
     // forbidding the rescue changes nothing about a clean run.
     for (SVDMethod m : kKernels) {
         SCOPED_TRACE(to_string(m));
-        EXPECT_NEAR(mps_fidelity(qubit_chain(5), m, /*rescue=*/false), 1.0, 1e-10);
+        EXPECT_NEAR(mps_fidelity(qubit_chain(5), m, SvdRejection::Throw), 1.0, 1e-10);
     }
 }
 
@@ -324,7 +372,13 @@ TEST(V11291SvdKernels, EveryRescueTheCounterRecordsIsOneWarningNamingItsBlock) {
             EXPECT_NE(w.find(std::string("the ") + to_string(m) + " factorisation"),
                       std::string::npos) << w;
             EXPECT_TRUE(std::regex_search(w, shape)) << w;
-            EXPECT_NE(w.find("failed verification ("), std::string::npos) << w;
+            // A kernel either returned a factorisation that failed
+            // verification or declined the block and returned nothing; the
+            // warning says which, and why.
+            const bool rejected = w.find("failed verification (") != std::string::npos;
+            const bool declined =
+                w.find("produced nothing (the kernel declined the block)") != std::string::npos;
+            EXPECT_TRUE(rejected != declined) << w;
         }
         // A rescued split still yields the exact state.
         EXPECT_NEAR(r.fidelity, 1.0, 1e-9);
@@ -392,16 +446,18 @@ TEST(V11291SvdKernels, WithRescueOffTheFirstRejectionThrowsWithoutDescending) {
     for (SVDMethod m : kKernels) {
         for (auto order : {detail::MatrixOrder::RowMajor, detail::MatrixOrder::ColMajor}) {
             SCOPED_TRACE(to_string(m));
-            bool threw = false;
+            std::optional<RuntimeFailure> e;
             const auto msgs = capture_warnings([&] {
-                try {
-                    (void)detail::svd_truncate_verified(block.data(), 4, 4, order, 4, 1e-16, m,
-                                                        /*rescue=*/false, "V11291Ladder");
-                } catch (const std::runtime_error&) {
-                    threw = true;
-                }
+                e = v11311::thrown<RuntimeFailure>([&] {
+                    (void)detail::svd_truncate_verified(
+                        block.data(), 4, 4, order, 4, 1e-16, m,
+                        detail::SvdPolicy{SvdRejection::Throw, false, SvdReport::Warn},
+                        "V11291Ladder");
+                });
             });
-            EXPECT_TRUE(threw);
+            ASSERT_TRUE(e.has_value());
+            EXPECT_EQ(e->entry_point(), "V11291Ladder");
+            v11311::expect_message(*e, {"svd_rejection is SvdRejection::Throw"});
             EXPECT_TRUE(msgs.empty()) << "the ladder descended with rescue off: " << msgs.front();
         }
     }
@@ -412,17 +468,18 @@ TEST(V11291SvdKernels, WithRescueOnEveryRungIsReportedBeforeTheThrow) {
     block[7] = Complex128(0.0, nan_bits());
     for (SVDMethod m : kKernels) {
         SCOPED_TRACE(to_string(m));
-        bool threw = false;
+        std::optional<RuntimeFailure> e;
         const auto msgs = capture_warnings([&] {
-            try {
-                (void)detail::svd_truncate_verified(block.data(), 4, 6,
-                                                    detail::MatrixOrder::ColMajor, 4, 1e-16, m,
-                                                    /*rescue=*/true, "V11291Ladder");
-            } catch (const std::runtime_error&) {
-                threw = true;
-            }
+            e = v11311::thrown<RuntimeFailure>([&] {
+                (void)detail::svd_truncate_verified(
+                    block.data(), 4, 6, detail::MatrixOrder::ColMajor, 4, 1e-16, m,
+                    detail::SvdPolicy{SvdRejection::Fix, /*accept_gram=*/true, SvdReport::Warn},
+                    "V11291Ladder");
+            });
         });
-        EXPECT_TRUE(threw) << "a non-finite block produced a tensor";
+        ASSERT_TRUE(e.has_value()) << "a non-finite block produced a tensor";
+        EXPECT_EQ(e->entry_point(), "V11291Ladder");
+        v11311::expect_message(*e, {"every permitted rung failed"});
         // One warning per rung descended: to Jacobi and on to Gram, or
         // straight to Gram when Jacobi was the kernel that failed.
         const std::size_t expected = (m == SVDMethod::Jacobi) ? 1u : 2u;
@@ -439,17 +496,19 @@ TEST(V11291SvdKernels, RescueOffOnTheQubitStateThrowsWithoutDescending) {
     for (bool rescue : {false, true}) {
         SCOPED_TRACE(rescue ? "rescue on" : "rescue off");
         MPSState state(3);
-        state.svd_rescue = rescue;
-        bool threw = false;
+        state.svd_rejection = rescue ? SvdRejection::Fix : SvdRejection::Throw;
+        state.svd_accept_gram = rescue;
+        std::optional<RuntimeFailure> e;
         const auto msgs = capture_warnings([&] {
-            try {
-                state.apply_two_qubit_gate(nan_gate(), 0, 1, {Validation::Ignore});
-            } catch (const std::runtime_error&) {
-                threw = true;
-            }
+            e = v11311::thrown<RuntimeFailure>(
+                [&] { state.apply_two_qubit_gate(nan_gate(), 0, 1, {Validation::Ignore}); });
         });
-        EXPECT_TRUE(threw);
-        EXPECT_EQ(msgs.empty(), !rescue);
+        ASSERT_TRUE(e.has_value());
+        v11311::expect_message(*e, {rescue ? "every permitted rung failed"
+                                           : "svd_rejection is SvdRejection::Throw"});
+        const auto descents = without_setting_notes(
+            msgs, "qubit", {rescue ? "svd_accept_gram on" : "svd_rejection = SvdRejection::Throw"});
+        EXPECT_EQ(descents.empty(), !rescue);
         EXPECT_EQ(state.jacobi_rescue_count(), 0u);
         EXPECT_EQ(state.gram_fallback_count(), 0u);
     }
@@ -460,17 +519,19 @@ TEST(V11291SvdKernels, RescueOffOnTheQuditStateThrowsWithoutDescending) {
     for (bool rescue : {false, true}) {
         SCOPED_TRACE(rescue ? "rescue on" : "rescue off");
         QuditMPS mps(3, 3);
-        mps.svd_rescue = rescue;
-        bool threw = false;
+        mps.svd_rejection = rescue ? SvdRejection::Fix : SvdRejection::Throw;
+        mps.svd_accept_gram = rescue;
+        std::optional<RuntimeFailure> e;
         const auto msgs = capture_warnings([&] {
-            try {
-                mps.apply_2qudit_adjacent(0, bad, {Validation::Ignore});
-            } catch (const std::runtime_error&) {
-                threw = true;
-            }
+            e = v11311::thrown<RuntimeFailure>(
+                [&] { mps.apply_2qudit_adjacent(0, bad, {Validation::Ignore}); });
         });
-        EXPECT_TRUE(threw);
-        EXPECT_EQ(msgs.empty(), !rescue);
+        ASSERT_TRUE(e.has_value());
+        v11311::expect_message(*e, {rescue ? "every permitted rung failed"
+                                           : "svd_rejection is SvdRejection::Throw"});
+        const auto descents = without_setting_notes(
+            msgs, "qudit", {rescue ? "svd_accept_gram on" : "svd_rejection = SvdRejection::Throw"});
+        EXPECT_EQ(descents.empty(), !rescue);
     }
 }
 
@@ -523,8 +584,14 @@ TEST(V11291SvdKernels, SelectingEigenJacobiAloneAlsoNotesIt) {
                 ::testing::ExitedWithCode(11), "");
 }
 
-TEST(V11291SvdKernels, TheBdcKernelsAreSilent) {
+TEST(V11291SvdKernels, TheDefaultBdcKernelIsSilent) {
     GTEST_FLAG_SET(death_test_style, "threadsafe");
-    EXPECT_EXIT(exit_with_note_counts({SVDMethod::BDC, SVDMethod::EigenBDC}),
-                ::testing::ExitedWithCode(0), "");
+    EXPECT_EXIT(exit_with_note_counts({SVDMethod::BDC}), ::testing::ExitedWithCode(0), "");
+}
+
+TEST(V11291SvdKernels, SelectingEigenBdcNotesItOncePerLayerPerProcess) {
+    // EigenBDC is not the default either, so it is noted like the Jacobi
+    // kernels: once per layer for the whole process, however often selected.
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(exit_with_note_counts({SVDMethod::EigenBDC}), ::testing::ExitedWithCode(11), "");
 }

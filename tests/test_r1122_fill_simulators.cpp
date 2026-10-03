@@ -44,8 +44,10 @@
 #include "lindblad/simulators/statevector_sim.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/types.hpp"
+#include "v11311_helpers.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -63,7 +65,6 @@ constexpr double kTol = 1e-9;
 Statevector sv_final(const QuantumCircuit& qc) {
     StatevectorSimulator sim;
     auto res = sim.run(qc, 0, 1);
-    EXPECT_TRUE(res.success) << res.error_message;
     return std::move(res.final_state);
 }
 
@@ -79,7 +80,6 @@ DensityMatrix dm_final(const QuantumCircuit& qc) {
     DensityMatrixSimulator sim;
     NoiseModel ideal;
     auto res = sim.run(qc, ideal, 0, 1);
-    EXPECT_TRUE(res.success) << res.error_message;
     return std::move(res.final_state);
 }
 
@@ -194,6 +194,21 @@ Instruction raw_instruction(GT type, std::vector<int> qubits) {
     return inst;
 }
 
+// A circuit the MPS backend cannot run is refused before the first gate:
+// exactly InvalidArgument from MPSSimulator::run, naming the reason and the
+// instruction, which is always instruction 0 here; nothing was computed, so no
+// failed-run record is left.
+void expect_mps_refusal(const std::function<void()>& run, const std::string& reason,
+                        const std::string& gate, const std::vector<int>& qubits) {
+    const std::uint64_t stores = detail::failed_run_stores();
+    const auto e = v11311::thrown<InvalidArgument>(run);
+    EXPECT_EQ(detail::failed_run_stores(), stores) << "a refusal left a failed-run record";
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), "MPSSimulator::run");
+    v11311::expect_message(*e, {"MPSSimulator::run: " + reason});
+    v11311::expect_point(e->where(), -1, 0, gate, qubits);
+}
+
 }  // namespace
 
 // =============================================================================
@@ -260,13 +275,17 @@ TEST(R1122FillSim, MPSUnitaryMatrixSizeValidationThrows) {
     auto bad1 = raw_instruction(GT::UNITARY, {0});
     bad1.matrix = std::vector<Complex128>(2, Complex128(1.0, 0.0));  // not 4
     one.instructions.push_back(bad1);
-    EXPECT_THROW(sim.run(one, 8, 0, 1), std::runtime_error);
+    expect_mps_refusal([&] { (void)sim.run(one, 8, 0, 1); },
+                       "the UNITARY acts on 1 qubit, so its matrix must have 4 entries; it has 2",
+                       "unitary", {0});
 
     QuantumCircuit two(2);
     auto bad2 = raw_instruction(GT::UNITARY, {0, 1});
     bad2.matrix = std::vector<Complex128>(4, Complex128(1.0, 0.0));  // not 16
     two.instructions.push_back(bad2);
-    EXPECT_THROW(sim.run(two, 8, 0, 1), std::runtime_error);
+    expect_mps_refusal([&] { (void)sim.run(two, 8, 0, 1); },
+                       "the UNITARY acts on 2 qubits, so its matrix must have 16 entries; it has 4",
+                       "unitary", {0, 1});
 }
 
 TEST(R1122FillSim, MPSWideRegisterMultiQubitUnitaryThrows) {
@@ -277,7 +296,11 @@ TEST(R1122FillSim, MPSWideRegisterMultiQubitUnitaryThrows) {
     for (size_t i = 0; i < 8; ++i) identity8[i * 8 + i] = Complex128(1.0, 0.0);
     qc.unitary(identity8, {0, 1, 2});
     MPSSimulator sim;
-    EXPECT_THROW(sim.run(qc, 4, 0, 1), std::runtime_error);
+    expect_mps_refusal([&] { (void)sim.run(qc, 4, 0, 1); },
+                       "a 3-qubit UNITARY is applied through the dense fallback, and 26 qubits "
+                       "exceed the dense-fallback limit (" +
+                           std::to_string(ENFORCED_MPS_DENSE_MAX_QUBITS) + ")",
+                       "unitary", {0, 1, 2});
 }
 
 TEST(R1122FillSim, MPSMalformedGateAritiesThrow) {
@@ -286,12 +309,14 @@ TEST(R1122FillSim, MPSMalformedGateAritiesThrow) {
     // A 3-operand instruction of a non-3-qubit type hits the 3q default.
     QuantumCircuit three(3);
     three.instructions.push_back(raw_instruction(GT::H, {0, 1, 2}));
-    EXPECT_THROW(sim.run(three, 8, 0, 1), std::runtime_error);
+    expect_mps_refusal([&] { (void)sim.run(three, 8, 0, 1); },
+                       "the gate acts on 1 qubit; it names 3", "h", {0, 1, 2});
 
     // A 4-operand instruction has no MPS path at all.
     QuantumCircuit four(4);
     four.instructions.push_back(raw_instruction(GT::CX, {0, 1, 2, 3}));
-    EXPECT_THROW(sim.run(four, 8, 0, 1), std::runtime_error);
+    expect_mps_refusal([&] { (void)sim.run(four, 8, 0, 1); },
+                       "the gate acts on 2 qubits; it names 4", "cx", {0, 1, 2, 3});
 }
 
 TEST(R1122FillSim, MPSUnboundParameterisedGateThrows) {
@@ -300,7 +325,9 @@ TEST(R1122FillSim, MPSUnboundParameterisedGateThrows) {
     sym.param_names = {"theta"};
     qc.instructions.push_back(sym);
     MPSSimulator sim;
-    EXPECT_THROW(sim.run(qc, 8, 0, 1), std::runtime_error);
+    expect_mps_refusal([&] { (void)sim.run(qc, 8, 0, 1); },
+                       "the gate has an unbound parameter; call assign_parameters() first",
+                       "rx", {0});
 }
 
 TEST(R1122FillSim, MPSConditionalForwardPassWithoutMeasure) {
@@ -420,10 +447,15 @@ TEST(R1122FillSim, DMUnboundParameterisedGateFailsGracefully) {
     qc.instructions.push_back(sym);
     DensityMatrixSimulator sim;
     NoiseModel ideal;
-    auto res = sim.run(qc, ideal, 0, 1);
-    EXPECT_FALSE(res.success);
-    EXPECT_NE(res.error_message.find("assign_parameters"), std::string::npos)
-        << res.error_message;
+    const std::uint64_t stores = detail::failed_run_stores();
+    const auto e = v11311::thrown<InvalidArgument>([&] { (void)sim.run(qc, ideal, 0, 1); });
+    EXPECT_EQ(detail::failed_run_stores(), stores);
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), "DensityMatrixSimulator::run");
+    v11311::expect_message(*e, {"DensityMatrixSimulator::run: the gate has an unbound parameter; "
+                                "call assign_parameters() first",
+                                "(instruction 0: p on qubit 0)"});
+    v11311::expect_point(e->where(), -1, 0, "p", {0});
 }
 
 // =============================================================================
@@ -462,20 +494,29 @@ TEST(R1122FillSim, SVApplyInstructionUnboundParamThrows) {
     Statevector sv(1);
     auto sym = raw_instruction(GT::PARAM_U, {0});
     sym.param_names = {"a", "b", "c"};
-    EXPECT_THROW(sim.apply_instruction(sv, sym), std::runtime_error);
+    // apply_instruction is a direct entry with no pass before it, so the
+    // kernel's own guard is what refuses; it raises a plain std::runtime_error.
+    const auto e = v11311::thrown<std::runtime_error>([&] { sim.apply_instruction(sv, sym); });
+    ASSERT_TRUE(e.has_value());
+    EXPECT_STREQ(e->what(), "Unresolved parameterised gate: u. Call assign_parameters() first.");
 }
 
 TEST(R1122FillSim, SVEmptyRegisterGuards) {
     QuantumCircuit qc(0, 0);
     StatevectorSimulator sim;
 
-    auto res = sim.run(qc, 0, 1);
-    EXPECT_FALSE(res.success);
-    EXPECT_NE(res.error_message.find("at least 1"), std::string::npos)
-        << res.error_message;
+    const auto run = v11311::thrown<InvalidArgument>([&] { (void)sim.run(qc, 0, 1); });
+    ASSERT_TRUE(run.has_value());
+    EXPECT_EQ(run->entry_point(), "StatevectorSimulator::run");
+    EXPECT_STREQ(run->what(),
+                 "StatevectorSimulator::run: the circuit must have at least 1 qubit (got 0)");
 
     SparsePauliOp z(std::vector<PauliString>{PauliString("Z")});
-    EXPECT_THROW(sim.eval_expectation(qc, z), std::invalid_argument);
+    const auto exact = v11311::thrown<InvalidArgument>([&] { (void)sim.eval_expectation(qc, z); });
+    ASSERT_TRUE(exact.has_value());
+    EXPECT_EQ(exact->entry_point(), "StatevectorSimulator::eval_expectation");
+    EXPECT_STREQ(exact->what(),
+                 "StatevectorSimulator::eval_expectation: circuit must have at least 1 qubit");
 }
 
 // =============================================================================

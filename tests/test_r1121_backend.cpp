@@ -58,7 +58,6 @@ TEST(R1121Backend, EachExplicitSimTypeRunsBell) {
         cfg.simulator = st;
         LocalBackend be(cfg);
         auto res = be.run(bell_measured(), 1000, 1);
-        EXPECT_TRUE(res.success) << res.error_message;
         expect_correlated(res.counts, 1000);
     }
 }
@@ -72,7 +71,6 @@ TEST(R1121Backend, AutoSelectsAndProducesCorrectCounts) {
     EXPECT_EQ(static_cast<int>(be.config.simulator),
               static_cast<int>(LocalBackend::SimType::AUTO));
     auto res = be.run(bell_measured(), 1000, 1);
-    EXPECT_TRUE(res.success);
     expect_correlated(res.counts, 1000);
 }
 
@@ -83,7 +81,6 @@ TEST(R1121Backend, AutoWithNoiseStillCorrectOnNoiselessGate) {
     be.noise_model.add_all_qubit_quantum_error(
         NoiseChannels::depolarizing(0.0, 1), "h");  // p=0: no actual error
     auto res = be.run(bell_measured(), 1000, 2);
-    EXPECT_TRUE(res.success);
     expect_correlated(res.counts, 1000);
 }
 
@@ -94,7 +91,7 @@ TEST(R1121Backend, AutoWithNoiseStillCorrectOnNoiselessGate) {
 TEST(R1121Backend, MetadataAndConfigDefaults) {
     LocalBackend be;
     EXPECT_EQ(be.name(), "lindblad_local_simulator");
-    EXPECT_EQ(be.max_qubits(), 30);
+    EXPECT_EQ(be.max_qubits(), ENFORCED_MAX_QUBITS);
     EXPECT_FALSE(be.version().empty());
     EXPECT_EQ(be.config.mps_bond_dim, 64);
 }
@@ -104,7 +101,6 @@ TEST(R1121Backend, RunBatchReturnsOneResultPerCircuit) {
     auto results = be.run_batch({bell_measured(), bell_measured()}, 256, 5);
     ASSERT_EQ(results.size(), 2u);
     for (const auto& r : results) {
-        EXPECT_TRUE(r.success);
         expect_correlated(r.counts, 256);
     }
 }
