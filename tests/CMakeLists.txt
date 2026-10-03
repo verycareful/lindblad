@@ -199,6 +199,8 @@ set(LINDBLAD_TEST_SOURCES
     test_v11302_thread_cap.cpp
     v11311_failed_run_env.cpp
     test_v11311_errors.cpp
+    test_v11311_preflight.cpp
+    test_v11311_limits.cpp
 )
 
 # The R.1.16.0 diagnostic's strict leg. This flag governs the file's OWN
