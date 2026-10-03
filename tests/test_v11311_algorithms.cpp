@@ -134,6 +134,38 @@ TEST(V11311Algorithms, MaqaoaNoisyPathThrowsTheRunsRefusal) {
     EXPECT_EQ(e->where()->gate, "cx");
 }
 
+// KNOWN RED until 1.1.31.2. A non-finite initial theta (the QSP rotation that
+// prepares each qubit) is refused on the noisy path at the first evaluation,
+// by the density-matrix run; the noiseless path evolves its own state, so the
+// optimisation runs on NaN energies, each scored as the sentinel, and fails
+// only when the final state is sampled, naming neither MA-QAOA nor the theta.
+// optimize() refuses it before any evaluation, on both paths, naming itself
+// and the index, as QAOA's evaluations refuse the same input on both of its.
+TEST(V11311Algorithms, MaqaoaRefusesANonFiniteInitialThetaUpFront) {
+    const SparsePauliOp cost(std::vector<PauliString>{PauliString("ZZ", Complex128(1.0, 0.0)),
+                                                      PauliString("ZI", Complex128(0.5, 0.0))});
+    for (const bool noisy : {false, true}) {
+        SCOPED_TRACE(noisy ? "noisy" : "noiseless");
+        MAQAOA maqaoa;
+        maqaoa.options.p = 1;
+        maqaoa.options.max_iterations = 3;
+        maqaoa.options.seed = 3;
+        maqaoa.options.initial_thetas = {0.2, quiet_nan_strict()};
+        if (noisy) {
+            NoiseModel noise;
+            noise.add_quantum_error(NoiseChannels::depolarizing(0.01), "h");
+            maqaoa.estimator.options.noise_model = noise;
+        }
+        const std::uint64_t stores = detail::failed_run_stores();
+        const auto e = v11311::thrown<InvalidArgument>([&] { (void)maqaoa.optimize(cost); });
+        EXPECT_EQ(detail::failed_run_stores(), stores) << "a run was attempted";
+        if (!e) continue;
+        EXPECT_EQ(e->entry_point(), "MAQAOA::optimize");
+        v11311::expect_message(*e, {"MAQAOA::optimize: ", "initial_thetas", "1",
+                                    std::to_string(quiet_nan_strict())});
+    }
+}
+
 TEST(V11311Algorithms, MaqaoaRefusesANonFiniteStartingPoint) {
     // A starting point built from a non-finite angle is refused before the
     // optimiser evaluates anything, on either path.
