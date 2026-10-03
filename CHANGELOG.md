@@ -4,6 +4,156 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.31.1] - 2026-10-03
+
+The test release for 1.1.31.0, which made every `run()` throw on failure and
+keep what it had computed. All 52 test sources left out of 1.1.31.0's build are
+back, respelled for runs that throw: a test that read a failed result's flag now
+asserts the exact exception type, the run's name, the whole message and the
+position, and that a refusal before the first gate leaves no failed-run record.
+No test was lost; nine were renamed where 1.1.31.0 changed what they check. Ten
+new suites cover what 1.1.31.0 added and nothing tested: the error types, the
+pass before the first gate, the qubit limit and the memory cap, the algorithms,
+the failed-run record, its folder and the folder's defences, the shot a failure
+names, JSON in any locale, and the MPS factorisation settings. Writing them
+found eleven defects; each is pinned by a test that ships red until 1.1.31.2
+fixes it, listed under Known red. No library code changes in this release.
+
+### Tests
+
+- **The 52 sources back in the build.** The 46 that read `success` or
+  `error_message` assert the exception instead, by exact type. The six that set
+  `svd_rescue` use `svd_rejection`, `svd_accept_gram` and `svd_report`, with the
+  defaults pinned on all three surfaces and every combination shown to reach
+  the chain a simulator builds. Where 1.1.31.0 reversed a test's premise the
+  test says so by its name: a wrong-sized UNITARY is caught before the first
+  gate, a failed run returns nothing and its record keeps what it observed, a
+  normless MPS starting chain is refused before the first gate (and a chain
+  whose norm fell below 1 still runs).
+- **The suite's own state folder.** A global test environment points
+  `XDG_STATE_HOME` (`LOCALAPPDATA` on Windows) at a folder of the suite's own,
+  removes it afterwards, and fails the run if any save left an incomplete
+  folder behind.
+- **`test_v11311_errors`.** The four exception types and the `Error` mixin; the
+  message format in every shape; `respond()` under each `Response` in each
+  phase; on all four backends, that only the start of the first shot is before
+  the first gate, that `Response::Auto` throws there and warns mid-run, that an
+  explicit `Throw` mid-run keeps the type and names the saved folder; and that a
+  built-in observer's refusal names the run.
+- **`test_v11311_preflight`.** On every backend, run directly and through
+  `LocalBackend`: a NaN or infinite parameter, a wrong-sized UNITARY, a
+  two-qubit MEASURE or RESET, a repeated operand, a malformed PERMUTATION, every
+  index outside its register (reported before any other fault), an
+  out-of-range `SimType`, and `eval_expectation` over the qubit limit or the
+  memory cap.
+- **`test_v11311_limits`.** `QubitLimit` on the statevector, `LocalBackend` and
+  the MPS dense fallback, with Lift admitting a width the memory check then
+  refuses, so no test allocates what it names; the memory cap's three sources;
+  the tableau answering to the cap; and an MPS chain outgrowing its run budget
+  mid-run with its state kept.
+- **`test_v11311_algorithms`.** Deutsch-Jozsa, Bernstein-Vazirani, Simon (both
+  sampling paths), phase estimation, Grover and Shor one qubit past the limit
+  throw the run's refusal; MA-QAOA's noisy path throws the density-matrix run's
+  refusal instead of scoring the point.
+- **`test_v11311_failed_run` and `test_v11311_failed_run_io`.** The record and
+  the per-thread slot on all four backends; saving, the folder's name, listing
+  and permissions, its default location and fallbacks; a run loaded back equal
+  to the run in memory, payload by payload and bit by bit, and saved again into
+  the same folder byte for byte; an observer's `end_run` failure keeping the
+  final state. Every edit, truncation and deletion the checksums catch, every
+  cross-check behind them, and crafted state files of every form refused
+  before anything is sized from them. A write that fails part way, driven with
+  the file size limit as a full disk would, leaves the part in memory and
+  nothing half-written on disk. Threads failing at once save separate
+  complete folders, and `Estimator::run_batch` hands the reported failure's
+  record to the caller.
+- **`test_v11311_failure_point`.** The shot a failure names, on all four
+  backends, against the shot the caller's observer was told.
+- **`test_v11311_json`.** The shared JSON reader and writer under a
+  decimal-comma locale, and `NoiseModel::to_json` / `from_json` round tripping
+  every part bit for bit. The check under a decimal-comma C locale skips on a
+  host that has none installed.
+- **`test_v11311_svd_settings`.** `Fix`, `Throw`, `Ignore` and `Silent` on
+  `MPSState`, `MPSSimulator` and `QuditMPS`, and each non-default setting's
+  one-time note, once per layer per process.
+
+### Known red
+
+Eighteen tests, one or more per defect, each fixed in 1.1.31.2:
+
+1. The circuit's `to_json`, its QASM 2 and 3 exporters and the noise model's
+   integer fields follow the process's global C++ locale: under a
+   decimal-comma locale `rx(0.5)` is written `rx(0,5)` and qubit 1234 as
+   `1.234`, and a failed run saved in that state cannot be loaded.
+   `V11311JsonLocale` (five tests).
+2. A condition bit below -1, built by hand or read from JSON, runs the gate
+   unconditioned. `V11311Preflight.AConditionBitBelowMinusOneIsRefused`,
+   `FromJsonRefusesAConditionBitBelowMinusOne`.
+3. A state observation whose label is longer than a file name may be loses
+   every observation from the saved folder.
+   `V11311FailedRunIo.AStateObservationWithALongLabelIsSavedAndLoadsBack`.
+4. A saved run's seed is parsed leniently: `"-1"` wraps and trailing text is
+   ignored. `V11311FailedRunIo.ASeedThatIsNotAStringOfDigitsIsRefused`.
+5. Under `Conversion::Never`, the refusal of a starting state the backend could
+   convert says the state "cannot be turned into" its form instead of naming
+   `Conversion::Never`.
+   `V11261InitialState.AnUnproducibleInitialStateFailsUnderConversionNever`.
+6. An MPS factorisation failure inside a run names an internal helper as its
+   entry point instead of `MPSSimulator::run`.
+   `V11311FailurePoint.AFactorisationFailureInsideARunNamesTheRun`.
+7. A `shots == 0` run walked shot by shot names no shot on the statevector and
+   MPS backends, where the density-matrix and Clifford backends, and every
+   backend's observers, name shot 0.
+   `V11311FailurePoint.AShotsZeroRunWalkedShotByShotFailsInShotZero`,
+   `V11301NoNorm.DenseRunsReportTheRefusal`.
+8. MA-QAOA runs a whole noiseless optimisation on a non-finite initial theta,
+   failing only when the final state is sampled, where the noisy path refuses
+   it at once. `V11311Algorithms.MaqaoaRefusesANonFiniteInitialThetaUpFront`.
+9. A save note names a part that could not be written without its folder
+   (`0-dm.bin` for `observations/0-dm.bin`).
+10. The message after a partial save agrees its verb and pronoun with the
+    number of parts ("The observations was not saved; take it"); it becomes
+    "Not saved: the observations. Take from memory with
+    lindblad::take_failed_run()." Defects 9 and 10:
+    `V11311FailedRunIo.AStateTooLargeToWriteStaysInMemoryAndTheMessageSaysSo`,
+    `ObservationsThatCannotAllBeWrittenAreSavedNoneAtAll`,
+    `TwoPartsThatCannotBeWrittenAreBothListed`.
+11. `Estimator::run_batch`, when the failure it reports left no record, can
+    discard the record the caller already held.
+    `V11311FailedRunIo.ABatchLeavesTheCallersRecordWhenTheReportedFailureLeftNone`.
+
+### Known gaps
+
+Paths no test reaches, since reaching them would need a seam in the library:
+the 4096 MiB fallback cap (every host answers the memory probe); the free-space
+refusal; `InternalError` at the consistency checks and dispatcher guards; an
+allocation failure while a record is assembled or the exception amended; the
+big-endian word swap in state files; the cgroup memory room; the MPS
+factorisation of a block that a kernel factorises and verification then
+rejects (and with it `Ignore` using such a factorisation, its count and the
+withdrawn fidelity figures, and the Gram route succeeding); a NaN the
+optimiser proposes after a finite start; and a failure inside the Clifford
+bit-sliced gate pass.
+
+### Results
+
+Six configurations, every leg failing exactly the eighteen tests listed under
+Known red and nothing else (CachyOS Linux, native):
+
+| Compiler | Target | Options | Tests | Passed | Skipped | Failed | Time |
+|---|---|---|---:|---:|---:|---:|---:|
+| Clang 23.1.1 | native | none (the documented build) | 3616 | 3589 | 9 | 18 | 18.1 s |
+| Clang 23.1.1 | native | harvest | 3616 | 3596 | 2 | 18 | 17.6 s |
+| Clang 23.1.1 | x86-64-v3 | harvest | 3616 | 3596 | 2 | 18 | 16.6 s |
+| GCC 14.3.1 | native | harvest | 3616 | 3596 | 2 | 18 | 20.5 s |
+| GCC 14.3.1 | x86-64-v3 | harvest | 3616 | 3596 | 2 | 18 | 17.0 s |
+| Clang 20.1.8 | native | harvest | 3616 | 3596 | 2 | 18 | 18.2 s |
+
+3616 tests across 345 suites. The documented build skips the seven
+theta-harvest tests; every leg skips the large register-size margin test and
+the decimal-comma C locale check, which this host cannot run. The Python tool
+suites pass: 66 tests (5 skipped) and the 5 histogram tests.
+
 ## [1.1.31.0] - 2026-10-02
 
 Every `run()` of the four qubit simulators and `LocalBackend` now either
