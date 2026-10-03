@@ -21,9 +21,10 @@
 // backend the same way; the shared prefix, which an observer would switch off,
 // is failed instead by a two-qubit gate the MPS factorisation cannot split.
 //
-// KNOWN RED until 1.1.31.2: a shots == 0 run walked shot by shot names no shot
-// on the statevector and MPS backends, where the density-matrix and Clifford
-// backends name shot 0; and an MPS factorisation failure inside a run names an
+// Two defects these tests found shipped red in 1.1.31.1 and were fixed in
+// 1.1.31.2: a shots == 0 run walked shot by shot named no shot on the
+// statevector and MPS backends, where the density-matrix and Clifford backends
+// named shot 0; and an MPS factorisation failure inside a run named an
 // internal helper as its entry point instead of the run.
 
 #include <gtest/gtest.h>
@@ -131,7 +132,7 @@ void expect_failure_shot(const Backend& b, const QuantumCircuit& qc, int shots, 
 
 }  // namespace
 
-// Row A. KNOWN RED on the statevector and MPS backends.
+// Row A.
 TEST(V11311FailurePoint, AShotsZeroRunWalkedShotByShotFailsInShotZero) {
     for (const Backend& b : backends()) {
         SCOPED_TRACE(b.name);
@@ -258,9 +259,9 @@ TEST(V11311FailurePoint, ACollapseAfterTheSharedPrefixNamesItsShotOnTheDenseBack
 // The entry point of a factorisation failure inside a run
 // =============================================================================
 
-// KNOWN RED until 1.1.31.2. A split no rung can factorise ends the run with
-// RuntimeFailure, but its entry point, and the start of its message, is the
-// internal "MPS svd_truncate" rather than the run the caller called.
+// A split no rung can factorise ends the run with RuntimeFailure whose entry
+// point, and the start of its message, is the run the caller called, not the
+// helper the split happened in.
 TEST(V11311FailurePoint, AFactorisationFailureInsideARunNamesTheRun) {
     std::optional<RuntimeFailure> e;
     const FailedRun r = fail_in_prefix(1, false, e);

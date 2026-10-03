@@ -55,8 +55,10 @@ public:
     }
 
 private:
-    // Transpiled-circuit cache: structure key → transpiled circuit.
-    // Key = hash of (gate type, qubits) sequence — independent of parameters.
+    // Transpiled-circuit cache: the whole unbound circuit, and the level it is
+    // transpiled at, as an exact key -> its transpiled circuit. Circuits that
+    // differ only in the values later bound to their symbolic parameters share
+    // an entry; circuits that differ in anything else never do.
     // Protected by a mutex so run_batch threads can share the cache safely.
     mutable std::unordered_map<std::string, QuantumCircuit> transpile_cache_;
     mutable std::mutex cache_mutex_;

@@ -46,8 +46,8 @@
 #include "document.hpp"
 
 #include "lindblad/circuit.hpp"
+#include "lindblad/detail/text.hpp"
 
-#include <sstream>
 #include <string>
 #include <variant>
 #include <vector>
@@ -129,9 +129,9 @@ std::string mathify_glyphs(const std::string& s) {
 // to math-mode commands (\pi, \cdot) and emitted in math mode, so the .tex
 // compiles under pdflatex; pure-ASCII suffixes fall back to \text{...}.
 std::string box_token(const BoxPart& p) {
-    std::ostringstream out;
+    detail::TextBuilder out;
     if (p.rowspan > 1) {
-        out << "\\gate[" << p.rowspan << "]{";
+        out << "\\gate[" << detail::integer_text(p.rowspan) << "]{";
     } else {
         out << "\\gate{";
     }
@@ -176,7 +176,7 @@ std::string box_token(const BoxPart& p) {
     }
 
     out << "}";
-    return out.str();
+    return std::move(out).str();
 }
 
 // Find the offset from `this_row` to the matching target row on the same
@@ -273,9 +273,9 @@ std::string render_latex(const CircuitDocument& doc, const DrawOptions& opts) {
                         token = box_token(p);
                     } else if constexpr (std::is_same_v<T, CtrlBulletPart>) {
                         int off = find_offset_to_other(g, qrow);
-                        std::ostringstream s;
-                        s << (p.anti ? "\\octrl{" : "\\ctrl{") << off << "}";
-                        token = s.str();
+                        detail::TextBuilder s;
+                        s << (p.anti ? "\\octrl{" : "\\ctrl{") << detail::integer_text(off) << "}";
+                        token = std::move(s).str();
                     } else if constexpr (std::is_same_v<T, XorTargetPart>) {
                         token = "\\targ{}";
                     } else if constexpr (std::is_same_v<T, SwapXPart>) {
@@ -297,9 +297,9 @@ std::string render_latex(const CircuitDocument& doc, const DrawOptions& opts) {
                         }
                         if (qrow == first_swap_row) {
                             int off = find_offset_to_other(g, qrow);
-                            std::ostringstream s;
-                            s << "\\swap{" << off << "}";
-                            token = s.str();
+                            detail::TextBuilder s;
+                            s << "\\swap{" << detail::integer_text(off) << "}";
+                            token = std::move(s).str();
                         } else {
                             token = "\\targX{}";
                         }
@@ -325,9 +325,9 @@ std::string render_latex(const CircuitDocument& doc, const DrawOptions& opts) {
                         }
                         if (qrow == top_b) {
                             int span = (bot_b - top_b + 1);
-                            std::ostringstream s;
-                            s << "\\barrier[\\dashed]{" << span << "}";
-                            token = s.str();
+                            detail::TextBuilder s;
+                            s << "\\barrier[\\dashed]{" << detail::integer_text(span) << "}";
+                            token = std::move(s).str();
                         } else {
                             token = ""; // keep default \qw fill below
                         }
@@ -346,7 +346,7 @@ std::string render_latex(const CircuitDocument& doc, const DrawOptions& opts) {
     // Emit the Quantikz body. lstick prefixes per row, & between cells, \\
     // between rows.
     // ------------------------------------------------------------------------
-    std::ostringstream out;
+    detail::TextBuilder out;
     out << "\\begin{quantikz}\n";
 
     for (int r = 0; r < n_rows; ++r) {
@@ -354,7 +354,7 @@ std::string render_latex(const CircuitDocument& doc, const DrawOptions& opts) {
         if (is_cwire) {
             out << "\\lstick{$c$} \\setwiretype{c} ";
         } else {
-            out << "\\lstick{$q_{" << r << "}$} ";
+            out << "\\lstick{$q_{" << detail::integer_text(r) << "}$} ";
         }
         for (int c = 0; c < grid.n_cols; ++c) {
             out << "& " << grid.cells[r][c] << " ";
@@ -374,7 +374,7 @@ std::string render_latex(const CircuitDocument& doc, const DrawOptions& opts) {
             << "X = CNOT target, x = SWAP arm, dashed line = barrier\n";
     }
 
-    return out.str();
+    return std::move(out).str();
 }
 
 } // namespace lindblad::viz

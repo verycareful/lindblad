@@ -18,9 +18,10 @@
 // the run's name, the whole message and the position, on all four backends,
 // with no failed-run record, since nothing has been computed.
 //
-// Two tests are KNOWN RED until 1.1.31.2: a condition bit below -1, built by
-// hand or read from JSON, runs the gate unconditioned instead of being
-// refused.
+// Two tests shipped red in 1.1.31.1 and were fixed in 1.1.31.2: a condition
+// bit below -1, built by hand or read from JSON, ran the gate unconditioned,
+// since -1 was what meant "no condition". A condition now has its own flag
+// (Instruction::has_condition), and the V11312 tests pin both halves of it.
 
 #include <gtest/gtest.h>
 
@@ -43,6 +44,7 @@
 #include <optional>
 #include <typeinfo>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace lindblad;
@@ -237,8 +239,7 @@ TEST(V11311Preflight, AClassicalOrConditionBitOutsideItsRegisterIsRefused) {
 
     QuantumCircuit conditioned(1, 1);
     conditioned.x(0);
-    conditioned.instructions.back().condition_clbit = 2;
-    conditioned.instructions.back().condition_value = 1;
+    conditioned.instructions.back().set_condition(2, 1);
     for (const Backend& b : every_backend()) {
         SCOPED_TRACE(b.entry_point);
         expect_refused<OutOfRange>(b, measure, 0, "classical bit index 3 out of range [0, 2)");
@@ -247,36 +248,82 @@ TEST(V11311Preflight, AClassicalOrConditionBitOutsideItsRegisterIsRefused) {
     }
 }
 
-// KNOWN RED until 1.1.31.2. condition_clbit = -1 means "no condition", and
-// every backend tests >= 0, so any other negative value runs the gate
-// unconditioned: here the X fires and every shot reads 1, where a condition on
-// a clbit holding 0 would have skipped it. A condition bit below -1 is outside
-// the register like one above it, and is refused the same way. The fix gives a
-// condition its own flag; this hand-built pin is rewritten with it.
+// A condition has its own flag, so no value of condition_clbit can stand for
+// "no condition" and run the gate unconditioned. A flagged condition on a bit
+// below the register is outside it like one above it, and is refused the same
+// way.
 TEST(V11311Preflight, AConditionBitBelowMinusOneIsRefused) {
     QuantumCircuit qc(1, 1);
     qc.x(0);
-    qc.instructions.back().condition_clbit = -7;
-    qc.instructions.back().condition_value = 1;
+    qc.instructions.back().set_condition(-7, 1);
     qc.measure(0, 0);
     for (const Backend& b : every_backend()) {
         SCOPED_TRACE(b.entry_point);
-        const std::uint64_t stores = detail::failed_run_stores();
-        const auto e = v11311::thrown<OutOfRange>([&] { b.run(qc); });
-        EXPECT_EQ(detail::failed_run_stores(), stores);
-        if (!e) continue;
-        EXPECT_EQ(e->entry_point(), b.entry_point);
-        v11311::expect_message(*e, {"-7"});
-        v11311::expect_point(e->where(), -1, 0, "x", {0});
+        expect_refused<OutOfRange>(b, qc, 0, "the condition's classical bit index -7 out of range [0, 1)");
     }
 }
 
-// KNOWN RED until 1.1.31.2. The same condition read from JSON is accepted as
-// it stands, so the circuit a file describes runs a gate the file conditions.
-// Whichever layer the fix refuses it in, the file must never become a circuit
-// that runs the gate unconditioned: either from_json refuses it as exactly
-// InvalidArgument naming the condition, or every backend refuses what it
-// returns as a condition bit outside the register.
+// The flag's other half: with has_condition off, a bit or a value is a
+// condition the caller wrote and the gate would ignore, so the gate would run
+// unconditioned. Refused before the first gate, naming the instruction.
+TEST(V11312Preflight, AConditionWithoutItsFlagIsRefused) {
+    for (const auto& [clbit, value] : std::vector<std::pair<int, int>>{{0, 1}, {-1, 1}, {0, 0}, {-7, 0}}) {
+        SCOPED_TRACE(std::to_string(clbit) + ", " + std::to_string(value));
+        QuantumCircuit qc(1, 1);
+        qc.x(0);
+        qc.instructions.back().condition_clbit = clbit;
+        qc.instructions.back().condition_value = value;
+        qc.measure(0, 0);
+        for (const Backend& b : every_backend()) {
+            SCOPED_TRACE(b.entry_point);
+            expect_refused<InvalidArgument>(
+                b, qc, 0,
+                "the instruction carries condition_clbit = " + std::to_string(clbit) +
+                    " and condition_value = " + std::to_string(value) +
+                    " with has_condition false; set has_condition (Instruction::set_condition) to "
+                    "condition it, or leave the two at -1 and 0");
+        }
+    }
+}
+
+// The helpers keep the three fields consistent: set_condition flags the
+// condition, clear_condition returns both fields to their unconditioned
+// values, and a circuit's JSON carries the condition exactly when the flag is
+// set.
+TEST(V11312Preflight, TheConditionHelpersAndJsonKeepTheFlag) {
+    QuantumCircuit qc(1, 1);
+    qc.x(0);
+    Instruction& x = qc.instructions.back();
+    x.set_condition(0, 1);
+    EXPECT_TRUE(x.has_condition);
+    EXPECT_EQ(x.condition_clbit, 0);
+    EXPECT_EQ(x.condition_value, 1);
+    const QuantumCircuit back = QuantumCircuit::from_json(qc.to_json());
+    ASSERT_EQ(back.instructions.size(), 1u);
+    EXPECT_TRUE(back.instructions[0].has_condition);
+    EXPECT_EQ(back.instructions[0].condition_clbit, 0);
+    EXPECT_EQ(back.instructions[0].condition_value, 1);
+
+    x.clear_condition();
+    EXPECT_FALSE(x.has_condition);
+    EXPECT_EQ(x.condition_clbit, -1);
+    EXPECT_EQ(x.condition_value, 0);
+    const std::string unconditioned = qc.to_json();
+    EXPECT_EQ(unconditioned.find("condition"), std::string::npos) << unconditioned;
+    EXPECT_FALSE(QuantumCircuit::from_json(unconditioned).instructions[0].has_condition);
+
+    Instruction copy;
+    copy.copy_condition(back.instructions[0]);
+    EXPECT_TRUE(copy.has_condition);
+    EXPECT_EQ(copy.condition_clbit, 0);
+    EXPECT_EQ(copy.condition_value, 1);
+}
+
+// The same condition read from JSON. Whichever layer refuses it, the file must
+// never become a circuit that runs the gate unconditioned: either from_json
+// refuses it as exactly InvalidArgument naming the condition, or every backend
+// refuses what it returns as a condition bit outside the register. from_json
+// sets the flag for the condition it reads, so the backends refuse it.
 TEST(V11311Preflight, FromJsonRefusesAConditionBitBelowMinusOne) {
     QuantumCircuit qc(1, 1);
     qc.add_if(0, 1, GT::X, {0});

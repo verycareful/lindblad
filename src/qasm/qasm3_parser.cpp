@@ -42,6 +42,7 @@
 //     other indices.
 
 #include "lindblad/circuit.hpp"
+#include "lindblad/detail/text.hpp"
 #include "lindblad/types.hpp"
 
 #include <algorithm>
@@ -638,13 +639,13 @@ private:
         }
     }
 
-    // The value of an INT or FLOAT token used as an angle. std::stod throws
+    // The value of an INT or FLOAT token used as an angle. parse_double throws
     // std::out_of_range when the value lies outside double's range (1e999, or
     // 1e-400 below the smallest subnormal), and that is refused here like any
     // other malformed input.
     double number_literal(const Token& t) const {
         try {
-            return std::stod(std::string(t.text));
+            return detail::parse_double(t.text);
         } catch (const std::out_of_range&) {
             fail("numeric literal '" + std::string(t.text) + "' is outside the range of a double");
         }
@@ -1724,8 +1725,7 @@ private:
     void emit_instruction(Instruction&& inst) {
         // Stamp classical condition (if any) onto this instruction.
         if (cond_clbit_ >= 0) {
-            inst.condition_clbit = cond_clbit_;
-            inst.condition_value = cond_value_;
+            inst.set_condition(cond_clbit_, cond_value_);
         }
 
         // Peephole — only attempt cancellation when no condition is active.
@@ -1775,7 +1775,7 @@ private:
         // Both instructions must be unconditioned for the cancellation to be
         // valid; conditioned gates can change semantics under different
         // classical values.
-        if (prior.condition_clbit >= 0 || inst.condition_clbit >= 0) return false;
+        if (prior.has_condition || inst.has_condition) return false;
 
         // Cancel: mark prior dead, pop top of each affected per-qubit stack.
         cancelled_[prev] = 1;

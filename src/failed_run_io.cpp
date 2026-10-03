@@ -17,6 +17,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -174,12 +175,15 @@ std::string mib(std::uint64_t bytes) { return std::to_string(bytes >> 20) + " Mi
 // =============================================================================
 
 // A file written in one pass, keeping its CRC-32C and byte count as it goes.
-// Any write that does not complete throws std::runtime_error naming the file.
+// Any write that does not complete throws std::runtime_error naming the file
+// as `name`, its path inside the folder as the manifest lists it
+// ("observations/0-dm.bin"), so the save note points at one file.
 class FailedRunFile {
 public:
-    explicit FailedRunFile(fs::path path)
-        : path_(std::move(path)), out_(path_, std::ios::binary | std::ios::trunc) {
-        if (!out_) throw std::runtime_error("cannot create " + path_.filename().string());
+    FailedRunFile(fs::path path, std::string name)
+        : path_(std::move(path)), name_(std::move(name)),
+          out_(path_, std::ios::binary | std::ios::trunc) {
+        if (!out_) throw std::runtime_error("cannot create " + name_);
     }
 
     void write(const void* data, std::size_t n) {
@@ -187,7 +191,7 @@ public:
         while (n > 0) {
             const std::size_t piece = std::min(n, CHUNK_BYTES);
             out_.write(p, static_cast<std::streamsize>(piece));
-            if (!out_) throw std::runtime_error("writing " + path_.filename().string() + " failed");
+            if (!out_) throw std::runtime_error("writing " + name_ + " failed");
             crc_ = crc32c(crc_, p, piece);
             bytes_ += piece;
             p += piece;
@@ -222,7 +226,7 @@ public:
     // Closes the file and leaves it readable and writable by its owner only.
     void close() {
         out_.close();
-        if (!out_) throw std::runtime_error("closing " + path_.filename().string() + " failed");
+        if (!out_) throw std::runtime_error("closing " + name_ + " failed");
 #if !defined(_WIN32)
         std::error_code ec;
         fs::permissions(path_, fs::perms::owner_read | fs::perms::owner_write,
@@ -235,6 +239,7 @@ public:
 
 private:
     fs::path path_;
+    std::string name_;
     std::ofstream out_;
     std::uint64_t bytes_ = 0;
     std::uint32_t crc_ = 0;
@@ -674,12 +679,22 @@ ObservationBundle::StatePayload state_payload(FailedRun::State&& state) {
     }
 }
 
-// A label as a file name: letters, digits, '.', '_' and '-' kept, anything
-// else replaced by '_'. The entry's position is prefixed, so two labels that
-// sanitise alike still name two files.
+// The most characters of a label a state file's name keeps. A file name is
+// limited to 255 bytes on every filesystem the library targets, and a label
+// has no limit; 64 leaves the index and the extension room under any of them
+// while still telling one file from another at a glance.
+constexpr std::size_t LABEL_FILE_CHARS = 64;
+
+// A label as a file name: its first LABEL_FILE_CHARS characters, with letters,
+// digits, '.', '_' and '-' kept and anything else replaced by '_'. The entry's
+// position is prefixed, so two labels that sanitise or shorten alike still name
+// two files. observations.json records each file beside its full label, so
+// nothing is lost when the name is shortened.
 std::string label_file(std::size_t index, const std::string& label) {
     std::string name = std::to_string(index) + "-";
-    for (const char c : label) {
+    const std::size_t kept = std::min(label.size(), LABEL_FILE_CHARS);
+    for (std::size_t i = 0; i < kept; ++i) {
+        const char c = label[i];
         const bool keep = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
                           (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
         name += keep ? c : '_';
@@ -750,7 +765,7 @@ void write_file(const fs::path& folder, const std::string& name, std::vector<Sav
                 Body&& body) {
     const fs::path path = folder / fs::path(name);
     try {
-        FailedRunFile f(path);
+        FailedRunFile f(path, name);
         body(f);
         f.close();
         files.push_back(SavedFile{name, f.bytes(), f.crc()});
@@ -798,10 +813,8 @@ std::string failed_run_name() {
     char stamp[32];
     std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &tm);
     const std::size_t thread = std::hash<std::thread::id>{}(std::this_thread::get_id());
-    std::ostringstream o;
-    o << stamp << '-' << pid << '-' << std::hex << (thread & 0xFFFFFFFFu) << std::dec << '-'
-      << counter.fetch_add(1);
-    return o.str();
+    return std::string(stamp) + '-' + integer_text(pid) + '-' +
+           integer_text(thread & 0xFFFFFFFFu, 16) + '-' + integer_text(counter.fetch_add(1));
 }
 
 std::string point_json(const std::optional<FailurePoint>& where) {
@@ -1142,6 +1155,27 @@ void parse_file(const std::string& name, Parse&& parse) {
     }
 }
 
+// The seed the manifest records. It is written as a string of decimal digits,
+// since a JSON number holds only 53 bits, and read back as exactly that: no
+// sign, no white space, no prefix, nothing after the digits, and no value a
+// 64-bit seed cannot hold.
+std::uint64_t read_seed(const std::string& text) {
+    const bool digits_only =
+        !text.empty() &&
+        std::all_of(text.begin(), text.end(), [](char c) { return c >= '0' && c <= '9'; });
+    if (!digits_only) {
+        throw std::runtime_error("records the seed \"" + text + "\", which is not a string of digits");
+    }
+    std::uint64_t seed = 0;
+    const char* const end = text.data() + text.size();
+    const auto [stop, ec] = std::from_chars(text.data(), end, seed);
+    if (ec != std::errc() || stop != end) {
+        throw std::runtime_error("records the seed \"" + text +
+                                 "\", which is more than a 64-bit seed holds");
+    }
+    return seed;
+}
+
 // A byte count or checksum the manifest records: a whole number below
 // 2^digits. It arrives as a double, and converting one outside the target's
 // range is undefined, so the range is checked first.
@@ -1262,7 +1296,7 @@ FailedRun load_failed_run(const std::filesystem::path& folder) {
             } else if (key == "shots_completed") {
                 r.shots_completed = j.read_int();
             } else if (key == "seed") {
-                r.seed = std::stoull(j.read_string());
+                r.seed = read_seed(j.read_string());
             } else if (key == "state_form") {
                 if (j.peek() == '"') state_form = j.read_string();
                 else j.skip_value();

@@ -21,10 +21,12 @@
 // tests install such a locale with a facet of their own, so they need no
 // locale installed on the host.
 //
-// KNOWN RED until 1.1.31.2: the circuit's to_json and QASM exporters, and the
-// noise model's integer fields, write through streams that follow the global
-// locale, so under a decimal-comma locale rx(0.5) is written as rx(0,5) and
-// qubit 1234 as 1.234.
+// One defect these tests found shipped red in 1.1.31.1 and was fixed in
+// 1.1.31.2: the circuit's to_json and QASM exporters, and the noise model's
+// integer fields, wrote through streams that follow the global locale, so
+// under a decimal-comma locale rx(0.5) was written as rx(0,5) and qubit 1234 as
+// 1.234. test_v11312_locale.cpp carries the same check to every other writer
+// and reader of numbers.
 
 #include <gtest/gtest.h>
 
@@ -51,26 +53,7 @@ using namespace lindblad;
 
 namespace {
 
-// A decimal comma and grouped thousands with a full stop between groups: what
-// a German or French desktop locale gives a C++ stream.
-struct CommaDecimal : std::numpunct<char> {
-    char do_decimal_point() const override { return ','; }
-    char do_thousands_sep() const override { return '.'; }
-    std::string do_grouping() const override { return "\3"; }
-};
-
-// Installs that locale as the global C++ locale for a scope.
-class ScopedCommaLocale {
-public:
-    ScopedCommaLocale()
-        : previous_(std::locale::global(std::locale(std::locale::classic(), new CommaDecimal))) {}
-    ~ScopedCommaLocale() { std::locale::global(previous_); }
-    ScopedCommaLocale(const ScopedCommaLocale&) = delete;
-    ScopedCommaLocale& operator=(const ScopedCommaLocale&) = delete;
-
-private:
-    std::locale previous_;
-};
+using v11311::ScopedCommaLocale;
 
 double parse(const std::string& token) { return detail::JsonReader::parse_number(token); }
 
@@ -291,7 +274,7 @@ TEST(V11311NoiseModelJson, AMalformedDocumentIsRefused) {
 }
 
 // =============================================================================
-// KNOWN RED until 1.1.31.2: writers that follow the global locale
+// The exporters under a decimal-comma locale
 // =============================================================================
 
 TEST(V11311JsonLocale, ACircuitWrittenUnderADecimalCommaReadsBackTheSame) {

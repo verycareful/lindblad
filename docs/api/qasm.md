@@ -192,15 +192,28 @@ instead of naming a setting that could not help.
   2.0's form: `0`, or digits with no leading zero, and no sign. `q[01]`,
   `q[+1]` and `q[-1]` throw, as does a value too large for an `int`.
   Whitespace inside the brackets (`q[ 1 ]`) is allowed.
+- Every gate argument, at the top level and inside a gate body, is read by
+  one parser for the OpenQASM 2.0 `exp` grammar: numbers (an exponent is
+  accepted on a whole number as well as on a real), `pi`, the formal
+  parameters of the gate being expanded, `+ - * / ^`, unary `-`, parentheses
+  and `sin cos tan exp ln sqrt`. `+` and `-` bind loosest (left-associative),
+  then `*` and `/` (left), then unary `-`, then `^` (right): `a/b/c` is
+  `(a/b)/c`, `-2^2` is `-4` and `2^3^2` is `512`. Anything else throws
+  `std::runtime_error("QASM2Parser: parameter expression '<exp>': <reason>")`:
+  text left over, an identifier naming no parameter in scope, a division by
+  zero, a value that is not finite (`ln(0)`, `sqrt(-1)`), an empty argument
 - Supports `gate name(params) qargs { body }` user definitions with recursive
-  inlining and parameter substitution (including `pi` expressions)
-- Body-parameter arithmetic (`a/2`, `2*a`, `a+pi`, `a-pi/2`, ...) binds
-  `+`/`-` at the lowest precedence and evaluates operands recursively;
-  numeric tokens must parse in full (no partial `stod`), and any
-  unresolvable token throws instead of silently becoming 0
-- Recognises every gate in the `qelib1.inc` standard library plus the same
-  multi-qubit set supported by the circuit (`ccx`, `cswap`, `rxx`, `ryy`,
-  `rzz`, `iswap`, etc.)
+  inlining. A call gives exactly the declared numbers of parameters and qubits;
+  a body statement names a built-in gate, a defined gate or `barrier`; a body
+  operand is one of the gate's qubit arguments; and no gate calls itself,
+  directly or through another. Each of these, broken, throws
+  `std::runtime_error` naming the gate
+- Built-in gates: the grammar's own `U` and `CX`, and from `qelib1.inc`
+  `h x y z s sdg t tdg sx rx ry rz p u u1 u2 u3 cx cy cz ch swap crx cry crz cp
+  ccx cswap rxx ryy rzz`. Each takes exactly its parameters and qubits and
+  throws otherwise, unless the file defines a gate of that name, whose
+  definition then takes the call
+- A statement that names no operands throws
 - Throws `std::runtime_error` when no `qreg` is found
 - Throws `std::runtime_error("QASM2Parser: unknown gate '<name>' …")` on any
   gate call whose name is not a built-in and not defined by an in-scope
@@ -219,7 +232,8 @@ instead of naming a setting that could not help.
   to the full register.
 - `if (creg == v) qop;` is read when `creg` is one bit wide, which is the
   only case where OpenQASM 2.0's register-wide comparison says the same thing
-  as `Instruction::condition_clbit` / `condition_value`, and the only form
+  as an `Instruction` condition (`has_condition`, `condition_clbit`,
+  `condition_value`), and the only form
   `to_qasm2()` writes. `v` must be written exactly `0` or `1`: an empty value
   (`if (c == )`), a spelling the grammar forbids (`01`, `+1`, `-0`) and any
   other value throw. The guarded statement must be a quantum operation (a
@@ -324,8 +338,8 @@ Dropping it there would silently change the operator.
   as a vector of parameterised `PreCall` records and re-emitted at every
   call site with deep-copied parameter substitution
 - Classical conditioning: `if (c[i] == V) ...` and `else ...`. Single-bit
-  conditions stamp the `condition_clbit` and `condition_value` fields on the
-  enclosed instructions. `else` is implemented as the complementary value
+  conditions set the condition (`has_condition`, `condition_clbit`,
+  `condition_value`) on the enclosed instructions. `else` is implemented as the complementary value
   (only meaningful for binary classical bits)
 - Symbolic parameters: `input float[N] name;` declarations register the
   parameter on the circuit. Angles that reference these names are stored as

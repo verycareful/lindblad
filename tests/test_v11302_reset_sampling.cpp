@@ -113,8 +113,7 @@ public:
 };
 
 void add_condition(QuantumCircuit& qc, int clbit, int value) {
-    qc.instructions.back().condition_clbit = clbit;
-    qc.instructions.back().condition_value = value;
+    qc.instructions.back().set_condition(clbit, value);
 }
 
 }  // namespace

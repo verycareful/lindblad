@@ -10,6 +10,7 @@
 #include "lindblad/circuit.hpp"
 #include "lindblad/operators.hpp"
 #include "lindblad/detail/json.hpp"
+#include "lindblad/detail/text.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 
@@ -25,9 +26,8 @@
 
 #include <algorithm>
 #include <fstream>
-#include <sstream>
 #include <stdexcept>
-#include <iomanip>
+#include <limits>
 
 namespace lindblad {
 
@@ -220,7 +220,7 @@ void QuantumCircuit::validate_operands() const {
     for (const auto& inst : instructions) {
         for (int q : inst.qubits) validate_qubit(q);
         for (int c : inst.clbits) validate_clbit(c);
-        if (inst.condition_clbit >= 0) validate_clbit(inst.condition_clbit);
+        if (inst.has_condition) validate_clbit(inst.condition_clbit);
     }
 }
 
@@ -680,8 +680,7 @@ QuantumCircuit& QuantumCircuit::p_if(double angle, int qubit, int clbit, int clv
     inst.type = Instruction::GateType::P;
     inst.qubits = {qubit};
     inst.params = {angle};
-    inst.condition_clbit = clbit;
-    inst.condition_value = clval;
+    inst.set_condition(clbit, clval);
     instructions.push_back(std::move(inst));
     return *this;
 }
@@ -695,8 +694,7 @@ QuantumCircuit& QuantumCircuit::add_if(int clbit, int clval, Instruction::GateTy
     inst.type = type;
     inst.qubits = qubits;
     inst.params = params;
-    inst.condition_clbit = clbit;
-    inst.condition_value = clval;
+    inst.set_condition(clbit, clval);
     instructions.push_back(std::move(inst));
     return *this;
 }
@@ -1115,7 +1113,7 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
                 // standalone register with operand order preserved.
                 QuantumCircuit local(gate_qubits);
                 Instruction local_inst = inst;
-                local_inst.condition_clbit = -1;  // raw gate action only
+                local_inst.clear_condition();  // raw gate action only
                 local_inst.qubits.clear();
                 for (int i = 0; i < gate_qubits; ++i)
                     local_inst.qubits.push_back(i);
@@ -1140,8 +1138,7 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
             for (int k = 0; k < num_ctrl_qubits; ++k) ci.qubits.push_back(k);
             for (int q : shifted_qubits) ci.qubits.push_back(q);
             ci.label = "c_" + inst.gate_name();
-            ci.condition_clbit = inst.condition_clbit;
-            ci.condition_value = inst.condition_value;
+            ci.copy_condition(inst);
             // The policy governs the matrix, and the controlled matrix is
             // unitary exactly when the block it was built from is: the control
             // structure contributes identity on every unselected slice, which
@@ -1160,8 +1157,7 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
                 Instruction ci;
                 ci.qubits = {ctrl, tgt};
                 ci.params = inst.params;
-                ci.condition_clbit = inst.condition_clbit;
-                ci.condition_value = inst.condition_value;
+                ci.copy_condition(inst);
                 ci.validation = inst.validation;
                 bool handled = true;
                 switch (inst.type) {
@@ -1198,16 +1194,14 @@ QuantumCircuit QuantumCircuit::control(int num_ctrl_qubits) const {
                 switch (inst.type) {
                     case GT::CX: {
                         Instruction ci; ci.type = GT::CCX; ci.qubits = {ctrl, q0, q1};
-                        ci.condition_clbit = inst.condition_clbit;
-                        ci.condition_value = inst.condition_value;
+                        ci.copy_condition(inst);
                         ci.validation = inst.validation;
                         result.instructions.push_back(std::move(ci));
                         continue;
                     }
                     case GT::SWAP: {
                         Instruction ci; ci.type = GT::CSWAP; ci.qubits = {ctrl, q0, q1};
-                        ci.condition_clbit = inst.condition_clbit;
-                        ci.condition_value = inst.condition_value;
+                        ci.copy_condition(inst);
                         ci.validation = inst.validation;
                         result.instructions.push_back(std::move(ci));
                         continue;
@@ -1320,8 +1314,8 @@ bool emit_conditions_here(const QasmExportOptions& opts,
 // `if (...) // text` is not a statement. A `barrier` is a directive rather
 // than a qop, which the OpenQASM 2.0 grammar does not admit after an `if`.
 std::string qasm2_condition_prefix(const std::string& body, int value) {
-    const std::string guard = "if (c == " + std::to_string(value) + ") ";
-    std::ostringstream out;
+    const std::string guard = "if (c == " + detail::integer_text(value) + ") ";
+    detail::TextBuilder out;
     std::size_t pos = 0;
     while (pos < body.size()) {
         const std::size_t eol = body.find('\n', pos);
@@ -1336,14 +1330,15 @@ std::string qasm2_condition_prefix(const std::string& body, int value) {
         else           out << line;
         pos = end;
     }
-    return out.str();
+    return std::move(out).str();
 }
 
 // QASM 3 conditions a block, so the instruction's text goes inside one whatever
 // it lowered into.
 std::string qasm3_condition_block(const std::string& body, int clbit, int value) {
-    std::ostringstream out;
-    out << "if (c[" << clbit << "] == " << value << ") {\n";
+    detail::TextBuilder out;
+    out << "if (c[" << detail::integer_text(clbit) << "] == " << detail::integer_text(value)
+        << ") {\n";
     std::size_t pos = 0;
     while (pos < body.size()) {
         const std::size_t eol = body.find('\n', pos);
@@ -1355,23 +1350,24 @@ std::string qasm3_condition_block(const std::string& body, int clbit, int value)
     }
     if (!body.empty() && body.back() != '\n') out << "\n";
     out << "}\n";
-    return out.str();
+    return std::move(out).str();
 }
 
 // One instruction's text is built in `body` and moved into `out` when this goes
 // out of scope. The flush being a destructor is what lets every emission branch
-// end an instruction with `continue`, as they all did before conditions were
-// written at all. clbit < 0 means the text is emitted as it stands.
+// end an instruction with `continue`. Unless `conditioned`, the text is emitted
+// as it stands.
 struct EmittedInstruction {
-    std::ostringstream& out;
-    std::ostringstream& body;
+    detail::TextBuilder& out;
+    detail::TextBuilder& body;
     bool qasm3;
+    bool conditioned;
     int clbit;
     int value;
 
     ~EmittedInstruction() {
         const std::string text = body.str();
-        if (clbit < 0) { out << text; return; }
+        if (!conditioned) { out << text; return; }
         out << (qasm3 ? qasm3_condition_block(text, clbit, value)
                       : qasm2_condition_prefix(text, value));
     }
@@ -1390,15 +1386,22 @@ struct EmittedInstruction {
         "standard gates before exporting");
 }
 
+// An angle or phase in OpenQASM text, to digits10 (15) significant digits:
+// the most that survive a round trip through a double, so the text carries no
+// digit that is only noise from the binary expansion.
+std::string qasm_number(double v) {
+    return detail::double_text(v, std::numeric_limits<double>::digits10);
+}
+
 }  // namespace
 
 std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
-    std::ostringstream out;
+    detail::TextBuilder out;
     out << "OPENQASM 2.0;\n";
     out << "include \"qelib1.inc\";\n";
-    out << "qreg q[" << n_qubits << "];\n";
+    out << "qreg q[" << detail::integer_text(n_qubits) << "];\n";
     if (n_clbits > 0) {
-        out << "creg c[" << n_clbits << "];\n";
+        out << "creg c[" << detail::integer_text(n_clbits) << "];\n";
     }
 
     // R.1.18.0: opt-in export-time lowering of MCX/MCP/PERMUTATION. The
@@ -1430,9 +1433,9 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
     for (const auto& inst : *insts) {
         // Built in its own buffer so a classical condition can wrap the
         // finished text; `emitted` flushes it into `out` on scope exit.
-        std::ostringstream oss;
-        int cond_clbit = -1;
-        if (inst.condition_clbit >= 0) {
+        detail::TextBuilder oss;
+        bool write_condition = false;
+        if (inst.has_condition) {
             if (!emit_conditions_here(opts, /*format_emits_by_default=*/false)) {
                 throw std::runtime_error(
                     "to_qasm2: the instruction '" + inst.gate_name() + "' carries "
@@ -1446,7 +1449,7 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
                     "to_json() both carry it exactly");
             }
             if (n_clbits == 1) {
-                cond_clbit = inst.condition_clbit;
+                write_condition = true;
             } else {
                 emit_warning(
                     "to_qasm2: dropped the classical condition c[" +
@@ -1455,14 +1458,14 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
                     inst.gate_name() + "', because OpenQASM 2.0 conditions a "
                     "whole classical register and this circuit declares " +
                     std::to_string(n_clbits) + " classical bits");
-                oss << "// dropped condition: c[" << inst.condition_clbit
-                    << "] == " << inst.condition_value
+                oss << "// dropped condition: c[" << detail::integer_text(inst.condition_clbit)
+                    << "] == " << detail::integer_text(inst.condition_value)
                     << " (OpenQASM 2.0 conditions a whole classical register)"
                     << "\n";
             }
         }
-        EmittedInstruction emitted{out, oss, /*qasm3=*/false, cond_clbit,
-                                   inst.condition_value};
+        EmittedInstruction emitted{out, oss, /*qasm3=*/false, write_condition,
+                                   inst.condition_clbit, inst.condition_value};
 
         std::string gname = inst.gate_name();
 
@@ -1470,19 +1473,20 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
             oss << "barrier";
             for (size_t i = 0; i < inst.qubits.size(); ++i) {
                 if (i > 0) oss << ",";
-                oss << " q[" << inst.qubits[i] << "]";
+                oss << " q[" << detail::integer_text(inst.qubits[i]) << "]";
             }
             oss << ";\n";
             continue;
         }
 
         if (inst.type == Instruction::GateType::MEASURE) {
-            oss << "measure q[" << inst.qubits[0] << "] -> c[" << inst.clbits[0] << "];\n";
+            oss << "measure q[" << detail::integer_text(inst.qubits[0]) << "] -> c["
+                << detail::integer_text(inst.clbits[0]) << "];\n";
             continue;
         }
 
         if (inst.type == Instruction::GateType::RESET) {
-            oss << "reset q[" << inst.qubits[0] << "];\n";
+            oss << "reset q[" << detail::integer_text(inst.qubits[0]) << "];\n";
             continue;
         }
 
@@ -1555,8 +1559,7 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
                 u.type = Instruction::GateType::U;
                 u.qubits = inst.qubits;
                 u.params = {theta, phi, lambda};
-                u.condition_clbit = inst.condition_clbit;
-                u.condition_value = inst.condition_value;
+                u.copy_condition(inst);
                 u.validation = inst.validation;
                 lowered.push_back(std::move(u));
             } else {
@@ -1597,7 +1600,7 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
                     "to_qasm2: dropped a global phase of " +
                     std::to_string(alpha) + " radians lowering the " +
                     std::to_string(width) + "-qubit unitary '" + gname + "'");
-                oss << "// global phase: " << std::setprecision(15) << alpha
+                oss << "// global phase: " << qasm_number(alpha)
                     << " (dropped: OpenQASM 2.0 cannot represent global phase; "
                     << "use to_qasm3() for a lossless round trip)\n";
             }
@@ -1608,13 +1611,13 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
                     oss << "(";
                     for (size_t i = 0; i < g.params.size(); ++i) {
                         if (i > 0) oss << ",";
-                        oss << std::setprecision(15) << g.params[i];
+                        oss << qasm_number(g.params[i]);
                     }
                     oss << ")";
                 }
                 for (size_t i = 0; i < g.qubits.size(); ++i) {
                     if (i > 0) oss << ",";
-                    oss << " q[" << g.qubits[i] << "]";
+                    oss << " q[" << detail::integer_text(g.qubits[i]) << "]";
                 }
                 oss << ";\n";
             }
@@ -1630,7 +1633,7 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
                 if (i) oss << ",";
                 oss << (i < inst.param_names.size() ? inst.param_names[i] : "0");
             }
-            oss << ") q[" << inst.qubits[0] << "];\n";
+            oss << ") q[" << detail::integer_text(inst.qubits[0]) << "];\n";
             continue;
         }
         if (inst.type == Instruction::GateType::PARAM_RX ||
@@ -1638,7 +1641,8 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
             inst.type == Instruction::GateType::PARAM_RZ ||
             inst.type == Instruction::GateType::PARAM_P) {
             const std::string& pname = inst.param_names.empty() ? "0" : inst.param_names[0];
-            oss << gname << "(" << pname << ") q[" << inst.qubits[0] << "];\n";
+            oss << gname << "(" << pname << ") q[" << detail::integer_text(inst.qubits[0])
+                << "];\n";
             continue;
         }
 
@@ -1647,27 +1651,27 @@ std::string QuantumCircuit::to_qasm2(const QasmExportOptions& opts) const {
             oss << "(";
             for (size_t i = 0; i < inst.params.size(); ++i) {
                 if (i > 0) oss << ",";
-                oss << std::setprecision(15) << inst.params[i];
+                oss << qasm_number(inst.params[i]);
             }
             oss << ")";
         }
         for (size_t i = 0; i < inst.qubits.size(); ++i) {
             if (i > 0) oss << ",";
-            oss << " q[" << inst.qubits[i] << "]";
+            oss << " q[" << detail::integer_text(inst.qubits[i]) << "]";
         }
         oss << ";\n";
     }
 
-    return out.str();
+    return std::move(out).str();
 }
 
 std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
-    std::ostringstream out;
+    detail::TextBuilder out;
     out << "OPENQASM 3.0;\n";
     out << "include \"stdgates.inc\";\n";
-    out << "qubit[" << n_qubits << "] q;\n";
+    out << "qubit[" << detail::integer_text(n_qubits) << "] q;\n";
     if (n_clbits > 0) {
-        out << "bit[" << n_clbits << "] c;\n";
+        out << "bit[" << detail::integer_text(n_clbits) << "] c;\n";
     }
 
     // R.1.18.0: PERMUTATION has no QASM 3 primitive, so it is ALWAYS lowered
@@ -1687,10 +1691,9 @@ std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
                 if (inst.type == Instruction::GateType::PERMUTATION) {
                     std::vector<Instruction> low =
                         hld::lower_permutation(inst.permutation, inst.qubits);
-                    if (inst.condition_clbit >= 0) {
+                    if (inst.has_condition) {
                         for (Instruction& g : low) {
-                            g.condition_clbit = inst.condition_clbit;
-                            g.condition_value = inst.condition_value;
+                            g.copy_condition(inst);
                         }
                     }
                     expanded.insert(expanded.end(),
@@ -1706,9 +1709,9 @@ std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
 
     for (const auto& inst : *insts) {
         // As in to_qasm2: one buffer per instruction, wrapped on scope exit.
-        std::ostringstream oss;
-        int cond_clbit = -1;
-        if (inst.condition_clbit >= 0) {
+        detail::TextBuilder oss;
+        bool write_condition = false;
+        if (inst.has_condition) {
             if (!emit_conditions_here(opts, /*format_emits_by_default=*/true)) {
                 throw std::runtime_error(
                     "to_qasm3: the instruction '" + inst.gate_name() + "' carries "
@@ -1716,10 +1719,10 @@ std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
                     "is Never. QASM 3 writes it exactly as an if block, so clear "
                     "that setting to export it");
             }
-            cond_clbit = inst.condition_clbit;
+            write_condition = true;
         }
-        EmittedInstruction emitted{out, oss, /*qasm3=*/true, cond_clbit,
-                                   inst.condition_value};
+        EmittedInstruction emitted{out, oss, /*qasm3=*/true, write_condition,
+                                   inst.condition_clbit, inst.condition_value};
 
         std::string gname = inst.gate_name();
 
@@ -1727,19 +1730,20 @@ std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
             oss << "barrier";
             for (size_t i = 0; i < inst.qubits.size(); ++i) {
                 if (i > 0) oss << ",";
-                oss << " q[" << inst.qubits[i] << "]";
+                oss << " q[" << detail::integer_text(inst.qubits[i]) << "]";
             }
             oss << ";\n";
             continue;
         }
 
         if (inst.type == Instruction::GateType::MEASURE) {
-            oss << "c[" << inst.clbits[0] << "] = measure q[" << inst.qubits[0] << "];\n";
+            oss << "c[" << detail::integer_text(inst.clbits[0]) << "] = measure q["
+                << detail::integer_text(inst.qubits[0]) << "];\n";
             continue;
         }
 
         if (inst.type == Instruction::GateType::RESET) {
-            oss << "reset q[" << inst.qubits[0] << "];\n";
+            oss << "reset q[" << detail::integer_text(inst.qubits[0]) << "];\n";
             continue;
         }
 
@@ -1751,12 +1755,12 @@ std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
         if (inst.type == Instruction::GateType::MCX) {
             const size_t k = inst.qubits.size() - 1;
             if (k == 0) {
-                oss << "x q[" << inst.qubits[0] << "];\n";
+                oss << "x q[" << detail::integer_text(inst.qubits[0]) << "];\n";
                 continue;
             }
-            oss << "ctrl(" << k << ") @ x";
+            oss << "ctrl(" << detail::integer_text(k) << ") @ x";
             for (size_t i = 0; i < inst.qubits.size(); ++i) {
-                oss << (i == 0 ? " " : ", ") << "q[" << inst.qubits[i] << "]";
+                oss << (i == 0 ? " " : ", ") << "q[" << detail::integer_text(inst.qubits[i]) << "]";
             }
             oss << ";\n";
             continue;
@@ -1769,14 +1773,14 @@ std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
             const double lambda = inst.params.empty() ? 0.0 : inst.params[0];
             const size_t m = inst.qubits.size();
             if (m == 1) {
-                oss << "p(" << std::setprecision(15) << lambda << ") q["
-                    << inst.qubits[0] << "];\n";
+                oss << "p(" << qasm_number(lambda) << ") q["
+                    << detail::integer_text(inst.qubits[0]) << "];\n";
                 continue;
             }
-            oss << "ctrl(" << (m - 1) << ") @ p("
-                << std::setprecision(15) << lambda << ")";
+            oss << "ctrl(" << detail::integer_text(m - 1) << ") @ p("
+                << qasm_number(lambda) << ")";
             for (size_t i = 0; i < m; ++i) {
-                oss << (i == 0 ? " " : ", ") << "q[" << inst.qubits[i] << "]";
+                oss << (i == 0 ? " " : ", ") << "q[" << detail::integer_text(inst.qubits[i]) << "]";
             }
             oss << ";\n";
             continue;
@@ -1812,8 +1816,7 @@ std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
             // global phase has to be restored explicitly. QASM 2 has nowhere to
             // put this, which is the whole reason the two formats differ here.
             if (std::abs(lowered->global_phase) > 1e-9) {
-                oss << "gphase(" << std::setprecision(15)
-                    << lowered->global_phase << ");\n";
+                oss << "gphase(" << qasm_number(lowered->global_phase) << ");\n";
             }
             for (const auto& g : lowered->instructions) {
                 oss << g.gate_name();
@@ -1821,13 +1824,13 @@ std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
                     oss << "(";
                     for (size_t i = 0; i < g.params.size(); ++i) {
                         if (i > 0) oss << ", ";
-                        oss << std::setprecision(15) << g.params[i];
+                        oss << qasm_number(g.params[i]);
                     }
                     oss << ")";
                 }
                 for (size_t i = 0; i < g.qubits.size(); ++i) {
                     if (i > 0) oss << ",";
-                    oss << " q[" << g.qubits[i] << "]";
+                    oss << " q[" << detail::integer_text(g.qubits[i]) << "]";
                 }
                 oss << ";\n";
             }
@@ -1857,11 +1860,11 @@ std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
                 phi    = std::atan2( m[2].imag,  m[2].real);
             }
             if (std::abs(alpha) > 1e-9) {
-                oss << "gphase(" << std::setprecision(15) << alpha << ");\n";
+                oss << "gphase(" << qasm_number(alpha) << ");\n";
             }
-            oss << "u(" << std::setprecision(15) << theta
-                << ", " << phi << ", " << lambda
-                << ") q[" << inst.qubits[0] << "];\n";
+            oss << "u(" << qasm_number(theta)
+                << ", " << qasm_number(phi) << ", " << qasm_number(lambda)
+                << ") q[" << detail::integer_text(inst.qubits[0]) << "];\n";
             continue;
         }
 
@@ -1870,18 +1873,18 @@ std::string QuantumCircuit::to_qasm3(const QasmExportOptions& opts) const {
             oss << "(";
             for (size_t i = 0; i < inst.params.size(); ++i) {
                 if (i > 0) oss << ", ";
-                oss << std::setprecision(15) << inst.params[i];
+                oss << qasm_number(inst.params[i]);
             }
             oss << ")";
         }
         for (size_t i = 0; i < inst.qubits.size(); ++i) {
             if (i > 0) oss << ",";
-            oss << " q[" << inst.qubits[i] << "]";
+            oss << " q[" << detail::integer_text(inst.qubits[i]) << "]";
         }
         oss << ";\n";
     }
 
-    return out.str();
+    return std::move(out).str();
 }
 
 // Forward declarations of the bridge functions in qasm{2,3}_parser.cpp
@@ -1998,14 +2001,13 @@ std::string QuantumCircuit::to_json() const {
         }
     }
 
-    std::ostringstream o;
-    o << std::setprecision(17);  // full double precision
+    detail::TextBuilder o;
 
     o << "{";
     o << "\"version\":\"1.0\",";
     o << "\"name\":" << detail::json_escape(name) << ",";
-    o << "\"n_qubits\":" << n_qubits << ",";
-    o << "\"n_clbits\":" << n_clbits << ",";
+    o << "\"n_qubits\":" << detail::integer_text(n_qubits) << ",";
+    o << "\"n_clbits\":" << detail::integer_text(n_clbits) << ",";
 
     // Parameters
     o << "\"parameter_names\":[";
@@ -2027,7 +2029,7 @@ std::string QuantumCircuit::to_json() const {
         o << "\"qubits\":[";
         for (size_t j = 0; j < inst.qubits.size(); ++j) {
             if (j > 0) o << ",";
-            o << inst.qubits[j];
+            o << detail::integer_text(inst.qubits[j]);
         }
         o << "],";
 
@@ -2035,7 +2037,7 @@ std::string QuantumCircuit::to_json() const {
         o << "\"clbits\":[";
         for (size_t j = 0; j < inst.clbits.size(); ++j) {
             if (j > 0) o << ",";
-            o << inst.clbits[j];
+            o << detail::integer_text(inst.clbits[j]);
         }
         o << "],";
 
@@ -2043,7 +2045,7 @@ std::string QuantumCircuit::to_json() const {
         o << "\"params\":[";
         for (size_t j = 0; j < inst.params.size(); ++j) {
             if (j > 0) o << ",";
-            o << inst.params[j];
+            o << detail::json_number(inst.params[j]);
         }
         o << "]";
 
@@ -2069,7 +2071,7 @@ std::string QuantumCircuit::to_json() const {
             o << ",\"permutation\":[";
             for (size_t j = 0; j < inst.permutation.size(); ++j) {
                 if (j > 0) o << ",";
-                o << inst.permutation[j];
+                o << detail::integer_text(inst.permutation[j]);
             }
             o << "]";
         }
@@ -2079,7 +2081,8 @@ std::string QuantumCircuit::to_json() const {
             o << ",\"matrix\":[";
             for (size_t j = 0; j < inst.matrix.size(); ++j) {
                 if (j > 0) o << ",";
-                o << "[" << inst.matrix[j].real << "," << inst.matrix[j].imag << "]";
+                o << "[" << detail::json_number(inst.matrix[j].real) << ","
+                  << detail::json_number(inst.matrix[j].imag) << "]";
             }
             o << "]";
         }
@@ -2098,16 +2101,16 @@ std::string QuantumCircuit::to_json() const {
             inst.validation.repair != kDefaultValidation.repair) {
             o << ",\"validation\":{\"policy\":"
               << detail::json_escape(validation_policy_to_str(inst.validation.policy))
-              << ",\"atol\":" << inst.validation.atol
+              << ",\"atol\":" << detail::json_number(inst.validation.atol)
               << ",\"repair\":"
               << detail::json_escape(validation_repair_to_str(inst.validation.repair))
               << "}";
         }
 
         // Conditioning
-        if (inst.condition_clbit >= 0) {
-            o << ",\"condition_clbit\":" << inst.condition_clbit;
-            o << ",\"condition_value\":" << inst.condition_value;
+        if (inst.has_condition) {
+            o << ",\"condition_clbit\":" << detail::integer_text(inst.condition_clbit);
+            o << ",\"condition_value\":" << detail::integer_text(inst.condition_value);
         }
 
         o << "}";
@@ -2115,7 +2118,7 @@ std::string QuantumCircuit::to_json() const {
     o << "]";
 
     o << "}";
-    return o.str();
+    return std::move(o).str();
 }
 
 // =============================================================================
@@ -2181,7 +2184,7 @@ QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
                         r.expect('[');
                         while (r.peek() != ']') {
                             if (r.peek() == ',') r.next();
-                            inst.params.push_back(r.read_number());
+                            inst.params.push_back(r.read_double());
                         }
                         r.expect(']');
                     } else if (ikey == "param_names") {
@@ -2209,9 +2212,9 @@ QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
                         while (r.peek() != ']') {
                             if (r.peek() == ',') r.next();
                             r.expect('[');
-                            double re = r.read_number();
+                            double re = r.read_double();
                             r.expect(',');
-                            double im = r.read_number();
+                            double im = r.read_double();
                             r.expect(']');
                             mat.push_back(Complex128(re, im));
                         }
@@ -2230,13 +2233,17 @@ QuantumCircuit QuantumCircuit::from_json(const std::string& json) {
                                 validation_repair_from_str(r.read_string(),
                                                            inst.validation);
                             } else if (vkey == "atol") {
-                                inst.validation.atol = r.read_number();
+                                inst.validation.atol = r.read_double();
                             } else {
                                 r.skip_value();
                             }
                         }
                         r.expect('}');
                     } else if (ikey == "condition_clbit") {
+                        // A condition is written only when there is one, so
+                        // the key is what conditions the instruction. A bit
+                        // outside the register is refused when a run meets it.
+                        inst.has_condition = true;
                         inst.condition_clbit = r.read_int();
                     } else if (ikey == "condition_value") {
                         inst.condition_value = r.read_int();

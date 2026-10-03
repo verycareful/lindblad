@@ -32,10 +32,10 @@
 #include "gate_symbols.hpp"
 
 #include "lindblad/circuit.hpp"
+#include "lindblad/detail/text.hpp"
 
 #include <array>
 #include <cmath>
-#include <cstdio>
 #include <string>
 
 namespace lindblad::viz {
@@ -47,6 +47,9 @@ namespace {
 // only edits one place.
 constexpr const char* kPiUtf8     = "\xCF\x80"; // U+03C0 GREEK SMALL LETTER PI
 constexpr const char* kMidDotUtf8 = "\xC2\xB7"; // U+00B7 MIDDLE DOT
+
+// Digits after the point in a numeric parameter that no pi multiple matches.
+constexpr int kLabelDecimals = 4;
 
 // One row of the pi-snap table: factor * pi exactly representable as a tidy
 // label. Sign is handled separately so the table only enumerates the positive
@@ -105,13 +108,12 @@ std::string substitute_pi(const std::string& input) {
     return out;
 }
 
-// Format a double via "%.4f" with no trailing-zero trimming. The fixed width
-// keeps box widths consistent across columns; tests / golden files can rely
-// on exact byte sequences.
+// Format a double as "%.4f" does in the C locale, with no trailing-zero
+// trimming, whatever the process's locale. The fixed width keeps box widths
+// consistent across columns; tests / golden files can rely on exact byte
+// sequences.
 std::string format_fixed_4(double v) {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.4f", v);
-    return std::string(buf);
+    return detail::fixed_text(v, kLabelDecimals);
 }
 
 // Recursive helper for ParamExpr that propagates a "needs parens around this

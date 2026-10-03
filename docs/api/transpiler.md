@@ -204,7 +204,7 @@ Lowering rules (all exact — no approximation anywhere):
 
 **Coupling-map floor**: when `ctx.coupling_map` is constrained (`n_physical_qubits > 0`), the output additionally contains no gate wider than two qubits. Every `CCX` — whether produced by the lowering above or written by the user — is flattened into the exact 6-`CX` T-ladder (alphabet `{H, P, CX}`, 15 gates, equal to the Toffoli as a matrix identity with no global-phase slack). Rationale: routing executes a 3-qubit gate only when all three wire pairs are simultaneously adjacent, which triangle-free targets (path, grid, heavy-hex) can never provide, so any `CCX` reaching the router on such a map would throw. The 2-qubit floor routes on any connected map. Unconstrained targets keep `CCX`: with no routing consumer the 3-qubit form is strictly better — a `ccx`-bearing `basis_gates` list keeps it native, and flattening would insert `CX` into streams that never needed it.
 
-The construction is ancilla-free and self-contained on the instruction's own operands; worst-case emitted gate count is cubic in the control count for wide `MCX` / `MCP`. Classical conditions (`condition_clbit` / `condition_value`) are propagated onto every emitted gate, preserving feedforward semantics.
+The construction is ancilla-free and self-contained on the instruction's own operands; worst-case emitted gate count is cubic in the control count for wide `MCX` / `MCP`. Classical conditions (`has_condition`, `condition_clbit`, `condition_value`) are propagated onto every emitted gate, preserving feedforward semantics.
 
 **Composition rule**: the preset pipelines compose this pass as stage 0 (ahead of layout and routing) at EVERY optimization level, but only when the transpile target actually requires the lowering — a constrained coupling map (`n_physical_qubits > 0`; routing handles at most 3-qubit gates) or a non-empty `basis_gates` list (the equivalence library cannot reach the three ops). With neither constraint the ops stay native: every backend executes `MCX` / `MCP` / `PERMUTATION` directly, and unconditional lowering would only pessimize. Append the pass to a custom `PassManager` for unconditional lowering.
 
@@ -575,7 +575,7 @@ lindblad::QuantumCircuit optimized = lindblad::transpile(
 
 - **Estimator** and **Sampler** internally transpile circuits before simulation if a coupling map is provided
 
-- **Caching**: Estimator caches transpilation results by circuit structure (keyed by topological sort signature)
+- **Caching**: Estimator caches transpilation results keyed on the whole unbound circuit and the optimisation level; only symbolic parameter values, bound afterwards, share an entry (see [estimator.md](estimator.md))
 
 ## Performance Considerations
 

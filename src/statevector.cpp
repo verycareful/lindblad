@@ -9,14 +9,13 @@
 
 #include "lindblad/statevector.hpp"
 #include "lindblad/detail/born_draw.hpp"
+#include "lindblad/detail/text.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <iomanip>
 #include <random>
-#include <sstream>
 #include <stdexcept>
 #include <numeric>
 
@@ -380,9 +379,9 @@ Statevector Statevector::clone() const {
 // =============================================================================
 
 std::string Statevector::to_string(int precision) const {
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(precision);
-    oss << "Statevector(" << n_qubits << " qubits, dim=" << dim << "):\n";
+    detail::TextBuilder oss;
+    oss << "Statevector(" << detail::integer_text(n_qubits) << " qubits, dim="
+        << detail::integer_text(dim) << "):\n";
 
     size_t max_show = std::min(dim, static_cast<size_t>(32));
 
@@ -398,16 +397,17 @@ std::string Statevector::to_string(int precision) const {
                 if ((i >> (n_qubits - 1 - b)) & 1) bits[b] = '1';
             }
             oss << "  |" << bits << "⟩: "
-                << r << (im >= 0 ? "+" : "") << im << "i"
-                << "  (p=" << prob << ")\n";
+                << detail::fixed_text(r, precision) << (im >= 0 ? "+" : "")
+                << detail::fixed_text(im, precision) << "i"
+                << "  (p=" << detail::fixed_text(prob, precision) << ")\n";
         }
     }
 
     if (dim > max_show) {
-        oss << "  ... (" << dim - max_show << " more entries)\n";
+        oss << "  ... (" << detail::integer_text(dim - max_show) << " more entries)\n";
     }
 
-    return oss.str();
+    return std::move(oss).str();
 }
 
 namespace detail {

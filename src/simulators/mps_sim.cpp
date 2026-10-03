@@ -355,6 +355,39 @@ static double kept_weight(const detail::SvdTruncation& split) {
     return kept;
 }
 
+namespace {
+
+// The run driving this thread's MPS splits, or null when a caller is using an
+// MPSState directly. A split that no permitted rung can factorise throws, and
+// inside a run the exception has to name the run the caller called, with its
+// message prefixed the same way, not the helper the split happened in; the
+// ladder's warnings name it too. It is the thread's and not the chain's because
+// a run copies its chain (each shot from the shared prefix) and hands one back
+// in its result: a name carried by the chain would either be lost on those
+// copies or follow the returned chain into calls no run makes. A run performs
+// every split on its calling thread, so the thread is exactly the scope.
+thread_local const char* mps_run_entry = nullptr;
+
+// Names the run for its duration, restoring whatever was named before, so a
+// run inside another run's observer hands the name back on its way out.
+class ScopedMpsRun {
+public:
+    explicit ScopedMpsRun(const char* entry) : previous_(mps_run_entry) { mps_run_entry = entry; }
+    ~ScopedMpsRun() { mps_run_entry = previous_; }
+    ScopedMpsRun(const ScopedMpsRun&) = delete;
+    ScopedMpsRun& operator=(const ScopedMpsRun&) = delete;
+
+private:
+    const char* previous_;
+};
+
+// The name a split reports under: the run's, or `own` outside a run.
+const char* split_context(const char* own) {
+    return mps_run_entry != nullptr ? mps_run_entry : own;
+}
+
+}  // namespace
+
 void MPSState::svd_truncate(
     const std::vector<Complex128>& M,
     int rows, int cols,
@@ -374,7 +407,7 @@ void MPSState::svd_truncate(
     const auto svd_t0 = std::chrono::steady_clock::now();
     const detail::SvdTruncation r = detail::svd_truncate_verified(
         M.data(), rows, cols, detail::MatrixOrder::RowMajor,
-        max_bond_dim, cutoff, svd_method, svd_policy(), "MPS svd_truncate");
+        max_bond_dim, cutoff, svd_method, svd_policy(), split_context("MPS svd_truncate"));
     account_split(r, static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - svd_t0).count()));
@@ -1166,7 +1199,7 @@ void MPSState::rebuild_from_statevector(const Statevector& sv) {
         const detail::SvdTruncation split = detail::svd_truncate_verified(
             block.data(), rows, half_cols, detail::MatrixOrder::RowMajor,
             max_bond_dim, cutoff, svd_method, svd_policy(),
-            "MPSState::rebuild_from_statevector");
+            split_context("MPSState::rebuild_from_statevector"));
         const std::uint64_t svd_ns = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - svd_t0).count());
@@ -1917,6 +1950,7 @@ MPSSimulator::Result MPSSimulator::run(
     int shots, uint64_t seed, const RunPlan& plan
 ) {
     ScopedWarningFlush flush_on_exit;
+    const ScopedMpsRun named_run("MPSSimulator::run");
     detail::check_circuit_has_qubits(circuit_in.n_qubits, "MPSSimulator::run");
     // Checked here as well as in the MPSState constructor so the message names
     // this call. The argument order differs from StatevectorSimulator::run
@@ -1987,7 +2021,7 @@ MPSSimulator::Result MPSSimulator::run(
         int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
         for (const auto& inst : circuit.instructions) {
             if (inst.type == Instruction::GateType::MEASURE) has_measure = true;
-            if (inst.condition_clbit >= 0) has_condition = true;
+            if (inst.has_condition) has_condition = true;
         }
         // A RESET collapses its qubit, and one pass would collapse it once for
         // every shot. One on a qubit known to be |0> changes nothing and leaves
@@ -1995,8 +2029,12 @@ MPSSimulator::Result MPSSimulator::run(
         const bool has_reset = detail::has_nontrivial_reset(circuit, plan.initial);
         const bool terminal_only = has_measure && !has_condition && !has_reset &&
                                    mps_measures_are_terminal(circuit);
-        const bool per_shot =
-            shots > 0 && ((has_measure && !terminal_only) || has_reset);
+        // Whether the circuit's shape makes a run walk it shot by shot. With
+        // shots == 0 that walk is taken once, and it is shot 0: a failure in
+        // it names shot 0, as it does on every backend, while a single pass
+        // that serves every shot names none.
+        const bool walked_per_shot = (has_measure && !terminal_only) || has_reset;
+        const bool per_shot = shots > 0 && walked_per_shot;
 
         // One trajectory: honours classical conditions, records MEASURE outcomes.
         // Anchors resolve against the circuit before any state is touched, so an
@@ -2033,7 +2071,7 @@ MPSSimulator::Result MPSSimulator::run(
                 failure.at_instruction(index, &inst);
                 detail::FiringGuard fire(watcher, index, inst, view);
                 if (inst.type == GT::BARRIER) continue;
-                if (inst.condition_clbit >= 0) {
+                if (inst.has_condition) {
                     int cv = (inst.condition_clbit < n_clbits)
                              ? clreg[inst.condition_clbit] : 0;
                     if (cv != inst.condition_value) continue;
@@ -2083,7 +2121,7 @@ MPSSimulator::Result MPSSimulator::run(
                 while (prefix_end < circuit.instructions.size()) {
                     const Instruction& inst = circuit.instructions[prefix_end];
                     if (inst.type == GT::MEASURE || inst.type == GT::RESET ||
-                        inst.condition_clbit >= 0)
+                        inst.has_condition)
                         break;
                     start.budget_link.instruction = static_cast<int>(prefix_end);
                     start.budget_link.inst = &inst;
@@ -2151,7 +2189,9 @@ MPSSimulator::Result MPSSimulator::run(
             if (shots == 0) {
                 // Single seeded trajectory (collapses measures, honours
                 // conditions); final_state is one reproducible trajectory.
+                if (walked_per_shot) failure.set_shot(0);
                 run_trajectory(result.final_state, clreg, 0);
+                if (walked_per_shot) failure.shot_done();
             } else {
                 // Terminal-only measurements (or none): one forward pass with
                 // MEASURE skipped; outcomes are sampled from the final state. That
@@ -2170,7 +2210,7 @@ MPSSimulator::Result MPSSimulator::run(
                     failure.at_instruction(index, &inst);
                     detail::FiringGuard fire(watcher, index, inst, view);
                     if (inst.type == GT::BARRIER || inst.type == GT::MEASURE) continue;
-                    if (inst.condition_clbit >= 0) {
+                    if (inst.has_condition) {
                         int cv = (inst.condition_clbit < n_clbits)
                                  ? clreg[inst.condition_clbit] : 0;
                         if (cv != inst.condition_value) continue;

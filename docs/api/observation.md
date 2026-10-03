@@ -458,7 +458,10 @@ Everything below happens INSIDE `run()` and throws from it:
   them would be unreachable in the bundle, and which one would depend on how
   often each happened to fire.
 - A supplied initial state that cannot be produced fails the run, whatever
-  `response` says.
+  `response` says. The message says which reason applies: a state with no
+  route to the backend's form "cannot be turned into" it, and a state whose
+  route exists but needs a conversion under `Conversion::Never` names that
+  setting.
 - An amplitude index outside the register, an `EntropyObserver` region that
   names a qubit twice, names a qubit outside the register, or names every qubit,
   and an `ExpectationObserver` observable that has no terms, a term whose

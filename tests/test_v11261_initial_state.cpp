@@ -292,15 +292,18 @@ TEST(V11261InitialState, AnUnproducibleInitialStateFailsUnderWarnAndIgnoreToo) {
     }
 }
 
-// KNOWN RED until 1.1.31.2. Each backend below CAN convert the state it is
-// handed, and does under Conversion::Convert (the control in each block);
-// Conversion::Never is what declines it, so that is what the refusal has to
-// name. Today all three say the state "cannot be turned into" the backend's
-// form, which sends the caller looking for a route that exists instead of at
-// the setting that refused it.
+// Each backend below CAN convert the state it is handed, and does under
+// Conversion::Convert (the control in each block); Conversion::Never is what
+// declines it, so that is what the refusal names. Saying the state "cannot be
+// turned into" the backend's form would send the caller looking for a route
+// that exists instead of at the setting that refused it.
 TEST(V11261InitialState, AnUnproducibleInitialStateFailsUnderConversionNever) {
-    const auto expect_names_never = [](const std::string& message) {
-        EXPECT_NE(message.find("Conversion::Never"), std::string::npos) << message;
+    const auto expect_names_never = [](const std::string& message, const std::string& held,
+                                       const std::string& target) {
+        const std::string sentence = "InitialState: the supplied " + held +
+                                     " would have to be converted into a " + target +
+                                     " to start this run, and Conversion::Never is selected.";
+        EXPECT_NE(message.find(sentence), std::string::npos) << message;
         EXPECT_EQ(message.find("cannot be turned into"), std::string::npos) << message;
     };
     auto stabilizer_seed = std::make_shared<StabilizerState>(3);
@@ -315,7 +318,7 @@ TEST(V11261InitialState, AnUnproducibleInitialStateFailsUnderConversionNever) {
         const NoiseModel noise;
         EXPECT_EQ(sim.run(measure_only(3), noise, 8, 20261, plan).counts.at(kFiveOnThree), 8);
         plan.options.conversion = Conversion::Never;
-        expect_names_never(dm_run_failure(measure_only(3), plan, 8));
+        expect_names_never(dm_run_failure(measure_only(3), plan, 8), "statevector", "density matrix");
     }
     {
         SCOPED_TRACE("statevector backend, stabilizer seed");
@@ -324,7 +327,7 @@ TEST(V11261InitialState, AnUnproducibleInitialStateFailsUnderConversionNever) {
         StatevectorSimulator sim;
         EXPECT_EQ(sim.run(measure_only(3), 8, 20261, plan).counts.at(kFiveOnThree), 8);
         plan.options.conversion = Conversion::Never;
-        expect_names_never(sv_run_failure(measure_only(3), plan, 8));
+        expect_names_never(sv_run_failure(measure_only(3), plan, 8), "stabilizer", "statevector");
     }
     {
         SCOPED_TRACE("MPS backend, stabilizer seed");
@@ -333,7 +336,7 @@ TEST(V11261InitialState, AnUnproducibleInitialStateFailsUnderConversionNever) {
         MPSSimulator sim;
         EXPECT_EQ(sim.run(measure_only(3), 8, 8, 20261, plan).counts.at(kFiveOnThree), 8);
         plan.options.conversion = Conversion::Never;
-        expect_names_never(mps_run_failure(measure_only(3), plan, 8));
+        expect_names_never(mps_run_failure(measure_only(3), plan, 8), "stabilizer", "statevector");
     }
 }
 

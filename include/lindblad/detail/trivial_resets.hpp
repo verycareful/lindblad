@@ -62,7 +62,7 @@ inline std::vector<bool> trivial_resets(const QuantumCircuit& circuit,
         if (inst.type == GT::RESET) {
             const auto q = static_cast<std::size_t>(inst.qubits[0]);
             trivial[i] = known_zero[q];
-            if (inst.condition_clbit < 0) known_zero[q] = true;
+            if (!inst.has_condition) known_zero[q] = true;
             continue;
         }
         for (int q : inst.qubits) known_zero[static_cast<std::size_t>(q)] = false;

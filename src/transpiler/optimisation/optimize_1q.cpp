@@ -262,7 +262,7 @@ DAGCircuit Optimize1qGates::run(const DAGCircuit& dag, const TranspilationContex
         // never be merged into an unconditional run (the merged rotation
         // would silently drop the condition). They break the run and pass
         // through untouched, like multi-qubit gates.
-        if (is_single_qubit_gate(inst) && inst.condition_clbit < 0) {
+        if (is_single_qubit_gate(inst) && !inst.has_condition) {
             int q = inst.qubits[0];
             Eigen::Matrix2cd gate_mat = instruction_to_2x2(inst);
             // Accumulate: new_U = gate_mat * accum  (gates applied left-to-right)
@@ -306,10 +306,11 @@ DAGCircuit CXCancellation::run(const DAGCircuit& dag, const TranspilationContext
             const auto& prev = optimized.instructions.back();
             // Cancellation also requires IDENTICAL classical conditioning:
             // a conditional CX must never cancel an unconditional one (they
-            // fire under different runtime states). Equal-condition pairs
-            // (including both unconditioned, clbit == -1) cancel validly.
+            // fire under different runtime states). Equal-condition pairs,
+            // both unconditioned included, cancel validly.
             if (prev.type == inst.type &&
                 prev.qubits == inst.qubits &&
+                prev.has_condition == inst.has_condition &&
                 prev.condition_clbit == inst.condition_clbit &&
                 prev.condition_value == inst.condition_value) {
                 // Cancel
@@ -369,7 +370,7 @@ static std::optional<Eigen::Matrix4cd> stored_2q_matrix(const Instruction& inst)
 // identity fallback would delete it from the circuit.
 static std::optional<Eigen::Matrix4cd> instruction_to_4x4(const Instruction& inst) {
     using GT = Instruction::GateType;
-    if (inst.condition_clbit >= 0) return std::nullopt;
+    if (inst.has_condition) return std::nullopt;
     if (inst.type == GT::UNITARY) return stored_2q_matrix(inst);
     Eigen::Matrix4cd U = Eigen::Matrix4cd::Zero();
 
@@ -862,8 +863,7 @@ std::optional<Lowered> lower_2q_unitary(const Instruction& inst) {
     out.instructions = kak.instructions;
     for (auto& emitted : out.instructions) {
         for (auto& q : emitted.qubits) q = (q == 0) ? inst.qubits[0] : inst.qubits[1];
-        emitted.condition_clbit = inst.condition_clbit;
-        emitted.condition_value = inst.condition_value;
+        emitted.copy_condition(inst);
         emitted.validation = inst.validation;
     }
     return out;

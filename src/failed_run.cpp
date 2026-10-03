@@ -92,8 +92,11 @@ const char* name_of(RunPlan::Options::SaveFailedRuns value) {
     return "SaveFailedRuns(?)";
 }
 
-// What a saved folder does not hold, as a sentence for the rethrown message,
-// or empty when it holds everything. The saver releases every part it writes,
+// What a saved folder does not hold, as two sentences for the rethrown message,
+// or empty when it holds everything: "Not saved: the state, the observations.
+// Take from memory with lindblad::take_failed_run()." The parts are listed
+// in the order the record keeps them, with no verb or pronoun whose number
+// would have to agree with theirs. The saver releases every part it writes,
 // so after a save the parts still in the record are exactly the ones it could
 // not write; save_note says why.
 std::string unsaved_parts(const FailedRun& r) {
@@ -105,15 +108,12 @@ std::string unsaved_parts(const FailedRun& r) {
     if (r.noise_model) parts.emplace_back("the noise model");
     if (parts.empty()) return {};
 
-    std::string out;
+    std::string out = "Not saved: ";
     for (std::size_t i = 0; i < parts.size(); ++i) {
-        if (i > 0) out += (i + 1 == parts.size()) ? " and " : ", ";
+        if (i > 0) out += ", ";
         out += parts[i];
     }
-    out[0] = 'T';
-    const bool one = parts.size() == 1;
-    out += one ? " was not saved; take it" : " were not saved; take them";
-    out += " from memory with lindblad::take_failed_run().";
+    out += ". Take from memory with lindblad::take_failed_run().";
     return out;
 }
 
@@ -135,6 +135,8 @@ void store_failed_run(FailedRun&& record) {
     slot = std::move(record);
     ++stores;
 }
+
+void restore_failed_run(FailedRun&& record) { slot = std::move(record); }
 
 std::uint64_t failed_run_stores() noexcept { return stores; }
 

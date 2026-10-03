@@ -259,7 +259,7 @@ static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
         if (failure) failure->at_instruction(index, &inst);
 
         bool skip = inst.type == GT::BARRIER;
-        if (!skip && inst.condition_clbit >= 0) {
+        if (!skip && inst.has_condition) {
             const int cv = (inst.condition_clbit < n_clbits)
                            ? clreg[inst.condition_clbit] : 0;
             if (cv != inst.condition_value) skip = true;
@@ -399,7 +399,7 @@ double StatevectorSimulator::eval_expectation(
     // (run() with shots > 0) instead of silently evaluating one trajectory.
     for (const auto& inst : circuit.instructions) {
         if (inst.type == Instruction::GateType::MEASURE ||
-            inst.condition_clbit >= 0) {
+            inst.has_condition) {
             detail::raise<InvalidArgument>("StatevectorSimulator::eval_expectation",
                 "circuit contains measurement or classically-conditioned "
                 "instructions; the exact expectation of a stochastic trajectory is "
@@ -494,7 +494,7 @@ int sv_fusion_auto_threshold() {
 
 bool sv_gate_is_fusable(const Instruction& inst, int max_qubit) {
     using GT = Instruction::GateType;
-    if (inst.condition_clbit >= 0) return false;
+    if (inst.has_condition) return false;
     switch (inst.type) {
         case GT::MEASURE: case GT::RESET: case GT::BARRIER:
         case GT::MCX: case GT::MCP: case GT::PERMUTATION:
@@ -774,7 +774,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
         for (const auto& inst : circuit.instructions) {
             if (inst.type == Instruction::GateType::MEASURE) has_measure = true;
-            if (inst.condition_clbit >= 0) has_condition = true;
+            if (inst.has_condition) has_condition = true;
         }
         // A RESET collapses its qubit, and one pass would collapse it once for
         // every shot. One on a qubit known to be |0> changes nothing and leaves
@@ -782,8 +782,12 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         const bool has_reset = detail::has_nontrivial_reset(circuit, plan.initial);
         const bool terminal_only = has_measure && !has_condition && !has_reset &&
                                    sv_measures_are_terminal(circuit);
-        const bool per_shot =
-            shots > 0 && ((has_measure && !terminal_only) || has_reset);
+        // Whether the circuit's shape makes a run walk it shot by shot. With
+        // shots == 0 that walk is taken once, and it is shot 0: a failure in
+        // it names shot 0, as it does on every backend, while a single pass
+        // that serves every shot names none.
+        const bool walked_per_shot = (has_measure && !terminal_only) || has_reset;
+        const bool per_shot = shots > 0 && walked_per_shot;
 
         if (per_shot) {
             // Per-shot trajectories: re-initialise and re-simulate for every
@@ -814,7 +818,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                                            &exec->instructions[prefix_end]);
                     const Instruction& inst = exec->instructions[prefix_end];
                     if (inst.type == GT::MEASURE || inst.type == GT::RESET ||
-                        inst.condition_clbit >= 0)
+                        inst.has_condition)
                         break;
                     if (inst.type != GT::BARRIER)
                         apply_instruction(*sv_work, inst, {Validation::Ignore});
@@ -931,10 +935,12 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             // forward pass for measurement-free circuits with shots > 0).
             std::vector<int> clreg(n_clbits, 0);
             runner->begin_run(circuit.n_qubits, 1);
+            if (walked_per_shot) failure.set_shot(0);
             runner->begin_shot(0, clreg);
             sv_run_trajectory(*this, *sv_work, *exec, clreg, n_clbits,
                               sv_sim_rng, 0, "StatevectorSimulator::run",
                               runner->active() ? &*runner : nullptr, &failure);
+            if (walked_per_shot) failure.shot_done();
             if (shots > 0) {
                 result.counts = sv_work->sample_counts(shots, seed);
             }

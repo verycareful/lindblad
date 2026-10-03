@@ -1424,7 +1424,7 @@ static bool clifford_measures_are_terminal(const QuantumCircuit& circuit,
     for (std::size_t i = 0; i < circuit.instructions.size(); ++i) {
         const Instruction& inst = circuit.instructions[i];
         if (inst.type == Instruction::GateType::BARRIER) continue;
-        if (inst.condition_clbit >= 0) return false;
+        if (inst.has_condition) return false;
         if (inst.type == Instruction::GateType::RESET) {
             if (!trivial[i]) return false;
             continue;
@@ -1866,7 +1866,7 @@ CliffordSimulator::Result CliffordSimulator::run(
             while (prefix_end < circuit.instructions.size()) {
                 const Instruction& inst = circuit.instructions[prefix_end];
                 if (inst.type == GT::MEASURE || inst.type == GT::RESET ||
-                    inst.condition_clbit >= 0)
+                    inst.has_condition)
                     break;
                 failure.at_instruction(static_cast<int>(prefix_end), &inst);
                 if (inst.type != GT::BARRIER) apply_gate(start, inst);
@@ -1894,7 +1894,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                 if (watcher) watcher->before_instruction(index, inst, view);
                 failure.at_instruction(index, &inst);
                 detail::FiringGuard fire(watcher, index, inst, view);
-                if (inst.condition_clbit >= 0) {
+                if (inst.has_condition) {
                     int cv = (inst.condition_clbit < n_clbits)
                              ? clreg[inst.condition_clbit] : 0;
                     if (cv != inst.condition_value) continue;

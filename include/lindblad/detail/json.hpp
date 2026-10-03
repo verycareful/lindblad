@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "lindblad/detail/text.hpp"
 #include "lindblad/types.hpp"
 
 #include <cctype>
@@ -16,7 +17,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <iomanip>
 #include <limits>
 #include <locale>
 #include <sstream>
@@ -53,7 +53,7 @@ inline std::string json_escape(const std::string& s) {
     return out;
 }
 
-// A double as JSON, exactly: 17 significant digits in the classic locale, so
+// A double as JSON, exactly: max_digits10 (17) significant digits, so
 // reading it back yields the same double. JSON has no NaN or infinity, so
 // those are written as the strings "NaN", "Infinity" and "-Infinity", which
 // JsonReader::read_double reads back. The bit pattern decides which, since
@@ -65,10 +65,7 @@ inline std::string json_number(double v) {
         if ((bits & 0x000FFFFFFFFFFFFFULL) != 0) return "\"NaN\"";
         return (bits >> 63) != 0 ? "\"-Infinity\"" : "\"Infinity\"";
     }
-    std::ostringstream o;
-    o.imbue(std::locale::classic());
-    o << std::setprecision(17) << v;
-    return o.str();
+    return double_text(v, std::numeric_limits<double>::max_digits10);
 }
 
 // =============================================================================

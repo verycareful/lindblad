@@ -117,6 +117,12 @@ private:
 // throw std::bad_alloc where moving a map allocates.
 void store_failed_run(FailedRun&& record);
 
+// Puts back into this thread's slot a record taken from it, as if it had never
+// left: unlike store_failed_run, it records no new failure, so
+// failed_run_stores() is unchanged. Can throw std::bad_alloc as
+// store_failed_run can.
+void restore_failed_run(FailedRun&& record);
+
 // How many records have been stored on this thread. A caller that reads it
 // before a run and again after the run throws knows whether that failure left
 // a record, or whether the slot still holds an older one: a failure before the

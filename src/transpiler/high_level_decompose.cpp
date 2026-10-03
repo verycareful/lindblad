@@ -390,10 +390,9 @@ std::vector<Instruction> lower_fully(const Instruction& inst) {
     }
 
     // A conditioned high-level op lowers to a uniformly conditioned block.
-    if (inst.condition_clbit >= 0) {
+    if (inst.has_condition) {
         for (Instruction& g : lowered) {
-            g.condition_clbit = inst.condition_clbit;
-            g.condition_value = inst.condition_value;
+            g.copy_condition(inst);
         }
     }
     return lowered;
@@ -447,8 +446,7 @@ DAGCircuit HighLevelDecompose::run(
         std::vector<Instruction> ladder =
             hld::lower_ccx(inst.qubits[0], inst.qubits[1], inst.qubits[2]);
         for (Instruction& g : ladder) {
-            g.condition_clbit = inst.condition_clbit; // uniform block, exactly
-            g.condition_value = inst.condition_value; // like lower_fully
+            g.copy_condition(inst);
             out.push_back(std::move(g));
         }
     };

@@ -96,7 +96,7 @@ The output classical bits $c[n-1] \ldots c[0]$ hold the QFT Fourier coefficients
 - Requires mid-circuit measurement and classically-controlled gates (feedforward)
 - The quantum state is fully collapsed at the end; output is always a bitstring, not a quantum state
 - Clifford-compatible for $n \le 2$ (the only angles used are $\pi/2$ and smaller — but $\pi/2 = S$ is Clifford, while $\pi/4$ and below are not)
-- The framework implements feedforward via `p_if()` instructions honouring `condition_clbit`/`condition_value` in all four simulators
+- The framework implements feedforward via `p_if()` instructions honouring the instruction's classical condition (`has_condition`, `condition_clbit`, `condition_value`) in all four simulators
 
 ## How to Invoke — Semi-Classical QFT
 

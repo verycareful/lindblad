@@ -173,7 +173,7 @@ measure q -> c;
     EXPECT_EQ(count_type(qc, GT::CSWAP), 1);
     EXPECT_EQ(qc.instructions.size(), 36u) << "31 gates + barrier + reset + 3 measures";
 
-    // pi-expression spot checks (evaluate_pi_expr variants).
+    // pi-expression spot checks.
     auto param_of = [&](GT t) -> double {
         for (const auto& inst : qc.instructions)
             if (inst.type == t) return inst.params[0];

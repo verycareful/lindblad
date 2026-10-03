@@ -395,8 +395,7 @@ TEST(R1221LoweringSeam, EveryEmittedInstructionCarriesConditionAndPolicy) {
     inst.type = Instruction::GateType::UNITARY;
     inst.qubits = {0, 1};
     inst.matrix = generic_2q();
-    inst.condition_clbit = 3;
-    inst.condition_value = 1;
+    inst.set_condition(3, 1);
     inst.validation = ValidationOptions{Validation::Warn, 1e-9};
 
     const auto low = tqd::lower_2q_unitary(inst);
@@ -442,8 +441,7 @@ TEST(R1221LoweringSeam, TheOperandIsTheEmittedSequenceTimesTheReportedPhase) {
     QuantumCircuit rebuilt(2);
     rebuilt.instructions = low->instructions;
     for (auto& g : rebuilt.instructions) {
-        g.condition_clbit = -1;
-        g.condition_value = 0;
+        g.clear_condition();
     }
 
     const auto want = inst.matrix;

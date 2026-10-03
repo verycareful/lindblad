@@ -703,7 +703,7 @@ TEST(R1151Basis, ConditionPropagatedOntoDecomposition) {
     int conditioned = 0, unconditioned_gates = 0;
     for (const auto& inst : out.instructions) {
         if (inst.type == GT::MEASURE) continue;
-        if (inst.condition_clbit >= 0) {
+        if (inst.has_condition) {
             ++conditioned;
             EXPECT_EQ(inst.condition_clbit, 0);
             EXPECT_EQ(inst.condition_value, 1);

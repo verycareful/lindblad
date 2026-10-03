@@ -410,7 +410,7 @@ CircuitDocument build_document(const QuantumCircuit& qc, const DrawOptions& opts
             for (int q : inst.qubits) {
                 touched.push_back(q);
             }
-            if (opts.show_clbits && inst.condition_clbit >= 0) {
+            if (opts.show_clbits && inst.has_condition) {
                 touched.push_back(cwire_row);
             }
         }
@@ -454,8 +454,8 @@ CircuitDocument build_document(const QuantumCircuit& qc, const DrawOptions& opts
         // Preserve conditional metadata on every glyph so renderers can emit
         // the `if c[k]=v` tag even when show_clbits = false (the tag is
         // inline next to the gate in that mode).
-        g.condition_clbit = inst.condition_clbit;
-        g.condition_value = inst.condition_value;
+        g.condition_clbit = inst.has_condition ? inst.condition_clbit : -1;
+        g.condition_value = inst.has_condition ? inst.condition_value : 0;
 
         // Extend the strut down to the c-wire row when the gate has a classical
         // hook AND the bundled c-wire is visible. Two triggers:
@@ -473,7 +473,7 @@ CircuitDocument build_document(const QuantumCircuit& qc, const DrawOptions& opts
                     break;
                 }
             }
-            const bool has_condition = inst.condition_clbit >= 0;
+            const bool has_condition = inst.has_condition;
 
             if (has_measure || has_condition) {
                 // Pick a sensible top: prefer an existing strut top, else

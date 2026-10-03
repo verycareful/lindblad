@@ -32,7 +32,14 @@ Key fields:
   (`inst.matrix = some_vector;`); there is no in-place element mutation.
 - `permutation`: basis-index map for `PERMUTATION` (size $2^k$, LSB = `qubits[0]`)
 - `label`: custom label (used for unitary naming)
-- `condition_clbit` / `condition_value`: classical condition metadata (not enforced by the circuit)
+- `has_condition` / `condition_clbit` / `condition_value`: the classical
+  condition. The gate runs only when classical bit `condition_clbit` holds
+  `condition_value`, and only when `has_condition` is set: the flag, not any
+  value of `condition_clbit`, says whether there is a condition. With the flag
+  off both fields must stay at `-1` and `0`, and a run refuses an instruction
+  where they do not with `InvalidArgument` before its first gate. With it on,
+  a `condition_clbit` outside the classical register is refused with
+  `OutOfRange`. The circuit itself does not check either at construction.
 - `schedule_time`: scheduling metadata (set by passes)
 
 Helpers:
@@ -41,6 +48,10 @@ Helpers:
   `PERMUTATION`; `mcx` / `mcp` for the multi-controlled ops)
 - `is_parameterised()` is true for `PARAM_RX/RY/RZ/P/U`
 - `is_classical()` is true for `MEASURE` and `RESET`
+- `set_condition(clbit, value)` conditions the instruction, setting all three
+  condition fields; `clear_condition()` returns them to the unconditioned
+  `false`, `-1`, `0`; `copy_condition(other)` takes another instruction's
+  condition, or its absence
 
 ## `QuantumCircuit`
 

@@ -701,8 +701,7 @@ DAGCircuit BasisTranslator::run(
             for (auto& d : decomposed) {
                 // Propagate the classical condition onto every emitted gate:
                 // exact for these unitary-only decompositions (see header).
-                d.condition_clbit = inst.condition_clbit;
-                d.condition_value = inst.condition_value;
+                d.copy_condition(inst);
                 if (emit_u && d.type == Instruction::GateType::U3) {
                     d.type = Instruction::GateType::U;  // same gate, basis's name
                 }

@@ -207,6 +207,9 @@ set(LINDBLAD_TEST_SOURCES
     test_v11311_failure_point.cpp
     test_v11311_json.cpp
     test_v11311_svd_settings.cpp
+    test_v11312_locale.cpp
+    test_v11312_estimator_cache.cpp
+    test_v11312_qasm2_expressions.cpp
 )
 
 # The R.1.16.0 diagnostic's strict leg. This flag governs the file's OWN

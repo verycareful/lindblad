@@ -656,7 +656,12 @@ std::shared_ptr<const void> produce_initial_state(const StateView& supplied,
 
     if (target != held) {
         if (!supplied.convertible_to(target)) return nullptr;
-        if (options.conversion == Conversion::Never) return nullptr;
+        if (options.conversion == Conversion::Never) {
+            raise<InvalidArgument>(entry_point,
+                "InitialState: the supplied " + std::string(to_string(held)) +
+                " would have to be converted into a " + to_string(target) +
+                " to start this run, and Conversion::Never is selected.");
+        }
     }
 
     if (options.initial_cost == Cost::Guarded) {

@@ -129,7 +129,8 @@ void preflight_instructions(
                     point_of(inst, i));
             }
         }
-        if (inst.condition_clbit >= circuit.n_clbits) {
+        if (inst.has_condition &&
+            (inst.condition_clbit < 0 || inst.condition_clbit >= circuit.n_clbits)) {
             raise<OutOfRange>(entry_point,
                 "the condition's classical bit index " + std::to_string(inst.condition_clbit) +
                     " out of range [0, " + std::to_string(circuit.n_clbits) + ")",
@@ -139,6 +140,18 @@ void preflight_instructions(
 
     for (std::size_t i = 0; i < circuit.instructions.size(); ++i) {
         const Instruction& inst = circuit.instructions[i];
+
+        // A bit and a value with no condition: the caller wrote a condition
+        // the gate would ignore, so the gate would run unconditioned.
+        if (!inst.has_condition && (inst.condition_clbit != -1 || inst.condition_value != 0)) {
+            raise<InvalidArgument>(entry_point,
+                "the instruction carries condition_clbit = " +
+                    std::to_string(inst.condition_clbit) + " and condition_value = " +
+                    std::to_string(inst.condition_value) +
+                    " with has_condition false; set has_condition (Instruction::set_condition) "
+                    "to condition it, or leave the two at -1 and 0",
+                point_of(inst, i));
+        }
 
         if (const std::string reason = unbound_reason(inst); !reason.empty()) {
             raise<InvalidArgument>(entry_point, reason, point_of(inst, i));

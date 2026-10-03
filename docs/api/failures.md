@@ -98,8 +98,9 @@ class InternalError   : public std::logic_error,       public Error;
 - When the run's partial results were saved, the message ends with
   `Partial results saved to <folder>.` and `saved_to()` returns the folder. If
   the folder lacks a part, the state when the disk had no room for it for
-  instance, a last sentence names it and says to take it from memory with
-  `take_failed_run()`.
+  instance, two last sentences list every missing part and say where to find
+  them: `Not saved: the state, the observations. Take from memory with
+  lindblad::take_failed_run().`
 
 ### RunPhase
 
@@ -320,7 +321,7 @@ systems the folder is readable by its owner only (0700, files 0600).
 | `circuit.json` | `QuantumCircuit::to_json()` |
 | `noise_model.json` | `NoiseModel::to_json()`, for a density-matrix run |
 | `observations.json` | every observation; numbers at 17 significant digits, NaN and infinities as the strings `"NaN"`, `"Infinity"`, `"-Infinity"` |
-| `observations/<index>-<label>.bin` | one state file per observed state |
+| `observations/<index>-<label>.bin` | one state file per observed state; `<label>` is the first 64 characters of the label, each one other than a letter, a digit, `.`, `_` or `-` written as `_` |
 | `state.bin` | the state being evolved |
 
 A state file is little-endian on every host, so a folder saved on one machine

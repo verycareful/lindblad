@@ -55,8 +55,8 @@ Fields and defaults:
 
 ## `clear_cache`
 
-Clears the internal transpilation cache. This is useful when you change
-transpilation settings or need to release cached circuits.
+Clears the internal transpilation cache, releasing the cached circuits. The
+optimisation level is part of every key, so changing it does not need a clear.
 
 ## `run_batch`
 
@@ -99,7 +99,13 @@ double run_single(
 Behavior (verified against the implementation):
 
 - When `options.optimization_level > 0`, transpiles the unbound circuit and
-  caches the result using a structure key (gate types, qubit indices, and `n_clbits`)
+  caches the result. The key is the whole circuit and the optimisation level:
+  every instruction's type, operands, classical bits, numeric parameters (by
+  their exact bits), matrix, permutation, condition, label, validation policy
+  and symbolic names or expressions, and the circuit's parameter list and
+  bindings. Only the values later bound to symbolic parameters are left out, so
+  one parameterised circuit transpiles once across all its evaluations while
+  any two circuits that differ otherwise never share an entry
 - Transpilation runs outside the cache mutex (double-checked locking); insertion is guarded
 - On cache hit, reuses the cached unbound circuit
 - Binds parameters by name using the transpiled circuit parameter names when

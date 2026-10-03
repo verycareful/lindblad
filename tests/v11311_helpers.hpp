@@ -30,6 +30,7 @@
 #include "lindblad/validation.hpp"
 
 #include <algorithm>
+#include <clocale>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -37,6 +38,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <locale>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -346,5 +348,59 @@ private:
     bool ok_ = false;
 };
 #endif
+
+// =============================================================================
+// Locales that format numbers differently
+// =============================================================================
+// A decimal comma and grouped thousands with a full stop between groups: what
+// a German or French desktop locale gives a C++ stream. Built from a facet of
+// our own, so it needs no locale installed on the host.
+struct CommaDecimal : std::numpunct<char> {
+    char do_decimal_point() const override { return ','; }
+    char do_thousands_sep() const override { return '.'; }
+    std::string do_grouping() const override { return "\3"; }
+};
+
+// Installs CommaDecimal as the global C++ locale for a scope. An unnamed
+// locale leaves the C locale alone, so this reaches streams only.
+class ScopedCommaLocale {
+public:
+    ScopedCommaLocale()
+        : previous_(std::locale::global(std::locale(std::locale::classic(), new CommaDecimal))) {}
+    ~ScopedCommaLocale() { std::locale::global(previous_); }
+    ScopedCommaLocale(const ScopedCommaLocale&) = delete;
+    ScopedCommaLocale& operator=(const ScopedCommaLocale&) = delete;
+
+private:
+    std::locale previous_;
+};
+
+// Sets the C locale's LC_NUMERIC to an installed decimal-comma locale for a
+// scope, which is what printf, std::to_string(double) and std::stod follow.
+// A host with none installed cannot do it, and ok() says so: the caller skips
+// rather than passing.
+class ScopedCommaCLocale {
+public:
+    ScopedCommaCLocale() {
+        const char* previous = std::setlocale(LC_NUMERIC, nullptr);
+        saved_ = previous != nullptr ? previous : "C";
+        for (const char* name : {"de_DE.UTF-8", "de_DE.utf8", "fr_FR.UTF-8", "fr_FR.utf8"}) {
+            if (std::setlocale(LC_NUMERIC, name) != nullptr) {
+                chosen_ = name;
+                return;
+            }
+        }
+    }
+    ~ScopedCommaCLocale() { std::setlocale(LC_NUMERIC, saved_.c_str()); }
+    ScopedCommaCLocale(const ScopedCommaCLocale&) = delete;
+    ScopedCommaCLocale& operator=(const ScopedCommaCLocale&) = delete;
+
+    bool ok() const { return !chosen_.empty(); }
+    const std::string& name() const { return chosen_; }
+
+private:
+    std::string saved_;
+    std::string chosen_;
+};
 
 }  // namespace v11311

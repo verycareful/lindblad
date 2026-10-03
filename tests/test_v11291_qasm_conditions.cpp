@@ -62,7 +62,7 @@ bool conditioned(const Instruction& inst, int clbit, int value) {
     return inst.condition_clbit == clbit && inst.condition_value == value;
 }
 
-bool unconditioned(const Instruction& inst) { return inst.condition_clbit < 0; }
+bool unconditioned(const Instruction& inst) { return !inst.has_condition; }
 
 // A measurable circuit: a one-bit register fed by a measurement, and a gate
 // conditioned on it. Qubit 1 is the target, so the condition's clbit and the
@@ -91,8 +91,9 @@ QasmExportOptions always() {
         const Instruction& x = a.instructions[i];
         const Instruction& y = b.instructions[i];
         if (x.type != y.type || x.qubits != y.qubits || x.clbits != y.clbits ||
-            x.condition_clbit != y.condition_clbit ||
-            (x.condition_clbit >= 0 && x.condition_value != y.condition_value))
+            x.has_condition != y.has_condition ||
+            (x.has_condition && (x.condition_clbit != y.condition_clbit ||
+                                 x.condition_value != y.condition_value)))
             return ::testing::AssertionFailure()
                    << "instruction " << i << " differs: " << x.gate_name() << " vs "
                    << y.gate_name() << ", condition " << x.condition_clbit << "=="

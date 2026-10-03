@@ -19,13 +19,17 @@
 #include <omp.h>
 #endif
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <exception>
 #include <optional>
-#include <sstream>
 #include <stdexcept>
+#include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace lindblad {
 
@@ -202,11 +206,24 @@ std::vector<double> Estimator::run_batch(
     // process. Each index keeps its own exception, and the lowest-indexed one
     // is rethrown after the region, so which error the caller sees does not
     // depend on thread scheduling. A failed run's record lands in the slot of
-    // the worker thread that ran it, so each index also takes its record there,
-    // and the lowest-indexed one goes into the caller's slot with its error.
+    // the worker thread that ran it, so each index also takes its record there.
     // An index takes a record only when its own failure stored one: a failure
     // before the first gate stores none, and the slot may still hold an older
     // record that belongs to another run.
+    //
+    // The caller's slot ends holding the reported failure's own record, or, when
+    // that failure left none, exactly what it held before the batch. The
+    // caller's thread is one of the workers, and a later index failing on it
+    // would otherwise overwrite the caller's record with one the batch then
+    // discards, so the caller's record is set aside first and put back.
+    std::optional<FailedRun> callers = take_failed_run();
+    const auto restore_callers = [&] {
+        try {
+            if (callers) detail::restore_failed_run(std::move(*callers));
+        } catch (...) {
+            // An allocation failure here cannot outrank the batch's own outcome.
+        }
+    };
     std::vector<std::exception_ptr> errors(n);
     std::vector<std::optional<FailedRun>> records(n);
     #pragma omp parallel for schedule(dynamic, 1)
@@ -226,34 +243,124 @@ std::vector<double> Estimator::run_batch(
     }
     for (std::size_t i = 0; i < errors.size(); ++i) {
         if (errors[i]) {
-            try {
-                if (records[i]) detail::store_failed_run(std::move(*records[i]));
-            } catch (...) {
-                // The index's own error is what the caller must see.
+            if (records[i]) {
+                try {
+                    detail::store_failed_run(std::move(*records[i]));
+                } catch (...) {
+                    // The index's own error is what the caller must see.
+                }
+            } else {
+                restore_callers();
             }
             std::rethrow_exception(errors[i]);
         }
     }
 
+    restore_callers();
     return results;
 }
 
 // =============================================================================
-// Structure key: hash of (gate_type_int, sorted_qubits) for each instruction,
-// ignoring numeric parameters. Two circuits with the same gate structure but
-// different parameter values map to the same key.
+// Transpile cache key - everything a transpiled circuit depends on
 // =============================================================================
+// The cache hands back a transpiled circuit in place of transpiling the one it
+// was given, so two circuits may share an entry only when transpiling either
+// gives the same circuit. The key therefore holds the circuit exactly: every
+// field of every instruction, its numbers as their bytes (so 0.5 and
+// 0.5000000000000001 differ, and so do -0.0 and 0.0), the classical
+// condition, the matrix, the symbolic names and expressions, and the
+// optimisation level the circuit is transpiled at. Each variable-length part is
+// prefixed by its length, so no two circuits write the same bytes. Two keys
+// are equal exactly when the circuits are, and the map's hash only picks the
+// bucket a full comparison then settles.
+//
+// What it leaves out is what the cache exists to share: the VALUES of symbolic
+// parameters, which run_single binds after the lookup, and the circuit's name.
+//
+// A field added to Instruction or QuantumCircuit that changes what transpile
+// produces has to be written here as well; one left out lets two circuits that
+// differ in it share a transpiled circuit.
+namespace {
 
-static std::string circuit_structure_key(const QuantumCircuit& qc) {
-    std::ostringstream oss;
-    oss << qc.n_qubits << ':' << qc.n_clbits << ':';
-    for (const auto& inst : qc.instructions) {
-        oss << static_cast<int>(inst.type) << '(';
-        for (int q : inst.qubits) oss << q << ',';
-        oss << ')';
+class CacheKey {
+public:
+    template <class T>
+        requires std::is_trivially_copyable_v<T>
+    void put(const T& v) {
+        bytes_.append(reinterpret_cast<const char*>(&v), sizeof v);
     }
-    return oss.str();
+    void put(const std::string& s) {
+        put(static_cast<std::uint64_t>(s.size()));
+        bytes_.append(s);
+    }
+    template <class T>
+    void put(const std::vector<T>& v) {
+        put(static_cast<std::uint64_t>(v.size()));
+        for (const T& x : v) put(x);
+    }
+    void put(const Complex128& z) {
+        put(z.real);
+        put(z.imag);
+    }
+    void put(const ParamExpr& e) {
+        put(static_cast<int>(e.kind));
+        put(e.literal);
+        put(e.name);
+        put(e.op);
+        put(static_cast<bool>(e.lhs));
+        if (e.lhs) put(*e.lhs);
+        put(static_cast<bool>(e.rhs));
+        if (e.rhs) put(*e.rhs);
+    }
+    void put(const ValidationOptions& v) {
+        put(static_cast<int>(v.policy));
+        put(v.atol);
+        put(static_cast<int>(v.repair));
+    }
+    void put(const Instruction& inst) {
+        put(static_cast<int>(inst.type));
+        put(inst.qubits);
+        put(inst.clbits);
+        put(inst.params);
+        put(inst.param_names);
+        put(static_cast<std::uint64_t>(inst.matrix.size()));
+        for (const Complex128& z : inst.matrix) put(z);
+        put(inst.validation);
+        put(inst.permutation);
+        put(inst.param_exprs);
+        put(inst.label);
+        put(inst.has_condition);
+        put(inst.condition_clbit);
+        put(inst.condition_value);
+        put(inst.schedule_time);
+    }
+
+    std::string take() && { return std::move(bytes_); }
+
+private:
+    std::string bytes_;
+};
+
+std::string transpile_cache_key(const QuantumCircuit& qc, int optimization_level) {
+    CacheKey key;
+    key.put(optimization_level);
+    key.put(qc.n_qubits);
+    key.put(qc.n_clbits);
+    key.put(qc.parameter_names);
+    // Ordered by name, so the key does not depend on the map's iteration order.
+    std::vector<std::pair<std::string, double>> bound(qc.parameter_bindings.begin(),
+                                                      qc.parameter_bindings.end());
+    std::sort(bound.begin(), bound.end());
+    key.put(static_cast<std::uint64_t>(bound.size()));
+    for (const auto& [name, value] : bound) {
+        key.put(name);
+        key.put(value);
+    }
+    key.put(qc.instructions);
+    return std::move(key).take();
 }
+
+}  // namespace
 
 double Estimator::run_single(
     const QuantumCircuit& circuit,
@@ -265,15 +372,15 @@ double Estimator::run_single(
     // actually evaluates on.
     detail::check_observable(observable, circuit.n_qubits, "Estimator", "circuit");
 
-    // Transpile with caching. The cache key is based on the UNBOUND circuit
-    // structure (gate types + qubit indices, ignoring parameter values), so the
-    // same transpiled layout is reused across all parameter evaluations.
-    // Cache stores the transpiled-but-unbound circuit; parameters are bound
-    // to the transpiled version, bypassing repeated SABRE/ZYZ work.
+    // Transpile with caching. The key is the whole UNBOUND circuit (see
+    // transpile_cache_key), so one symbolic circuit transpiles once and every
+    // parameter evaluation reuses it, while circuits that differ in anything
+    // else, numbers included, never share an entry. Parameters are bound to
+    // the transpiled circuit, bypassing repeated SABRE/ZYZ work.
     QuantumCircuit to_simulate = circuit;
 
     if (options.optimization_level > 0) {
-        std::string key = circuit_structure_key(circuit);
+        std::string key = transpile_cache_key(circuit, options.optimization_level);
 
         // First check under lock (fast path for cache hit).
         {
@@ -321,7 +428,7 @@ double Estimator::run_single(
     if (options.shots <= 0) {
         for (const auto& inst : to_simulate.instructions) {
             if (inst.type == Instruction::GateType::MEASURE ||
-                inst.condition_clbit >= 0) {
+                inst.has_condition) {
                 throw std::invalid_argument(
                     "Estimator: shots == 0 requests an exact expectation "
                     "value, which is undefined for circuits containing "

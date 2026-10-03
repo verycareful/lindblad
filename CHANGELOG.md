@@ -4,6 +4,147 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.31.2] - 2026-10-04
+
+The patch for the eleven defects 1.1.31.1's tests found, and for three more
+that fixing them turned up. Every number the library writes or reads as text is
+locale-independent. A classical condition has its own flag, so no condition bit
+can stand for "none". The failed-run folder survives a long label and a forged
+seed, and its messages name what is missing in one form. A starting state under
+`Conversion::Never`, an MPS factorisation failure, a `shots == 0` run and
+MA-QAOA's initial angles are all reported as what they are. The Estimator's
+transpile cache no longer answers one circuit with another's value, and the
+OpenQASM 2.0 reader parses the grammar's full expression language and refuses
+what it cannot read. All eighteen tests listed under 1.1.31.1's Known red pass,
+and nothing ships red.
+
+### Added
+
+- **`Instruction::has_condition`**, with `set_condition(clbit, value)`,
+  `clear_condition()` and `copy_condition(other)`. The flag, not any value of
+  `condition_clbit`, says whether an instruction is conditioned.
+- **OpenQASM 2.0 expressions.** Every gate argument, at the top level and in a
+  gate body, is read by one parser for the grammar's `exp`: numbers, `pi`, a
+  gate's formal parameters, `+ - * / ^`, unary minus, parentheses and `sin`,
+  `cos`, `tan`, `exp`, `ln`, `sqrt`. `+` and `-` bind loosest, then `*` and
+  `/`, then unary minus, then `^` (right-associative), so `a/b/c` is `(a/b)/c`
+  and `-2^2` is `-4`. The grammar's own `U` and `CX` are read as built-in
+  gates, and a `barrier` inside a gate body spans the operands it names.
+
+### Changed
+
+- **A condition needs its flag.** With `has_condition` off, `condition_clbit`
+  and `condition_value` must stay at `-1` and `0`; a run refuses an instruction
+  where they do not with `InvalidArgument` before its first gate, naming the
+  instruction. With it on, a condition bit outside the classical register,
+  below it as well as above, is refused with `OutOfRange`. Code that wrote the
+  two fields directly sets the condition with `set_condition`. `from_json`
+  sets the flag for every condition it reads, so circuit files load unchanged.
+- **The OpenQASM 2.0 reader refuses what it used to guess at**, with
+  `std::runtime_error` naming the expression or the gate: an argument it cannot
+  read (it became 0), a division by zero (it gave 0), a value that is not
+  finite, an empty argument, a built-in gate given more arguments than it takes
+  (the extras were dropped), a user-defined gate called with the wrong number
+  of parameters or qubits, a gate body naming an unknown gate (it was skipped)
+  or an operand that is not one of the gate's qubit arguments (it was
+  dropped), a gate that calls itself, and a statement with no operands.
+- **A circuit's JSON writes every double as `json_number` does**, so a NaN or
+  infinite parameter, matrix entry or tolerance is the string `"NaN"`,
+  `"Infinity"` or `"-Infinity"` and reads back, where it was written as a bare
+  `nan` that no JSON reader accepts.
+- **The partial-save message reads `Not saved: the state, the observations.
+  Take from memory with lindblad::take_failed_run().`**, listing every missing
+  part, comma-separated, in the order the record keeps them.
+
+### Fixed
+
+- **Numbers in text follow no locale.** Under a process locale with a decimal
+  comma, `to_json`, `to_qasm2` and `to_qasm3` wrote `rx(0.5)` as `rx(0,5)` and
+  grouped qubit 1234 as `1.234`, and `NoiseModel::to_json` grouped its integer
+  fields, so a noise model's qubit 1000 read back as qubit 1 and a failed run
+  saved in that state could not be loaded. The SVG, LaTeX and HTML drawings,
+  the drawings' parameter labels, `Statevector::to_string`, the failed-run
+  folder name and the Estimator's cache key had the same defect, and the
+  OpenQASM readers read through `std::stod`, which a named locale also
+  reaches. Every number now goes through one locale-free writer, a text buffer
+  that cannot be handed a number any other way, and one locale-free reader.
+- **A condition bit below -1 no longer runs the gate unconditioned.** `-1`
+  meant "no condition" and every backend tested for `>= 0`, so `-7`, set by
+  hand or read from JSON, ran the gate every time. It is refused as outside
+  the register.
+- **A state observation with a long label is saved.** Its file name kept the
+  whole label, and a label longer than a file name may be made the file
+  unwritable, which lost every observation from the folder. The name keeps the
+  observation's index and at most 64 characters of the label.
+- **A saved run's seed must be a string of digits.** It was parsed leniently:
+  `"-1"` wrapped to 2^64 - 1 and trailing text was ignored. Anything else is
+  refused with `InvalidArgument` naming `manifest.json`.
+- **A starting state declined by `Conversion::Never` says so.** On the
+  statevector, density-matrix and MPS backends the refusal said the state
+  "cannot be turned into" the backend's form, though a conversion exists. It
+  now names `Conversion::Never`; "cannot be turned into" is kept for a state
+  with no route at all.
+- **An MPS factorisation failure inside a run names the run.** Its entry point
+  and message prefix were an internal helper's; they are `MPSSimulator::run`.
+- **A `shots == 0` run walked shot by shot names shot 0** on the statevector
+  and MPS backends, as on the density-matrix and Clifford backends and as its
+  observers are told. A single pass that serves every shot still names none.
+- **MA-QAOA refuses a non-finite initial theta before evaluating anything**, on
+  both paths, with `InvalidArgument` naming `MAQAOA::optimize` and the index.
+  The noiseless path ran the whole optimisation on NaN energies.
+- **A save note names a part as the manifest lists it**
+  (`observations/0-dm.bin`, not `0-dm.bin`).
+- **`Estimator::run_batch` keeps the caller's failed-run record** when the
+  failure it reports left none. A later index failing on the caller's own
+  thread replaced the caller's record, and the batch then discarded it.
+- **The Estimator's transpile cache tells every circuit apart.** At
+  `optimization_level >= 1` the cache key held only the circuit's widths, gate
+  types and qubit indices, while the cached circuit kept the first caller's
+  numbers: after `rx(0.5)`, a run of `rx(0.7)` returned cos(0.5). Matrices,
+  conditions and measurement targets collided the same way. The key now holds
+  the whole circuit and the optimisation level; only the values bound to
+  symbolic parameters, which are bound after the lookup, share an entry.
+- **The OpenQASM 2.0 reader evaluates expressions correctly.** A number before
+  `pi` was read only as far as it went, so `rx(0.1+pi/2)` became 0.05π and
+  `rx(pi/2+0.1)` lost its 0.1; in a gate body `a/b/c` was `a/(b/c)`.
+
+### Tests
+
+- **`test_v11312_locale`.** The writers, the reader against `std::stod`'s own
+  results, and every exporter and drawing under a decimal-comma or
+  grouped-thousands locale; the two checks that need a decimal-comma C locale
+  skip on a host without one installed.
+- **`test_v11312_estimator_cache`.** Parameter values, matrices, conditions,
+  measurement targets and parameter order each keep circuits apart, compared
+  with an Estimator that has seen only the second circuit.
+- **`test_v11312_qasm2_expressions`.** Every form of the grammar, every
+  refusal by its full message, gate bodies, nested and self-calling gates.
+- New `V11312` tests beside the 1.1.31.1 pins they extend: the condition flag
+  and its helpers, a long label alongside another of the same 64 characters,
+  the largest seed, a batch that succeeds, and a non-finite theta in a vector
+  MA-QAOA would not use. The pins for defects whose wording is now fixed
+  assert the whole message.
+
+### Results
+
+Six configurations, every leg passing every test it runs (CachyOS Linux,
+native):
+
+| Compiler | Target | Options | Tests | Passed | Skipped | Failed | Time |
+|---|---|---|---:|---:|---:|---:|---:|
+| Clang 23.1.1 | native | none (the documented build) | 3656 | 3646 | 10 | 0 | 17.0 s |
+| Clang 23.1.1 | native | harvest | 3656 | 3653 | 3 | 0 | 17.6 s |
+| Clang 23.1.1 | x86-64-v3 | harvest | 3656 | 3653 | 3 | 0 | 16.5 s |
+| GCC 14.3.1 | native | harvest | 3656 | 3653 | 3 | 0 | 19.1 s |
+| GCC 14.3.1 | x86-64-v3 | harvest | 3656 | 3653 | 3 | 0 | 18.3 s |
+| Clang 20.1.8 | native | harvest | 3656 | 3653 | 3 | 0 | 17.1 s |
+
+3656 tests across 351 suites, all passed. The documented build skips the seven
+theta-harvest tests; every leg skips the large register-size margin test and
+the two decimal-comma C locale checks, which this host cannot run (both pass
+against a decimal-comma locale built for the purpose). The Python tool suites
+pass: 66 tests (5 skipped) and the 5 histogram tests.
+
 ## [1.1.31.1] - 2026-10-03
 
 The test release for 1.1.31.0, which made every `run()` throw on failure and

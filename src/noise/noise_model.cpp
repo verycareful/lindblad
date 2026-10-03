@@ -10,12 +10,12 @@
 #include "lindblad/noise.hpp"
 #include "lindblad/detail/json.hpp"
 #include "lindblad/detail/report.hpp"
+#include "lindblad/detail/text.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <limits>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -179,8 +179,8 @@ constexpr int NOISE_MODEL_VERSION = 1;
 // stay below its width.
 constexpr int MAX_CHANNEL_QUBITS = (std::numeric_limits<std::size_t>::digits - 1) / 2;
 
-void write_channel(std::ostringstream& o, const KrausChannel& channel) {
-    o << "{\"n_qubits\":" << channel.n_qubits << ",\"operators\":[";
+void write_channel(detail::TextBuilder& o, const KrausChannel& channel) {
+    o << "{\"n_qubits\":" << detail::integer_text(channel.n_qubits) << ",\"operators\":[";
     for (std::size_t k = 0; k < channel.operators.size(); ++k) {
         if (k > 0) o << ',';
         o << '[';
@@ -263,9 +263,9 @@ std::vector<int> read_int_array(detail::JsonReader& r) {
 }  // namespace
 
 std::string NoiseModel::to_json() const {
-    std::ostringstream o;
+    detail::TextBuilder o;
     o << "{\"format\":" << detail::json_escape(NOISE_MODEL_FORMAT)
-      << ",\"version\":" << NOISE_MODEL_VERSION << ",\"basis_gate_errors\":[";
+      << ",\"version\":" << detail::integer_text(NOISE_MODEL_VERSION) << ",\"basis_gate_errors\":[";
 
     std::vector<std::string> gates;
     gates.reserve(basis_gate_errors.size());
@@ -280,7 +280,7 @@ std::string NoiseModel::to_json() const {
             o << "{\"qubits\":[";
             for (std::size_t q = 0; q < errors[e].qubits.size(); ++q) {
                 if (q > 0) o << ',';
-                o << errors[e].qubits[q];
+                o << detail::integer_text(errors[e].qubits[q]);
             }
             o << "],\"after_gate\":" << (errors[e].after_gate ? "true" : "false")
               << ",\"channel\":";
@@ -298,7 +298,7 @@ std::string NoiseModel::to_json() const {
     for (std::size_t i = 0; i < qubits.size(); ++i) {
         if (i > 0) o << ',';
         const ReadoutError& err = readout_errors.at(qubits[i]);
-        o << "{\"qubit\":" << qubits[i]
+        o << "{\"qubit\":" << detail::integer_text(qubits[i])
           << ",\"prob_meas_0_prep_1\":" << detail::json_number(err.prob_meas_0_prep_1)
           << ",\"prob_meas_1_prep_0\":" << detail::json_number(err.prob_meas_1_prep_0) << '}';
     }
@@ -309,7 +309,7 @@ std::string NoiseModel::to_json() const {
         o << detail::json_escape(noisy_gates[i]);
     }
     o << "]}";
-    return o.str();
+    return std::move(o).str();
 }
 
 NoiseModel NoiseModel::from_json(const std::string& json) {

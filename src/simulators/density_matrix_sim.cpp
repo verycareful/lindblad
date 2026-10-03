@@ -930,7 +930,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
         bool has_measure = false;
         const int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
         for (const auto& inst : circuit.instructions) {
-            if (inst.condition_clbit >= 0) has_feedforward = true;
+            if (inst.has_condition) has_feedforward = true;
             if (inst.type == Instruction::GateType::MEASURE) has_measure = true;
         }
         const bool needs_per_shot =
@@ -1156,7 +1156,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 using GT = Instruction::GateType;
                 while (prefix_end < n_inst) {
                     const auto& inst = circuit.instructions[prefix_end];
-                    if (inst.type == GT::MEASURE || inst.condition_clbit >= 0) break;
+                    if (inst.type == GT::MEASURE || inst.has_condition) break;
                     failure.at_instruction(static_cast<int>(prefix_end), &inst);
                     if (inst.type != GT::BARRIER) apply_inst(dm, prefix_end);
                     ++prefix_end;
@@ -1188,7 +1188,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                     if (inst.type == GT::BARRIER) continue;
 
                     // Classical condition check
-                    if (inst.condition_clbit >= 0) {
+                    if (inst.has_condition) {
                         int cv = (inst.condition_clbit < n_clbits)
                                  ? clreg[inst.condition_clbit] : 0;
                         if (cv != inst.condition_value) continue;

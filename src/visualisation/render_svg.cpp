@@ -32,8 +32,8 @@
 #include "document.hpp"
 
 #include "lindblad/circuit.hpp"
+#include "lindblad/detail/text.hpp"
 
-#include <sstream>
 #include <string>
 #include <variant>
 #include <vector>
@@ -41,6 +41,14 @@
 namespace lindblad::viz {
 
 namespace {
+
+// Significant digits of an SVG coordinate or length: a drawing narrower than
+// 10^5 px is placed to a tenth of a pixel, and no text carries more digits
+// than the eye can use.
+constexpr int SVG_DIGITS = 6;
+
+// A coordinate or length as SVG text, whatever the process's locale.
+std::string svg_number(double v) { return detail::double_text(v, SVG_DIGITS); }
 
 // XML attribute / text content escaper. Only the five XML-significant
 // characters need handling; the rest pass through unchanged (UTF-8 is fine in
@@ -83,22 +91,22 @@ int codepoint_count(const std::string& s) {
 
 // Joined qubit-row list for the data-qubits attribute ("0,1" for a CX).
 std::string join_qubits(const Glyph& g) {
-    std::ostringstream oss;
+    detail::TextBuilder oss;
     bool first = true;
     for (const auto& [qrow, part] : g.parts) {
         (void)part;
         if (!first) { oss << ','; }
-        oss << qrow;
+        oss << detail::integer_text(qrow);
         first = false;
     }
-    return oss.str();
+    return std::move(oss).str();
 }
 
 // =============================================================================
 // Emit per-part SVG
 // =============================================================================
 
-void emit_box(std::ostringstream& out,
+void emit_box(detail::TextBuilder& out,
               double cx, double cy,
               double cell_w, double cell_h,
               const BoxPart& p) {
@@ -113,49 +121,50 @@ void emit_box(std::ostringstream& out,
     const std::string fill   = p.svg_fill.empty()   ? "#f5f5f5" : p.svg_fill;
     const std::string stroke = p.svg_stroke.empty() ? "#444"    : p.svg_stroke;
 
-    out << "<rect class=\"lb-gate\" x=\"" << x << "\" y=\"" << y
-        << "\" width=\"" << w << "\" height=\"" << h
+    out << "<rect class=\"lb-gate\" x=\"" << svg_number(x) << "\" y=\"" << svg_number(y)
+        << "\" width=\"" << svg_number(w) << "\" height=\"" << svg_number(h)
         << "\" rx=\"3\" ry=\"3\" fill=\"" << xml_escape(fill)
         << "\" stroke=\"" << xml_escape(stroke) << "\"/>";
 
     const double text_y = cy + (p.rowspan > 1 ? (p.rowspan - 1) * 0.5 * cell_h : 0.0);
-    out << "<text class=\"lb-label\" x=\"" << cx << "\" y=\"" << text_y << "\">"
+    out << "<text class=\"lb-label\" x=\"" << svg_number(cx) << "\" y=\""
+        << svg_number(text_y) << "\">"
         << xml_escape(p.label) << "</text>";
 }
 
-void emit_ctrl(std::ostringstream& out, double cx, double cy, bool anti) {
+void emit_ctrl(detail::TextBuilder& out, double cx, double cy, bool anti) {
     if (anti) {
-        out << "<circle class=\"lb-ctrl\" cx=\"" << cx << "\" cy=\"" << cy
+        out << "<circle class=\"lb-ctrl\" cx=\"" << svg_number(cx) << "\" cy=\"" << svg_number(cy)
             << "\" r=\"5\" fill=\"white\" stroke=\"#444\" stroke-width=\"1.5\"/>";
     } else {
-        out << "<circle class=\"lb-ctrl\" cx=\"" << cx << "\" cy=\"" << cy
+        out << "<circle class=\"lb-ctrl\" cx=\"" << svg_number(cx) << "\" cy=\"" << svg_number(cy)
             << "\" r=\"5\" fill=\"#444\"/>";
     }
 }
 
-void emit_xor_target(std::ostringstream& out, double cx, double cy) {
+void emit_xor_target(detail::TextBuilder& out, double cx, double cy) {
     const double r = 11.0;
-    out << "<circle class=\"lb-gate\" cx=\"" << cx << "\" cy=\"" << cy
-        << "\" r=\"" << r << "\" fill=\"white\" stroke=\"#444\" stroke-width=\"1.5\"/>";
-    out << "<line class=\"lb-gate\" x1=\"" << (cx - r) << "\" y1=\"" << cy
-        << "\" x2=\"" << (cx + r) << "\" y2=\"" << cy
+    out << "<circle class=\"lb-gate\" cx=\"" << svg_number(cx) << "\" cy=\"" << svg_number(cy)
+        << "\" r=\"" << svg_number(r) << "\" fill=\"white\" stroke=\"#444\" stroke-width=\"1.5\"/>";
+    out << "<line class=\"lb-gate\" x1=\"" << svg_number(cx - r) << "\" y1=\"" << svg_number(cy)
+        << "\" x2=\"" << svg_number(cx + r) << "\" y2=\"" << svg_number(cy)
         << "\" stroke=\"#444\" stroke-width=\"1.5\"/>";
-    out << "<line class=\"lb-gate\" x1=\"" << cx << "\" y1=\"" << (cy - r)
-        << "\" x2=\"" << cx << "\" y2=\"" << (cy + r)
+    out << "<line class=\"lb-gate\" x1=\"" << svg_number(cx) << "\" y1=\"" << svg_number(cy - r)
+        << "\" x2=\"" << svg_number(cx) << "\" y2=\"" << svg_number(cy + r)
         << "\" stroke=\"#444\" stroke-width=\"1.5\"/>";
 }
 
-void emit_swap_x(std::ostringstream& out, double cx, double cy) {
+void emit_swap_x(detail::TextBuilder& out, double cx, double cy) {
     const double s = 7.0;
-    out << "<line class=\"lb-gate\" x1=\"" << (cx - s) << "\" y1=\"" << (cy - s)
-        << "\" x2=\"" << (cx + s) << "\" y2=\"" << (cy + s)
+    out << "<line class=\"lb-gate\" x1=\"" << svg_number(cx - s) << "\" y1=\"" << svg_number(cy - s)
+        << "\" x2=\"" << svg_number(cx + s) << "\" y2=\"" << svg_number(cy + s)
         << "\" stroke=\"#444\" stroke-width=\"2\"/>";
-    out << "<line class=\"lb-gate\" x1=\"" << (cx - s) << "\" y1=\"" << (cy + s)
-        << "\" x2=\"" << (cx + s) << "\" y2=\"" << (cy - s)
+    out << "<line class=\"lb-gate\" x1=\"" << svg_number(cx - s) << "\" y1=\"" << svg_number(cy + s)
+        << "\" x2=\"" << svg_number(cx + s) << "\" y2=\"" << svg_number(cy - s)
         << "\" stroke=\"#444\" stroke-width=\"2\"/>";
 }
 
-void emit_measure(std::ostringstream& out, double cx, double cy,
+void emit_measure(detail::TextBuilder& out, double cx, double cy,
                   double cell_w, double cell_h) {
     const double inset = 4.0;
     const double w = cell_w - 2.0 * inset;
@@ -163,29 +172,31 @@ void emit_measure(std::ostringstream& out, double cx, double cy,
     const double x = cx - w * 0.5;
     const double y = cy - h * 0.5;
     // Box.
-    out << "<rect class=\"lb-gate\" x=\"" << x << "\" y=\"" << y
-        << "\" width=\"" << w << "\" height=\"" << h
+    out << "<rect class=\"lb-gate\" x=\"" << svg_number(x) << "\" y=\"" << svg_number(y)
+        << "\" width=\"" << svg_number(w) << "\" height=\"" << svg_number(h)
         << "\" rx=\"3\" ry=\"3\" fill=\"#fff\" stroke=\"#444\" stroke-width=\"1.5\"/>";
     // Arc (semicircle) suggesting the meter dial.
     const double r = h * 0.35;
     const double arc_y = cy + h * 0.1;
-    out << "<path class=\"lb-gate\" d=\"M" << (cx - r) << "," << arc_y
-        << " A" << r << "," << r << " 0 0 1 " << (cx + r) << "," << arc_y
+    out << "<path class=\"lb-gate\" d=\"M" << svg_number(cx - r) << "," << svg_number(arc_y)
+        << " A" << svg_number(r) << "," << svg_number(r) << " 0 0 1 " << svg_number(cx + r)
+        << "," << svg_number(arc_y)
         << "\" fill=\"none\" stroke=\"#444\" stroke-width=\"1.5\"/>";
     // Needle.
-    out << "<line class=\"lb-gate\" x1=\"" << cx << "\" y1=\"" << arc_y
-        << "\" x2=\"" << (cx + r * 0.7) << "\" y2=\"" << (arc_y - r * 0.9)
+    out << "<line class=\"lb-gate\" x1=\"" << svg_number(cx) << "\" y1=\"" << svg_number(arc_y)
+        << "\" x2=\"" << svg_number(cx + r * 0.7) << "\" y2=\"" << svg_number(arc_y - r * 0.9)
         << "\" stroke=\"#444\" stroke-width=\"1.5\"/>";
 }
 
-void emit_reset(std::ostringstream& out, double cx, double cy) {
+void emit_reset(detail::TextBuilder& out, double cx, double cy) {
     // The reset marker prints as a small "|0>" text fragment.
-    out << "<text class=\"lb-label\" x=\"" << cx << "\" y=\"" << cy << "\">|0&#x27E9;</text>";
+    out << "<text class=\"lb-label\" x=\"" << svg_number(cx) << "\" y=\"" << svg_number(cy)
+        << "\">|0&#x27E9;</text>";
 }
 
-void emit_barrier(std::ostringstream& out, double cx, double y_top, double y_bot) {
-    out << "<line class=\"lb-barrier\" x1=\"" << cx << "\" y1=\"" << y_top
-        << "\" x2=\"" << cx << "\" y2=\"" << y_bot
+void emit_barrier(detail::TextBuilder& out, double cx, double y_top, double y_bot) {
+    out << "<line class=\"lb-barrier\" x1=\"" << svg_number(cx) << "\" y1=\"" << svg_number(y_top)
+        << "\" x2=\"" << svg_number(cx) << "\" y2=\"" << svg_number(y_bot)
         << "\" stroke=\"#888\" stroke-dasharray=\"2 3\" stroke-width=\"1.2\"/>";
 }
 
@@ -222,10 +233,10 @@ std::string render_svg(const CircuitDocument& doc, const DrawOptions& opts) {
     auto y_cwire  = [&]()       { return cell_h * (n_q + 0.5) + 8.0; };
     auto x_centre = [&](int c)  { return prefix_px + cell_w * (c + 0.5); };
 
-    std::ostringstream out;
+    detail::TextBuilder out;
     out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
     out << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 "
-        << svg_width << " " << svg_height << "\">\n";
+        << svg_number(svg_width) << " " << svg_number(svg_height) << "\">\n";
 
     // Inline style block per spec section 7.2.
     out << "<style>\n"
@@ -250,21 +261,21 @@ std::string render_svg(const CircuitDocument& doc, const DrawOptions& opts) {
 
     out << "<g class=\"lb-wires\">\n";
     for (int q = 0; q < n_q; ++q) {
-        out << "<line class=\"lb-wire\" x1=\"" << wire_x0
-            << "\" y1=\"" << y_qubit(q)
-            << "\" x2=\"" << wire_x1
-            << "\" y2=\"" << y_qubit(q) << "\"/>\n";
+        out << "<line class=\"lb-wire\" x1=\"" << svg_number(wire_x0)
+            << "\" y1=\"" << svg_number(y_qubit(q))
+            << "\" x2=\"" << svg_number(wire_x1)
+            << "\" y2=\"" << svg_number(y_qubit(q)) << "\"/>\n";
     }
     if (show_c) {
         // Double line for the c-wire (two thin parallel strokes 2 px apart).
-        out << "<line class=\"lb-cwire\" x1=\"" << wire_x0
-            << "\" y1=\"" << (y_cwire() - 1.5)
-            << "\" x2=\"" << wire_x1
-            << "\" y2=\"" << (y_cwire() - 1.5) << "\"/>\n";
-        out << "<line class=\"lb-cwire\" x1=\"" << wire_x0
-            << "\" y1=\"" << (y_cwire() + 1.5)
-            << "\" x2=\"" << wire_x1
-            << "\" y2=\"" << (y_cwire() + 1.5) << "\"/>\n";
+        out << "<line class=\"lb-cwire\" x1=\"" << svg_number(wire_x0)
+            << "\" y1=\"" << svg_number(y_cwire() - 1.5)
+            << "\" x2=\"" << svg_number(wire_x1)
+            << "\" y2=\"" << svg_number(y_cwire() - 1.5) << "\"/>\n";
+        out << "<line class=\"lb-cwire\" x1=\"" << svg_number(wire_x0)
+            << "\" y1=\"" << svg_number(y_cwire() + 1.5)
+            << "\" x2=\"" << svg_number(wire_x1)
+            << "\" y2=\"" << svg_number(y_cwire() + 1.5) << "\"/>\n";
     }
     out << "</g>\n";
 
@@ -276,13 +287,13 @@ std::string render_svg(const CircuitDocument& doc, const DrawOptions& opts) {
         std::string lbl = (q < static_cast<int>(doc.qubit_labels.size())
                            ? doc.qubit_labels[q]
                            : ("q[" + std::to_string(q) + "]"));
-        out << "<text class=\"lb-rowlabel\" x=\"" << (prefix_px - 8.0)
-            << "\" y=\"" << y_qubit(q) << "\" text-anchor=\"end\">"
+        out << "<text class=\"lb-rowlabel\" x=\"" << svg_number(prefix_px - 8.0)
+            << "\" y=\"" << svg_number(y_qubit(q)) << "\" text-anchor=\"end\">"
             << xml_escape(lbl) << "</text>\n";
     }
     if (show_c) {
-        out << "<text class=\"lb-rowlabel\" x=\"" << (prefix_px - 8.0)
-            << "\" y=\"" << y_cwire() << "\" text-anchor=\"end\">c</text>\n";
+        out << "<text class=\"lb-rowlabel\" x=\"" << svg_number(prefix_px - 8.0)
+            << "\" y=\"" << svg_number(y_cwire()) << "\" text-anchor=\"end\">c</text>\n";
     }
     out << "</g>\n";
 
@@ -294,7 +305,7 @@ std::string render_svg(const CircuitDocument& doc, const DrawOptions& opts) {
         for (const Glyph& g : L.glyphs) {
             out << "<g class=\"lb-glyph\" data-gate=\""
                 << xml_escape(g.data_gate)
-                << "\" data-col=\"" << g.column
+                << "\" data-col=\"" << detail::integer_text(g.column)
                 << "\" data-qubits=\"" << join_qubits(g) << "\">";
 
             const double cx = x_centre(g.column);
@@ -306,10 +317,10 @@ std::string render_svg(const CircuitDocument& doc, const DrawOptions& opts) {
                 if (show_c && g.strut_bot >= n_q) {
                     y_bot = y_cwire();
                 }
-                out << "<line class=\"lb-strut\" x1=\"" << cx
-                    << "\" y1=\"" << y_top
-                    << "\" x2=\"" << cx
-                    << "\" y2=\"" << y_bot << "\"/>";
+                out << "<line class=\"lb-strut\" x1=\"" << svg_number(cx)
+                    << "\" y1=\"" << svg_number(y_top)
+                    << "\" x2=\"" << svg_number(cx)
+                    << "\" y2=\"" << svg_number(y_bot) << "\"/>";
             }
 
             // Conditional decoration: drop a strut to the c-wire row when
@@ -321,14 +332,15 @@ std::string render_svg(const CircuitDocument& doc, const DrawOptions& opts) {
                     if (qrow < top_qubit) { top_qubit = qrow; }
                 }
                 if (top_qubit < n_q) {
-                    out << "<line class=\"lb-strut\" x1=\"" << cx
-                        << "\" y1=\"" << y_qubit(top_qubit)
-                        << "\" x2=\"" << cx
-                        << "\" y2=\"" << y_cwire() << "\"/>";
+                    out << "<line class=\"lb-strut\" x1=\"" << svg_number(cx)
+                        << "\" y1=\"" << svg_number(y_qubit(top_qubit))
+                        << "\" x2=\"" << svg_number(cx)
+                        << "\" y2=\"" << svg_number(y_cwire()) << "\"/>";
                 }
-                out << "<text class=\"lb-rowlabel\" x=\"" << (cx + 6.0)
-                    << "\" y=\"" << y_cwire() << "\">c[" << g.condition_clbit
-                    << "]=" << g.condition_value << "</text>";
+                out << "<text class=\"lb-rowlabel\" x=\"" << svg_number(cx + 6.0)
+                    << "\" y=\"" << svg_number(y_cwire()) << "\">c["
+                    << detail::integer_text(g.condition_clbit)
+                    << "]=" << detail::integer_text(g.condition_value) << "</text>";
             }
 
             // Per-part marks.
@@ -361,7 +373,7 @@ std::string render_svg(const CircuitDocument& doc, const DrawOptions& opts) {
     out << "</g>\n";
 
     out << "</svg>\n";
-    return out.str();
+    return std::move(out).str();
 }
 
 } // namespace lindblad::viz

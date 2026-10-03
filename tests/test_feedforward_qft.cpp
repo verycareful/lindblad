@@ -636,7 +636,7 @@ TEST(BuildIterativeCircuit, AllPIfClvalIsOne) {
     // Every p_if in the forward circuit has condition_value == 1.
     auto qc = QFT::build_iterative_circuit(4);
     for (const auto& inst : qc.instructions) {
-        if (inst.condition_clbit >= 0) {
+        if (inst.has_condition) {
             EXPECT_EQ(inst.condition_value, 1);
         }
     }

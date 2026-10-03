@@ -114,8 +114,7 @@ TEST(R1222ConditionalExport, AConditionalTwoQubitUnitaryLowersInsideOneBlock) {
 
     QuantumCircuit qc(2, 1);
     qc.unitary(Operator::from_circuit(src).data, {0, 1}, "u2");
-    qc.instructions.back().condition_clbit = 0;
-    qc.instructions.back().condition_value = 1;
+    qc.instructions.back().set_condition(0, 1);
 
     std::string text;
     ASSERT_NO_THROW(text = qc.to_qasm3())

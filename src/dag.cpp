@@ -119,7 +119,8 @@ DAGCircuit DAGCircuit::from_circuit(const QuantumCircuit& qc) {
         // the last writer of its condition bit. Without this edge the DAG has
         // no ordering between a measurement and the feedforward gate it
         // drives whenever they share no qubit wire.
-        if (inst.condition_clbit >= 0 && inst.condition_clbit < qc.n_clbits) {
+        if (inst.has_condition && inst.condition_clbit >= 0 &&
+            inst.condition_clbit < qc.n_clbits) {
             const int c = inst.condition_clbit;
             dag.add_edge(last_clbit_node[c], node_id, c, true);
             clbit_readers[static_cast<size_t>(c)].push_back(node_id);

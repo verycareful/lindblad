@@ -624,10 +624,12 @@ void retain_allocation(const ObservationContext& ctx, std::size_t bytes,
 //   - it never reports a cost through the warning channel, because seeding is
 //     ordinary work rather than a guard someone waived.
 //
-// Returns null when no route exists or Conversion::Never declined it, which the
-// caller turns into a throw: a run has to start somewhere, so the response knob
-// does not soften this any more than it softens a broken anchor. An allocation
-// over the guard throws here, since that cause needs a message of its own.
+// Returns null when no route exists, which the caller turns into a throw
+// naming its own form: a run has to start somewhere, so the response knob does
+// not soften this any more than it softens a broken anchor. A route that exists
+// and that Conversion::Never declines throws InvalidArgument here, naming the
+// setting, so the caller is sent to the setting rather than looking for a
+// route; so does an allocation over the guard.
 std::shared_ptr<const void> produce_initial_state(const StateView& supplied,
                                                   StateForm target,
                                                   const RunPlan::Options& options,

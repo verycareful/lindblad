@@ -126,7 +126,7 @@ Convenience overload that internally constructs a `LocalBackend` configured to u
 
 ## Semi-Classical (Iterative) QFT — Griffiths & Niu 1996
 
-These methods implement the feedforward variant of the QFT. Every instruction in the returned circuit has `n_clbits == n`. The framework honours `condition_clbit`/`condition_value` on each `P` gate in all four simulators; `shots` must be `> 0` since feedforward requires per-shot execution.
+These methods implement the feedforward variant of the QFT. Every instruction in the returned circuit has `n_clbits == n`. The framework honours the classical condition (`has_condition`, `condition_clbit`, `condition_value`) on each `P` gate in all four simulators; `shots` must be `> 0` since feedforward requires per-shot execution.
 
 ### `build_iterative_circuit`
 

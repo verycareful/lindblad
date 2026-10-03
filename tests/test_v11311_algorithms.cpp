@@ -31,6 +31,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -134,13 +135,11 @@ TEST(V11311Algorithms, MaqaoaNoisyPathThrowsTheRunsRefusal) {
     EXPECT_EQ(e->where()->gate, "cx");
 }
 
-// KNOWN RED until 1.1.31.2. A non-finite initial theta (the QSP rotation that
-// prepares each qubit) is refused on the noisy path at the first evaluation,
-// by the density-matrix run; the noiseless path evolves its own state, so the
-// optimisation runs on NaN energies, each scored as the sentinel, and fails
-// only when the final state is sampled, naming neither MA-QAOA nor the theta.
-// optimize() refuses it before any evaluation, on both paths, naming itself
-// and the index, as QAOA's evaluations refuse the same input on both of its.
+// A non-finite initial theta (the QSP rotation that prepares each qubit) is
+// refused by optimize() before any evaluation, on both paths, naming itself and
+// the index, as QAOA's evaluations refuse the same input on both of its. The
+// noiseless path evolves its own state, so without the check it would run the
+// optimisation on NaN energies and fail only when the final state is sampled.
 TEST(V11311Algorithms, MaqaoaRefusesANonFiniteInitialThetaUpFront) {
     const SparsePauliOp cost(std::vector<PauliString>{PauliString("ZZ", Complex128(1.0, 0.0)),
                                                       PauliString("ZI", Complex128(0.5, 0.0))});
@@ -161,9 +160,27 @@ TEST(V11311Algorithms, MaqaoaRefusesANonFiniteInitialThetaUpFront) {
         EXPECT_EQ(detail::failed_run_stores(), stores) << "a run was attempted";
         if (!e) continue;
         EXPECT_EQ(e->entry_point(), "MAQAOA::optimize");
-        v11311::expect_message(*e, {"MAQAOA::optimize: ", "initial_thetas", "1",
-                                    std::to_string(quiet_nan_strict())});
+        EXPECT_EQ(std::string(e->what()), "MAQAOA::optimize: initial_thetas[1] = " +
+                                              std::to_string(quiet_nan_strict()) +
+                                              "; every initial theta must be finite");
     }
+}
+
+TEST(V11312Algorithms, MaqaoaRefusesANonFiniteThetaInAVectorItWouldNotUse) {
+    // Three thetas for two qubits: the vector's length leaves it unused, and
+    // its infinity is still refused rather than ignored.
+    const SparsePauliOp cost(std::vector<PauliString>{PauliString("ZZ", Complex128(1.0, 0.0))});
+    MAQAOA maqaoa;
+    maqaoa.options.p = 1;
+    maqaoa.options.max_iterations = 3;
+    maqaoa.options.initial_thetas = {0.1, 0.2, std::numeric_limits<double>::infinity()};
+    const std::uint64_t stores = detail::failed_run_stores();
+    const auto e = v11311::thrown<InvalidArgument>([&] { (void)maqaoa.optimize(cost); });
+    EXPECT_EQ(detail::failed_run_stores(), stores) << "a run was attempted";
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(std::string(e->what()), "MAQAOA::optimize: initial_thetas[2] = " +
+                                          std::to_string(std::numeric_limits<double>::infinity()) +
+                                          "; every initial theta must be finite");
 }
 
 TEST(V11311Algorithms, MaqaoaRefusesANonFiniteStartingPoint) {

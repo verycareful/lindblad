@@ -65,7 +65,7 @@ int count_type(const QuantumCircuit& qc, GT t) {
 int count_conditioned(const QuantumCircuit& qc) {
     int n = 0;
     for (const auto& inst : qc.instructions)
-        if (inst.condition_clbit >= 0) ++n;
+        if (inst.has_condition) ++n;
     return n;
 }
 

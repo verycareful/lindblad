@@ -164,6 +164,7 @@ Behavior (verified against `src/algorithms/maqaoa.cpp`):
   beta drives which term
 - Parameter layout per layer: `[gammas..., betas...]`
 - Throws `std::invalid_argument`, here, in `build_circuit` and in `num_parameters` alike, for a cost Hamiltonian with no terms, with terms of different widths, or that is not Hermitian (the cost layer rotates by each coefficient's real part), for a mixer term whose width is not the cost Hamiltonian's, and for a mixer term with a non-zero imaginary coefficient
+- Throws `lindblad::InvalidArgument` before evaluating anything, on the noisy path and the noiseless one, for a non-finite entry of `options.initial_thetas`, naming the index: `MAQAOA::optimize: initial_thetas[1] = nan; every initial theta must be finite`. Every entry is checked, also in a vector whose length leaves it unused
 - Uses the minimiser `options.optimizer` names with bounds `[-2*pi, 2*pi]` on every parameter and first step `options.initial_step`
 - If `estimator.options.noise_model` is non-ideal, evaluates with `DensityMatrixSimulator`
 - If ideal, uses direct statevector evolution (`evolve_into`) instead of rebuilding circuits

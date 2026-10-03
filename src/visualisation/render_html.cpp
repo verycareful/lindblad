@@ -25,8 +25,8 @@
 #include "document.hpp"
 
 #include "lindblad/circuit.hpp"
+#include "lindblad/detail/text.hpp"
 
-#include <sstream>
 #include <string>
 
 namespace lindblad::viz {
@@ -38,7 +38,7 @@ namespace lindblad::viz {
 std::string render_html(const CircuitDocument& doc, const DrawOptions& opts) {
     const std::string svg = render_svg(doc, opts);
 
-    std::ostringstream out;
+    detail::TextBuilder out;
     out << "<!DOCTYPE html>\n"
         << "<html lang=\"en\">\n"
         << "<head>\n"
@@ -59,10 +59,10 @@ std::string render_html(const CircuitDocument& doc, const DrawOptions& opts) {
         << "<body>\n"
         << "<div class=\"lb-circuit\">\n"
         << "<div class=\"lb-meta\">"
-        << doc.n_qubits << " qubits, "
-        << doc.layers.size() << " layers";
+        << detail::integer_text(doc.n_qubits) << " qubits, "
+        << detail::integer_text(doc.layers.size()) << " layers";
     if (opts.show_clbits) {
-        out << ", " << doc.n_clbits << " clbits";
+        out << ", " << detail::integer_text(doc.n_clbits) << " clbits";
     }
     out << "</div>\n"
         << svg;
@@ -76,7 +76,7 @@ std::string render_html(const CircuitDocument& doc, const DrawOptions& opts) {
         << "</body>\n"
         << "</html>\n";
 
-    return out.str();
+    return std::move(out).str();
 }
 
 } // namespace lindblad::viz

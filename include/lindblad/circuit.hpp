@@ -185,8 +185,38 @@ struct Instruction {
 
     // Metadata
     std::string label;
-    int condition_clbit = -1;     // classical conditioning (-1 = none)
+
+    // Classical conditioning: the gate runs only when classical bit
+    // condition_clbit holds condition_value. has_condition, not any value of
+    // condition_clbit, says whether there is a condition at all, so no bit
+    // index can stand for "none" and run the gate unconditioned. With it off,
+    // condition_clbit and condition_value must stay at -1 and 0: a run refuses
+    // an instruction where they do not before its first gate, since a bit and a
+    // value with no condition is a condition the caller wrote and the gate
+    // would ignore. With it on, condition_clbit must be inside the classical
+    // register.
+    bool has_condition = false;
+    int condition_clbit = -1;
     int condition_value = 0;
+
+    // Conditions this instruction on classical bit `clbit` holding `value`.
+    void set_condition(int clbit, int value) {
+        has_condition = true;
+        condition_clbit = clbit;
+        condition_value = value;
+    }
+    // Removes the condition, leaving both fields at their unconditioned values.
+    void clear_condition() {
+        has_condition = false;
+        condition_clbit = -1;
+        condition_value = 0;
+    }
+    // Takes `other`'s condition, or its absence.
+    void copy_condition(const Instruction& other) {
+        has_condition = other.has_condition;
+        condition_clbit = other.condition_clbit;
+        condition_value = other.condition_value;
+    }
 
     // Scheduling metadata (set by ASAP/ALAP passes; -1 = unscheduled)
     int schedule_time = -1;

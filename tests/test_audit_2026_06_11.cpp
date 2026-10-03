@@ -390,7 +390,7 @@ TEST(AuditR1112, C11a_Optimize1qKeepsConditions) {
 
     bool has_conditional = false;
     for (const auto& inst : out.instructions) {
-        if (inst.condition_clbit >= 0) { has_conditional = true; break; }
+        if (inst.has_condition) { has_conditional = true; break; }
     }
     EXPECT_TRUE(has_conditional)
         << "transpile(level 1) dropped the classical condition from p_if";
@@ -431,7 +431,7 @@ TEST(AuditR1112, C12_DAGOrdersConditionalAfterMeasure) {
     for (const auto& node : dag.nodes) {
         if (node.type != DAGNode::Type::OP) continue;
         if (node.op.type == GT::MEASURE) measure_id = node.node_id;
-        if (node.op.condition_clbit >= 0) cond_id = node.node_id;
+        if (node.op.has_condition) cond_id = node.node_id;
     }
     ASSERT_GE(measure_id, 0);
     ASSERT_GE(cond_id, 0);

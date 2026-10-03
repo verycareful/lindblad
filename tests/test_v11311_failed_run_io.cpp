@@ -26,14 +26,15 @@
 // library. Then the threads, and the batch primitive that moves a record from
 // a worker thread to the caller's.
 //
-// KNOWN RED until 1.1.31.2, each marked where it stands: a state observation
-// whose label is longer than a file name may be loses every observation on
-// disk; the manifest's seed is read with a parser that wraps "-1" and ignores
-// trailing text; the message after a partial save agrees its verb and pronoun
-// with the number of parts, so a single plural part reads "The observations
-// was not saved; take it"; the note for a part that could not be written names
-// it without its folder; and a batch whose reported failure left no record
-// discards the record the caller already held.
+// Five defects these tests found shipped red in 1.1.31.1 and were fixed in
+// 1.1.31.2: a state observation whose label is longer than a file name may be
+// lost every observation on disk; the manifest's seed was read with a parser
+// that wraps "-1" and ignores trailing text; the message after a partial save
+// agreed its verb and pronoun with the number of parts, so a single plural
+// part read "The observations was not saved; take it"; the note for a part
+// that could not be written named it without its folder; and a batch whose
+// reported failure left no record discarded the record the caller already
+// held. The V11312 tests are 1.1.31.2's own, beside the pins they extend.
 
 #include <gtest/gtest.h>
 
@@ -362,9 +363,8 @@ TEST(V11311FailedRunIo, AClaimedWidthTheFileCannotHoldIsRefusedWithoutAllocating
 // =============================================================================
 
 #if !defined(_WIN32)
-// KNOWN RED until 1.1.31.2 on the message alone: what is missing is listed
-// after "Not saved:", with no verb or pronoun to agree with the number of
-// parts. Everything else here holds today.
+// What is missing is listed after "Not saved:", with no verb or pronoun to
+// agree with the number of parts.
 TEST(V11311FailedRunIo, AStateTooLargeToWriteStaysInMemoryAndTheMessageSaysSo) {
     // 2^12 amplitudes make a 64 KiB state file; every other part is a few
     // KiB. A 16 KiB file limit fails the state's write part way, as a full
@@ -399,9 +399,9 @@ TEST(V11311FailedRunIo, AStateTooLargeToWriteStaysInMemoryAndTheMessageSaysSo) {
     EXPECT_TRUE(loaded.circuit.has_value());
 }
 
-// KNOWN RED until 1.1.31.2 on the two messages: the note names the file by
-// its path in the folder, as the manifest lists it, and the exception lists
-// what is missing with no verb or pronoun to agree.
+// The note names the file by its path in the folder, as the manifest lists
+// it, and the exception lists what is missing with no verb or pronoun to
+// agree.
 TEST(V11311FailedRunIo, ObservationsThatCannotAllBeWrittenAreSavedNoneAtAll) {
     // A density-matrix capture of six qubits is a 64 KiB file; the run's own
     // statevector is 1 KiB. Under a 16 KiB limit the capture's write fails,
@@ -436,8 +436,8 @@ TEST(V11311FailedRunIo, ObservationsThatCannotAllBeWrittenAreSavedNoneAtAll) {
     EXPECT_EQ(load_failed_run(*record.saved_to).observations.size(), 0u);
 }
 
-// KNOWN RED until 1.1.31.2 on the message, as above: two parts missing are
-// listed in the order the record keeps them.
+// Two parts missing are listed in the order the record keeps them, separated
+// by a comma.
 TEST(V11311FailedRunIo, TwoPartsThatCannotBeWrittenAreBothListed) {
     const v11311::TempDir dir("two-parts");
     RunPlan plan;
@@ -462,14 +462,14 @@ TEST(V11311FailedRunIo, TwoPartsThatCannotBeWrittenAreBothListed) {
 #endif
 
 // =============================================================================
-// KNOWN RED until 1.1.31.2
+// A long label, and the seed
 // =============================================================================
 
-// A state observation is saved as observations/<index>-<label>.bin with the
-// label kept whole. A label longer than a file name may be (255 bytes on most
-// filesystems) makes that file unwritable, and since observations are saved
-// whole or not at all, every observation of the run is lost from the folder.
-// The fix keeps the index and at most 64 characters of the label.
+// A state observation is saved as observations/<index>-<label>.bin with at
+// most 64 sanitised characters of the label, so a label longer than a file
+// name may be (255 bytes on most filesystems) still names a writable file.
+// Observations are saved whole or not at all, so one unwritable file would
+// lose every observation of the run from the folder.
 TEST(V11311FailedRunIo, AStateObservationWithALongLabelIsSavedAndLoadsBack) {
     const v11311::TempDir dir("long-label");
     const std::string label(300, 'a');
@@ -484,11 +484,34 @@ TEST(V11311FailedRunIo, AStateObservationWithALongLabelIsSavedAndLoadsBack) {
     EXPECT_EQ(loaded.observations.form(label), StateForm::Statevector);
 }
 
+// Two labels that agree in their first 64 characters shorten to the same text,
+// and the index in front keeps their files apart.
+TEST(V11312FailedRunIo, TwoLongLabelsAlikeInTheirFirst64CharactersBothLoadBack) {
+    const v11311::TempDir dir("long-labels");
+    const std::string first = std::string(80, 'b') + "-one";
+    const std::string second = std::string(80, 'b') + "-two";
+    RunPlan plan;
+    plan.observations.observe(Anchor::after_instruction(0), std::make_shared<StateObserver>(first));
+    plan.observations.observe(Anchor::after_instruction(0), std::make_shared<StateObserver>(second));
+    auto [record, e] = fail_into(dir.path(), normless_trajectory(2), plan);
+    ASSERT_TRUE(record.saved_to.has_value()) << record.save_note;
+    EXPECT_EQ(record.save_note, "");
+    std::vector<std::string> files;
+    for (const auto& entry : fs::directory_iterator(*record.saved_to / "observations")) {
+        files.push_back(entry.path().filename().string());
+    }
+    std::sort(files.begin(), files.end());
+    EXPECT_EQ(files, (std::vector<std::string>{"0-" + std::string(64, 'b') + ".bin",
+                                               "1-" + std::string(64, 'b') + ".bin"}));
+    const FailedRun loaded = load_failed_run(*record.saved_to);
+    EXPECT_TRUE(loaded.observations.contains(first));
+    EXPECT_TRUE(loaded.observations.contains(second));
+}
+
 // The manifest's seed is written as a string of digits, since a JSON number
-// holds only 53 bits, and read back with std::stoull, which accepts a minus
-// sign (wrapping "-1" to 2^64 - 1), leading spaces and trailing text. A seed
-// that is not a plain string of digits is refused like every other malformed
-// number in the manifest.
+// holds only 53 bits, and read back as exactly that. A sign ("-1" would wrap to
+// 2^64 - 1 under a lenient reader), white space, a prefix or trailing text is
+// refused like every other malformed number in the manifest.
 TEST(V11311FailedRunIo, ASeedThatIsNotAStringOfDigitsIsRefused) {
     const v11311::TempDir dir("seed");
     for (const std::string seed : {"-1", " 12", "12abc", "0x10", "+5"}) {
@@ -496,7 +519,9 @@ TEST(V11311FailedRunIo, ASeedThatIsNotAStringOfDigitsIsRefused) {
         const fs::path folder = saved_folder(dir.path());
         v11311::edit_manifest(folder, [&](std::string& m) { v11311::replace_value(m, "seed", "\"" + seed + "\""); });
         const auto e = v11311::thrown<InvalidArgument>([&] { (void)load_failed_run(folder); });
-        if (e) v11311::expect_message(*e, {"load_failed_run: manifest.json "});
+        ASSERT_TRUE(e.has_value());
+        EXPECT_EQ(std::string(e->what()), "load_failed_run: manifest.json records the seed \"" + seed +
+                                              "\", which is not a string of digits");
     }
 }
 
@@ -508,7 +533,19 @@ TEST(V11311FailedRunIo, ASeedOutOfRangeIsRefusedNamingTheManifest) {
     });
     const auto e = v11311::thrown<InvalidArgument>([&] { (void)load_failed_run(folder); });
     ASSERT_TRUE(e.has_value());
-    v11311::expect_message(*e, {"load_failed_run: manifest.json "});
+    EXPECT_EQ(std::string(e->what()),
+              "load_failed_run: manifest.json records the seed \"18446744073709551616\", which is "
+              "more than a 64-bit seed holds");
+}
+
+TEST(V11312FailedRunIo, TheLargestSeedLoadsBack) {
+    const v11311::TempDir dir("seed-max");
+    const fs::path folder = saved_folder(dir.path());
+    const std::uint64_t largest = std::numeric_limits<std::uint64_t>::max();
+    v11311::edit_manifest(folder, [&](std::string& m) {
+        v11311::replace_value(m, "seed", "\"" + std::to_string(largest) + "\"");
+    });
+    EXPECT_EQ(load_failed_run(folder).seed, largest);
 }
 
 // =============================================================================
@@ -640,13 +677,12 @@ TEST(V11311FailedRunIo, ABatchWhoseFailureLeftNoRecordAttachesNone) {
     EXPECT_EQ(record->seed, 4242u) << "a record from the batch replaced the caller's";
 }
 
-// KNOWN RED until 1.1.31.2. As above, but only index 0 is refused before its
-// first gate; the later indices fail mid-run and each leaves a record. On the
-// caller's own thread such a record replaces the caller's (the newest wins),
-// and the batch then discards it, since only index 0 is reported: the caller
-// is left with an empty slot. The batch puts only the reported failure's
-// record into the caller's slot, and leaves the slot as it was otherwise, on
-// one thread or several.
+// As above, but only index 0 is refused before its first gate; the later
+// indices fail mid-run and each leaves a record. On the caller's own thread
+// such a record would replace the caller's (the newest wins) and then be
+// discarded, since only index 0 is reported. The batch puts only the reported
+// failure's record into the caller's slot, and leaves the slot as it was
+// otherwise, on one thread or several.
 TEST(V11311FailedRunIo, ABatchLeavesTheCallersRecordWhenTheReportedFailureLeftNone) {
 #ifdef _OPENMP
     const int previous = omp_get_max_threads();
@@ -682,4 +718,30 @@ TEST(V11311FailedRunIo, ABatchLeavesTheCallersRecordWhenTheReportedFailureLeftNo
 #ifdef _OPENMP
     omp_set_num_threads(previous);
 #endif
+}
+
+// A batch that does not fail leaves the caller's record where it was, and
+// putting it back is not a new failure: the count of records stored on the
+// caller's thread is unchanged.
+TEST(V11312FailedRunIo, ABatchThatSucceedsLeavesTheCallersRecordAndTheStoreCount) {
+    const v11311::TempDir dir("batch-ok");
+    {
+        RunPlan plan;
+        plan.options.failed_run_dir = dir.path();
+        plan.options.save_failed_runs = RunPlan::Options::SaveFailedRuns::DoNotSave;
+        (void)take_failed_run();
+        EXPECT_THROW((void)StatevectorSimulator().run(normless_trajectory(2), 3, 4242, plan), RuntimeFailure);
+    }
+    const std::uint64_t stores = detail::failed_run_stores();
+    QuantumCircuit ansatz(1);
+    ansatz.rx("theta", 0);
+    Estimator est;
+    make_sampling(est);
+    const SparsePauliOp z(std::vector<PauliString>{PauliString("Z")});
+    const std::vector<std::vector<double>> params{{0.1}, {0.2}, {0.3}, {0.4}};
+    EXPECT_EQ(est.run_batch(ansatz, z, params).size(), params.size());
+    EXPECT_EQ(detail::failed_run_stores(), stores);
+    const auto record = take_failed_run();
+    ASSERT_TRUE(record.has_value()) << "the caller's own record was taken";
+    EXPECT_EQ(record->seed, 4242u);
 }

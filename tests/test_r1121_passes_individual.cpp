@@ -202,7 +202,7 @@ TEST(R1121Passes, ConsolidateBlocksDoesNotAbsorbConditionedGate) {
     auto out = run_pass(ConsolidateBlocks(), qc);
     int conditioned = 0;
     for (const auto& inst : out.instructions)
-        if (inst.condition_clbit >= 0) ++conditioned;
+        if (inst.has_condition) ++conditioned;
     EXPECT_EQ(conditioned, 1) << "conditioned CX must be preserved";
 }
 

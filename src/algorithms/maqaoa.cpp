@@ -504,6 +504,22 @@ static void require_finite_parameters(std::span<const double> x) {
     }
 }
 
+// A non-finite initial theta is refused before anything runs, on both paths.
+// The noisy path's first density-matrix run would refuse the RY it becomes;
+// the noiseless path applies it to its state directly and would run the whole
+// optimisation on NaN energies, failing only when the final state is sampled.
+// Every entry is checked, including those of a vector whose length leaves it
+// unused, so a NaN given is never a NaN ignored.
+static void require_finite_initial_thetas(const std::vector<double>& thetas) {
+    for (std::size_t q = 0; q < thetas.size(); ++q) {
+        if (!is_finite_strict(thetas[q])) {
+            detail::raise<InvalidArgument>("MAQAOA::optimize",
+                "initial_thetas[" + std::to_string(q) + "] = " + std::to_string(thetas[q]) +
+                    "; every initial theta must be finite");
+        }
+    }
+}
+
 static double maqaoa_objective(MAQAOACallbackData* cb, std::span<const double> x) {
     require_finite_parameters(x);
     if (cb->params_buf.size() != x.size()) {
@@ -665,6 +681,7 @@ MAQAOA::Result MAQAOA::optimize(
     const int nq = cost_hamiltonian.n_qubits();
 
     validate_operators(cost_hamiltonian, mixer_hamiltonian_in, "MAQAOA::optimize");
+    require_finite_initial_thetas(options.initial_thetas);
     SparsePauliOp mixer = mixer_hamiltonian_in;
 
     // Precompute orbit data once for the entire run (Change 6)

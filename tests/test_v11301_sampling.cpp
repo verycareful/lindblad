@@ -941,9 +941,8 @@ TEST(V11301NoNorm, DenseRunsReportTheRefusal) {
             expect_failed(sv, no_norm, std::pair{0, 2}, [&] { (void)ssim.run(trajectory, 16, 1); });
         }
         {
-            // KNOWN RED until 1.1.31.2: the statevector's single trajectory
-            // names no shot, where every other per-shot walk names the one it
-            // is in, and its observers are told shot 0.
+            // The statevector's single trajectory is walked shot by shot, so
+            // it names shot 0, the shot its observers are told.
             SCOPED_TRACE("statevector, a single trajectory");
             expect_failed(sv, no_norm, std::pair{0, 2}, [&] { (void)ssim.run(trajectory, 0, 1); });
         }
