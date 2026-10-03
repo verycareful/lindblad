@@ -61,12 +61,12 @@ set(LINDBLAD_TEST_SOURCES
     test_r1121_types.cpp
     test_r1121_statevector.cpp
     test_r1121_gates_matrices.cpp
-    # test_r1121_circuit_api.cpp
-    # test_r1121_circuit_serialization.cpp
+    test_r1121_circuit_api.cpp
+    test_r1121_circuit_serialization.cpp
     test_r1121_dag_api.cpp
     test_r1121_exec_semantics.cpp
     test_r1121_noise_channels.cpp
-    # test_r1121_noise_model.cpp
+    test_r1121_noise_model.cpp
     test_r1121_operators.cpp
     test_r1121_quantum_info.cpp
     test_r1121_clifford_tableau.cpp
@@ -74,7 +74,7 @@ set(LINDBLAD_TEST_SOURCES
     test_r1121_coupling_topologies.cpp
     test_r1121_passes_individual.cpp
     test_r1121_primitives.cpp
-    # test_r1121_backend.cpp
+    test_r1121_backend.cpp
     test_r1121_qudit_core.cpp
     test_r1121_qudit_dm_mps.cpp
     test_r1121_qudit_noise_clifford.cpp
@@ -82,10 +82,10 @@ set(LINDBLAD_TEST_SOURCES
     test_r1121_viz_options.cpp
     test_r1121_passes_more.cpp
     test_r1121_symbol_gaps.cpp
-    # test_r1122_fill_simulators.cpp
+    test_r1122_fill_simulators.cpp
     test_r1122_fill_transpiler.cpp
-    # test_r1122_fill_algorithms.cpp
-    # test_r1122_fill_frontends.cpp
+    test_r1122_fill_algorithms.cpp
+    test_r1122_fill_frontends.cpp
     test_r1131_structured_ops.cpp
     test_r1131_cow_matrix.cpp
     test_r1131_estimator_grouping.cpp
@@ -98,7 +98,7 @@ set(LINDBLAD_TEST_SOURCES
     test_r1131_transpiler.cpp
     test_r1141_corpus.cpp
     test_r1141_corpus_semantics.cpp
-    # test_r1151_routing_regression.cpp
+    test_r1151_routing_regression.cpp
     test_diag_r1160_mps_shor.cpp
     test_diag_r1160_strictfp.cpp
     test_r1161_qudit_mps_stress.cpp
