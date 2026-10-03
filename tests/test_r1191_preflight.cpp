@@ -17,11 +17,9 @@
 // per-instruction sweep every backend run() invokes up front, so a bad index
 // arriving by any of those routes is reported before it reaches a kernel.
 //
-// The two run() reporting styles differ and are pinned here:
-//   - StatevectorSimulator / DensityMatrixSimulator catch inside run() and
-//     report through Result{success=false, error_message}.
-//   - MPSSimulator / CliffordSimulator have no Result error channel and
-//     surface the failure by throwing.
+// Every backend's run() refuses a bad index before its first gate with
+// lindblad::OutOfRange naming the run and the instruction; validate_operands(),
+// called directly, still throws a plain std::out_of_range. Both are pinned here.
 //
 // This file uses compose() with an out-of-range qubit mapping as a concrete,
 // builder-bypassing ingress: the composed circuit carries an X on a qubit index
@@ -39,7 +37,11 @@
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/simulators/mps_sim.hpp"
 #include "lindblad/simulators/clifford_sim.hpp"
+#include "lindblad/types.hpp"
+#include "v11311_helpers.hpp"
 
+#include <cstdint>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -60,6 +62,20 @@ QuantumCircuit make_bad_index_circuit() {
     return outer.compose(inner, {5});
 }
 
+// The refusal every backend's run() gives for make_bad_index_circuit(): exactly
+// OutOfRange from the run, before the first gate (so no failed-run record),
+// naming the index, the register and the instruction.
+void expect_bad_index_refused(const std::string& entry_point, const std::function<void()>& run) {
+    const std::uint64_t stores = detail::failed_run_stores();
+    const auto e = v11311::thrown<OutOfRange>(run);
+    EXPECT_EQ(detail::failed_run_stores(), stores) << "a refusal left a failed-run record";
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), entry_point);
+    EXPECT_EQ(std::string(e->what()),
+              entry_point + ": qubit index 5 out of range [0, 2) (instruction 0: x on qubit 5)");
+    v11311::expect_point(e->where(), -1, 0, "x", {5});
+}
+
 // A well-formed reference circuit (Bell pair) for the positive controls.
 QuantumCircuit make_valid_circuit() {
     QuantumCircuit qc(2);
@@ -76,7 +92,9 @@ QuantumCircuit make_valid_circuit() {
 
 TEST(R1191Preflight, ValidateOperandsThrowsOnBadIndex) {
     QuantumCircuit bad = make_bad_index_circuit();
-    EXPECT_THROW(bad.validate_operands(), std::out_of_range);
+    const auto e = v11311::thrown<std::out_of_range>([&] { bad.validate_operands(); });
+    ASSERT_TRUE(e.has_value());
+    EXPECT_STREQ(e->what(), "Qubit index 5 out of range [0, 2)");
 }
 
 TEST(R1191Preflight, ValidateOperandsPassesOnValidCircuit) {
@@ -85,49 +103,39 @@ TEST(R1191Preflight, ValidateOperandsPassesOnValidCircuit) {
 }
 
 // =============================================================================
-// Statevector / DensityMatrix: report through Result, do not throw out of run()
+// Every backend: refused before the first gate, naming the run and the gate
 // =============================================================================
 
-TEST(R1191Preflight, StatevectorRunReportsBadIndexViaResult) {
+TEST(R1191Preflight, StatevectorRunRefusesBadIndexBeforeTheFirstGate) {
     QuantumCircuit bad = make_bad_index_circuit();
     StatevectorSimulator sim;
-    auto result = sim.run(bad);
-    EXPECT_FALSE(result.success);
-    EXPECT_FALSE(result.error_message.empty());
+    expect_bad_index_refused("StatevectorSimulator::run", [&] { (void)sim.run(bad); });
 }
 
 TEST(R1191Preflight, StatevectorRunSucceedsOnValidCircuit) {
     QuantumCircuit ok = make_valid_circuit();
     StatevectorSimulator sim;
-    auto result = sim.run(ok);
-    EXPECT_TRUE(result.success);
+    EXPECT_NO_THROW((void)sim.run(ok));
 }
 
-TEST(R1191Preflight, DensityMatrixRunReportsBadIndexViaResult) {
+TEST(R1191Preflight, DensityMatrixRunRefusesBadIndexBeforeTheFirstGate) {
     QuantumCircuit bad = make_bad_index_circuit();
     NoiseModel noise;  // empty: exercises the noiseless path, pre-flight still runs
     DensityMatrixSimulator sim;
-    auto result = sim.run(bad, noise);
-    EXPECT_FALSE(result.success);
-    EXPECT_FALSE(result.error_message.empty());
+    expect_bad_index_refused("DensityMatrixSimulator::run", [&] { (void)sim.run(bad, noise); });
 }
 
 TEST(R1191Preflight, DensityMatrixRunSucceedsOnValidCircuit) {
     QuantumCircuit ok = make_valid_circuit();
     NoiseModel noise;
     DensityMatrixSimulator sim;
-    auto result = sim.run(ok, noise);
-    EXPECT_TRUE(result.success);
+    EXPECT_NO_THROW((void)sim.run(ok, noise));
 }
-
-// =============================================================================
-// MPS / Clifford: no Result error channel, so run() throws
-// =============================================================================
 
 TEST(R1191Preflight, MpsRunThrowsOnBadIndex) {
     QuantumCircuit bad = make_bad_index_circuit();
     MPSSimulator sim;
-    EXPECT_THROW(sim.run(bad), std::out_of_range);
+    expect_bad_index_refused("MPSSimulator::run", [&] { (void)sim.run(bad); });
 }
 
 TEST(R1191Preflight, MpsRunSucceedsOnValidCircuit) {
@@ -139,7 +147,7 @@ TEST(R1191Preflight, MpsRunSucceedsOnValidCircuit) {
 TEST(R1191Preflight, CliffordRunThrowsOnBadIndex) {
     QuantumCircuit bad = make_bad_index_circuit();  // X is Clifford; the index is not
     CliffordSimulator sim;
-    EXPECT_THROW(sim.run(bad, /*shots=*/16), std::out_of_range);
+    expect_bad_index_refused("CliffordSimulator::run", [&] { (void)sim.run(bad, /*shots=*/16); });
 }
 
 TEST(R1191Preflight, CliffordRunSucceedsOnValidCircuit) {
@@ -156,14 +164,22 @@ TEST(R1191Preflight, StatevectorCtorRejectsBadCount) {
     // A negative count used to compute `1ULL << n` in the initializer list
     // BEFORE the range guard ran: shift-width undefined behaviour. The count is
     // validated first now, so every out-of-range count is a clean throw.
-    EXPECT_THROW(Statevector(0), std::invalid_argument);
-    EXPECT_THROW(Statevector(-1), std::invalid_argument);
-    EXPECT_THROW(Statevector(-1000), std::invalid_argument);
-    EXPECT_THROW(Statevector(31), std::invalid_argument);
-    EXPECT_THROW(Statevector(64), std::invalid_argument);
+    for (const int n : {0, -1, -1000, ENFORCED_MAX_QUBITS + 1, 64}) {
+        SCOPED_TRACE(n);
+        const auto e = v11311::thrown<InvalidArgument>([&] { Statevector sv(n); });
+        ASSERT_TRUE(e.has_value());
+        EXPECT_EQ(e->entry_point(), "Statevector");
+        v11311::expect_message(*e, {"Statevector: n_qubits must be in [1, " +
+                                    std::to_string(ENFORCED_MAX_QUBITS) + "], got " +
+                                    std::to_string(n)});
+        // Only a width Lift would accept is told about Lift.
+        const bool liftable = n > ENFORCED_MAX_QUBITS && n <= LIFTED_MAX_QUBITS;
+        EXPECT_EQ(std::string(e->what()).find("QubitLimit::Lift") != std::string::npos, liftable)
+            << e->what();
+    }
 }
 
 TEST(R1191Preflight, StatevectorCtorAcceptsValidCount) {
     EXPECT_NO_THROW(Statevector(1));
-    EXPECT_NO_THROW(Statevector(30));  // the documented maximum
+    EXPECT_NO_THROW(Statevector{ENFORCED_MAX_QUBITS});  // the documented maximum
 }

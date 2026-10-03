@@ -91,21 +91,8 @@ QuantumCircuit opted_out_block(Validation policy) {
 
 constexpr int kWidths[] = {1, 2, 3};
 
-// The backends do not agree on how a rejected circuit surfaces, and asserting
-// the wrong one produces a test that cannot fail.
-//
-// StatevectorSimulator::run and DensityMatrixSimulator::run wrap their bodies in
-// a try/catch and report through Result::success, so EXPECT_NO_THROW on either
-// is vacuous: it holds whatever the backend decided. MPSSimulator::run has no
-// such catch and surfaces by throwing, so there is no Result flag to read.
-//
-// Hence two helpers rather than one. Each states the SAME contract, "this
-// backend accepted the circuit", in the only terms its backend offers.
-::testing::AssertionResult accepted(bool success, const std::string& message) {
-    if (success) return ::testing::AssertionSuccess();
-    return ::testing::AssertionFailure()
-           << "the backend rejected a circuit the library accepted: " << message;
-}
+// Every backend's run() refuses a circuit by throwing, so a run that returns
+// accepted it, and EXPECT_NO_THROW states that contract on each of them.
 
 }  // namespace
 
@@ -132,8 +119,7 @@ TEST(R1221PolicyAtPointOfUse, StatevectorRunsAnOptedOutUnitary) {
         SCOPED_TRACE("k = " + std::to_string(k));
         StatevectorSimulator sim;
         QuantumCircuit qc = opted_out(4, k, Validation::Ignore);
-        const auto r = sim.run(qc, /*shots=*/0, /*seed=*/0);
-        EXPECT_TRUE(accepted(r.success, r.error_message))
+        EXPECT_NO_THROW((void)sim.run(qc, /*shots=*/0, /*seed=*/0))
             << "run() passes Ignore into apply_instruction at every call site "
                "below its pre-flight; this is the shape the other backends are "
                "measured against";
@@ -159,8 +145,7 @@ TEST(R1221PolicyAtPointOfUse, DensityMatrixRunsAnOptedOutUnitary) {
         SCOPED_TRACE("k = " + std::to_string(k));
         DensityMatrixSimulator sim;
         QuantumCircuit qc = opted_out(4, k, Validation::Ignore);
-        const auto r = sim.run(qc, noise, /*shots=*/0, /*seed=*/0);
-        EXPECT_TRUE(accepted(r.success, r.error_message))
+        EXPECT_NO_THROW((void)sim.run(qc, noise, /*shots=*/0, /*seed=*/0))
             << "this backend pre-flights under the caller's policy, so the "
                "gate loop below it must apply the matrix under Ignore rather "
                "than re-judging it under a default, at every width";
@@ -188,8 +173,7 @@ TEST(R1221PolicyAtPointOfUse, WarnIsNotEscalatedToThrow) {
 
         StatevectorSimulator sv;
         QuantumCircuit qc_sv = opted_out(4, k, Validation::Warn);
-        const auto r = sv.run(qc_sv, /*shots=*/0, /*seed=*/0);
-        EXPECT_TRUE(accepted(r.success, r.error_message))
+        EXPECT_NO_THROW((void)sv.run(qc_sv, /*shots=*/0, /*seed=*/0))
             << "Warn must not become Throw";
 
         MPSSimulator mps;

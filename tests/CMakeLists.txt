@@ -102,9 +102,9 @@ set(LINDBLAD_TEST_SOURCES
     test_diag_r1160_mps_shor.cpp
     test_diag_r1160_strictfp.cpp
     test_r1161_qudit_mps_stress.cpp
-    # test_r1171_sv_fusion.cpp
+    test_r1171_sv_fusion.cpp
     test_r1171_hw_info.cpp
-    # test_r1171_dm_superop.cpp
+    test_r1171_dm_superop.cpp
     test_r1181_structured_lowering.cpp
     test_r1181_export_roundtrip.cpp
     test_r1182_ccx_floor.cpp
@@ -113,7 +113,7 @@ set(LINDBLAD_TEST_SOURCES
     test_r1191_mps_validation.cpp
     test_r1191_clifford_validation.cpp
     test_r1191_qudit_validation.cpp
-    # test_r1191_preflight.cpp
+    test_r1191_preflight.cpp
     test_r1201_constants.cpp
     test_r1201_constants_tu2.cpp
     test_r1201_strict_fp.cpp
@@ -122,19 +122,19 @@ set(LINDBLAD_TEST_SOURCES
     test_r1201_qaoa_validity.cpp
     test_r1211_validation_core.cpp
     test_r1211_warning_channel.cpp
-    # test_r1211_sv_physical.cpp
+    test_r1211_sv_physical.cpp
     test_r1211_dm_physical.cpp
     test_r1211_mps_physical.cpp
     test_r1211_qudit_physical.cpp
     test_r1211_propagation.cpp
     test_r1211_synthesized.cpp
-    # test_r1211_margins.cpp
+    test_r1211_margins.cpp
     test_r1211_backfill_r120.cpp
     test_r1212_guards.cpp
     r1211_reference_residuals_strictfp.cpp
     test_r1213_residual_stability.cpp
     test_r1214_kak_diagnostic.cpp
-    # test_r1221_policy_at_point_of_use.cpp
+    test_r1221_policy_at_point_of_use.cpp
     test_r1221_qasm_unitary.cpp
     test_r1221_constants_rule.cpp
     test_r1222_kernel_policy_rule.cpp
@@ -149,7 +149,7 @@ set(LINDBLAD_TEST_SOURCES
     test_v11241_truncation.cpp
     test_v11241_seam_rules.cpp
     test_eigen_svd_pin.cpp
-    # test_v11242_repair_reach.cpp
+    test_v11242_repair_reach.cpp
     # test_v11251_clifford_gates.cpp
     test_v11251_clifford_transpose.cpp
     test_v11251_clifford_slab.cpp

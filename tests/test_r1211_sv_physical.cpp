@@ -33,8 +33,10 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
+#include "v11311_helpers.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -328,15 +330,13 @@ TEST(R1211SvPreflight, IgnoresNonUnitaryInstructionTypes) {
     EXPECT_NO_THROW(qc.validate_physical());
 }
 
-TEST(R1211SvPreflight, WrongSizedMatricesAreCaughtByTheKernelNotThePreflight) {
+TEST(R1211SvPreflight, WrongSizedMatricesAreCaughtBeforeTheFirstGate) {
     // Neither circuit-level check owns matrix size. validate_physical skips an
     // instruction whose matrix is not rows*rows, because measuring unitarity
     // against an assumed side length would read past the operand, and
     // validate_operands inspects only qubit and clbit indices, which here are
-    // valid. The guard is the kernel's own Class B size check.
-    //
-    // What must hold is that the defect is caught somewhere before it can
-    // corrupt a state, so that is what is asserted.
+    // valid. run()'s pass before the first gate owns it: the matrix's size is
+    // decided by the circuit alone, so it is refused before any state exists.
     QuantumCircuit qc(2);
     auto inst = make_unitary_instruction({Complex128(1.0, 0.0)}, {0, 1});
     qc.instructions.push_back(inst);
@@ -348,12 +348,15 @@ TEST(R1211SvPreflight, WrongSizedMatricesAreCaughtByTheKernelNotThePreflight) {
            "about indices";
 
     StatevectorSimulator sim;
-    const auto result = sim.run(qc, 0, 0);
-    EXPECT_FALSE(result.success)
-        << "a 1-entry matrix on two qubits reached execution and was applied";
-    EXPECT_NE(result.error_message.find("size mismatch"), std::string::npos)
-        << "the failure must name the size defect. Got: "
-        << result.error_message;
+    const std::uint64_t stores = detail::failed_run_stores();
+    const auto e = v11311::thrown<InvalidArgument>([&] { (void)sim.run(qc, 0, 0); });
+    EXPECT_EQ(detail::failed_run_stores(), stores) << "a refusal left a failed-run record";
+    ASSERT_TRUE(e.has_value()) << "a 1-entry matrix on two qubits reached execution";
+    EXPECT_EQ(e->entry_point(), "StatevectorSimulator::run");
+    EXPECT_EQ(std::string(e->what()),
+              "StatevectorSimulator::run: the UNITARY acts on 2 qubits, so its matrix must "
+              "have 16 entries; it has 1 (instruction 0: unitary on qubits 0, 1)");
+    v11311::expect_point(e->where(), -1, 0, "unitary", {0, 1});
 }
 
 TEST(R1211SvPreflight, ReportsTheGateLabelAsContext) {
@@ -437,16 +440,21 @@ TEST(R1211SvRun, RunRejectsANonUnitaryCircuit) {
     QuantumCircuit qc(2);
     qc.instructions.push_back(make_unitary_instruction(bad_1q(), {0}));
 
-    // run() converts an exception into Result::success plus error_message
-    // rather than letting it escape, so the rejection is read from the result.
+    // The physical check refuses before the first gate. Its refusal names the
+    // gate that requested the check (its label, else its name) as the entry
+    // point rather than the run, and carries no position.
     StatevectorSimulator sim;
-    const auto result = sim.run(qc, 0, 0);
-    EXPECT_FALSE(result.success)
+    const std::uint64_t stores = detail::failed_run_stores();
+    const auto e = v11311::thrown<InvalidArgument>([&] { (void)sim.run(qc, 0, 0); });
+    EXPECT_EQ(detail::failed_run_stores(), stores) << "a refusal left a failed-run record";
+    ASSERT_TRUE(e.has_value())
         << "run() must pre-flight the circuit; without it the matrix is "
            "checked per shot or not at all";
-    EXPECT_NE(result.error_message.find("not unitary"), std::string::npos)
-        << "the failure must name the physical defect rather than surfacing as "
-           "a generic one. Got: " << result.error_message;
+    EXPECT_EQ(e->entry_point(), "unitary");
+    EXPECT_EQ(std::string(e->what()).rfind("unitary: matrix is not unitary (max |U†U - I| = ", 0),
+              0u)
+        << e->what();
+    EXPECT_FALSE(e->where().has_value());
 }
 
 TEST(R1211SvRun, SimulateCircuitRejectsANonUnitaryCircuit) {
@@ -456,7 +464,10 @@ TEST(R1211SvRun, SimulateCircuitRejectsANonUnitaryCircuit) {
     qc.instructions.push_back(make_unitary_instruction(bad_1q(), {0}));
     StatevectorSimulator sim;
     Statevector sv(2);
-    EXPECT_THROW(sim.simulate_circuit(sv, qc), std::invalid_argument);
+    const auto e = v11311::thrown<InvalidArgument>([&] { sim.simulate_circuit(sv, qc); });
+    ASSERT_TRUE(e.has_value());
+    EXPECT_EQ(e->entry_point(), "unitary");
+    v11311::expect_message(*e, {"matrix is not unitary"});
 }
 
 TEST(R1211SvRun, RunAcceptsACircuitMarkedIgnore) {
