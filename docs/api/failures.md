@@ -129,7 +129,7 @@ struct FailedRun {
     int shots_completed = 0;          // shots whose counts are in `counts`
     std::uint64_t seed = 0;           // the seed actually used, also when 0 was passed
     std::optional<FailurePoint> where;
-    std::string exception_type;       // the dynamic type, demangled where possible
+    std::string exception_type;       // the dynamic type as C++ writes it, the same on every platform
     std::string message;              // what(), as thrown
     std::vector<std::pair<std::string, std::string>> options;  // name, JSON value
 

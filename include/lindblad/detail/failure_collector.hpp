@@ -16,6 +16,7 @@
 #include <exception>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -122,6 +123,15 @@ void store_failed_run(FailedRun&& record);
 // failed_run_stores() is unchanged. Can throw std::bad_alloc as
 // store_failed_run can.
 void restore_failed_run(FailedRun&& record);
+
+// A type name with the class-key keywords the MSVC ABI writes into
+// type_info::name() removed: "class lindblad::RuntimeFailure" becomes
+// "lindblad::RuntimeFailure", and inside template arguments too. A keyword is
+// removed only where it starts a word and is followed by a space, so an
+// identifier such as "subclass" is left alone. FailedRun::exception_type is
+// written into a saved folder that loads on any platform, so it carries one
+// spelling everywhere.
+std::string without_class_keys(std::string_view name);
 
 // How many records have been stored on this thread. A caller that reads it
 // before a run and again after the run throws knows whether that failure left

@@ -4,6 +4,95 @@ All notable changes to this project are documented in this file.
 
 The format is based on Keep a Changelog and this project uses semantic versioning labels for release identifiers.
 
+## [1.1.31.3] - 2026-10-04
+
+The patch for the two failures of 1.1.31.2's CI run, the first run to cover
+1.1.31.0's code. A matrix-product-state chain run twice in one process could
+come out differently: autonne's BDC kernel, built by GCC for a target with
+FMA, factorised blocks with repeated singular values differently depending on
+where the heap placed its buffers. autonne is now built with FMA contraction
+off, and pinned to v0.3.1. On Windows a failed run recorded its exception type
+as `class lindblad::InvalidArgument`; the type name now reads the same on every
+platform. The documentation now says what is true: Windows is not supported.
+
+### Fixed
+
+- **The same input and seed give the same bits again, whatever the heap
+  layout.** The documentation promises reproducible seeded runs, and
+  `V11311SvdSettings.SilentCountsEveryRescueItDoesNotReport` failed once in CI
+  (GCC 13) because a qutrit MPS chain, run twice in one process, made 7 Jacobi
+  rescues the first time and 6 the second. The variation was inside autonne's
+  `svd_thin_bdc`. GCC versions a loop it cannot prove free of aliasing into a
+  scalar and a vector copy and picks one at run time by how far apart two
+  buffers lie; under its default `-ffp-contract=fast` the two copies fuse
+  multiply-adds differently and round differently. On a block whose singular
+  values are equal (the singular vectors are then unique only up to a rotation
+  among them) the last bit decides which basis comes back, and with it which
+  later splits pass verification. Across the 362 blocks one qutrit chain
+  splits, 39 gave more than one factorisation for the same input under GCC with
+  `-march=native`. autonne's own build has no `-march`, so its suite cannot see
+  this; this project passes one. The fetched `autonne` target is now compiled
+  with `-ffp-contract=off` (GCC and Clang), under which every block gave one
+  answer. It costs autonne's BDC kernel 2.5% to 6.6% depending on block size.
+  Reported upstream as shek014/autonne#20; the flag stays until autonne
+  resolves it there. A workload on each engine of this library
+  (statevector, density matrix, qubit and qudit MPS, Clifford, the transpiler,
+  the Estimator) gave one answer at 60 heap layouts, built by GCC and by Clang,
+  with and without fast-math.
+- **A failed run names its exception type the same on every platform.** The
+  MSVC ABI's `type_info::name()` is readable but carries the class key
+  (`class lindblad::RuntimeFailure`), which the record kept; the Itanium ABI's
+  name is demangled. The key is removed, so `FailedRun::exception_type`, which
+  a saved folder records and any platform loads, has one spelling. This was
+  nine failures on the Windows CI leg.
+
+### Changed
+
+- **autonne v0.3.1.** It fixes `svd_thin_bdc` returning `false` on finite
+  blocks whose nonzero singular values are exactly equal beside exact zeros,
+  the spectrum of an MPS block in its exact regime (shek014/autonne#16). With
+  it the qutrit chain the rescue tests drive needs no rescue on any of the six
+  configurations, so a Jacobi rescue that succeeds is a path no test reaches
+  without a seam; the rescue tests still check that every rescue is reported
+  once and the state stays exact. A build tree configured before keeps v0.3.0 in its CMake cache:
+  reconfigure it with `-DLINDBLAD_AUTONNE_GIT_TAG=v0.3.1`, or start a fresh
+  one.
+- **Windows is documented as not supported.** `docs/BuildAndTest.md` and the
+  README listed MSVC among the supported toolchains. Supported is Linux with GCC
+  or Clang; the sources keep their Windows code paths and the CI workflow can
+  still build a Windows leg on request, but no release is gated on it. The
+  build guide's commands are written for a Linux shell.
+
+### Tests
+
+- **`test_v11313_reproducibility`.** The 9x27 block that factorised three ways
+  (nine singular values equal to 1/3 within a few ulps), embedded bit-exact,
+  factorised at 300 heap layouts; and the qutrit chain run 30 times in one
+  process. Both must give one answer. Both fail on the build before this
+  release (three answers, and ten in thirty).
+- **`test_v11313_type_names`.** The MSVC class keys are removed, inside
+  template arguments too, and a name without one is left as it is. The
+  function is compiled on every platform, so the test runs everywhere.
+
+### Results
+
+Six configurations, every leg passing every test it runs (CachyOS Linux,
+native):
+
+| Compiler | Target | Options | Tests | Passed | Skipped | Failed | Time |
+|---|---|---|---:|---:|---:|---:|---:|
+| Clang 23.1.1 | native | none (the documented build) | 3660 | 3650 | 10 | 0 | 18.4 s |
+| Clang 23.1.1 | native | harvest | 3660 | 3657 | 3 | 0 | 18.6 s |
+| Clang 23.1.1 | x86-64-v3 | harvest | 3660 | 3657 | 3 | 0 | 18.0 s |
+| GCC 14.3.1 | native | harvest | 3660 | 3657 | 3 | 0 | 21.2 s |
+| GCC 14.3.1 | x86-64-v3 | harvest | 3660 | 3657 | 3 | 0 | 20.5 s |
+| Clang 20.1.8 | native | harvest | 3660 | 3657 | 3 | 0 | 19.3 s |
+
+3660 tests across 353 suites, all passed. The documented build skips the seven
+theta-harvest tests; every leg skips the large register-size margin test and
+the two decimal-comma C locale checks, which this host cannot run. The Python
+tool suites pass: 66 tests (5 skipped) and the 5 histogram tests.
+
 ## [1.1.31.2] - 2026-10-04
 
 The patch for the eleven defects 1.1.31.1's tests found, and for three more

@@ -2,11 +2,15 @@
 
 ## Supported Toolchains
 
-lindblad targets modern C++23 toolchains.
+lindblad targets modern C++23 toolchains on Linux.
 
-- Windows: MSVC (Visual Studio 2022/26 recommended)
 - Linux: GCC or Clang
 - CMake: 3.20+
+
+Windows is not supported. The sources carry Windows code paths and the CI
+workflow can build and test a Windows leg on request, but no release is gated on
+it and failures there are not treated as defects. Other platforms are not
+tested.
 
 OpenMP support is expected and linked in `lindblad_core`.
 
@@ -14,7 +18,7 @@ OpenMP support is expected and linked in `lindblad_core`.
 
 From repository root:
 
-```powershell
+```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 ```
 
@@ -35,25 +39,11 @@ Important CMake options:
 
 Example with options:
 
-```powershell
+```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLINDBLAD_BUILD_BENCHMARKS=ON -DLINDBLAD_BUILD_PYTHON=OFF
 ```
 
 ## Build
-
-### Windows (single-config generators)
-
-```powershell
-cmake --build build -j
-```
-
-### Windows (multi-config generators, example Release)
-
-```powershell
-cmake --build build --config Release -j
-```
-
-### Linux
 
 ```bash
 cmake --build build -j$(nproc)
@@ -63,13 +53,13 @@ cmake --build build -j$(nproc)
 
 Run all discovered tests:
 
-```powershell
+```bash
 ctest --test-dir build --output-on-failure
 ```
 
-For multi-config builds, specify configuration:
+For multi-config generators (Ninja Multi-Config), specify the configuration:
 
-```powershell
+```bash
 ctest --test-dir build -C Release --output-on-failure
 ```
 
@@ -140,11 +130,11 @@ If `LINDBLAD_BUILD_BENCHMARKS=ON`, benchmark executables are generated from:
 
 Run from the build output directory, for example:
 
-```powershell
-.\bench_gates
-.\bench_statevector
-.\bench_maqaoa
-.\bench_scaling
+```bash
+./bench_gates
+./bench_statevector
+./bench_maqaoa
+./bench_scaling
 ```
 
 ## Comparison Benchmarks (vs Qiskit / Qiskit Aer)
@@ -216,7 +206,7 @@ does. They expose no failed-run record. Use the C++ API.
 
 Enable bindings:
 
-```powershell
+```bash
 cmake -S . -B build -DLINDBLAD_BUILD_PYTHON=ON
 cmake --build build -j
 ```
@@ -230,8 +220,8 @@ This builds a `lindblad` Python extension module via pybind11.
 - Ensure outbound network access for CMake FetchContent Git repositories.
 - Remove stale build directory and reconfigure:
 
-```powershell
-Remove-Item -Recurse -Force build
+```bash
+rm -rf build
 cmake -S . -B build
 ```
 
@@ -269,7 +259,6 @@ Building with CMake 3.x needs none of this.
 ### OpenMP link errors
 
 - Confirm compiler OpenMP support is installed/enabled.
-- On MSVC, use a Visual Studio toolchain with OpenMP components.
 
 ### Tests not found in CTest
 

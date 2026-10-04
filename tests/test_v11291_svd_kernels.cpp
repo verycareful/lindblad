@@ -19,11 +19,12 @@
 //
 // Two rungs are deliberately not driven. A Jacobi or Gram rescue SUCCEEDING
 // needs a block the selected kernel rejects and a later rung accepts, and no
-// input produces that on demand. The qudit chain below is the one the default
-// kernel declines blocks of on current builds, so the rescue tests assert what
-// must hold whether or not a decline happens on a given compiler: every
-// rescue the counter records is one warning naming its block, and the state
-// is still exact. The THROW rung is reached with a non-finite block, which
+// input produces that on demand: the pinned autonne's default kernel declines
+// none of the qudit chain's blocks below, so a successful rescue is a path no
+// test reaches without a seam. The rescue
+// tests assert what must hold whether or not a decline happens: every rescue
+// the counter records is one warning naming its block, and the state is still
+// exact. The THROW rung is reached with a non-finite block, which
 // every rung rejects.
 //
 // The Jacobi selection note is latched once per layer for the whole process,
@@ -178,8 +179,9 @@ struct QuditOp {
 };
 
 // The gate chain of R1161QuditStress.LongSeededChainExact: seven qutrits, 168
-// gates, every pair distance. The default kernel declines several of its blocks
-// on current builds, which is what makes it the ladder's live test.
+// gates, every pair distance. Its blocks carry the spectra the default kernel
+// finds hardest (runs of equal singular values beside exact zeros), so a
+// decline would show here first.
 std::vector<QuditOp> qutrit_chain(const std::vector<Complex128>& F,
                                   const std::vector<Complex128>& SUM,
                                   const std::vector<Complex128>& CP) {

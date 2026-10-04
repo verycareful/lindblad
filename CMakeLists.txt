@@ -8,9 +8,9 @@
 # Commercial License Agreement with the Author.
 
 cmake_minimum_required(VERSION 3.21)
-project(lindblad VERSION 1.1.31.2 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
+project(lindblad VERSION 1.1.31.3 DESCRIPTION "Lindblad Quantum Computing Framework" LANGUAGES CXX)
 # Lindblad version labeling (independent of semantic versioning)
-set(LINDBLAD_VERSION_LABEL "1.1.31.2")
+set(LINDBLAD_VERSION_LABEL "1.1.31.3")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -160,7 +160,7 @@ option(LINDBLAD_MPS_THETA_HARVEST "Dump MPS two-site blocks for external SVD ben
 # substituted without editing this file.
 set(LINDBLAD_AUTONNE_REPOSITORY "https://github.com/shek014/autonne.git"
     CACHE STRING "Git remote the autonne SVD kernels are fetched from")
-set(LINDBLAD_AUTONNE_GIT_TAG "v0.3.0"
+set(LINDBLAD_AUTONNE_GIT_TAG "v0.3.1"
     CACHE STRING "Tag, commit SHA or branch of autonne to build against")
 option(LINDBLAD_BUILD_APPS       "Build user-facing CLI apps (lindblad_draw, ...)" ${PROJECT_IS_TOP_LEVEL})
 
@@ -385,6 +385,18 @@ FetchContent_Declare(autonne
 set(AUTONNE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(AUTONNE_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(autonne)
+# FMA contraction off for the kernels. autonne builds itself with strict
+# floating point, which still leaves GCC's default -ffp-contract=fast, and the
+# -march this project passes brings FMA in. GCC versions a loop it cannot prove
+# free of aliasing into a scalar and a vector copy, contracts the two
+# differently, and picks one at run time by how far apart two buffers lie: on a
+# block with a degenerate spectrum the factorisation then depends on the heap
+# layout (shek014/autonne#20), and so does which splits pass verification.
+# Clang contracts per source expression, the same in both copies, so it is
+# unaffected; off is equally deterministic there.
+if(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+    target_compile_options(autonne PRIVATE -ffp-contract=off)
+endif()
 # PRIVATE: no public header names an autonne type (detail/autonne_backend.hpp
 # passes raw buffers), so a consumer sees it only as a link dependency.
 target_link_libraries(lindblad_core PRIVATE autonne::autonne)

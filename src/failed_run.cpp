@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <exception>
 #include <string>
+#include <string_view>
 #include <typeinfo>
 #include <utility>
 #include <vector>
@@ -34,8 +35,11 @@ namespace {
 thread_local std::optional<FailedRun> slot;
 thread_local std::uint64_t stores = 0;  // records stored on this thread
 
-// The dynamic type of an exception as a reader would write it:
-// "lindblad::RuntimeFailure" rather than the mangled symbol.
+// The dynamic type of an exception as a reader would write it, the same on
+// every platform: "lindblad::RuntimeFailure". The Itanium ABI's name is the
+// mangled symbol, demangled here; the MSVC ABI's is already readable but
+// prefixed with its class key ("class lindblad::RuntimeFailure"), which is
+// removed.
 std::string demangled_type_name(const std::type_info& type) {
 #if defined(__GNUG__)
     int status = 0;
@@ -46,8 +50,10 @@ std::string demangled_type_name(const std::type_info& type) {
         return out;
     }
     std::free(name);
-#endif
     return type.name();
+#else
+    return detail::without_class_keys(type.name());
+#endif
 }
 
 const char* name_of(Conversion value) {
@@ -137,6 +143,31 @@ void store_failed_run(FailedRun&& record) {
 }
 
 void restore_failed_run(FailedRun&& record) { slot = std::move(record); }
+
+std::string without_class_keys(std::string_view name) {
+    static constexpr std::string_view keys[] = {"class ", "struct ", "enum ", "union "};
+    const auto word_char = [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+               c == '_';
+    };
+    std::string out;
+    out.reserve(name.size());
+    std::size_t i = 0;
+    while (i < name.size()) {
+        bool removed = false;
+        if (i == 0 || !word_char(name[i - 1])) {
+            for (const std::string_view key : keys) {
+                if (name.substr(i, key.size()) == key) {
+                    i += key.size();
+                    removed = true;
+                    break;
+                }
+            }
+        }
+        if (!removed) out += name[i++];
+    }
+    return out;
+}
 
 std::uint64_t failed_run_stores() noexcept { return stores; }
 

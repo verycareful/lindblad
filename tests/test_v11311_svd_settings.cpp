@@ -200,9 +200,10 @@ TEST(V11311SvdSettings, SilentReportsNoDescentAndStillStopsTheSameWay) {
 
 namespace {
 
-// Seven qutrits, 168 gates, every pair distance: the default kernel declines
-// several of its blocks on current builds and Jacobi repairs each, so the
-// rescue is counted without any seam.
+// Seven qutrits, 168 gates, every pair distance: the blocks whose spectra the
+// default kernel finds hardest (runs of equal singular values beside exact
+// zeros), so a rescue, if one happens, is counted without any seam. The pinned
+// autonne declines none of them, so both runs count zero.
 std::size_t qutrit_chain_rescues(SvdReport report, std::size_t& retry_warnings) {
     constexpr int n = 7, d = 3;
     const auto F = qudit_gates::qft_matrix(d);
