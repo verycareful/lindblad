@@ -9,6 +9,7 @@
 
 #include "lindblad/statevector.hpp"
 #include "lindblad/detail/born_draw.hpp"
+#include "lindblad/detail/sv_runs.hpp"
 #include "lindblad/detail/text.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 
@@ -110,11 +111,14 @@ Statevector& Statevector::operator=(Statevector&& other) noexcept {
 void Statevector::initialize() {
     // Parallel zero-fill causes first-touch to distribute pages across NUMA
     // nodes on multi-socket hardware; free on UMA.
-    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
-    for (size_t i = 0; i < dim; ++i) {
-        real_parts[i] = 0.0;
-        imag_parts[i] = 0.0;
-    }
+    double* re = real_parts;
+    double* im = imag_parts;
+    detail::for_each_share(dim, detail::streaming_work(dim), [re, im](size_t b, size_t e) {
+        for (size_t i = b; i < e; ++i) {
+            re[i] = 0.0;
+            im[i] = 0.0;
+        }
+    });
     real_parts[0] = 1.0;  // |0...0⟩
 }
 
@@ -206,12 +210,15 @@ double Statevector::probability(size_t index) const {
 }
 
 std::vector<double> Statevector::probabilities() const {
+    // Serial on purpose. The vector's constructor zero-fills the whole result
+    // on the calling thread, so the result sits in that core's cache; a team
+    // writing it would pull every line across to its own cores, and a team
+    // spanning two L3 domains does that at a third of one thread's speed
+    // (measured at 2^16 to 2^20 amplitudes), the next call's zero-fill pulling
+    // the lines back again.
     std::vector<double> probs(dim);
-
-    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
     for (size_t i = 0; i < dim; ++i) {
-        probs[i] = real_parts[i] * real_parts[i] +
-                   imag_parts[i] * imag_parts[i];
+        probs[i] = real_parts[i] * real_parts[i] + imag_parts[i] * imag_parts[i];
     }
     return probs;
 }
@@ -220,15 +227,21 @@ std::vector<double> Statevector::probabilities() const {
 // Norm
 // =============================================================================
 
+// Each thread sums its share and the shares are added in thread order
+// (detail::reduce_shares), so the last bits depend on the team size and on
+// nothing else.
 double Statevector::norm_sq() const {
-    double sum = 0.0;
-
-    #pragma omp parallel for reduction(+:sum) schedule(static) if(dim >= (1<<20))
-    for (size_t i = 0; i < dim; ++i) {
-        sum += real_parts[i] * real_parts[i] +
-               imag_parts[i] * imag_parts[i];
-    }
-    return sum;
+    const double* re = real_parts;
+    const double* im = imag_parts;
+    return detail::reduce_shares(
+        dim, detail::streaming_work(dim), 0.0,
+        [re, im](size_t b, size_t e) {
+            double sum = 0.0;
+            #pragma omp simd reduction(+:sum)
+            for (size_t i = b; i < e; ++i) sum += re[i] * re[i] + im[i] * im[i];
+            return sum;
+        },
+        [](double acc, double part) { return acc + part; });
 }
 
 double Statevector::norm() const {
@@ -246,17 +259,19 @@ void Statevector::normalize() {
             "no norm to divide out; the state is zero or non-finite");
     }
     const double inv_n = 1.0 / n;
-
-    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
-    for (size_t i = 0; i < dim; ++i) {
-        real_parts[i] *= inv_n;
-        imag_parts[i] *= inv_n;
-    }
+    double* re = real_parts;
+    double* im = imag_parts;
+    detail::for_each_share(dim, detail::streaming_work(dim), [re, im, inv_n](size_t b, size_t e) {
+        for (size_t i = b; i < e; ++i) {
+            re[i] *= inv_n;
+            im[i] *= inv_n;
+        }
+    });
 }
 
 // Measured through the quarantined sum rather than through norm_sq() above:
-// this value is compared against a tolerance, and norm_sq()'s OpenMP reduction
-// splits the sum across threads, so its last bits depend on the thread count.
+// this value is compared against a tolerance, and norm_sq() splits the sum
+// across threads, so its last bits depend on the thread count.
 // A verdict that changes with how many cores happened to be free is not one.
 bool Statevector::is_normalized(double atol) const {
     return std::abs(detail::state_norm_sq(real_parts, imag_parts, dim) - 1.0) <=
@@ -286,16 +301,30 @@ Complex128 Statevector::inner_product(const Statevector& other) const {
         throw std::invalid_argument("Dimension mismatch for inner product");
     }
 
-    double re = 0.0;
-    double im = 0.0;
-
-    #pragma omp parallel for reduction(+:re,im) schedule(static) if(dim >= (1<<20))
-    for (size_t i = 0; i < dim; ++i) {
-        // ⟨this|other⟩ = sum_i conj(this_i) * other_i
-        re += real_parts[i] * other.real_parts[i] + imag_parts[i] * other.imag_parts[i];
-        im += real_parts[i] * other.imag_parts[i] - imag_parts[i] * other.real_parts[i];
-    }
-    return {re, im};
+    // ⟨this|other⟩ = sum_i conj(this_i) * other_i, summed share by share and
+    // added in thread order (detail::reduce_shares).
+    struct Sum {
+        double re;
+        double im;
+    };
+    const double* ar = real_parts;
+    const double* ai = imag_parts;
+    const double* br = other.real_parts;
+    const double* bi = other.imag_parts;
+    const Sum s = detail::reduce_shares(
+        dim, detail::streaming_work(dim), Sum{0.0, 0.0},
+        [ar, ai, br, bi](size_t b, size_t e) {
+            double re = 0.0;
+            double im = 0.0;
+            #pragma omp simd reduction(+:re,im)
+            for (size_t i = b; i < e; ++i) {
+                re += ar[i] * br[i] + ai[i] * bi[i];
+                im += ar[i] * bi[i] - ai[i] * br[i];
+            }
+            return Sum{re, im};
+        },
+        [](Sum acc, Sum part) { return Sum{acc.re + part.re, acc.im + part.im}; });
+    return {s.re, s.im};
 }
 
 // =============================================================================
@@ -416,14 +445,24 @@ bool state_is_finite_and_nonzero(const Statevector& sv) noexcept {
     const std::size_t dim = sv.dim;
     const double* re = sv.real_parts;
     const double* im = sv.imag_parts;
-    double norm_sq = 0.0;
-    int non_finite = 0;
-    #pragma omp parallel for schedule(static) reduction(+:norm_sq, non_finite) if(dim >= (1<<20))
-    for (std::size_t i = 0; i < dim; ++i) {
-        if (!is_finite_strict(re[i]) || !is_finite_strict(im[i])) ++non_finite;
-        norm_sq += re[i] * re[i] + im[i] * im[i];
-    }
-    return non_finite == 0 && norm_sq > 0.0;
+    struct Scan {
+        double norm_sq;
+        std::size_t non_finite;
+    };
+    const Scan s = reduce_shares(
+        dim, streaming_work(dim), Scan{0.0, 0},
+        [re, im](std::size_t b, std::size_t e) {
+            Scan part{0.0, 0};
+            for (std::size_t i = b; i < e; ++i) {
+                if (!is_finite_strict(re[i]) || !is_finite_strict(im[i])) ++part.non_finite;
+                part.norm_sq += re[i] * re[i] + im[i] * im[i];
+            }
+            return part;
+        },
+        [](Scan acc, Scan part) {
+            return Scan{acc.norm_sq + part.norm_sq, acc.non_finite + part.non_finite};
+        });
+    return s.non_finite == 0 && s.norm_sq > 0.0;
 }
 
 }  // namespace detail

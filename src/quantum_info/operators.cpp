@@ -10,6 +10,7 @@
 #include "lindblad/operators.hpp"
 #include "lindblad/detail/pauli_rules.hpp"
 #include "lindblad/detail/report.hpp"
+#include "lindblad/detail/sv_runs.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/gates.hpp"
@@ -373,38 +374,52 @@ double SparsePauliOp::expectation_value(const Statevector& sv) const {
             }
         }
 
-        double re = 0.0, im = 0.0;
-
-        #pragma omp parallel for reduction(+:re,im) schedule(static) if(dim >= (1<<20))
-        for (int kk = 0; kk < static_cast<int>(dim); ++kk) {
-            size_t k = kk;
-            const size_t j = k ^ x_mask;
-
-            // Phase from Z parity: Z acts on the input (column) state |j⟩, not |k⟩.
-            // Y = iXZ: Z contributes (-1)^{j_bit} for each Y/Z qubit in j = k^x_mask.
-            const int z_parity = LINDBLAD_POPCOUNT64(j & z_mask) & 1;
-            // i^{#Y} factor is constant per Pauli term (independent of k).
-            const int y_count  = LINDBLAD_POPCOUNT64(y_mask) & 3;
-
-            // i^y_count: 0->1+0i, 1->0+1i, 2->-1+0i, 3->0-1i
-            double phase_r = 1.0, phase_i = 0.0;
-            switch (y_count) {
-                case 1: phase_r =  0.0; phase_i =  1.0; break;
-                case 2: phase_r = -1.0; phase_i =  0.0; break;
-                case 3: phase_r =  0.0; phase_i = -1.0; break;
-                default: break;
-            }
-            if (z_parity) { phase_r = -phase_r; phase_i = -phase_i; }
-
-            // conj(ψ_k) * ψ_j = (r_k*r_j + i_k*i_j) + i*(r_k*i_j - i_k*r_j)
-            const double r_k = rp[k], i_k = ip[k];
-            const double r_j = rp[j], i_j = ip[j];
-            const double dot_r = r_k * r_j + i_k * i_j;
-            const double dot_i = r_k * i_j - i_k * r_j;
-
-            re += phase_r * dot_r - phase_i * dot_i;
-            im += phase_r * dot_i + phase_i * dot_r;
+        // i^{#Y} factor is constant per Pauli term (independent of k).
+        // i^y_count: 0->1+0i, 1->0+1i, 2->-1+0i, 3->0-1i
+        const int y_count = LINDBLAD_POPCOUNT64(y_mask) & 3;
+        double y_r = 1.0, y_i = 0.0;
+        switch (y_count) {
+            case 1: y_r =  0.0; y_i =  1.0; break;
+            case 2: y_r = -1.0; y_i =  0.0; break;
+            case 3: y_r =  0.0; y_i = -1.0; break;
+            default: break;
         }
+
+        // Summed share by share and added in thread order
+        // (detail::reduce_shares), so the last bits depend on the team size
+        // and on nothing else.
+        struct Sum {
+            double re;
+            double im;
+        };
+        const Sum sum = detail::reduce_shares(
+            dim, dim, Sum{0.0, 0.0},
+            [rp, ip, x_mask, z_mask, y_r, y_i](size_t b, size_t e) {
+                double re = 0.0, im = 0.0;
+                for (size_t k = b; k < e; ++k) {
+                    const size_t j = k ^ x_mask;
+
+                    // Phase from Z parity: Z acts on the input (column) state
+                    // |j⟩, not |k⟩. Y = iXZ: Z contributes (-1)^{j_bit} for
+                    // each Y/Z qubit in j = k^x_mask.
+                    const int z_parity = LINDBLAD_POPCOUNT64(j & z_mask) & 1;
+                    const double phase_r = z_parity ? -y_r : y_r;
+                    const double phase_i = z_parity ? -y_i : y_i;
+
+                    // conj(ψ_k) * ψ_j = (r_k*r_j + i_k*i_j) + i*(r_k*i_j - i_k*r_j)
+                    const double r_k = rp[k], i_k = ip[k];
+                    const double r_j = rp[j], i_j = ip[j];
+                    const double dot_r = r_k * r_j + i_k * i_j;
+                    const double dot_i = r_k * i_j - i_k * r_j;
+
+                    re += phase_r * dot_r - phase_i * dot_i;
+                    im += phase_r * dot_i + phase_i * dot_r;
+                }
+                return Sum{re, im};
+            },
+            [](Sum acc, Sum part) { return Sum{acc.re + part.re, acc.im + part.im}; });
+        const double re = sum.re;
+        const double im = sum.im;
 
         // Accumulate: Re(coeff * (re + i*im))
         result += term.coeff.real * re - term.coeff.imag * im;

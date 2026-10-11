@@ -13,6 +13,7 @@
 #include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/report.hpp"
+#include "lindblad/detail/sv_runs.hpp"
 #include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate.hpp"
@@ -167,36 +168,50 @@ void StatevectorSimulator::apply_instruction(Statevector& sv,
 // Collapse `qubit` to a sampled outcome (Born rule), renormalise, return it.
 // Shared by the MEASURE/RESET dispatch cases and the trajectory runner
 // rather than triplicating the same O(dim) loops at each call site. Both
-// passes iterate the two qubit-value halves as strided
-// blocks with branch-free inner loops and are OMP-gated at the same
-// dim >= 2^20 threshold as the gate kernels.
+// passes iterate the two qubit-value halves as strided blocks with branch-free
+// inner loops, split across a team by the statevector thread rule for a
+// streaming pass (detail::streaming_work). The two sums are folded in thread order
+// (detail::reduce_shares): the outcome is drawn against prob0 / total, so a
+// sum whose last bits changed from run to run could change a seeded outcome.
 static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng,
                              const char* ctx) {
     const size_t step = 1ULL << qubit;
     const size_t dim = sv.dim;
-    const int n_blocks = static_cast<int>(dim / (2 * step));
+    const size_t n_blocks = dim / (2 * step);
     double* __restrict__ rp = sv.real_parts;
     double* __restrict__ ip = sv.imag_parts;
 
     // Both halves are summed rather than taking the second as 1 - prob0, so the
     // draw is from the state's own normalised distribution and a state with no
     // norm is refused before the engine is touched.
-    double prob0 = 0.0;
-    double prob1 = 0.0;
-    #pragma omp parallel for reduction(+:prob0,prob1) schedule(static) if(dim >= (1<<20))
-    for (int bi = 0; bi < n_blocks; ++bi) {
-        const size_t base = static_cast<size_t>(bi) * 2 * step;
-        double acc0 = 0.0;
-        double acc1 = 0.0;
-        #pragma omp simd reduction(+:acc0,acc1)
-        for (size_t j = 0; j < step; ++j) {
-            acc0 += rp[base + j] * rp[base + j] + ip[base + j] * ip[base + j];
-            acc1 += rp[base + step + j] * rp[base + step + j] +
-                    ip[base + step + j] * ip[base + step + j];
-        }
-        prob0 += acc0;
-        prob1 += acc1;
-    }
+    struct Halves {
+        double prob0;
+        double prob1;
+    };
+    const Halves h = detail::reduce_shares(
+        n_blocks, detail::streaming_work(dim), Halves{0.0, 0.0},
+        [rp, ip, step](size_t b, size_t e) {
+            Halves part{0.0, 0.0};
+            for (size_t bi = b; bi < e; ++bi) {
+                const size_t base = bi * 2 * step;
+                double acc0 = 0.0;
+                double acc1 = 0.0;
+                #pragma omp simd reduction(+:acc0,acc1)
+                for (size_t j = 0; j < step; ++j) {
+                    acc0 += rp[base + j] * rp[base + j] + ip[base + j] * ip[base + j];
+                    acc1 += rp[base + step + j] * rp[base + step + j] +
+                            ip[base + step + j] * ip[base + step + j];
+                }
+                part.prob0 += acc0;
+                part.prob1 += acc1;
+            }
+            return part;
+        },
+        [](Halves acc, Halves part) {
+            return Halves{acc.prob0 + part.prob0, acc.prob1 + part.prob1};
+        });
+    const double prob0 = h.prob0;
+    const double prob1 = h.prob1;
     const double total = prob0 + prob1;
     detail::require_norm_to_sample(std::sqrt(total), ctx);
 
@@ -209,21 +224,22 @@ static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng,
     const size_t keep_off = (outcome == 0) ? 0 : step;   // half that survives
     const size_t zero_off = step - keep_off;             // half that vanishes
 
-    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
-    for (int bi = 0; bi < n_blocks; ++bi) {
-        const size_t base = static_cast<size_t>(bi) * 2 * step;
-        double* __restrict__ kr = rp + base + keep_off;
-        double* __restrict__ ki = ip + base + keep_off;
-        double* __restrict__ zr = rp + base + zero_off;
-        double* __restrict__ zi = ip + base + zero_off;
-        #pragma omp simd
-        for (size_t j = 0; j < step; ++j) {
-            kr[j] *= inv_norm;
-            ki[j] *= inv_norm;
-            zr[j] = 0.0;
-            zi[j] = 0.0;
+    detail::for_each_share(n_blocks, detail::streaming_work(dim), [=](size_t b, size_t e) {
+        for (size_t bi = b; bi < e; ++bi) {
+            const size_t base = bi * 2 * step;
+            double* __restrict__ kr = rp + base + keep_off;
+            double* __restrict__ ki = ip + base + keep_off;
+            double* __restrict__ zr = rp + base + zero_off;
+            double* __restrict__ zi = ip + base + zero_off;
+            #pragma omp simd
+            for (size_t j = 0; j < step; ++j) {
+                kr[j] *= inv_norm;
+                ki[j] *= inv_norm;
+                zr[j] = 0.0;
+                zi[j] = 0.0;
+            }
         }
-    }
+    });
     return outcome;
 }
 

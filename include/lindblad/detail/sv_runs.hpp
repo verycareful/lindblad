@@ -28,9 +28,10 @@
 // dim / 2^(q_{m-1}+1) blocks, which is 1 for a gate on the top qubit: one
 // thread working and the rest idle.
 //
-// The team is min(hw::available_threads(), dim / parallel_grain()) threads
-// (parallel_grain in thread_cap.hpp, DEFAULT_MIN_AMPLITUDES_PER_THREAD unless
-// a simulator's option sets it), and a team of one runs serially.
+// The team is sv_team(dim) threads: min(hw::available_threads(),
+// dim / parallel_grain()) (parallel_grain in thread_cap.hpp,
+// DEFAULT_MIN_AMPLITUDES_PER_THREAD unless a simulator's option sets it), and a
+// team of one runs serially.
 //
 // Two shapes, by how many runs there are:
 //
@@ -60,6 +61,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <memory>
+#include <new>
 #include <type_traits>
 
 #ifdef _OPENMP
@@ -92,6 +95,122 @@ inline std::size_t insert_zeros(std::size_t k, const int* sorted_q, int m) noexc
         k = ((k >> q) << (q + 1)) | low;
     }
     return k;
+}
+
+// The threads for a statevector pass worth `work` amplitudes: each thread gets
+// at least parallel_grain() of them, the team never exceeds the threads a
+// region may use, and a pass with only one thread's worth runs serially. Work
+// is counted in one-qubit-gate amplitudes: a pass doing more per amplitude than
+// a one-qubit gate passes more than its amplitude count and reaches a team
+// sooner, one doing less (streaming_work) passes fewer and reaches it later.
+inline int sv_team(std::size_t work) {
+    const std::size_t team = std::min(hw::available_threads(), work / parallel_grain());
+    return static_cast<int>(std::max<std::size_t>(team, 1));
+}
+
+// The work of a streaming pass over `amplitudes` amplitudes (a fill, a scale,
+// a sum, a collapse), in one-qubit-gate amplitudes: half. Such a pass touches
+// each amplitude once with one or two operations, where a gate reads and
+// writes it through a 2x2 multiply, so its threads pay later: measured at
+// 2^12 amplitudes, a team of two loses to one thread on every streaming pass
+// and wins on a one-qubit gate.
+inline std::size_t streaming_work(std::size_t amplitudes) noexcept { return amplitudes / 2; }
+
+namespace sv_runs_impl {
+
+// Share t of `threads` over n_units units of `unit` items: contiguous, in
+// thread order, sizes differing by at most one unit.
+struct Share {
+    std::size_t begin;
+    std::size_t end;
+};
+
+inline Share share_of(std::size_t n_units, std::size_t unit, std::size_t threads,
+                      std::size_t t) noexcept {
+    const std::size_t share = n_units / threads;
+    const std::size_t extra = n_units % threads;
+    const std::size_t begin = (t * share + std::min(t, extra)) * unit;
+    return {begin, begin + (share + (t < extra ? 1 : 0)) * unit};
+}
+
+// Items per share unit: kRunAlign when it divides the count, so shares of an
+// amplitude array begin on a cache line, else 1.
+inline std::size_t share_unit(std::size_t count) noexcept {
+    return count % kRunAlign == 0 ? kRunAlign : 1;
+}
+
+}  // namespace sv_runs_impl
+
+// =============================================================================
+// for_each_share / reduce_shares - a flat pass split across a team
+// =============================================================================
+// For passes with no gate structure: a fill, a scale, a sum over the state.
+// The items [0, count) are cut into one contiguous share per thread of a team
+// of sv_team(work), never more threads than share units.
+//
+// for_each_share calls body(begin, end) once per share. reduce_shares has each
+// share return its partial, body(begin, end) -> T, and folds the partials with
+// combine(acc, partial) starting from init, in THREAD ORDER after the region.
+// The fold order is fixed by the code, not by which thread finished first, so a
+// sum depends on the team size but is the same on every run with that team: an
+// OpenMP reduction clause leaves the order to the runtime, and libomp combines
+// small teams atomically, in arrival order. A team of one returns
+// combine(init, body(0, count)). T must be default-constructible.
+template <class Body>
+inline void for_each_share(std::size_t count, std::size_t work, Body&& body) {
+    if (count == 0) return;
+    const std::size_t unit = sv_runs_impl::share_unit(count);
+    const std::size_t n_units = count / unit;
+    const int team = static_cast<int>(
+        std::min<std::size_t>(static_cast<std::size_t>(sv_team(work)), n_units));
+    if (team <= 1) {
+        body(std::size_t{0}, count);
+        return;
+    }
+    #pragma omp parallel num_threads(team)
+    {
+        std::size_t threads = 1;
+        std::size_t t = 0;
+#ifdef _OPENMP
+        threads = static_cast<std::size_t>(omp_get_num_threads());
+        t = static_cast<std::size_t>(omp_get_thread_num());
+#endif
+        const sv_runs_impl::Share s = sv_runs_impl::share_of(n_units, unit, threads, t);
+        if (s.begin < s.end) body(s.begin, s.end);
+    }
+}
+
+template <class T, class Body, class Combine>
+inline T reduce_shares(std::size_t count, std::size_t work, T init, Body&& body,
+                       Combine&& combine) {
+    if (count == 0) return init;
+    const std::size_t unit = sv_runs_impl::share_unit(count);
+    const std::size_t n_units = count / unit;
+    const int team = static_cast<int>(
+        std::min<std::size_t>(static_cast<std::size_t>(sv_team(work)), n_units));
+    // The partials are allocated without throwing, so a pass that cannot get
+    // them runs serially and reduce_shares adds no exception of its own (the
+    // finite check that calls it is noexcept).
+    std::unique_ptr<T[]> partial;
+    if (team > 1) partial.reset(new (std::nothrow) T[static_cast<std::size_t>(team)]);
+    if (!partial) return combine(init, body(std::size_t{0}, count));
+    for (int t = 0; t < team; ++t) partial[static_cast<std::size_t>(t)] = init;
+    std::size_t used = 1;  // threads the region actually ran with
+    #pragma omp parallel num_threads(team)
+    {
+        std::size_t threads = 1;
+        std::size_t t = 0;
+#ifdef _OPENMP
+        threads = static_cast<std::size_t>(omp_get_num_threads());
+        t = static_cast<std::size_t>(omp_get_thread_num());
+#endif
+        if (t == 0) used = threads;
+        const sv_runs_impl::Share s = sv_runs_impl::share_of(n_units, unit, threads, t);
+        if (s.begin < s.end) partial[t] = body(s.begin, s.end);
+    }
+    T acc = init;
+    for (std::size_t t = 0; t < used; ++t) acc = combine(acc, partial[t]);
+    return acc;
 }
 
 namespace sv_runs_impl {
@@ -131,10 +250,7 @@ inline void for_each_run(std::size_t dim, const int* sorted_q, int m, Body&& bod
     std::size_t tmask = 0;
     for (int j = 0; j < m; ++j) tmask |= std::size_t{1} << sorted_q[j];
 
-    // Each thread gets at least parallel_grain() amplitudes of the state, and
-    // a sweep with only one thread's worth starts no region at all.
-    const std::size_t team = std::min(hw::available_threads(), dim / parallel_grain());
-    const int team_size = static_cast<int>(std::max<std::size_t>(team, 1));
+    const int team_size = sv_team(dim);
 
     #pragma omp parallel num_threads(team_size) if(team_size > 1)
     {
@@ -145,13 +261,11 @@ inline void for_each_run(std::size_t dim, const int* sorted_q, int m, Body&& bod
         t = static_cast<std::size_t>(omp_get_thread_num());
 #endif
         const bool whole = n_runs >= kRunsPerThread * threads;
-        const std::size_t unit = whole ? run_cap
-                               : (n_groups % kRunAlign == 0 ? kRunAlign : 1);
-        const std::size_t n_units = n_groups / unit;
-        const std::size_t share = n_units / threads;
-        const std::size_t extra = n_units % threads;
-        const std::size_t begin = (t * share + std::min(t, extra)) * unit;
-        const std::size_t end = begin + (share + (t < extra ? 1 : 0)) * unit;
+        const std::size_t unit = whole ? run_cap : sv_runs_impl::share_unit(n_groups);
+        const sv_runs_impl::Share s =
+            sv_runs_impl::share_of(n_groups / unit, unit, threads, t);
+        const std::size_t begin = s.begin;
+        const std::size_t end = s.end;
 
         using sv_runs_impl::sweep_share;
         if (whole && run_cap <= kConstRunMax) {

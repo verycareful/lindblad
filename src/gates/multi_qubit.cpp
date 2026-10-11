@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace lindblad {
@@ -200,16 +201,23 @@ void apply_unitary(
     // Count number of background groups
     size_t n_groups = sv.dim >> k;
 
-    // Work-shape dispatch. Parallelising over background
-    // groups starves when k is large: an n-qubit oracle has ONE group and ran
-    // fully serial with O(4^n) work. With few groups but large blocks,
-    // parallelise the ROW loop of the in-group multiply instead (rows are
-    // independent once the group snapshot is taken).
-    const bool par_groups = n_groups > (1 << 15);
-    const bool par_rows =
-        !par_groups && block_size >= (1 << 8) &&
-        static_cast<unsigned long long>(n_groups) * block_size * block_size >=
-            (1ULL << 20);
+    // Work-shape dispatch. Each amplitude costs block_size complex
+    // multiply-adds, block_size / 2 times a one-qubit gate's two, so the pass
+    // asks detail::sv_team for dim * block_size / 2 amplitudes' worth of
+    // threads. Parallelising over background groups starves when k is large:
+    // an n-qubit oracle has ONE group. With fewer groups than a group's own
+    // multiply could keep busy, the ROW loop of the in-group multiply is
+    // parallelised instead (rows are independent once the group snapshot is
+    // taken), one region per group.
+    const size_t pass_work =
+        block_size > std::numeric_limits<size_t>::max() / sv.dim
+            ? std::numeric_limits<size_t>::max()
+            : sv.dim * (block_size / 2);
+    const int group_team = static_cast<int>(std::min<size_t>(
+        static_cast<size_t>(detail::sv_team(pass_work)), n_groups));
+    const int row_team = static_cast<int>(std::min<size_t>(
+        static_cast<size_t>(detail::sv_team(block_size * (block_size / 2))), block_size));
+    const bool par_rows = row_team > group_team;
 
     if (par_rows) {
         std::vector<size_t> indices(block_size);
@@ -242,7 +250,7 @@ void apply_unitary(
                 old_imag[s] = sv.imag_parts[idx];
             }
 
-            #pragma omp parallel for schedule(static)
+            #pragma omp parallel for num_threads(row_team) schedule(static)
             for (int row = 0; row < static_cast<int>(block_size); ++row) {
                 const Complex128* mrow =
                     matrix.data() + static_cast<size_t>(row) * block_size;
@@ -265,8 +273,8 @@ void apply_unitary(
     thread_local std::vector<double> tl_old_real;
     thread_local std::vector<double> tl_old_imag;
 
-    #pragma omp parallel for schedule(static) if(n_groups > (1<<15)) \
-        firstprivate(block_size)
+    #pragma omp parallel for num_threads(group_team) if(group_team > 1) \
+        schedule(static) firstprivate(block_size)
     for (int gg = 0; gg < static_cast<int>(n_groups); ++gg) {
         // Resize thread-local buffers only when needed
         if (tl_indices.size() < block_size) {
@@ -342,7 +350,8 @@ void apply_mcx(Statevector& sv, const std::vector<int>& controls,
 
     // Iterate indices with target bit 0; each visited pair (i, i|tbit) is
     // disjoint, so the parallel swaps do not race.
-    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
+    const int team = detail::sv_team(dim);
+    #pragma omp parallel for num_threads(team) if(team > 1) schedule(static)
     for (long long ii = 0; ii < static_cast<long long>(dim); ++ii) {
         const size_t i = static_cast<size_t>(ii);
         if ((i & tbit) != 0) continue;
@@ -368,7 +377,8 @@ void apply_mcp(Statevector& sv, const std::vector<int>& qubits,
     double* __restrict__ rp = sv.real_parts;
     double* __restrict__ ip = sv.imag_parts;
 
-    #pragma omp parallel for schedule(static) if(dim >= (1<<20))
+    const int team = detail::sv_team(dim);
+    #pragma omp parallel for num_threads(team) if(team > 1) schedule(static)
     for (long long ii = 0; ii < static_cast<long long>(dim); ++ii) {
         const size_t i = static_cast<size_t>(ii);
         if ((i & mask) != mask) continue;
@@ -425,7 +435,16 @@ void apply_permutation(Statevector& sv, const std::vector<int>& qubits,
     double* __restrict__ rp = sv.real_parts;
     double* __restrict__ ip = sv.imag_parts;
 
-    #pragma omp parallel
+    // A permutation does two to three times a one-qubit gate's work per
+    // amplitude (each group's base is rebuilt bit by bit, then gathered and
+    // scattered through sub_off), measured serially at 2^12 to 2^19
+    // amplitudes, so it asks for 2 * dim amplitudes' worth of threads.
+    const size_t perm_work =
+        sv.dim > std::numeric_limits<size_t>::max() / 2 ? std::numeric_limits<size_t>::max()
+                                                         : 2 * sv.dim;
+    const int team = static_cast<int>(
+        std::min<size_t>(static_cast<size_t>(detail::sv_team(perm_work)), n_bg));
+    #pragma omp parallel num_threads(team) if(team > 1)
     {
         thread_local std::vector<double> tr, ti;
         if (tr.size() < sub_dim) { tr.resize(sub_dim); ti.resize(sub_dim); }
