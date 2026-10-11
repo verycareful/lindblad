@@ -373,6 +373,7 @@ void StatevectorSimulator::simulate_circuit(
 ) {
     const detail::ScopedThreadCap threads(options.max_parallel_threads,
                                           "StatevectorSimulator::simulate_circuit");
+    const detail::ScopedParallelGrain grain(options.min_amplitudes_per_thread);
     sv_simulate(*this, sv, circuit_in, "StatevectorSimulator::simulate_circuit");
 }
 
@@ -386,6 +387,7 @@ double StatevectorSimulator::eval_expectation(
 ) {
     const detail::ScopedThreadCap threads(options.max_parallel_threads,
                                           "StatevectorSimulator::eval_expectation");
+    const detail::ScopedParallelGrain grain(options.min_amplitudes_per_thread);
     if (circuit.n_qubits < 1) {
         detail::raise<InvalidArgument>("StatevectorSimulator::eval_expectation",
                                        "circuit must have at least 1 qubit");
@@ -607,6 +609,40 @@ QuantumCircuit sv_fuse_circuit(StatevectorSimulator& sim,
     return out;
 }
 
+// =============================================================================
+// PhaseClock - partitions one run() into PhaseTimes
+// =============================================================================
+// Each charge() bills the time since the previous charge (or since
+// construction) to one phase and starts the next interval at the same reading,
+// so the phases tile the run with no gap: their sum is construction to the last
+// charge. Off, it reads no clock and every call returns at once.
+class PhaseClock {
+public:
+    using Clock = std::chrono::steady_clock;
+
+    explicit PhaseClock(bool on) : on_(on) {
+        if (on_) last_ = Clock::now();
+    }
+
+    // slot = the PhaseTimes field the interval just ended belongs to
+    void charge(double PhaseTimes::*slot) {
+        if (!on_) return;
+        const Clock::time_point now = Clock::now();
+        times_.*slot += std::chrono::duration<double>(now - last_).count();
+        last_ = now;
+    }
+
+    std::optional<PhaseTimes> result() const {
+        if (!on_) return std::nullopt;
+        return times_;
+    }
+
+private:
+    bool on_;
+    Clock::time_point last_{};
+    PhaseTimes times_{};
+};
+
 }  // namespace
 
 // Every field of Options, for a failed run's record.
@@ -614,6 +650,7 @@ static void record_options(detail::FailureCollector& failure,
                            const StatevectorSimulator::Options& o) {
     using detail::option_value;
     failure.add_option("max_parallel_threads", option_value(o.max_parallel_threads));
+    failure.add_option("min_amplitudes_per_thread", option_value(o.min_amplitudes_per_thread));
     failure.add_option("max_memory_mb", option_value(o.max_memory_mb));
     failure.add_option("qubit_limit", option_value(o.qubit_limit));
     failure.add_option("prefix_reuse", option_value(o.prefix_reuse));
@@ -623,6 +660,7 @@ static void record_options(detail::FailureCollector& failure,
     failure.add_option("fusion_enable", option_value(o.fusion_enable));
     failure.add_option("fusion_threshold", option_value(o.fusion_threshold));
     failure.add_option("fusion_max_qubit", option_value(o.fusion_max_qubit));
+    failure.add_option("record_phase_times", option_value(o.record_phase_times));
 }
 
 StatevectorSimulator::Result StatevectorSimulator::run(
@@ -631,6 +669,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
     uint64_t seed,
     const RunPlan& plan
 ) {
+    PhaseClock clock(options.record_phase_times);
     ScopedWarningFlush flush_on_exit;
     Result result;
 
@@ -655,9 +694,12 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // it rather than a memory figure.
         check_qubit_limit(circuit_in.n_qubits, options.qubit_limit, "StatevectorSimulator::run");
         // Every parallel region of the run below takes Options::
-        // max_parallel_threads; the caller's own setting is back on return.
+        // max_parallel_threads, and every gate kernel Options::
+        // min_amplitudes_per_thread; the caller's own settings are back on
+        // return.
         const detail::ScopedThreadCap threads(options.max_parallel_threads,
                                               "StatevectorSimulator::run");
+        const detail::ScopedParallelGrain grain(options.min_amplitudes_per_thread);
         // A run holds two states at once: the working buffer and the copy
         // returned in Result::final_state. A prefix snapshot, when taken, is
         // released before that copy is made, so it does not raise the count.
@@ -735,6 +777,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         const bool fuse = options.fusion_enable &&
                           (!observed ||
                            plan.options.fusion == RunPlan::Options::Fusion::Keep);
+        clock.charge(&PhaseTimes::setup);
         if (fuse) {
             const int fusion_min = options.fusion_threshold > 0
                 ? options.fusion_threshold
@@ -743,6 +786,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                 fused_storage =
                     sv_fuse_circuit(*this, circuit, options.fusion_max_qubit);
                 exec = &fused_storage;
+                clock.charge(&PhaseTimes::fusion);
             }
         }
 
@@ -848,6 +892,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                 sv_run_trajectory(*this, *sv_work, *exec, clreg, n_clbits,
                                   sv_sim_rng, prefix_end, "StatevectorSimulator::run",
                                   runner->active() ? &*runner : nullptr, &failure);
+                clock.charge(&PhaseTimes::evolution);
 
                 std::string bits;
                 if (has_measure) {
@@ -864,6 +909,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                     bits = sv_sample_register(*sv_work, sv_sim_rng);
                 }
                 result.counts[bits]++;
+                clock.charge(&PhaseTimes::sampling);
                 failure.shot_done();
             }
         } else if (shots > 0 && terminal_only) {
@@ -893,6 +939,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             }
             if (runner->active()) runner->at_end(view, index);
             failure.leave_instructions();
+            clock.charge(&PhaseTimes::evolution);
 
             std::vector<std::pair<int, int>> meas;  // (qubit, clbit)
             for (const auto& inst : exec->instructions)
@@ -930,6 +977,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                 }
                 result.counts[bits]++;
             }
+            clock.charge(&PhaseTimes::sampling);
         } else {
             // Single seeded trajectory (shots == 0 semantics; also the plain
             // forward pass for measurement-free circuits with shots > 0).
@@ -941,15 +989,18 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                               sv_sim_rng, 0, "StatevectorSimulator::run",
                               runner->active() ? &*runner : nullptr, &failure);
             if (walked_per_shot) failure.shot_done();
+            clock.charge(&PhaseTimes::evolution);
             if (shots > 0) {
                 result.counts = sv_work->sample_counts(shots, seed);
             }
+            clock.charge(&PhaseTimes::sampling);
         }
 
         // Flushes every labelled observer into result.observations. Runs before
         // the timer stops, since collecting what was observed is part of the
         // work the run was asked to do.
         runner->end_run();
+        clock.charge(&PhaseTimes::evolution);
 
         auto t_end = std::chrono::high_resolution_clock::now();
         result.simulation_time_seconds =
@@ -975,6 +1026,8 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         result.final_state = Statevector(circuit.n_qubits, options.qubit_limit);
         result.final_state.set_amplitudes(sv_work->real_parts, sv_work->imag_parts,
                                           sv_work->dim, {Validation::Ignore});
+        clock.charge(&PhaseTimes::final_copy);
+        result.phase_times = clock.result();
 
     } catch (...) {
         // The failure path: whatever the run had computed goes into the

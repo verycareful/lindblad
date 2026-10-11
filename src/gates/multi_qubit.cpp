@@ -9,6 +9,7 @@
 
 #include "lindblad/gates.hpp"
 
+#include "lindblad/detail/sv_runs.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 
@@ -32,29 +33,19 @@ void apply_ccx(Statevector& sv, int c1, int c2, int tgt) {
     detail::check_all_distinct({c1, c2, tgt}, "ccx");
     std::array<int,3> qs = {c1, c2, tgt};
     std::sort(qs.begin(), qs.end());
-    const size_t s0  = 1ULL << qs[0];
-    const size_t s1  = 1ULL << qs[1];
-    const size_t s2  = 1ULL << qs[2];
     const size_t c1b = 1ULL << c1;
     const size_t c2b = 1ULL << c2;
     const size_t tb  = 1ULL << tgt;
-    const int n_outer = static_cast<int>(sv.dim / (2 * s2));
 
-    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
-    for (int oi = 0; oi < n_outer; ++oi) {
-        const size_t k2 = static_cast<size_t>(oi) * 2 * s2;
-        for (size_t k1 = 0; k1 < s2; k1 += 2 * s1) {
-            for (size_t k0 = 0; k0 < s1; k0 += 2 * s0) {
-                for (size_t k = 0; k < s0; ++k) {
-                    const size_t base = k2 + k1 + k0 + k;
-                    const size_t i = base | c1b | c2b;       // c1=1, c2=1, tgt=0
-                    const size_t j = base | c1b | c2b | tb;  // c1=1, c2=1, tgt=1
-                    std::swap(sv.real_parts[i], sv.real_parts[j]);
-                    std::swap(sv.imag_parts[i], sv.imag_parts[j]);
-                }
-            }
+    detail::for_each_run(sv.dim, qs.data(), 3, [&](size_t run, auto len) {
+        for (size_t k = 0; k < len; ++k) {
+            const size_t base = run + k;
+            const size_t i = base | c1b | c2b;       // c1=1, c2=1, tgt=0
+            const size_t j = base | c1b | c2b | tb;  // c1=1, c2=1, tgt=1
+            std::swap(sv.real_parts[i], sv.real_parts[j]);
+            std::swap(sv.imag_parts[i], sv.imag_parts[j]);
         }
-    }
+    });
 }
 
 // =============================================================================
@@ -67,27 +58,17 @@ void apply_ccz(Statevector& sv, int c1, int c2, int tgt) {
     detail::check_all_distinct({c1, c2, tgt}, "ccz");
     std::array<int,3> qs = {c1, c2, tgt};
     std::sort(qs.begin(), qs.end());
-    const size_t s0  = 1ULL << qs[0];
-    const size_t s1  = 1ULL << qs[1];
-    const size_t s2  = 1ULL << qs[2];
     const size_t c1b = 1ULL << c1;
     const size_t c2b = 1ULL << c2;
     const size_t tb  = 1ULL << tgt;
-    const int n_outer = static_cast<int>(sv.dim / (2 * s2));
 
-    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
-    for (int oi = 0; oi < n_outer; ++oi) {
-        const size_t k2 = static_cast<size_t>(oi) * 2 * s2;
-        for (size_t k1 = 0; k1 < s2; k1 += 2 * s1) {
-            for (size_t k0 = 0; k0 < s1; k0 += 2 * s0) {
-                for (size_t k = 0; k < s0; ++k) {
-                    const size_t i = (k2 + k1 + k0 + k) | c1b | c2b | tb;  // all three = 1
-                    sv.real_parts[i] = -sv.real_parts[i];
-                    sv.imag_parts[i] = -sv.imag_parts[i];
-                }
-            }
+    detail::for_each_run(sv.dim, qs.data(), 3, [&](size_t run, auto len) {
+        for (size_t k = 0; k < len; ++k) {
+            const size_t i = (run + k) | c1b | c2b | tb;  // all three = 1
+            sv.real_parts[i] = -sv.real_parts[i];
+            sv.imag_parts[i] = -sv.imag_parts[i];
         }
-    }
+    });
 }
 
 // =============================================================================
@@ -100,29 +81,19 @@ void apply_cswap(Statevector& sv, int ctrl, int q1, int q2) {
     detail::check_all_distinct({ctrl, q1, q2}, "cswap");
     std::array<int,3> qs = {ctrl, q1, q2};
     std::sort(qs.begin(), qs.end());
-    const size_t s0    = 1ULL << qs[0];
-    const size_t s1    = 1ULL << qs[1];
-    const size_t s2    = 1ULL << qs[2];
     const size_t ctrlb = 1ULL << ctrl;
     const size_t q1b   = 1ULL << q1;
     const size_t q2b   = 1ULL << q2;
-    const int n_outer  = static_cast<int>(sv.dim / (2 * s2));
 
-    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
-    for (int oi = 0; oi < n_outer; ++oi) {
-        const size_t k2 = static_cast<size_t>(oi) * 2 * s2;
-        for (size_t k1 = 0; k1 < s2; k1 += 2 * s1) {
-            for (size_t k0 = 0; k0 < s1; k0 += 2 * s0) {
-                for (size_t k = 0; k < s0; ++k) {
-                    const size_t base = k2 + k1 + k0 + k;
-                    const size_t i = base | ctrlb | q1b;  // ctrl=1, q1=1, q2=0
-                    const size_t j = base | ctrlb | q2b;  // ctrl=1, q1=0, q2=1
-                    std::swap(sv.real_parts[i], sv.real_parts[j]);
-                    std::swap(sv.imag_parts[i], sv.imag_parts[j]);
-                }
-            }
+    detail::for_each_run(sv.dim, qs.data(), 3, [&](size_t run, auto len) {
+        for (size_t k = 0; k < len; ++k) {
+            const size_t base = run + k;
+            const size_t i = base | ctrlb | q1b;  // ctrl=1, q1=1, q2=0
+            const size_t j = base | ctrlb | q2b;  // ctrl=1, q1=0, q2=1
+            std::swap(sv.real_parts[i], sv.real_parts[j]);
+            std::swap(sv.imag_parts[i], sv.imag_parts[j]);
         }
-    }
+    });
 }
 
 // =============================================================================
@@ -153,39 +124,29 @@ void apply_rccx(Statevector& sv, int c1, int c2, int tgt) {
     detail::check_all_distinct({c1, c2, tgt}, "rccx");
     std::array<int,3> qs = {c1, c2, tgt};
     std::sort(qs.begin(), qs.end());
-    const size_t s0  = 1ULL << qs[0];
-    const size_t s1  = 1ULL << qs[1];
-    const size_t s2  = 1ULL << qs[2];
     const size_t c1b = 1ULL << c1;
     const size_t c2b = 1ULL << c2;
     const size_t tb  = 1ULL << tgt;
-    const int n_outer = static_cast<int>(sv.dim / (2 * s2));
 
-    #pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
-    for (int oi = 0; oi < n_outer; ++oi) {
-        const size_t k2 = static_cast<size_t>(oi) * 2 * s2;
-        for (size_t k1 = 0; k1 < s2; k1 += 2 * s1) {
-            for (size_t k0 = 0; k0 < s1; k0 += 2 * s0) {
-                for (size_t k = 0; k < s0; ++k) {
-                    const size_t base = k2 + k1 + k0 + k;
-                    // |101>: c1=1, c2=0, t=1 picks up a -1 phase
-                    const size_t i101 = base | c1b | tb;
-                    sv.real_parts[i101] = -sv.real_parts[i101];
-                    sv.imag_parts[i101] = -sv.imag_parts[i101];
-                    // c1=1, c2=1 pair:
-                    //   new|110> = -i * old|111>,  new|111> = i * old|110>
-                    const size_t i110 = base | c1b | c2b;
-                    const size_t i111 = i110 | tb;
-                    const double r0 = sv.real_parts[i110], im0 = sv.imag_parts[i110];
-                    const double r1 = sv.real_parts[i111], im1 = sv.imag_parts[i111];
-                    sv.real_parts[i110] = im1;   // -i*(r1 + i*im1) = im1 - i*r1
-                    sv.imag_parts[i110] = -r1;
-                    sv.real_parts[i111] = -im0;  //  i*(r0 + i*im0) = -im0 + i*r0
-                    sv.imag_parts[i111] = r0;
-                }
-            }
+    detail::for_each_run(sv.dim, qs.data(), 3, [&](size_t run, auto len) {
+        for (size_t k = 0; k < len; ++k) {
+            const size_t base = run + k;
+            // |101>: c1=1, c2=0, t=1 picks up a -1 phase
+            const size_t i101 = base | c1b | tb;
+            sv.real_parts[i101] = -sv.real_parts[i101];
+            sv.imag_parts[i101] = -sv.imag_parts[i101];
+            // c1=1, c2=1 pair:
+            //   new|110> = -i * old|111>,  new|111> = i * old|110>
+            const size_t i110 = base | c1b | c2b;
+            const size_t i111 = i110 | tb;
+            const double r0 = sv.real_parts[i110], im0 = sv.imag_parts[i110];
+            const double r1 = sv.real_parts[i111], im1 = sv.imag_parts[i111];
+            sv.real_parts[i110] = im1;   // -i*(r1 + i*im1) = im1 - i*r1
+            sv.imag_parts[i110] = -r1;
+            sv.real_parts[i111] = -im0;  //  i*(r0 + i*im0) = -im0 + i*r0
+            sv.imag_parts[i111] = r0;
         }
-    }
+    });
 }
 
 // =============================================================================

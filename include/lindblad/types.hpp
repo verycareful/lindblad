@@ -524,6 +524,65 @@ inline constexpr int max_mps_dense_qubits(QubitLimit limit) {
 inline constexpr std::uint64_t NO_MEMORY_CAP = std::numeric_limits<std::uint64_t>::max();
 inline constexpr std::uint64_t FALLBACK_MEMORY_CAP_MB = 4096;
 
+// =============================================================================
+// Statevector parallel grain - how much work a thread needs before it helps
+// =============================================================================
+// A statevector gate kernel runs in parallel only when every thread it uses
+// gets at least this many amplitudes of the state, and it uses
+// min(available threads, 2^n / grain) threads; one thread's worth runs
+// serially, without starting a parallel region. Starting a region costs a
+// fixed time that grows with its thread count, so the rule spends threads
+// only where each one's share of the sweep outweighs it, and uses fewer
+// threads where a full team would cost more to start than it saves.
+//
+// The value is measured: the cheapest corpus kernel (a controlled phase,
+// which touches a quarter of the amplitudes with two multiplies each) gained
+// from threads from about 1365 amplitudes per thread, at both 12 and 24
+// threads; 2048 is that rounded up to a power of two. Every other kernel does
+// more work per amplitude and crosses earlier.
+//
+// StatevectorSimulator::Options::min_amplitudes_per_thread overrides it for a
+// run (0 keeps this default).
+inline constexpr std::size_t DEFAULT_MIN_AMPLITUDES_PER_THREAD = 2048;
+
+// =============================================================================
+// PhaseTimes - where one run() spent its wall-clock time
+// =============================================================================
+// Filled only when the caller asks (a backend's Options::record_phase_times);
+// a run that is not asked reads no clock for it. The five phases tile the run
+// from entry to the point its result is complete, with no gaps and no overlap,
+// so total() is that whole span. Seconds, from std::chrono::steady_clock.
+//
+//   setup      = everything before the circuit's first instruction can run:
+//                validation, preflight, the memory budget, a repaired copy,
+//                the working state and its initial value, RNG seeding.
+//   fusion     = the gate-fusion pre-pass. Exactly 0 when it does not engage.
+//   evolution  = applying instructions to the state: the single forward pass,
+//                every shot's trajectory (prefix snapshot, restores, collapses
+//                included), or the single seeded trajectory; and the
+//                observation harness that rides on them.
+//   sampling   = turning states into counts: cumulative distributions, draws,
+//                bitstrings and the counts map. A run sampled shot by shot
+//                charges each shot's bitstring and count here, so asking costs
+//                two clock reads per shot.
+//   final_copy = the checks on the finished state and its copy into the
+//                result.
+//
+// A backend's own simulation_time_seconds is a different span (it starts after
+// option validation and stops before final_copy), so the two are not
+// interchangeable.
+struct PhaseTimes {
+    double setup = 0.0;
+    double fusion = 0.0;
+    double evolution = 0.0;
+    double sampling = 0.0;
+    double final_copy = 0.0;
+
+    double total() const noexcept {
+        return setup + fusion + evolution + sampling + final_copy;
+    }
+};
+
 // Mathematical constants (PI, INV_SQRT2, ...) live in constants.hpp, included
 // at the top of this header, so every one of those names is visible to anything
 // including types.hpp.

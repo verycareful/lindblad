@@ -14,6 +14,7 @@
 #include "lindblad/statevector.hpp"
 #include "lindblad/types.hpp"
 
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -40,6 +41,14 @@ public:
         // primitive, runs under the caller's setting. Negative values are
         // refused.
         int max_parallel_threads = 0;
+        // How many amplitudes of the state each thread must get before a
+        // gate kernel runs in parallel; a gate then uses
+        // min(threads available, 2^n / this) threads, and runs serially when
+        // that is one. 0, the default, is DEFAULT_MIN_AMPLITUDES_PER_THREAD
+        // (types.hpp). Larger values keep small registers serial; 1 threads
+        // every gate of 2 or more amplitudes. Applies for the length of
+        // run(), simulate_circuit() and eval_expectation().
+        std::size_t min_amplitudes_per_thread = 0;
         // The most memory a run may use, in MiB (2^20 bytes). 0, the default,
         // is automatic: the memory this machine reports available, or
         // FALLBACK_MEMORY_CAP_MB when it gives no coherent reading.
@@ -71,6 +80,11 @@ public:
                                     // exceeds one L3 instance (hw::llc_bytes;
                                     // 32 MiB assumed when undetectable)
         int fusion_max_qubit = 5;   // max fused-block width, 2..6 (Aer default 5)
+
+        // Whether run() reports where its time went, in Result::phase_times
+        // (PhaseTimes in types.hpp). Off reads no clock for it; on reads a few
+        // per run, plus two per shot in a run sampled shot by shot.
+        bool record_phase_times = false;
     };
 
     struct Result {
@@ -78,6 +92,8 @@ public:
         std::unordered_map<std::string, int> counts;  // if measured
         std::vector<double> expectation_values;        // if observables requested
         double simulation_time_seconds = 0.0;
+        // Set only when Options::record_phase_times asked for it.
+        std::optional<PhaseTimes> phase_times;
 
         // Whatever the run's labelled observers collected. Empty unless the
         // RunPlan attached observers carrying labels.

@@ -211,6 +211,7 @@ See [Statevector API](statevector.md) for full details. State stored as:
 ```cpp
 struct Options {
     int max_parallel_threads = 0;  // 0 = auto (all cores)
+    std::size_t min_amplitudes_per_thread = 0;  // 0 = default (2048)
     uint64_t max_memory_mb = 0;    // MiB; 0 = automatic
     QubitLimit qubit_limit = QubitLimit::Enforce;  // 30 qubits; Lift: 59
     PrefixReuse prefix_reuse = PrefixReuse::Hardware;
@@ -220,6 +221,7 @@ struct Options {
     bool fusion_enable = true;     // master switch for gate fusion
     int fusion_threshold = 0;      // min qubits to engage fusion; 0 = auto
     int fusion_max_qubit = 5;      // max fused-block width, 2..6
+    bool record_phase_times = false;  // fill Result::phase_times
 };
 ```
 
@@ -231,6 +233,18 @@ struct Options {
   simulators side by side, keep theirs. `apply_instruction`, a one-gate
   primitive, runs under the caller's setting. A negative value is refused
   with `std::invalid_argument` before anything runs
+- **min_amplitudes_per_thread**: how many amplitudes of the state each thread
+  must get before a gate kernel runs in parallel. A gate on an n-qubit state
+  uses min(threads available, 2^n / this value) threads, and runs serially
+  when that is one, so small registers do not pay to start threads they
+  cannot use and mid-sized ones start only as many as pay. 0, the default,
+  means `DEFAULT_MIN_AMPLITUDES_PER_THREAD` (2048, in `lindblad/types.hpp`),
+  measured as the point where the cheapest gate kernel starts to gain from
+  threads. A larger value keeps more registers serial; 1 threads every gate
+  of two or more amplitudes. It holds for the length of `run()`,
+  `simulate_circuit()` and `eval_expectation()`; the gate functions called
+  directly use the default. The thread count it divides is the one
+  `max_parallel_threads` allows
 - **max_memory_mb**: the most memory a run may use, in MiB (2^20 bytes). 0,
   the default, is automatic: the memory the machine reports available, else
   4096 MiB; `NO_MEMORY_CAP` means no cap (see
@@ -256,6 +270,9 @@ struct Options {
 - **fusion_enable**: Master switch for the gate-fusion pre-pass (see Gate Fusion below); `false` runs every circuit unfused
 - **fusion_threshold**: Minimum circuit qubit count at which fusion engages. `0` (the default) derives the point from the hardware at runtime: the first $n$ whose statevector ($16 \cdot 2^n$ bytes) exceeds one last-level-cache instance. An explicit value pins the point verbatim; values below the auto point can regress cache-resident circuits, so overriding downward is for experimentation, not production. `run()` rejects negative values.
 - **fusion_max_qubit**: Maximum width of a fused block in qubits, valid range 2 to 6. Follows the Qiskit Aer option name; Aer's default width (5) is also the default here.
+- **record_phase_times**: whether `run()` reports where its wall-clock time
+  went, in `Result::phase_times` (see [Phase Times](#phase-times)). `false`,
+  the default, reads no clock for it
 
 ### Result Structure
 
@@ -265,6 +282,7 @@ struct Result {
     std::unordered_map<std::string, int> counts;      // Sampled bitstrings (if shots > 0)
     std::vector<double> expectation_values;           // Empty; use Estimator for expectations
     double simulation_time_seconds = 0.0;
+    std::optional<PhaseTimes> phase_times;           // only when asked for
     ObservationBundle observations;
 };
 ```
@@ -274,8 +292,52 @@ struct Result {
 - **counts**: Measurement outcome histogram; keys are bitstrings (e.g., "01"), values are occurrence counts
 - **expectation_values**: Reserved for future use (currently not populated by simulator)
 - **observations**: whatever the run's labelled observers collected, empty unless the `RunPlan` attached observers carrying labels. A run that fails flushes its observers into the failed-run record instead
+- **simulation_time_seconds**: seconds from the end of option validation to
+  the end of the run's evolution and sampling; it excludes the checks and the
+  copy into `final_state`
+- **phase_times**: where the run's time went, set only when
+  `Options::record_phase_times` is `true` (see [Phase Times](#phase-times))
 
 A run that fails throws rather than returning a `Result` (see [Failures](failures.md)), so a returned result is always an answer.
+
+### Phase Times
+
+With `Options::record_phase_times = true`, `Result::phase_times` holds a
+`PhaseTimes` (declared in `lindblad/types.hpp`) splitting the run into five
+phases, in seconds from `std::chrono::steady_clock`. The phases tile the run
+from entry to the point its result is complete, with no gap and no overlap, so
+`total()` is that whole span.
+
+- **setup**: everything before the first instruction can run: validation,
+  the checks before the first gate, the memory budget, a repaired copy of the
+  circuit, the working state and its initial value, and RNG seeding
+- **fusion**: the gate-fusion pre-pass, and exactly `0` when fusion does not
+  engage (see [Gate Fusion](#gate-fusion-r117))
+- **evolution**: applying the circuit to the state: the single forward pass,
+  every shot's trajectory in a run sampled shot by shot (prefix snapshot,
+  restores and collapses included), or the single seeded trajectory, together
+  with the observation harness
+- **sampling**: turning states into counts: the cumulative distribution, the
+  draws, the bitstrings and the counts map. In a run sampled shot by shot, each
+  shot's bitstring and count land here, which costs two clock reads per shot
+- **final_copy**: the checks on the finished state and its copy into
+  `final_state`
+
+```cpp
+#include "lindblad/simulators/statevector_sim.hpp"
+
+using namespace lindblad;
+
+StatevectorSimulator::Options opts;
+opts.record_phase_times = true;
+StatevectorSimulator sim(opts);
+
+auto result = sim.run(circuit, /*shots=*/1024, /*seed=*/42);
+const PhaseTimes& t = *result.phase_times;
+// t.evolution / t.total() is the share spent applying gates
+```
+
+Left at `false`, a run reads no clock for this and `phase_times` is empty.
 
 ### Workflow
 

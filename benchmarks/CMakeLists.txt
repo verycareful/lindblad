@@ -25,6 +25,8 @@ set(LINDBLAD_BENCH_SOURCES
     bench_scaling.cpp
     bench_validation_cost.cpp
     bench_clifford.cpp
+    bench_sv_kernels.cpp
+    bench_sv_phases.cpp
     bench_compare_sv.cpp
     bench_compare_dm.cpp
     bench_compare_mps.cpp

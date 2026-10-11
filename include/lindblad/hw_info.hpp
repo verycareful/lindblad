@@ -62,5 +62,13 @@ std::size_t available_memory_bytes();
 // another process can allocate the moment after any reading.
 std::size_t recent_available_memory_bytes();
 
+// How many threads a parallel region the calling thread starts now may use:
+// OpenMP's current limit for that thread, which OMP_NUM_THREADS, the
+// caller's own omp_set_num_threads and a simulator's max_parallel_threads
+// (detail::ScopedThreadCap) all set. 1 in a build without OpenMP. Read afresh
+// on every call, since a cap applies only for the length of the call that
+// set it.
+std::size_t available_threads();
+
 }  // namespace hw
 }  // namespace lindblad

@@ -127,6 +127,12 @@ If `LINDBLAD_BUILD_BENCHMARKS=ON`, benchmark executables are generated from:
 - `benchmarks/bench_qudit_sv.cpp` (R.1.13: qudit statevector kernels, d=2-7)
 - `benchmarks/bench_qudit_dm.cpp` (R.1.13: qudit density-matrix kernels)
 - `benchmarks/bench_scaling.cpp` (R.1.13: standard circuit across all four backends)
+- `benchmarks/bench_sv_kernels.cpp` (statevector gate kernels by target qubit,
+  thread count and register size; every case is checked against an independent
+  reference before it is timed, and roofline cases give the machine's
+  bandwidth ceilings)
+- `benchmarks/bench_sv_phases.cpp` (the statevector comparison rows split into
+  the phases of `StatevectorSimulator::Result::phase_times`)
 
 Run from the build output directory, for example:
 
@@ -135,6 +141,50 @@ Run from the build output directory, for example:
 ./bench_statevector
 ./bench_maqaoa
 ./bench_scaling
+./bench_sv_kernels --benchmark_filter='kernel/cx/n22/hi/'
+```
+
+### Comparing Two Builds
+
+`tools/bench_ab.py` compares two builds of one benchmark binary on one machine.
+It runs them in alternating order (before then after, then after then before)
+inside one session, so drift in clock boost, temperature or background load
+falls on both sides, and it reports each benchmark's speedup with the range of
+the per-round ratios beside it. A row is `FASTER` or `SLOWER` only when every
+round agrees beyond the threshold; a change the rounds do not agree on is
+`NOISY`, and no resolved change is `SAME`. It also records the power profile,
+load, busiest processes, CPU temperatures, commit and a hash of each binary.
+
+```bash
+# keep the binary built before the change
+cp build/benchmarks/bench_sv_phases bench_sv_phases.before
+# ... make the change and rebuild ...
+python3 tools/bench_ab.py \
+  --before bench_sv_phases.before --after build/benchmarks/bench_sv_phases \
+  --out ab-result --rounds 4
+```
+
+Run it once with the same binary on both sides first. That run changes
+nothing, so whatever it reports is the noise floor of the machine as it is set
+up, and a change smaller than that cannot be resolved there. Pass that run's
+`summary.json` to later comparisons with `--noise-floor`: each benchmark then
+has to clear its own measured noise, not only the global `--threshold`. A
+floor is only accepted from a run made under the same conditions (the same
+`--pin`, `--rounds`, `--repetitions` and `--min-time`).
+
+`--pin` runs both sides with `OMP_PLACES=threads` and `OMP_PROC_BIND=close`.
+Without it the operating system places threads afresh in every process, and on
+a processor with more than one cache domain that alone can move a result by
+more than the change being measured. Pinning makes two builds comparable on one
+machine; it is not a statement about how either performs unpinned, and the
+library does not rely on it.
+
+```bash
+python3 tools/bench_ab.py --before build/benchmarks/bench_sv_phases \
+  --after build/benchmarks/bench_sv_phases --out aa --rounds 4 --pin
+python3 tools/bench_ab.py --before bench_sv_phases.before \
+  --after build/benchmarks/bench_sv_phases --out ab --rounds 4 --pin \
+  --noise-floor aa/summary.json
 ```
 
 ## Comparison Benchmarks (vs Qiskit / Qiskit Aer)

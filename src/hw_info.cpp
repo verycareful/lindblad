@@ -32,6 +32,10 @@
 #include <unistd.h>
 #endif
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace lindblad {
 namespace hw {
 
@@ -318,6 +322,14 @@ std::size_t recent_available_memory_bytes() {
     reading.store(fresh, std::memory_order_relaxed);
     read_at.store(now, std::memory_order_release);
     return fresh;
+}
+
+std::size_t available_threads() {
+#ifdef _OPENMP
+    return static_cast<std::size_t>(std::max(1, omp_get_max_threads()));
+#else
+    return 1;
+#endif
 }
 
 }  // namespace hw

@@ -24,7 +24,9 @@
 // regions and a cap changes nothing.
 
 #include "lindblad/detail/validate.hpp"
+#include "lindblad/types.hpp"
 
+#include <cstddef>
 #include <string>
 
 #ifdef _OPENMP
@@ -59,6 +61,36 @@ public:
 
 private:
     int previous_ = 0;  // the caller's setting, when a cap replaced it
+};
+
+// =============================================================================
+// ScopedParallelGrain - the statevector parallel grain for the length of a call
+// =============================================================================
+// The amplitudes each thread must get before a statevector gate kernel runs
+// in parallel (DEFAULT_MIN_AMPLITUDES_PER_THREAD in types.hpp). The kernels
+// read it from parallel_grain(), a per-thread setting, so a simulator's
+// min_amplitudes_per_thread reaches them without passing through every gate's
+// signature. Like ScopedThreadCap it holds for one public call and puts the
+// calling thread's previous value back however the call ends, and other
+// threads keep theirs. 0 keeps the value in force; a gate called outside any
+// simulator uses the default.
+inline thread_local std::size_t t_parallel_grain = DEFAULT_MIN_AMPLITUDES_PER_THREAD;
+
+inline std::size_t parallel_grain() noexcept { return t_parallel_grain; }
+
+class ScopedParallelGrain {
+public:
+    explicit ScopedParallelGrain(std::size_t grain) : previous_(t_parallel_grain) {
+        if (grain > 0) t_parallel_grain = grain;
+    }
+
+    ~ScopedParallelGrain() { t_parallel_grain = previous_; }
+
+    ScopedParallelGrain(const ScopedParallelGrain&) = delete;
+    ScopedParallelGrain& operator=(const ScopedParallelGrain&) = delete;
+
+private:
+    std::size_t previous_;  // the calling thread's value on entry
 };
 
 }  // namespace detail
