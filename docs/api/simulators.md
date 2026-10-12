@@ -234,10 +234,14 @@ struct Options {
   primitive, runs under the caller's setting. A negative value is refused
   with `std::invalid_argument` before anything runs
 - **min_amplitudes_per_thread**: how many amplitudes of the state each thread
-  must get before a gate kernel runs in parallel. A gate on an n-qubit state
-  uses min(threads available, 2^n / this value) threads, and runs serially
-  when that is one, so small registers do not pay to start threads they
-  cannot use and mid-sized ones start only as many as pay. 0, the default,
+  must get before a gate kernel, or any other pass over the state, runs in
+  parallel. A one-qubit gate on an n-qubit state uses min(threads available,
+  2^n / this value) threads, and runs serially when that is one, so small
+  registers do not pay to start threads they cannot use and mid-sized ones
+  start only as many as pay. Other passes count their amplitudes by their
+  work relative to that gate: a fill, a sum, a collapse or the sampler's block
+  sums at half, a permutation at twice, a dense k-qubit unitary at 2^(k-1)
+  times; `Statevector::probabilities()` always runs on one thread. 0, the default,
   means `DEFAULT_MIN_AMPLITUDES_PER_THREAD` (2048, in `lindblad/types.hpp`),
   measured as the point where the cheapest gate kernel starts to gain from
   threads. A larger value keeps more registers serial; 1 threads every gate
@@ -248,9 +252,10 @@ struct Options {
 - **max_memory_mb**: the most memory a run may use, in MiB (2^20 bytes). 0,
   the default, is automatic: the memory the machine reports available, else
   4096 MiB; `NO_MEMORY_CAP` means no cap (see
-  [The memory cap](failures.md#the-memory-cap)). A statevector run always holds
-  two states, the working buffer and the copy returned in `Result::final_state`
-  ($2 \cdot 16 \cdot 2^n$ bytes), and a run that needs more than the cap is
+  [The memory cap](failures.md#the-memory-cap)). A statevector run is budgeted
+  for two states, the working buffer (handed over as `Result::final_state`
+  when the run ends) and room for the prefix snapshot a run sampled shot by
+  shot may take ($2 \cdot 16 \cdot 2^n$ bytes), and a run that needs more than the cap is
   refused with `InvalidArgument` before anything is allocated, naming what it
   needs, the cap and where the cap came from. The copies and conversions its
   observers take are checked against the same cap while the run goes on.
@@ -293,8 +298,8 @@ struct Result {
 - **expectation_values**: Reserved for future use (currently not populated by simulator)
 - **observations**: whatever the run's labelled observers collected, empty unless the `RunPlan` attached observers carrying labels. A run that fails flushes its observers into the failed-run record instead
 - **simulation_time_seconds**: seconds from the end of option validation to
-  the end of the run's evolution and sampling; it excludes the checks and the
-  copy into `final_state`
+  the end of the run's evolution and sampling; it excludes the checks on the
+  finished state and handing it over as `final_state`
 - **phase_times**: where the run's time went, set only when
   `Options::record_phase_times` is `true` (see [Phase Times](#phase-times))
 
@@ -317,11 +322,11 @@ from entry to the point its result is complete, with no gap and no overlap, so
   every shot's trajectory in a run sampled shot by shot (prefix snapshot,
   restores and collapses included), or the single seeded trajectory, together
   with the observation harness
-- **sampling**: turning states into counts: the cumulative distribution, the
+- **sampling**: turning states into counts: the sampler's block sums, the
   draws, the bitstrings and the counts map. In a run sampled shot by shot, each
   shot's bitstring and count land here, which costs two clock reads per shot
-- **final_copy**: the checks on the finished state and its copy into
-  `final_state`
+- **final_copy**: the checks on the finished state and handing it over as
+  `final_state` (the working buffer is moved, not copied)
 
 ```cpp
 #include "lindblad/simulators/statevector_sim.hpp"
@@ -361,8 +366,8 @@ std::unordered_map<std::string, int> counts = result.counts;
 1. User calls `run(circuit, shots, seed)`
 2. Create Statevector initialized to $|0\cdots0\rangle$
 3. Iterate over circuit instructions, calling `apply_instruction`
-4. If shots > 0, sample `sv.sample_counts(shots, seed)` via cumulative distribution
-5. Return Result with final state and counts
+4. If shots > 0, sample the counts with the block sampler `Statevector::sample_counts` uses
+5. Return Result with the final state (the working state itself, not a copy) and counts
 
 ### Fast Expectation Values
 
@@ -380,8 +385,15 @@ Semantics are untouched by construction: `MEASURE` / `RESET` / `BARRIER`, classi
 
 - **Time**: $O(2^n k)$ where $k$ = number of instructions; $O(2^{2k})$ for $k$-qubit gates
 - **Space**: $O(2^n)$ for statevector
-- **Parallelization**: Each gate parallelizes if $2^n \geq 2^{20}$ (via OpenMP)
-- **Measurement**: $O(2^n + \text{shots} \cdot \log 2^n)$ to sample (cumulative distribution + binary search)
+- **Parallelization**: each gate and each pass over the state runs on a team of
+  OpenMP threads sized by its work: at least `min_amplitudes_per_thread`
+  amplitudes per thread, counting a pass that does less per amplitude than a
+  one-qubit gate (a fill, a sum, a collapse) at half its size, and never more
+  threads than `max_parallel_threads` allows. A pass with one thread's worth
+  runs serially
+- **Measurement**: $O(2^n + \text{shots} \cdot (\log(2^n / b) + b))$ to sample,
+  where $b \leq 1024$ is the sampler's block width (block sums, then a binary
+  search and a walk through one block per shot)
 
 ### Use Cases
 

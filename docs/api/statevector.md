@@ -129,9 +129,14 @@ Behavior:
 - A state with no norm, zero or non-finite, throws `lindblad::RuntimeFailure`
   (a `std::runtime_error`) before anything is drawn, on the threshold
   `normalize()` refuses at
-- `measure_once` does a linear scan of cumulative probability; `sample_counts`
-  precomputes the cumulative probabilities once and binary-searches them per
-  shot
+- `measure_once` does a linear scan of cumulative probability. `sample_counts`
+  sums the probabilities of blocks of consecutive amplitudes once, in parallel,
+  then resolves each shot by a binary search over the block sums and a walk
+  through one block. The block width is the number of amplitudes per shot,
+  rounded down to a power of two, between 1 and 1024, so few shots from a large
+  state keep a small table and many shots from a small state walk short blocks.
+  The shots draw their uniforms in order from the seeded generator, so a seed
+  gives the same counts on any number of threads
 - Bitstrings are returned MSB-first (leftmost char is the most significant bit)
 
 ## Cloning and Debug Output

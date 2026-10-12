@@ -14,6 +14,7 @@
 #include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/report.hpp"
 #include "lindblad/detail/sv_runs.hpp"
+#include "lindblad/detail/sv_sampler.hpp"
 #include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate.hpp"
@@ -716,9 +717,9 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         const detail::ScopedThreadCap threads(options.max_parallel_threads,
                                               "StatevectorSimulator::run");
         const detail::ScopedParallelGrain grain(options.min_amplitudes_per_thread);
-        // A run holds two states at once: the working buffer and the copy
-        // returned in Result::final_state. A prefix snapshot, when taken, is
-        // released before that copy is made, so it does not raise the count.
+        // A run holds at most two states at once: the working buffer, which is
+        // handed over as Result::final_state, and the prefix snapshot the
+        // per-shot path may take.
         const std::uint64_t two_states = detail::saturating_mul(
             2, detail::complex_bytes(detail::pow2_saturating(circuit_in.n_qubits)));
         const std::uint64_t cap_bytes = detail::require_memory_budget(
@@ -749,12 +750,17 @@ StatevectorSimulator::Result StatevectorSimulator::run(
 
         auto t_start = std::chrono::high_resolution_clock::now();
 
+        bool fresh = false;
         if (!sv_work || sv_work->n_qubits != circuit.n_qubits) {
             sv_work = std::make_unique<Statevector>(circuit.n_qubits, options.qubit_limit);
+            fresh = true;
         }
         // Writes |0...0> for the default plan, so a reused buffer is cleared on
-        // the same call that seeds a supplied initial state.
-        detail::apply_initial_state(plan, *sv_work, "StatevectorSimulator::run");
+        // the same call that seeds a supplied initial state. A buffer just
+        // constructed already holds |0...0>, and clearing it again would be a
+        // second full pass over the state for nothing.
+        if (!fresh || !plan.initial.is_default())
+            detail::apply_initial_state(plan, *sv_work, "StatevectorSimulator::run");
         // Derive a per-thread seed so parallel batches (e.g. Estimator::run_batch)
         // produce statistically independent RNG streams rather than every thread
         // reseeding to the same Mersenne Twister state. The single-threaded path
@@ -858,7 +864,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             // Options::prefix_reuse allows, an unobserved run of more than one
             // shot runs it once into a snapshot every shot copies, and the
             // seeded counts are those of a rerun. The snapshot lives only in
-            // this block, so it is gone before the result's copy is made.
+            // this block, so it is gone before the run returns.
             result.counts.clear();
             std::vector<int> clreg(n_clbits, 0);
             runner->begin_run(circuit.n_qubits, shots);
@@ -964,16 +970,12 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                                       inst.clbits.empty() ? inst.qubits[0]
                                                           : inst.clbits[0]);
 
-            // Cumulative probabilities + binary search per shot (same scheme
-            // as Statevector::sample_counts, with clbit-mapped keys).
-            std::vector<double> cum(sv_work->dim);
-            double acc = 0.0;
-            for (size_t i = 0; i < sv_work->dim; ++i) {
-                acc += sv_work->real_parts[i] * sv_work->real_parts[i]
-                     + sv_work->imag_parts[i] * sv_work->imag_parts[i];
-                cum[i] = acc;
-            }
-            detail::require_norm_to_sample(std::sqrt(acc), "StatevectorSimulator::run");
+            // The two-level sampler (sv_sampler.hpp), as in
+            // Statevector::sample_counts, with clbit-mapped keys.
+            const detail::StateSampler sampler(sv_work->real_parts, sv_work->imag_parts,
+                                               sv_work->dim, static_cast<size_t>(shots));
+            detail::require_norm_to_sample(std::sqrt(sampler.total()),
+                                           "StatevectorSimulator::run");
             // Sample with the per-call RNG seeded above from {seed, tid}:
             // identical seeds on DIFFERENT threads stay statistically
             // independent (B9_StatevectorRngParallelIndependence, relied on
@@ -981,18 +983,19 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             // reproducible (sv_sim_rng is reseeded deterministically per
             // call). A plain mt19937_64(seed) here would give every thread
             // the same stream.
+            // The uniforms are taken in shot order from that one stream, and
+            // only their resolution runs across threads.
             std::uniform_real_distribution<double> udist(0.0, 1.0);
-            for (int s = 0; s < shots; ++s) {
-                const size_t outcome =
-                    detail::born_draw_cumulative(cum, udist(sv_sim_rng));
-
-                std::string bits(n_clbits, '0');
-                for (const auto& [q, c] : meas) {
-                    if (c < 0 || c >= n_clbits) continue;
-                    if ((outcome >> q) & 1) bits[n_clbits - 1 - c] = '1';
-                }
-                result.counts[bits]++;
-            }
+            detail::sample_outcomes(
+                sampler, static_cast<size_t>(shots), [&] { return udist(sv_sim_rng); },
+                [&](std::uint64_t outcome, int count) {
+                    std::string bits(n_clbits, '0');
+                    for (const auto& [q, c] : meas) {
+                        if (c < 0 || c >= n_clbits) continue;
+                        if ((outcome >> q) & 1) bits[n_clbits - 1 - c] = '1';
+                    }
+                    result.counts[bits] += count;
+                });
             clock.charge(&PhaseTimes::sampling);
         } else {
             // Single seeded trajectory (shots == 0 semantics; also the plain
@@ -1022,14 +1025,17 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         result.simulation_time_seconds =
             std::chrono::duration<double>(t_end - t_start).count();
 
-        // Copy simulated state to result (callers own result.final_state;
-        // sv_work stays in the cache for the next call).
+        // The working buffer becomes Result::final_state: nothing is copied,
+        // and the next run of this width on this thread allocates its own
+        // buffer. Allocating costs that run one first touch of the state,
+        // where a copy would cost this one a zero-filled allocation plus a
+        // full read and write.
         //
-        // Ignore, because this is not a hand-over: these amplitudes are the
-        // library's own output, and their norm carries whatever rounding the
-        // circuit accumulated. Checking here would judge a circuit's arithmetic
-        // against a caller's tolerance and could make run() throw on a
-        // simulation that did nothing wrong.
+        // The norm is not judged, because this is not a hand-over: these
+        // amplitudes are the library's own output, and their norm carries
+        // whatever rounding the circuit accumulated. Checking it would judge a
+        // circuit's arithmetic against a caller's tolerance and could make
+        // run() throw on a simulation that did nothing wrong.
         //
         // What it does refuse is no state at all: zero or non-finite, which
         // only a matrix let through under ValidationOptions Warn or Ignore can
@@ -1039,9 +1045,8 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                 "the final state is zero or not finite, so there is no state to return; "
                 "a matrix let through by ValidationOptions Warn or Ignore can do this");
         }
-        result.final_state = Statevector(circuit.n_qubits, options.qubit_limit);
-        result.final_state.set_amplitudes(sv_work->real_parts, sv_work->imag_parts,
-                                          sv_work->dim, {Validation::Ignore});
+        result.final_state = std::move(*sv_work);
+        sv_work.reset();
         clock.charge(&PhaseTimes::final_copy);
         result.phase_times = clock.result();
 

@@ -1,11 +1,12 @@
 # Hardware Info
 
 Best-effort runtime detection of hardware properties that change how the library
-tunes itself. There are two: the last-level cache size, which the statevector
-simulator asks to decide whether to fuse gates, and the memory the operating
-system reports available, which sets the memory cap a run answers to when
-`max_memory_mb` is 0 and decides whether a per-shot run keeps its prefix
-snapshot.
+tunes itself: the last-level cache size, which the statevector simulator asks
+to decide whether to fuse gates; the memory the operating system reports
+available, which sets the memory cap a run answers to when `max_memory_mb` is 0
+and decides whether a per-shot run keeps its prefix snapshot; the threads a
+parallel region may use, which sizes every statevector pass's team; and the
+memory page size, which a statevector's amplitude arrays are aligned to.
 
 The whole module is built on one rule: **nothing here guesses silently.** Every
 query has an explicit "unknown" return, and the caller picks its own documented
@@ -87,6 +88,35 @@ once, before it starts, and reading `/proc/meminfo` on every call would cost
 more than a small run does. The cap is a snapshot either way, since another
 process can allocate the moment after any reading (see
 [The memory cap](failures.md#the-memory-cap)).
+
+### `available_threads`
+
+```cpp
+std::size_t available_threads();
+```
+
+How many threads a parallel region the calling thread starts now may use:
+OpenMP's current limit for that thread, which `OMP_NUM_THREADS`, the caller's
+own `omp_set_num_threads` and a simulator's `max_parallel_threads` all set.
+`1` in a build without OpenMP. Read afresh on every call, since a simulator's
+cap applies only for the length of the call that set it. The statevector
+passes size their teams from it (see `min_amplitudes_per_thread` in
+[Simulators](simulators.md)).
+
+### `page_bytes`
+
+```cpp
+std::size_t page_bytes();
+```
+
+The operating system's memory page size in bytes, or `0` if unknown:
+`sysconf(_SC_PAGESIZE)` on Linux and macOS, `GetSystemInfo` on Windows.
+Detected once and cached. A `Statevector` aligns each amplitude array of at
+least one page to it, so the real and imaginary arrays start at the same offset
+within a page: a kernel that loads both and then stores both would otherwise
+have its next loads held back behind its own stores, which the CPU matches on
+the low address bits. When the size is unknown the arrays keep cache-line
+alignment.
 
 ## Detection and its limits
 

@@ -70,5 +70,10 @@ std::size_t recent_available_memory_bytes();
 // set it.
 std::size_t available_threads();
 
+// The operating system's memory page size in bytes, or 0 if unknown
+// (sysconf(_SC_PAGESIZE) on Linux and macOS, GetSystemInfo on Windows).
+// Detected once, cached thread-safely.
+std::size_t page_bytes();
+
 }  // namespace hw
 }  // namespace lindblad

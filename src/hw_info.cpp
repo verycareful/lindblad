@@ -332,5 +332,19 @@ std::size_t available_threads() {
 #endif
 }
 
+std::size_t page_bytes() {
+    static const std::size_t cached = [] {  // magic static: thread-safe
+#if defined(_WIN32)
+        SYSTEM_INFO info;
+        GetSystemInfo(&info);
+        return static_cast<std::size_t>(info.dwPageSize);
+#else
+        const long page = ::sysconf(_SC_PAGESIZE);
+        return page > 0 ? static_cast<std::size_t>(page) : std::size_t{0};
+#endif
+    }();
+    return cached;
+}
+
 }  // namespace hw
 }  // namespace lindblad

@@ -220,17 +220,18 @@ inline constexpr Complex128 operator*(double scalar, const Complex128& c) noexce
 
 constexpr size_t CACHE_LINE_SIZE = 64;
 
-inline double* aligned_alloc_doubles(size_t count) {
+// alignment = a power of two, at least CACHE_LINE_SIZE
+inline double* aligned_alloc_doubles(size_t count, size_t alignment = CACHE_LINE_SIZE) {
     void* ptr = nullptr;
     size_t bytes = count * sizeof(double);
     // Ensure allocation is a multiple of alignment
-    if (bytes % CACHE_LINE_SIZE != 0) {
-        bytes = ((bytes / CACHE_LINE_SIZE) + 1) * CACHE_LINE_SIZE;
+    if (bytes % alignment != 0) {
+        bytes = ((bytes / alignment) + 1) * alignment;
     }
 #if defined(_MSC_VER)
-    ptr = _aligned_malloc(bytes, CACHE_LINE_SIZE);
+    ptr = _aligned_malloc(bytes, alignment);
 #else
-    ptr = std::aligned_alloc(CACHE_LINE_SIZE, bytes);
+    ptr = std::aligned_alloc(alignment, bytes);
 #endif
     if (!ptr) throw std::bad_alloc();
     return static_cast<double*>(ptr);
@@ -561,12 +562,12 @@ inline constexpr std::size_t DEFAULT_MIN_AMPLITUDES_PER_THREAD = 2048;
 //                every shot's trajectory (prefix snapshot, restores, collapses
 //                included), or the single seeded trajectory; and the
 //                observation harness that rides on them.
-//   sampling   = turning states into counts: cumulative distributions, draws,
+//   sampling   = turning states into counts: the sampler's block sums, draws,
 //                bitstrings and the counts map. A run sampled shot by shot
 //                charges each shot's bitstring and count here, so asking costs
 //                two clock reads per shot.
-//   final_copy = the checks on the finished state and its copy into the
-//                result.
+//   final_copy = the checks on the finished state and handing it to the
+//                result (the working buffer is moved, not copied).
 //
 // A backend's own simulation_time_seconds is a different span (it starts after
 // option validation and stops before final_copy), so the two are not
