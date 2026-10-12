@@ -59,6 +59,19 @@ public:
     // shots  = the draws the caller will make (0 counts as 1); sets the width.
     StateSampler(const double* re, const double* im, std::size_t dim, std::size_t shots);
 
+    // The block width for `shots` draws from `dim` amplitudes.
+    static std::size_t block_for(std::size_t dim, std::size_t shots) noexcept;
+
+    // Whether sample_outcomes tallies `shots` draws from `dim` amplitudes in
+    // an array indexed by outcome (else in a hash map).
+    static bool dense_tally(std::size_t dim, std::size_t shots) noexcept;
+
+    // The bytes of the arrays a sampler and sample_outcomes allocate for
+    // `shots` draws from `dim` amplitudes: the block sums, one chunk of
+    // uniforms and outcomes, and the dense tally when there is one. A run
+    // charges this against its memory cap before the first gate.
+    static std::uint64_t scratch_bytes(std::size_t dim, std::size_t shots) noexcept;
+
     double total() const noexcept { return total_; }
     std::size_t dim() const noexcept { return dim_; }
 
@@ -96,7 +109,7 @@ void sample_outcomes(const StateSampler& sampler, std::size_t shots, Uniform&& u
     const std::size_t chunk = shots < kSampleChunk ? shots : kSampleChunk;
     std::unique_ptr<double[]> u(new double[chunk]);
     std::unique_ptr<std::size_t[]> out(new std::size_t[chunk]);
-    const bool dense = sampler.dim() / kDenseTallyPerShot <= shots;
+    const bool dense = StateSampler::dense_tally(sampler.dim(), shots);
     std::unique_ptr<int[]> counts(dense ? new int[sampler.dim()]() : nullptr);
     std::unordered_map<std::uint64_t, int> tally;
     for (std::size_t done = 0; done < shots;) {

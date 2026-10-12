@@ -52,11 +52,12 @@ public:
         // The most memory a run may use, in MiB (2^20 bytes). 0, the default,
         // is automatic: the memory this machine reports available, or
         // FALLBACK_MEMORY_CAP_MB when it gives no coherent reading.
-        // NO_MEMORY_CAP means no cap. A run is budgeted for two states (the
-        // working buffer, handed over as Result::final_state, and room for
-        // the prefix snapshot a run sampled shot by shot may take): a run
-        // needing more is refused before anything is allocated, and every
-        // copy an observer takes is charged against it while the run goes on.
+        // NO_MEMORY_CAP means no cap. A run needs one state (the working
+        // buffer, handed over as Result::final_state) and, when it samples,
+        // the sampler's arrays: a run needing more is refused before anything
+        // is allocated, and every copy an observer takes is charged against
+        // it while the run goes on. The prefix snapshot a run sampled shot by
+        // shot may take is taken only when it fits beside the state.
         uint64_t max_memory_mb = 0;
         // The widest register a run accepts: 30 qubits under Enforce, 59 under
         // Lift (see QubitLimit in types.hpp). Lifting never bypasses

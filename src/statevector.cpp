@@ -9,6 +9,7 @@
 
 #include "lindblad/statevector.hpp"
 #include "lindblad/detail/born_draw.hpp"
+#include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/sv_runs.hpp"
 #include "lindblad/detail/sv_sampler.hpp"
 #include "lindblad/detail/text.hpp"
@@ -464,11 +465,7 @@ namespace detail {
 
 StateSampler::StateSampler(const double* re, const double* im, std::size_t dim,
                            std::size_t shots)
-    : re_(re), im_(im), dim_(dim) {
-    const std::size_t per_shot = dim / (shots > 0 ? shots : 1);
-    block_ = std::clamp<std::size_t>(std::bit_floor(std::max<std::size_t>(per_shot, 1)), 1,
-                                     std::min(kMaxBlock, dim));
-    nb_ = dim / block_;
+    : re_(re), im_(im), dim_(dim), block_(block_for(dim, shots)), nb_(dim / block_) {
     prefix_.reset(new double[nb_]);
 
     // Block sums across a team, written where each thread will leave them;
@@ -501,6 +498,26 @@ StateSampler::StateSampler(const double* re, const double* im, std::size_t dim,
             break;
         }
     }
+}
+
+std::size_t StateSampler::block_for(std::size_t dim, std::size_t shots) noexcept {
+    const std::size_t per_shot = dim / (shots > 0 ? shots : 1);
+    return std::clamp<std::size_t>(std::bit_floor(std::max<std::size_t>(per_shot, 1)), 1,
+                                   std::min(kMaxBlock, std::max<std::size_t>(dim, 1)));
+}
+
+bool StateSampler::dense_tally(std::size_t dim, std::size_t shots) noexcept {
+    return dim / kDenseTallyPerShot <= shots;
+}
+
+std::uint64_t StateSampler::scratch_bytes(std::size_t dim, std::size_t shots) noexcept {
+    const std::uint64_t blocks = dim / block_for(dim, shots);
+    const std::uint64_t chunk = std::min<std::uint64_t>(shots, kSampleChunk);
+    std::uint64_t bytes = saturating_mul(blocks, sizeof(double));
+    bytes = saturating_add(bytes, saturating_mul(chunk, sizeof(double) + sizeof(std::size_t)));
+    if (shots > 0 && dense_tally(dim, shots))
+        bytes = saturating_add(bytes, saturating_mul(dim, sizeof(int)));
+    return bytes;
 }
 
 std::size_t StateSampler::draw(double u) const noexcept {

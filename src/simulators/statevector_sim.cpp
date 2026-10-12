@@ -717,13 +717,20 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         const detail::ScopedThreadCap threads(options.max_parallel_threads,
                                               "StatevectorSimulator::run");
         const detail::ScopedParallelGrain grain(options.min_amplitudes_per_thread);
-        // A run holds at most two states at once: the working buffer, which is
-        // handed over as Result::final_state, and the prefix snapshot the
-        // per-shot path may take.
-        const std::uint64_t two_states = detail::saturating_mul(
-            2, detail::complex_bytes(detail::pow2_saturating(circuit_in.n_qubits)));
+        // What a run needs before its first gate: the working state, which is
+        // handed over as Result::final_state, and, when it samples, the
+        // sampler's arrays (block sums, one chunk of draws, the tally when it
+        // is an array). The prefix snapshot the per-shot path may take is
+        // judged on its own when the path is chosen, and skipped when the
+        // working state and the snapshot together would not fit.
+        const std::uint64_t dim_bound = detail::pow2_saturating(circuit_in.n_qubits);
+        const std::uint64_t footprint = detail::saturating_add(
+            detail::complex_bytes(dim_bound),
+            shots > 0 ? detail::StateSampler::scratch_bytes(static_cast<std::size_t>(dim_bound),
+                                                           static_cast<std::size_t>(shots))
+                      : 0);
         const std::uint64_t cap_bytes = detail::require_memory_budget(
-            two_states, options.max_memory_mb, "StatevectorSimulator::run");
+            footprint, options.max_memory_mb, "StatevectorSimulator::run");
         // Everything the instructions decide on their own, operand indices
         // first, before any state is touched, each refusal naming its
         // instruction.
@@ -820,9 +827,9 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // it.
         runner.emplace(plan, *exec, StateForm::Statevector, "StatevectorSimulator::run");
         runner->set_bundle(&result.observations);
-        // Everything the run allocates beyond its two states is charged here
+        // Everything the run allocates beyond that footprint is charged here
         // before it is allocated: the copies and conversions its observers take.
-        detail::RunBudget budget(cap_bytes, two_states, "StatevectorSimulator::run");
+        detail::RunBudget budget(cap_bytes, footprint, "StatevectorSimulator::run");
         runner->set_budget(&budget);
 
         // Execution strategy (docs/api/simulators.md, Execution semantics):

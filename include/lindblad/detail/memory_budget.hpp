@@ -21,9 +21,9 @@
 //                             gives no coherent answer
 //
 // Two checks use it. Before the first gate, a run whose unavoidable buffers
-// exceed the cap is refused (the statevector simulator counts two states, the
-// density-matrix simulator one matrix, the Clifford simulator its tableau and
-// sampling slab). While the run goes on, a RunBudget charges everything the
+// exceed the cap is refused (the statevector simulator counts its state and
+// its sampler's arrays, the density-matrix simulator one matrix, the Clifford
+// simulator its tableau and sampling slab). While the run goes on, a RunBudget charges everything the
 // run allocates beyond that fixed footprint before it is allocated: an MPS
 // chain's growth and its dense fallbacks, and the copies observers take.
 // Going over is then a failure the run reports and can save, rather than a

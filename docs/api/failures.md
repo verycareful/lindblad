@@ -234,7 +234,9 @@ which setting lifts it.
 Before the first gate, a run whose fixed buffers exceed the cap is refused with
 `InvalidArgument`, naming what it needs, the cap, and where the cap came from:
 
-- the statevector simulator counts two states, $2 \cdot 16 \cdot 2^n$ bytes;
+- the statevector simulator counts one state, $16 \cdot 2^n$ bytes, plus its
+  sampler's arrays when the run samples (a prefix snapshot is judged on its
+  own, and taken only when it fits);
 - the density-matrix simulator counts one matrix, $16 \cdot 4^n$ bytes (a prefix
   snapshot is judged on its own, and taken only when it fits);
 - the Clifford simulator counts three tableau-sized buffers;

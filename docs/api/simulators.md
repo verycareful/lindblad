@@ -252,11 +252,13 @@ struct Options {
 - **max_memory_mb**: the most memory a run may use, in MiB (2^20 bytes). 0,
   the default, is automatic: the memory the machine reports available, else
   4096 MiB; `NO_MEMORY_CAP` means no cap (see
-  [The memory cap](failures.md#the-memory-cap)). A statevector run is budgeted
-  for two states, the working buffer (handed over as `Result::final_state`
-  when the run ends) and room for the prefix snapshot a run sampled shot by
-  shot may take ($2 \cdot 16 \cdot 2^n$ bytes), and a run that needs more than the cap is
-  refused with `InvalidArgument` before anything is allocated, naming what it
+  [The memory cap](failures.md#the-memory-cap)). A statevector run needs one
+  state, the working buffer handed over as `Result::final_state` when the run
+  ends ($16 \cdot 2^n$ bytes), plus the sampler's arrays when `shots > 0`
+  (at most $12 \cdot 2^n$ bytes and 1 MiB of draws, and far less when there
+  are fewer shots than amplitudes); the prefix snapshot a run sampled shot by
+  shot may take is taken only when it fits beside the state. A run that needs
+  more than the cap is refused with `InvalidArgument` before anything is allocated, naming what it
   needs, the cap and where the cap came from. The copies and conversions its
   observers take are checked against the same cap while the run goes on.
   Fixed-size bookkeeping is not counted
