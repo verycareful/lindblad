@@ -9,23 +9,37 @@
 
 #include "lindblad/gates.hpp"
 
-#include "lindblad/detail/sv_runs.hpp"
+#include "lindblad/detail/sv_groups.hpp"
 #include "lindblad/detail/validate.hpp"
 
 #include <cmath>
 #include <algorithm>
 #include <cassert>
+#include <utility>
 
 namespace lindblad {
 namespace gates {
 
 // =============================================================================
-// Cache-optimised two-qubit gate core
+// Two-qubit sweep: the gate as one formula over every group of four
 // =============================================================================
-// All two-qubit gates share the same nested lo/hi-step loop structure.
-// By iterating in block order (outer → hi_step, middle → lo_step, inner → contiguous),
-// we get sequential memory access within cache lines and enable SIMD vectorisation.
-// This eliminates the branch-per-element pattern of the naive approach.
+// for_each_quad(sv, a, b, g) runs g(r, i) on every group of four amplitudes,
+// member x = bit_a + 2 * bit_b, on doubles or on Lane8 blocks of eight groups,
+// whichever detail::for_each_group picks for the qubits (sv_groups.hpp).
+// Touched names the members g reads or writes; the others are not moved.
+template <unsigned Touched, class G>
+static inline void for_each_quad(Statevector& sv, int a, int b, const G& g) {
+    const int qs[2] = {a, b};
+    detail::for_each_group<2, Touched>(sv.real_parts, sv.imag_parts, sv.dim, qs, g);
+}
+
+// A diagonal gate scales each member on its own: d(x, r, i) updates member x
+// (a std::integral_constant) in place (detail::for_each_diagonal).
+template <unsigned Touched, class D>
+static inline void for_each_quad_diagonal(Statevector& sv, int a, int b, const D& d) {
+    const int qs[2] = {a, b};
+    detail::for_each_diagonal<2, Touched>(sv.real_parts, sv.imag_parts, sv.dim, qs, d);
+}
 
 // =============================================================================
 // Helper: Controlled single-qubit gate (cache-optimised + SIMD)
@@ -41,55 +55,17 @@ static inline void apply_controlled_matrix(
     double dr, double di
 ) noexcept {
     assert(ctrl != tgt);
-    const size_t dim = sv.dim;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
+    // Members: 1 = ctrl 1, tgt 0; 3 = ctrl 1, tgt 1.
+    for_each_quad<0b1010>(sv, ctrl, tgt, [=](auto* r, auto* i) {
+        const auto r0 = r[1];
+        const auto i0 = i[1];
+        const auto r1 = r[3];
+        const auto i1 = i[3];
 
-    // Sort the two qubit positions to iterate in memory order
-    const int lo = std::min(ctrl, tgt);
-    const int hi = std::max(ctrl, tgt);
-    const size_t lo_step = 1ULL << lo;
-    const size_t hi_step = 1ULL << hi;
-
-    const int qs[2] = {lo, hi};
-    detail::for_each_run(dim, qs, 2, [=](size_t run, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        // Within this block, process pairs where ctrl=1, tgt=0
-        // The offset for ctrl=1 depends on whether ctrl is hi or lo
-        size_t base = run;
-
-        // Compute offsets: we need ctrl bit set, tgt bit clear
-        // When ctrl > tgt: ctrl is hi, tgt is lo
-        //   ctrl=1 → add hi_step; tgt=0 → don't add lo_step
-        //   partner (tgt=1) → add lo_step
-        // When tgt > ctrl: tgt is hi, ctrl is lo
-        //   ctrl=1 → add lo_step; tgt=0 → don't add hi_step
-        //   partner (tgt=1) → add hi_step
-        size_t off_ctrl1_tgt0, off_partner;
-        if (ctrl > tgt) {
-            off_ctrl1_tgt0 = hi_step;       // ctrl(hi)=1, tgt(lo)=0
-            off_partner    = lo_step;        // tgt(lo)=1
-        } else {
-            off_ctrl1_tgt0 = lo_step;        // ctrl(lo)=1, tgt(hi)=0
-            off_partner    = hi_step;        // tgt(hi)=1
-        }
-
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t idx0 = base + i + off_ctrl1_tgt0;
-            size_t idx1 = idx0 + off_partner;
-
-            double r0 = real_ptr[idx0];
-            double i0 = imag_ptr[idx0];
-            double r1 = real_ptr[idx1];
-            double i1 = imag_ptr[idx1];
-
-            real_ptr[idx0] = (ar*r0 - ai*i0) + (br*r1 - bi*i1);
-            imag_ptr[idx0] = (ar*i0 + ai*r0) + (br*i1 + bi*r1);
-            real_ptr[idx1] = (cr*r0 - ci*i0) + (dr*r1 - di*i1);
-            imag_ptr[idx1] = (cr*i0 + ci*r0) + (dr*i1 + di*r1);
-        }
+        r[1] = (ar*r0 - ai*i0) + (br*r1 - bi*i1);
+        i[1] = (ar*i0 + ai*r0) + (br*i1 + bi*r1);
+        r[3] = (cr*r0 - ci*i0) + (dr*r1 - di*i1);
+        i[3] = (cr*i0 + ci*r0) + (dr*i1 + di*r1);
     });
 }
 
@@ -104,37 +80,14 @@ static inline void apply_controlled_phase(
     double cos_p, double sin_p
 ) noexcept {
     assert(ctrl != tgt);
-    const size_t dim = sv.dim;
-    const int lo = std::min(ctrl, tgt);
-    const int hi = std::max(ctrl, tgt);
-    const size_t lo_step = 1ULL << lo;
-    const size_t hi_step = 1ULL << hi;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
-
-    const int qs[2] = {lo, hi};
-    detail::for_each_run(dim, qs, 2, [=](size_t run, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        // Both bits set: offset = hi_step + lo_step
-        size_t base = run + hi_step + lo_step;
-
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t idx = base + i;
-            double r = real_ptr[idx];
-            double im = imag_ptr[idx];
-            real_ptr[idx] = r * cos_p - im * sin_p;
-            imag_ptr[idx] = r * sin_p + im * cos_p;
-        }
+    // Member 3 = ctrl 1, tgt 1.
+    for_each_quad_diagonal<0b1000>(sv, ctrl, tgt, [=](auto, auto& r, auto& i) {
+        const auto re = r;
+        const auto im = i;
+        r = re * cos_p - im * sin_p;
+        i = re * sin_p + im * cos_p;
     });
 }
-
-// =============================================================================
-// Helper: Two-qubit swap pair — cache-optimised loop for gates that swap
-// amplitudes between |01⟩ and |10⟩ subspaces (SWAP, iSWAP, CX).
-// Calls a lambda(idx_a, idx_b) for each pair.
-// =============================================================================
 
 // =============================================================================
 // CX (CNOT): ctrl=1 flips target — cache-optimised
@@ -143,40 +96,10 @@ void apply_cx(Statevector& sv, int ctrl, int tgt) {
     detail::check_qubit(ctrl, sv.n_qubits, "cx");
     detail::check_qubit(tgt, sv.n_qubits, "cx");
     detail::check_distinct2(ctrl, tgt, "cx");
-    const size_t dim = sv.dim;
-    const int lo = std::min(ctrl, tgt);
-    const int hi = std::max(ctrl, tgt);
-    const size_t lo_step = 1ULL << lo;
-    const size_t hi_step = 1ULL << hi;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
-
-    const int qs[2] = {lo, hi};
-    detail::for_each_run(dim, qs, 2, [=](size_t run, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        size_t base = run;
-        size_t off_ctrl1_tgt0, off_partner;
-        if (ctrl > tgt) {
-            off_ctrl1_tgt0 = hi_step;
-            off_partner    = lo_step;
-        } else {
-            off_ctrl1_tgt0 = lo_step;
-            off_partner    = hi_step;
-        }
-
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t idx0 = base + i + off_ctrl1_tgt0;
-            size_t idx1 = idx0 + off_partner;
-
-            double tmp_r = real_ptr[idx0];
-            double tmp_i = imag_ptr[idx0];
-            real_ptr[idx0] = real_ptr[idx1];
-            imag_ptr[idx0] = imag_ptr[idx1];
-            real_ptr[idx1] = tmp_r;
-            imag_ptr[idx1] = tmp_i;
-        }
+    // Members: 1 = ctrl 1, tgt 0; 3 = ctrl 1, tgt 1.
+    for_each_quad<0b1010>(sv, ctrl, tgt, [](auto* r, auto* i) {
+        std::swap(r[1], r[3]);
+        std::swap(i[1], i[3]);
     });
 }
 
@@ -203,27 +126,10 @@ void apply_cz(Statevector& sv, int ctrl, int tgt) {
     detail::check_qubit(ctrl, sv.n_qubits, "cz");
     detail::check_qubit(tgt, sv.n_qubits, "cz");
     detail::check_distinct2(ctrl, tgt, "cz");
-    const size_t dim = sv.dim;
-    const int lo = std::min(ctrl, tgt);
-    const int hi = std::max(ctrl, tgt);
-    const size_t lo_step = 1ULL << lo;
-    const size_t hi_step = 1ULL << hi;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
-
-    const int qs[2] = {lo, hi};
-    detail::for_each_run(dim, qs, 2, [=](size_t run, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        // Both bits = 1: offset = hi_step + lo_step
-        size_t base = run + hi_step + lo_step;
-
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t idx = base + i;
-            real_ptr[idx] = -real_ptr[idx];
-            imag_ptr[idx] = -imag_ptr[idx];
-        }
+    // Member 3 = ctrl 1, tgt 1.
+    for_each_quad_diagonal<0b1000>(sv, ctrl, tgt, [](auto, auto& r, auto& i) {
+        r = -r;
+        i = -i;
     });
 }
 
@@ -250,35 +156,10 @@ void apply_swap(Statevector& sv, int q1, int q2) {
     detail::check_qubit(q1, sv.n_qubits, "swap");
     detail::check_qubit(q2, sv.n_qubits, "swap");
     detail::check_distinct2(q1, q2, "swap");
-    const size_t dim = sv.dim;
-    const int lo = std::min(q1, q2);
-    const int hi = std::max(q1, q2);
-    const size_t lo_step = 1ULL << lo;
-    const size_t hi_step = 1ULL << hi;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
-
-    const int qs[2] = {lo, hi};
-    detail::for_each_run(dim, qs, 2, [=](size_t run, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        // |01⟩: lo=1, hi=0 → base + lo_step
-        // |10⟩: lo=0, hi=1 → base + hi_step
-        size_t off_01 = run + lo_step;
-        size_t off_10 = run + hi_step;
-
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t idx_a = off_01 + i;
-            size_t idx_b = off_10 + i;
-
-            double tmp_r = real_ptr[idx_a];
-            double tmp_i = imag_ptr[idx_a];
-            real_ptr[idx_a] = real_ptr[idx_b];
-            imag_ptr[idx_a] = imag_ptr[idx_b];
-            real_ptr[idx_b] = tmp_r;
-            imag_ptr[idx_b] = tmp_i;
-        }
+    // Members: 1 = q1 1, q2 0; 2 = q1 0, q2 1.
+    for_each_quad<0b0110>(sv, q1, q2, [](auto* r, auto* i) {
+        std::swap(r[1], r[2]);
+        std::swap(i[1], i[2]);
     });
 }
 
@@ -289,38 +170,19 @@ void apply_iswap(Statevector& sv, int q1, int q2) {
     detail::check_qubit(q1, sv.n_qubits, "iswap");
     detail::check_qubit(q2, sv.n_qubits, "iswap");
     detail::check_distinct2(q1, q2, "iswap");
-    const size_t dim = sv.dim;
-    const int lo = std::min(q1, q2);
-    const int hi = std::max(q1, q2);
-    const size_t lo_step = 1ULL << lo;
-    const size_t hi_step = 1ULL << hi;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
+    // Members: 1 = q1 1, q2 0; 2 = q1 0, q2 1.
+    for_each_quad<0b0110>(sv, q1, q2, [](auto* r, auto* i) {
+        const auto r_a = r[1];
+        const auto i_a = i[1];
+        const auto r_b = r[2];
+        const auto i_b = i[2];
 
-    const int qs[2] = {lo, hi};
-    detail::for_each_run(dim, qs, 2, [=](size_t run, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        size_t off_01 = run + lo_step;
-        size_t off_10 = run + hi_step;
-
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t idx_a = off_01 + i;  // |01⟩
-            size_t idx_b = off_10 + i;  // |10⟩
-
-            double r_a = real_ptr[idx_a];
-            double i_a = imag_ptr[idx_a];
-            double r_b = real_ptr[idx_b];
-            double i_b = imag_ptr[idx_b];
-
-            // |01⟩ gets i * old|10⟩: i*(r_b + i*i_b) = -i_b + i*r_b
-            real_ptr[idx_a] = -i_b;
-            imag_ptr[idx_a] = r_b;
-            // |10⟩ gets i * old|01⟩: i*(r_a + i*i_a) = -i_a + i*r_a
-            real_ptr[idx_b] = -i_a;
-            imag_ptr[idx_b] = r_a;
-        }
+        // member 1 gets i * old member 2: i*(r_b + i*i_b) = -i_b + i*r_b
+        r[1] = -i_b;
+        i[1] = r_b;
+        // member 2 gets i * old member 1: i*(r_a + i*i_a) = -i_a + i*r_a
+        r[2] = -i_a;
+        i[2] = r_a;
     });
 }
 
@@ -370,48 +232,19 @@ void apply_crz(Statevector& sv, int ctrl, int tgt, double theta) {
     detail::check_distinct2(ctrl, tgt, "crz");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
-    const size_t dim = sv.dim;
-    const int lo = std::min(ctrl, tgt);
-    const int hi = std::max(ctrl, tgt);
-    const size_t lo_step = 1ULL << lo;
-    const size_t hi_step = 1ULL << hi;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
 
-    const int qs[2] = {lo, hi};
-    detail::for_each_run(dim, qs, 2, [=](size_t run, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        size_t base = run;
-
-        // ctrl=1, tgt=0: apply exp(-i*t/2)
-        size_t off_c1t0, off_c1t1;
-        if (ctrl > tgt) {
-            off_c1t0 = hi_step;                // ctrl(hi)=1, tgt(lo)=0
-            off_c1t1 = hi_step + lo_step;      // ctrl(hi)=1, tgt(lo)=1
+    // Members: 1 = ctrl 1, tgt 0; 3 = ctrl 1, tgt 1.
+    for_each_quad_diagonal<0b1010>(sv, ctrl, tgt, [=](auto x, auto& r, auto& i) {
+        const auto r0 = r;
+        const auto i0 = i;
+        if constexpr (decltype(x)::value == 1) {
+            // tgt=0: multiply by exp(-i*t/2) = cos - i*sin
+            r = r0 * cos_half + i0 * sin_half;
+            i = i0 * cos_half - r0 * sin_half;
         } else {
-            off_c1t0 = lo_step;                // ctrl(lo)=1, tgt(hi)=0
-            off_c1t1 = lo_step + hi_step;      // ctrl(lo)=1, tgt(hi)=1
-        }
-
-        // tgt=0: multiply by exp(-i*t/2) = cos - i*sin
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t idx = base + off_c1t0 + i;
-            double r = real_ptr[idx];
-            double im = imag_ptr[idx];
-            real_ptr[idx] = r * cos_half + im * sin_half;
-            imag_ptr[idx] = im * cos_half - r * sin_half;
-        }
-
-        // tgt=1: multiply by exp(+i*t/2) = cos + i*sin
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t idx = base + off_c1t1 + i;
-            double r = real_ptr[idx];
-            double im = imag_ptr[idx];
-            real_ptr[idx] = r * cos_half - im * sin_half;
-            imag_ptr[idx] = im * cos_half + r * sin_half;
+            // tgt=1: multiply by exp(+i*t/2) = cos + i*sin
+            r = r0 * cos_half - i0 * sin_half;
+            i = i0 * cos_half + r0 * sin_half;
         }
     });
 }
@@ -476,63 +309,29 @@ void apply_ecr(Statevector& sv, int q1, int q2) {
     detail::check_qubit(q1, sv.n_qubits, "ecr");
     detail::check_qubit(q2, sv.n_qubits, "ecr");
     detail::check_distinct2(q1, q2, "ecr");
-    const size_t dim = sv.dim;
-    const int lo = std::min(q1, q2);
-    const int hi = std::max(q1, q2);
-    const size_t lo_step = 1ULL << lo;
-    const size_t hi_step = 1ULL << hi;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
 
-    // Precompute offsets for 4 basis states |q1,q2⟩
-    // Need to map bit positions to lo/hi positions
-    size_t off_00 = 0;
-    size_t off_01, off_10, off_11;
-    if (q1 > q2) {
-        // q1=hi, q2=lo
-        off_01 = lo_step;                // q1=0, q2=1
-        off_10 = hi_step;                // q1=1, q2=0
-        off_11 = hi_step + lo_step;      // q1=1, q2=1
-    } else {
-        // q1=lo, q2=hi
-        off_01 = hi_step;                // q1=0, q2=1
-        off_10 = lo_step;                // q1=1, q2=0
-        off_11 = lo_step + hi_step;      // q1=1, q2=1
-    }
+    // Member x = bit_q2 + 2 * bit_q1, so x written in binary is |q1 q2⟩.
+    for_each_quad<0b1111>(sv, q2, q1, [](auto* r, auto* i) {
+        const auto r00 = r[0], im00 = i[0];
+        const auto r01 = r[1], im01 = i[1];
+        const auto r10 = r[2], im10 = i[2];
+        const auto r11 = r[3], im11 = i[3];
 
-    const int qs[2] = {lo, hi};
-    detail::for_each_run(dim, qs, 2, [=](size_t run, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t base = run + i;
-            size_t i00 = base + off_00;
-            size_t i01 = base + off_01;
-            size_t i10 = base + off_10;
-            size_t i11 = base + off_11;
+        // Row 0 (|00⟩): 1/sqrt2 * (|10⟩ + i|11⟩)
+        r[0] = INV_SQRT2 * (r10 - im11);
+        i[0] = INV_SQRT2 * (im10 + r11);
 
-            double r00 = real_ptr[i00], im00 = imag_ptr[i00];
-            double r01 = real_ptr[i01], im01 = imag_ptr[i01];
-            double r10 = real_ptr[i10], im10 = imag_ptr[i10];
-            double r11 = real_ptr[i11], im11 = imag_ptr[i11];
+        // Row 1 (|01⟩): 1/sqrt2 * (i|10⟩ + |11⟩)
+        r[1] = INV_SQRT2 * (-im10 + r11);
+        i[1] = INV_SQRT2 * (r10 + im11);
 
-            // Row 0 (|00⟩): 1/sqrt2 * (|10⟩ + i|11⟩)
-            real_ptr[i00] = INV_SQRT2 * (r10 - im11);
-            imag_ptr[i00] = INV_SQRT2 * (im10 + r11);
+        // Row 2 (|10⟩): 1/sqrt2 * (|00⟩ - i|01⟩)
+        r[2] = INV_SQRT2 * (r00 + im01);
+        i[2] = INV_SQRT2 * (im00 - r01);
 
-            // Row 1 (|01⟩): 1/sqrt2 * (i|10⟩ + |11⟩)
-            real_ptr[i01] = INV_SQRT2 * (-im10 + r11);
-            imag_ptr[i01] = INV_SQRT2 * (r10 + im11);
-
-            // Row 2 (|10⟩): 1/sqrt2 * (|00⟩ - i|01⟩)
-            real_ptr[i10] = INV_SQRT2 * (r00 + im01);
-            imag_ptr[i10] = INV_SQRT2 * (im00 - r01);
-
-            // Row 3 (|11⟩): 1/sqrt2 * (-i|00⟩ + |01⟩)
-            real_ptr[i11] = INV_SQRT2 * (im00 + r01);
-            imag_ptr[i11] = INV_SQRT2 * (-r00 + im01);
-        }
+        // Row 3 (|11⟩): 1/sqrt2 * (-i|00⟩ + |01⟩)
+        r[3] = INV_SQRT2 * (im00 + r01);
+        i[3] = INV_SQRT2 * (-r00 + im01);
     });
 }
 
@@ -545,55 +344,27 @@ void apply_rzx(Statevector& sv, int q1, int q2, double theta) {
     detail::check_distinct2(q1, q2, "rzx");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
-    const size_t dim = sv.dim;
-    const int lo = std::min(q1, q2);
-    const int hi = std::max(q1, q2);
-    const size_t lo_step = 1ULL << lo;
-    const size_t hi_step = 1ULL << hi;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
 
-    // Precompute offsets for the 4 computational basis states |q1,q2⟩
-    size_t off_00 = 0, off_01, off_10, off_11;
-    if (q1 > q2) {
-        off_01 = lo_step; off_10 = hi_step; off_11 = hi_step + lo_step;
-    } else {
-        off_01 = hi_step; off_10 = lo_step; off_11 = lo_step + hi_step;
-    }
+    // Member x = bit_q2 + 2 * bit_q1, so x written in binary is |q1 q2⟩.
+    for_each_quad<0b1111>(sv, q2, q1, [=](auto* r, auto* i) {
+        // q1=0 pair: |00⟩ <-> |01⟩, Z=+1, applies exp(-i*t/2*X): off-diag = -i*sin
+        {
+            const auto r0 = r[0], i0 = i[0];
+            const auto r1 = r[1], i1 = i[1];
+            r[0] = cos_half * r0 + sin_half * i1;
+            i[0] = cos_half * i0 - sin_half * r1;
+            r[1] = cos_half * r1 + sin_half * i0;
+            i[1] = cos_half * i1 - sin_half * r0;
+        }
 
-    const int qs[2] = {lo, hi};
-    detail::for_each_run(dim, qs, 2, [=](size_t run, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t base = run + i;
-
-            // Process q1=0 pair: |00⟩ <-> |01⟩ — Z=+1, applies exp(-i*t/2*X): off-diag = -i*sin
-            {
-                size_t ia = base + off_00;
-                size_t ib = base + off_01;
-                double r0 = real_ptr[ia], i0 = imag_ptr[ia];
-                double r1 = real_ptr[ib], i1 = imag_ptr[ib];
-
-                real_ptr[ia] = cos_half * r0 + sin_half * i1;
-                imag_ptr[ia] = cos_half * i0 - sin_half * r1;
-                real_ptr[ib] = cos_half * r1 + sin_half * i0;
-                imag_ptr[ib] = cos_half * i1 - sin_half * r0;
-            }
-
-            // Process q1=1 pair: |10⟩ <-> |11⟩ — Z=-1, applies exp(+i*t/2*X): off-diag = +i*sin
-            {
-                size_t ia = base + off_10;
-                size_t ib = base + off_11;
-                double r0 = real_ptr[ia], i0 = imag_ptr[ia];
-                double r1 = real_ptr[ib], i1 = imag_ptr[ib];
-
-                real_ptr[ia] = cos_half * r0 - sin_half * i1;
-                imag_ptr[ia] = cos_half * i0 + sin_half * r1;
-                real_ptr[ib] = cos_half * r1 - sin_half * i0;
-                imag_ptr[ib] = cos_half * i1 + sin_half * r0;
-            }
+        // q1=1 pair: |10⟩ <-> |11⟩, Z=-1, applies exp(+i*t/2*X): off-diag = +i*sin
+        {
+            const auto r0 = r[2], i0 = i[2];
+            const auto r1 = r[3], i1 = i[3];
+            r[2] = cos_half * r0 - sin_half * i1;
+            i[2] = cos_half * i0 + sin_half * r1;
+            r[3] = cos_half * r1 - sin_half * i0;
+            i[3] = cos_half * i1 + sin_half * r0;
         }
     });
 }
@@ -607,50 +378,25 @@ void apply_rxx(Statevector& sv, int q1, int q2, double theta) {
     detail::check_distinct2(q1, q2, "rxx");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
-    const size_t dim = sv.dim;
-    const int lo = std::min(q1, q2);
-    const int hi = std::max(q1, q2);
-    const size_t lo_step = 1ULL << lo;
-    const size_t hi_step = 1ULL << hi;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
 
-    size_t off_00 = 0, off_01, off_10, off_11;
-    if (q1 > q2) {
-        off_01 = lo_step; off_10 = hi_step; off_11 = hi_step + lo_step;
-    } else {
-        off_01 = hi_step; off_10 = lo_step; off_11 = lo_step + hi_step;
-    }
+    // Member x = bit_q2 + 2 * bit_q1, so x written in binary is |q1 q2⟩.
+    for_each_quad<0b1111>(sv, q2, q1, [=](auto* r, auto* i) {
+        const auto r00 = r[0], im00 = i[0];
+        const auto r01 = r[1], im01 = i[1];
+        const auto r10 = r[2], im10 = i[2];
+        const auto r11 = r[3], im11 = i[3];
 
-    const int qs[2] = {lo, hi};
-    detail::for_each_run(dim, qs, 2, [=](size_t run, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t base = run + i;
-            size_t i00 = base + off_00;
-            size_t i01 = base + off_01;
-            size_t i10 = base + off_10;
-            size_t i11 = base + off_11;
+        r[0] = cos_half * r00 + sin_half * im11;
+        i[0] = cos_half * im00 - sin_half * r11;
 
-            double r00 = real_ptr[i00], im00 = imag_ptr[i00];
-            double r01 = real_ptr[i01], im01 = imag_ptr[i01];
-            double r10 = real_ptr[i10], im10 = imag_ptr[i10];
-            double r11 = real_ptr[i11], im11 = imag_ptr[i11];
+        r[1] = cos_half * r01 + sin_half * im10;
+        i[1] = cos_half * im01 - sin_half * r10;
 
-            real_ptr[i00] = cos_half * r00 + sin_half * im11;
-            imag_ptr[i00] = cos_half * im00 - sin_half * r11;
+        r[2] = sin_half * im01 + cos_half * r10;
+        i[2] = -sin_half * r01 + cos_half * im10;
 
-            real_ptr[i01] = cos_half * r01 + sin_half * im10;
-            imag_ptr[i01] = cos_half * im01 - sin_half * r10;
-
-            real_ptr[i10] = sin_half * im01 + cos_half * r10;
-            imag_ptr[i10] = -sin_half * r01 + cos_half * im10;
-
-            real_ptr[i11] = sin_half * im00 + cos_half * r11;
-            imag_ptr[i11] = -sin_half * r00 + cos_half * im11;
-        }
+        r[3] = sin_half * im00 + cos_half * r11;
+        i[3] = -sin_half * r00 + cos_half * im11;
     });
 }
 
@@ -663,50 +409,25 @@ void apply_ryy(Statevector& sv, int q1, int q2, double theta) {
     detail::check_distinct2(q1, q2, "ryy");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
-    const size_t dim = sv.dim;
-    const int lo = std::min(q1, q2);
-    const int hi = std::max(q1, q2);
-    const size_t lo_step = 1ULL << lo;
-    const size_t hi_step = 1ULL << hi;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
 
-    size_t off_00 = 0, off_01, off_10, off_11;
-    if (q1 > q2) {
-        off_01 = lo_step; off_10 = hi_step; off_11 = hi_step + lo_step;
-    } else {
-        off_01 = hi_step; off_10 = lo_step; off_11 = lo_step + hi_step;
-    }
+    // Member x = bit_q2 + 2 * bit_q1, so x written in binary is |q1 q2⟩.
+    for_each_quad<0b1111>(sv, q2, q1, [=](auto* r, auto* i) {
+        const auto r00 = r[0], im00 = i[0];
+        const auto r01 = r[1], im01 = i[1];
+        const auto r10 = r[2], im10 = i[2];
+        const auto r11 = r[3], im11 = i[3];
 
-    const int qs[2] = {lo, hi};
-    detail::for_each_run(dim, qs, 2, [=](size_t run, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t base = run + i;
-            size_t i00 = base + off_00;
-            size_t i01 = base + off_01;
-            size_t i10 = base + off_10;
-            size_t i11 = base + off_11;
+        r[0] = cos_half * r00 - sin_half * im11;
+        i[0] = cos_half * im00 + sin_half * r11;
 
-            double r00 = real_ptr[i00], im00 = imag_ptr[i00];
-            double r01 = real_ptr[i01], im01 = imag_ptr[i01];
-            double r10 = real_ptr[i10], im10 = imag_ptr[i10];
-            double r11 = real_ptr[i11], im11 = imag_ptr[i11];
+        r[1] = cos_half * r01 + sin_half * im10;
+        i[1] = cos_half * im01 - sin_half * r10;
 
-            real_ptr[i00] = cos_half * r00 - sin_half * im11;
-            imag_ptr[i00] = cos_half * im00 + sin_half * r11;
+        r[2] = sin_half * im01 + cos_half * r10;
+        i[2] = -sin_half * r01 + cos_half * im10;
 
-            real_ptr[i01] = cos_half * r01 + sin_half * im10;
-            imag_ptr[i01] = cos_half * im01 - sin_half * r10;
-
-            real_ptr[i10] = sin_half * im01 + cos_half * r10;
-            imag_ptr[i10] = -sin_half * r01 + cos_half * im10;
-
-            real_ptr[i11] = -sin_half * im00 + cos_half * r11;
-            imag_ptr[i11] = sin_half * r00 + cos_half * im11;
-        }
+        r[3] = -sin_half * im00 + cos_half * r11;
+        i[3] = sin_half * r00 + cos_half * im11;
     });
 }
 
@@ -721,58 +442,20 @@ void apply_rzz(Statevector& sv, int q1, int q2, double theta) {
     detail::check_distinct2(q1, q2, "rzz");
     const double cos_half = std::cos(theta / 2.0);
     const double sin_half = std::sin(theta / 2.0);
-    const size_t dim = sv.dim;
-    const int lo = std::min(q1, q2);
-    const int hi = std::max(q1, q2);
-    const size_t lo_step = 1ULL << lo;
-    const size_t hi_step = 1ULL << hi;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
 
-    const int qs[2] = {lo, hi};
-    detail::for_each_run(dim, qs, 2, [=](size_t run, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        size_t base = run;
-
-        // |00⟩: parity=0, exp(-it/2) = cos - i*sin
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t idx = base + i;
-            double r = real_ptr[idx];
-            double im = imag_ptr[idx];
-            real_ptr[idx] = r * cos_half + im * sin_half;
-            imag_ptr[idx] = im * cos_half - r * sin_half;
-        }
-
-        // |01⟩: parity=1, exp(+it/2) = cos + i*sin
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t idx = base + lo_step + i;
-            double r = real_ptr[idx];
-            double im = imag_ptr[idx];
-            real_ptr[idx] = r * cos_half - im * sin_half;
-            imag_ptr[idx] = im * cos_half + r * sin_half;
-        }
-
-        // |10⟩: parity=1, exp(+it/2)
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t idx = base + hi_step + i;
-            double r = real_ptr[idx];
-            double im = imag_ptr[idx];
-            real_ptr[idx] = r * cos_half - im * sin_half;
-            imag_ptr[idx] = im * cos_half + r * sin_half;
-        }
-
-        // |11⟩: parity=0, exp(-it/2)
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < len; ++i) {
-            size_t idx = base + hi_step + lo_step + i;
-            double r = real_ptr[idx];
-            double im = imag_ptr[idx];
-            real_ptr[idx] = r * cos_half + im * sin_half;
-            imag_ptr[idx] = im * cos_half - r * sin_half;
+    // Member x = bit_q1 + 2 * bit_q2; the phase depends on its parity only.
+    for_each_quad_diagonal<0b1111>(sv, q1, q2, [=](auto x, auto& r, auto& i) {
+        constexpr std::size_t X = decltype(x)::value;
+        const auto r0 = r;
+        const auto i0 = i;
+        if constexpr (X == 0 || X == 3) {
+            // Even parity: exp(-it/2) = cos - i*sin
+            r = r0 * cos_half + i0 * sin_half;
+            i = i0 * cos_half - r0 * sin_half;
+        } else {
+            // Odd parity: exp(+it/2) = cos + i*sin
+            r = r0 * cos_half - i0 * sin_half;
+            i = i0 * cos_half + r0 * sin_half;
         }
     });
 }

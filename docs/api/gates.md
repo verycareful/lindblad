@@ -13,7 +13,7 @@ Gates in lindblad follow a **functional, in-place modification** paradigm:
 
 ## Single-Qubit Gates
 
-All single-qubit gates iterate over amplitude pairs `(index, index + step)` where `step = 1 << qubit`. The outer loop spans `[0, dim, 2*step)` with inner SIMD loop over `[i, i+step)`, enabling cache-friendly access and SIMD vectorization.
+All single-qubit gates act on amplitude pairs: member 0 at an index with the target bit clear, member 1 at the index `step = 1 << qubit` above it, with the bit set. Each gate states its formula once, as a function of one pair, and the sweep applies it to every pair (see [Sweeping the State](#sweeping-the-state)).
 
 ### Pauli Gates
 
@@ -105,28 +105,23 @@ static inline void apply_single_qubit_matrix(
 )
 ```
 
-**Loop Structure**:
+**The pair function**:
 ```cpp
-#pragma omp parallel for schedule(static) if(sv.dim >= (1<<20))
-for (size_t i = 0; i < sv.dim; i += 2 * step) {
-    #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-    for (size_t j = i; j < i + step; ++j) {
-        // Load pair
-        double r0 = real_ptr[j], i0 = imag_ptr[j];
-        double r1 = real_ptr[j + step], i1 = imag_ptr[j + step];
-        
-        // Apply: [new_0; new_1] = [[a,b],[c,d]] * [old_0; old_1]
-        real_ptr[j]        = (ar*r0 - ai*i0) + (br*r1 - bi*i1);
-        imag_ptr[j]        = (ar*i0 + ai*r0) + (br*i1 + bi*r1);
-        real_ptr[j + step] = (cr*r0 - ci*i0) + (dr*r1 - di*i1);
-        imag_ptr[j + step] = (cr*i0 + ci*r0) + (dr*i1 + di*r1);
-    }
-}
+for_each_pair<kPairBoth>(sv, qubit, [=](auto* r, auto* i) {
+    const auto r0 = r[0], i0 = i[0];  // member 0: target bit clear
+    const auto r1 = r[1], i1 = i[1];  // member 1: target bit set
+
+    // [new_0; new_1] = [[a,b],[c,d]] * [old_0; old_1]
+    r[0] = (ar*r0 - ai*i0) + (br*r1 - bi*i1);
+    i[0] = (ar*i0 + ai*r0) + (br*i1 + bi*r1);
+    r[1] = (cr*r0 - ci*i0) + (dr*r1 - di*i1);
+    i[1] = (cr*i0 + ci*r0) + (dr*i1 + di*r1);
+});
 ```
 
 **Features**:
-- **Outer parallel loop**: Divides amplitude pairs across OpenMP threads with `schedule(static)`; activates only if `dim >= 2^20` (~1M amplitudes)
-- **Inner SIMD loop**: `#pragma omp simd aligned(ptr: 64)` ensures 64-byte aligned memory access for AVX-512 vectorization
+- **One formula, two widths**: `r` and `i` point at 8-lane values (eight pairs) or at doubles (one pair, inside a vectorized loop); the same expression serves both, and a result does not depend on how many threads ran it
+- **Members touched**: `kPairBoth` loads and stores both members; a gate that changes only member 1 (Z, S, S†) passes `kPairSet`
 - **Complex multiplication**: Four multiplications + two additions per matrix element (2×2 matrix × 2 amplitudes = 16 operations total per pair)
 
 ### `apply_diagonal_phase`
@@ -140,60 +135,38 @@ static inline void apply_diagonal_phase(
 )
 ```
 
-**Optimization**: Only scales amplitudes by phase; no mixing. Two separate SIMD loops (one for qubit=0 amplitudes, one for qubit=1) avoid branch misprediction.
+**Optimization**: Only scales amplitudes by phase; no mixing. Member 0 is multiplied by the first phase and member 1 by the second.
 
 ## Two-Qubit Gates
 
-Two-qubit gates employ a **cache-optimized nested loop** structure with lo/hi step decomposition to maintain sequential memory access and enable SIMD vectorization.
+Two-qubit gates act on groups of four amplitudes, one per setting of the two qubits.
 
-### Cache-Optimized Loop Pattern
+### Groups of Four
 
-For a two-qubit operation on controls/targets, sort indices to iterate in memory order:
+A kernel names its two qubits in its own order, `for_each_quad(sv, a, b, g)`, and member `x` of a group has `x = bit_a + 2 * bit_b`. For a controlled gate called with `(ctrl, tgt)`, member 1 is ctrl=1, tgt=0 and member 3 is ctrl=1, tgt=1, whichever of the two qubits is higher. The kernel also names the members it touches as a bit mask, and only those are loaded and stored, so a controlled gate moves only the memory its control selects:
+
 ```cpp
-const int lo = std::min(ctrl, tgt);
-const int hi = std::max(ctrl, tgt);
-const size_t lo_step = 1ULL << lo;
-const size_t hi_step = 1ULL << hi;
-
-#pragma omp parallel for schedule(static) if(dim >= (1<<20))
-for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)) {
-    size_t k = kk;
-    for (size_t j = 0; j < hi_step; j += 2 * lo_step) {
-        size_t base = k + j;
-        // Compute offsets based on which qubit is hi/lo
-        size_t off_ctrl1_tgt0, off_partner;
-        if (ctrl > tgt) {
-            off_ctrl1_tgt0 = hi_step;   // ctrl(hi)=1, tgt(lo)=0
-            off_partner    = lo_step;   // tgt(lo)=1
-        } else {
-            off_ctrl1_tgt0 = lo_step;   // ctrl(lo)=1, tgt(hi)=0
-            off_partner    = hi_step;   // tgt(hi)=1
-        }
-        
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t i = 0; i < lo_step; ++i) {
-            size_t idx0 = base + i + off_ctrl1_tgt0;
-            size_t idx1 = idx0 + off_partner;
-            // Process indices where ctrl=1, tgt=0/1
-        }
-    }
+void apply_cx(Statevector& sv, int ctrl, int tgt) {
+    // Members: 1 = ctrl 1, tgt 0; 3 = ctrl 1, tgt 1.
+    for_each_quad<0b1010>(sv, ctrl, tgt, [](auto* r, auto* i) {
+        std::swap(r[1], r[3]);
+        std::swap(i[1], i[3]);
+    });
 }
 ```
 
-**Benefit**: Memory access is sequential within cache lines, enabling SIMD prefetch and vectorization. No branch per element; all complex logic in outer loops.
+As for single-qubit gates, the group function runs on eight groups at a time, by the sweep described in [Sweeping the State](#sweeping-the-state).
 
 ### Controlled Gates
 
 **CX (CNOT)** (`apply_cx`): Flips target when control=1
-- **Code**: Swaps amplitudes at `[idx0, idx0 + off_partner]` when ctrl=1
-- **Implementation**: Two loop swaps for real and imag parts
+- **Code**: Swaps members 1 and 3 (ctrl=1 with tgt=0 and with tgt=1); members 0 and 2 are not touched
 
 **CY** (`apply_cy`): Applies Y to target when control=1
 - **Code**: Call `apply_controlled_matrix(sv, ctrl, tgt, 0, 0, 0, -1, 0, 1, 0, 0)` for Y = $\begin{bmatrix} 0 & -i \\ i & 0 \end{bmatrix}$
 
 **CZ** (`apply_cz`): Negates phase when both qubits are 1
-- **Optimization**: Uses `apply_controlled_phase` (diagonal path)
-- **Code**: Only modifies amplitudes where ctrl=1 AND tgt=1
+- **Code**: Negates member 3 (ctrl=1 AND tgt=1); the other members are not touched
 
 **CH** (`apply_ch`): Applies Hadamard to target when control=1
 - **Code**: Call `apply_controlled_matrix` with Hadamard coefficients
@@ -201,7 +174,7 @@ for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)
 ### Swap Gates
 
 **SWAP** (`apply_swap`): Exchanges amplitudes between q1 and q2
-- **Code**: For each index pair with `(q1, q2)` bits differing, swap amplitudes
+- **Code**: Swaps the two members whose `(q1, q2)` bits differ
 
 **iSWAP** (`apply_iswap`): Swaps AND applies $i$ phase factor
 - **Code**: Similar to SWAP, but prepends $i$ (imaginary unit) to swapped amplitudes
@@ -230,7 +203,7 @@ for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)
 - **RYY(θ)**: $RYY(\theta) = e^{-i\theta(Y \otimes Y)/2}$ — applies YY rotation
 - **RZZ(θ)**: $RZZ(\theta) = e^{-i\theta(Z \otimes Z)/2}$ — applies ZZ rotation (diagonal)
 - **RZX(θ)**: $RZX(\theta) = e^{-i\theta(Z \otimes X)/2}$ — mixed ZX rotation
-- **Code**: Precompute phase factors; apply via `apply_controlled_matrix` or `apply_controlled_phase` (for RZZ, which is diagonal)
+- **Code**: Precompute `cos(θ/2)` and `sin(θ/2)`; each gate has its own group function over the four members (RZZ is diagonal and multiplies every member by its parity's phase)
 
 ## Three-Qubit Gates
 
@@ -238,32 +211,31 @@ for (int kk = 0; kk < static_cast<int>(dim); kk += static_cast<int>(2 * hi_step)
 
 (`apply_ccx`): Flips target when both controls are 1
 
-**Implementation**: Simpler than two-qubit gates; uses direct bit checking:
+**Implementation**: The gate acts on groups of eight amplitudes, one per setting of the three qubits, and only two members of each move. The groups' base indices (all three bits clear) come in runs of consecutive indices, `2^q_min` long for the lowest of the three qubits, so within a run the c1=1, c2=1, tgt=0 amplitudes are one contiguous stretch and their partners the stretch `2^tgt` above it. The kernel swaps the two stretches:
 ```cpp
-for (int ii = 0; ii < static_cast<int>(dim); ++ii) {
-    size_t i = ii;
-    // Act when c1=1, c2=1, tgt=0
-    if (((i >> c1) & 1) && ((i >> c2) & 1) && !((i >> tgt) & 1)) {
-        size_t j = i | (1ULL << tgt);  // Set tgt bit
-        std::swap(sv.real_parts[i], sv.real_parts[j]);
-        std::swap(sv.imag_parts[i], sv.imag_parts[j]);
-    }
-}
+detail::for_each_run(sv.dim, sorted_qubits, 3, [=](size_t run, auto len) {
+    const size_t first = run | c1b | c2b;  // c1=1, c2=1, tgt=0
+    for_each_in_run(len, [&](size_t k) {
+        std::swap(real_ptr[first + k], real_ptr[first + k + tb]);
+        std::swap(imag_ptr[first + k], imag_ptr[first + k + tb]);
+    });
+});
 ```
+`for_each_in_run` runs a stretch of one or two groups (the lowest qubit at 0 or 1) as straight-line code, and a longer one as an `omp simd` loop vectorized across the run.
 
-**Complexity**: $O(2^n)$ iterations; conditional swap only for matching indices. OpenMP parallelization via `schedule(static)`.
+**Complexity**: $O(2^n / 8)$ swaps: only the pairs that change are visited. The runs are split across threads as in [Sweeping the State](#sweeping-the-state).
 
 ### CCZ
 
 (`apply_ccz`): Negates phase when all three qubits are 1
 
-**Code**: Check `(i >> c1) & 1 && (i >> c2) & 1 && (i >> tgt) & 1`; negate real and imag parts
+**Code**: Negates the stretch with all three bits set, run by run as for CCX
 
 ### CSWAP (Fredkin)
 
 (`apply_cswap`): Swaps q1 and q2 when control=1
 
-**Code**: Check ctrl=1; then swap amplitudes if q1 and q2 bits differ
+**Code**: Swaps the ctrl=1, q1=1, q2=0 stretch with the ctrl=1, q1=0, q2=1 stretch, run by run as for CCX
 
 ### RCCX (Margolus Gate)
 
@@ -304,7 +276,7 @@ void apply_unitary(
 ```cpp
 size_t n_groups = sv.dim >> k;  // 2^(n-k) groups
 
-#pragma omp parallel for schedule(static) if(n_groups > (1<<15))
+#pragma omp parallel for num_threads(group_team) if(group_team > 1) schedule(static)
 for (int gg = 0; gg < static_cast<int>(n_groups); ++gg) {
     size_t g = gg;
     // Map group index g to background index by inserting zeros at target positions
@@ -347,11 +319,12 @@ for (int gg = 0; gg < static_cast<int>(n_groups); ++gg) {
 **Complexity**:
 - **Time**: $O(2^n \cdot 2^{2k})$ (iterate over $2^{n-k}$ groups, apply $2^{2k}$ matrix operations)
 - **Space**: $O(2^k)$ for temporary vectors per OpenMP thread
-- **Parallelization (R.1.13, audit F-8)**: work-shape dispatch. When there are
-  many background groups (`n_groups > 2^15`), the outer group loop parallelizes.
-  When `k` is large (few groups, big per-group blocks) — e.g. a full-register
-  oracle has a single group — the per-group ROW multiply parallelizes instead,
-  so large-`k` unitaries no longer run serially at $O(4^n)$.
+- **Parallelization**: work-shape dispatch. Each amplitude costs `block_size`
+  complex multiply-adds, so the group loop's team is sized for
+  `dim * block_size / 2` amplitudes of one-qubit work (see
+  [Sweeping the State](#sweeping-the-state)). When `k` is large and there are
+  fewer background groups than that team could use (a full-register oracle has
+  a single group), the row multiply inside each group parallelizes instead.
 
 ## Multi-Controlled and Permutation Operations
 
@@ -405,39 +378,31 @@ for routing and basis translation (see the [QASM](qasm.md) and
 
 ## Performance Optimizations
 
-### SIMD Vectorization
+### Sweeping the State
 
-All gates employ `#pragma omp simd aligned(ptr: 64)` to:
-- Enable AVX-512 instruction generation (64-byte alignment matches 8×double cache line)
-- Allow compiler vectorization without manual intrinsics
-- Maintain portability across architectures
+One- and two-qubit gates are swept by `detail::for_each_group`, which takes the gate's group function and runs it eight groups at a time, either on 8-lane values (each lane holds one group) or in an `omp simd` loop. The sweep picks one of two paths by the lowest qubit `q_min` the gate touches:
+
+- **Blocks** (`q_min >= 3`): the groups' base indices come in runs of `2^q_min` consecutive indices, at least eight, so the same member of eight consecutive groups is one whole cache line. Each thread sweeps its share run by run, the next run following from the last by a masked increment. A short run (under eight cache lines) is swept a cache line at a time: the sweep loads each member's line directly, calls the group function on the 8-lane values, and stores the lines back. A longer run is one `omp simd` loop over its amplitudes calling the group function on doubles, which the compiler vectorizes; a loop's entry cost is then spread over the whole run.
+- **Lanes** (`q_min < 3`): a run is shorter than a cache line (one to four amplitudes). The sweep takes tiles of whole cache lines and shuffles their lanes so that one 8-lane value holds the same member of eight different groups. The group function runs once on those values, and the inverse shuffle puts every lane back. A gate qubit at 3 or above chooses which cache lines form a tile, since its partner line lies `2^q` amplitudes away.
+
+Each thread copies the group function and takes `restrict` pointers to the amplitude arrays once for its share, so the gate's coefficients stay in registers across the whole share.
+
+The 8-lane values use GCC and Clang vector extensions, which the compiler lowers to the target's own registers and permutes (AVX-512, AVX2, SSE2 or NEON); other compilers get a plain eight-double array with the same values. A state smaller than one tile (under 16 amplitudes for a one-qubit gate, 32 for a two-qubit gate) runs the group function on doubles, one group at a time.
+
+Three-qubit gates (CCX, CCZ, CSWAP, RCCX) sweep runs only: straight-line code for runs of one or two groups, an `omp simd` loop over longer ones.
 
 ### OpenMP Parallelization
 
-- **Single-qubit gates**: Activate parallelization if `dim >= 2^20` (~1M amplitudes)
-- **Multi-qubit gates**: Similar threshold based on dimension or number of groups
-- **Schedule**: `schedule(static)` for predictable workload distribution without synchronization overhead
+- **Team size**: every pass sizes its team by its work: `min(available threads, work / min_amplitudes_per_thread)`, where the work counts amplitudes at one-qubit-gate cost and `min_amplitudes_per_thread` defaults to `DEFAULT_MIN_AMPLITUDES_PER_THREAD` (2048, in `lindblad/types.hpp`). A team of one runs serially. See `min_amplitudes_per_thread` in the [Simulators](simulators.md) page.
+- **Even split**: the groups (or tiles) are divided among the team by count, in contiguous shares that start on a cache line, so a gate on the highest qubit keeps every thread busy and no two threads write one line.
+- **Determinism**: each amplitude is written by exactly one thread with the same formula, so a gate computes the same bits on one thread or many.
 
 ### Specialized Diagonal Paths
 
-For gates with diagonal matrices (S, T, RZ, P, CZ, CP, RZZ):
-- Use `apply_diagonal_phase` instead of full `apply_single_qubit_matrix`
-- Avoids amplitude mixing; only scales by phase
-- **Memory traffic**: ~50% of full gate implementation
-
-### Loop Tiling for Two-Qubit Gates
-
-Cache-optimized nested loops (hi_step/lo_step) ensure:
-- **Sequential memory access** within SIMD vectors
-- **Prefetch efficiency** by accessing contiguous regions
-- **Cache utilization** by processing complete blocks before moving to next
-
-### Direct Bit Manipulation for Multi-Qubit Gates
-
-Three-qubit gates (CCX, CCZ, CSWAP) use direct bit checking rather than nested step loops:
-- **Simpler code** with fewer nested loops
-- **Same complexity** ($O(2^n)$) but potentially better branch prediction on CPUs with specialized bit testing
-- **Trade-off**: Slightly worse SIMD efficiency than cache-optimized loops (less predictable memory patterns)
+For gates with diagonal matrices (Z, S, S†, T, T†, RZ, P, CZ, CP, CRZ, RZZ):
+- The kernel states the gate per member, as a function that scales one member by its phase (`detail::for_each_diagonal`); no amplitude mixing
+- On the blocks path, each run is swept one member at a time, so the loop streams through one member's memory before the next member's instead of interleaving all of them; the lanes path applies the member function to every member of a tile
+- Controlled diagonal gates (CZ, CP) touch one member of four, so they load and store a quarter of the state when both qubits are at 3 or above, half when exactly one is below 3, and all of it when both are (a cache line then holds touched and untouched members alike)
 
 ## Integration with QuantumCircuit
 

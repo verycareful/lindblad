@@ -9,7 +9,7 @@
 
 #include "lindblad/gates.hpp"
 
-#include "lindblad/detail/sv_runs.hpp"
+#include "lindblad/detail/sv_groups.hpp"
 #include "lindblad/detail/validate.hpp"
 
 #include <cmath>
@@ -19,14 +19,27 @@ namespace lindblad {
 namespace gates {
 
 // =============================================================================
-// One-qubit sweep: every run of groups for qubit q, split evenly across threads
+// One-qubit sweep: the gate as one formula over every pair
 // =============================================================================
-// A run [base, base + len) holds amplitudes with bit q clear; each partner,
-// with bit q set, sits step = 2^q above it (detail::for_each_run).
-template <class Body>
-static inline void for_each_pair_run(const Statevector& sv, int q, Body&& body) {
+// A pair is member 0 (bit q clear) and member 1 (bit q set). The kernel's
+// formula g(r, i) runs on doubles or on Lane8 blocks of eight pairs, whichever
+// detail::for_each_group picks for q (sv_groups.hpp); Touched names the
+// members g reads or writes.
+inline constexpr unsigned kPairBoth = 0b11;  // members 0 and 1
+inline constexpr unsigned kPairSet = 0b10;   // member 1 only
+
+template <unsigned Touched, class G>
+static inline void for_each_pair(Statevector& sv, int q, const G& g) {
     const int qs[1] = {q};
-    detail::for_each_run(sv.dim, qs, 1, std::forward<Body>(body));
+    detail::for_each_group<1, Touched>(sv.real_parts, sv.imag_parts, sv.dim, qs, g);
+}
+
+// A diagonal gate scales each member on its own: d(x, r, i) updates member x
+// (a std::integral_constant) in place (detail::for_each_diagonal).
+template <unsigned Touched, class D>
+static inline void for_each_pair_diagonal(Statevector& sv, int q, const D& d) {
+    const int qs[1] = {q};
+    detail::for_each_diagonal<1, Touched>(sv.real_parts, sv.imag_parts, sv.dim, qs, d);
 }
 
 // =============================================================================
@@ -44,28 +57,19 @@ static inline void apply_single_qubit_matrix(
     double cr, double ci,  // c = matrix[1][0]
     double dr, double di   // d = matrix[1][1]
 ) {
-    const size_t step = 1ULL << qubit;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
+    for_each_pair<kPairBoth>(sv, qubit, [=](auto* r, auto* i) {
+        const auto r0 = r[0];
+        const auto i0 = i[0];
+        const auto r1 = r[1];
+        const auto i1 = i[1];
 
-    for_each_pair_run(sv, qubit, [=](size_t base, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t j = base; j < base + len; ++j) {
-            double r0 = real_ptr[j];
-            double i0 = imag_ptr[j];
-            double r1 = real_ptr[j + step];
-            double i1 = imag_ptr[j + step];
+        // new_0 = a * old_0 + b * old_1
+        r[0] = (ar*r0 - ai*i0) + (br*r1 - bi*i1);
+        i[0] = (ar*i0 + ai*r0) + (br*i1 + bi*r1);
 
-            // new_0 = a * old_0 + b * old_1
-            real_ptr[j]        = (ar*r0 - ai*i0) + (br*r1 - bi*i1);
-            imag_ptr[j]        = (ar*i0 + ai*r0) + (br*i1 + bi*r1);
-
-            // new_1 = c * old_0 + d * old_1
-            real_ptr[j + step] = (cr*r0 - ci*i0) + (dr*r1 - di*i1);
-            imag_ptr[j + step] = (cr*i0 + ci*r0) + (dr*i1 + di*r1);
-        }
+        // new_1 = c * old_0 + d * old_1
+        r[1] = (cr*r0 - ci*i0) + (dr*r1 - di*i1);
+        i[1] = (cr*i0 + ci*r0) + (dr*i1 + di*r1);
     });
 }
 
@@ -75,29 +79,17 @@ static inline void apply_diagonal_phase(
     double cos0, double sin0,  // cos/sin of phase0
     double cos1, double sin1   // cos/sin of phase1
 ) {
-    const size_t step = 1ULL << qubit;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
-
-    for_each_pair_run(sv, qubit, [=](size_t base, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t j = base; j < base + len; ++j) {
+    for_each_pair_diagonal<kPairBoth>(sv, qubit, [=](auto x, auto& r, auto& i) {
+        const auto r0 = r;
+        const auto i0 = i;
+        if constexpr (decltype(x)::value == 0) {
             // Apply phase0 to qubit=0 amplitudes
-            double r = real_ptr[j];
-            double im = imag_ptr[j];
-            real_ptr[j] = r * cos0 - im * sin0;
-            imag_ptr[j] = r * sin0 + im * cos0;
-        }
-
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t j = base + step; j < base + step + len; ++j) {
+            r = r0 * cos0 - i0 * sin0;
+            i = r0 * sin0 + i0 * cos0;
+        } else {
             // Apply phase1 to qubit=1 amplitudes
-            double r = real_ptr[j];
-            double im = imag_ptr[j];
-            real_ptr[j] = r * cos1 - im * sin1;
-            imag_ptr[j] = r * sin1 + im * cos1;
+            r = r0 * cos1 - i0 * sin1;
+            i = r0 * sin1 + i0 * cos1;
         }
     });
 }
@@ -107,18 +99,9 @@ static inline void apply_diagonal_phase(
 // =============================================================================
 void apply_x(Statevector& sv, int q) {
     detail::check_qubit(q, sv.n_qubits, "x");
-    const size_t step = 1ULL << q;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
-
-    for_each_pair_run(sv, q, [=](size_t base, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t j = base; j < base + len; ++j) {
-            std::swap(real_ptr[j], real_ptr[j + step]);
-            std::swap(imag_ptr[j], imag_ptr[j + step]);
-        }
+    for_each_pair<kPairBoth>(sv, q, [](auto* r, auto* i) {
+        std::swap(r[0], r[1]);
+        std::swap(i[0], i[1]);
     });
 }
 
@@ -127,27 +110,18 @@ void apply_x(Statevector& sv, int q) {
 // =============================================================================
 void apply_y(Statevector& sv, int q) {
     detail::check_qubit(q, sv.n_qubits, "y");
-    const size_t step = 1ULL << q;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
+    for_each_pair<kPairBoth>(sv, q, [](auto* r, auto* i) {
+        const auto r0 = r[0];
+        const auto i0 = i[0];
+        const auto r1 = r[1];
+        const auto i1 = i[1];
 
-    for_each_pair_run(sv, q, [=](size_t base, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t j = base; j < base + len; ++j) {
-            double r0 = real_ptr[j];
-            double i0 = imag_ptr[j];
-            double r1 = real_ptr[j + step];
-            double i1 = imag_ptr[j + step];
-
-            // new_0 = -i * old_1 = (i1, -r1)
-            real_ptr[j]        = i1;
-            imag_ptr[j]        = -r1;
-            // new_1 = i * old_0 = (-i0, r0)
-            real_ptr[j + step] = -i0;
-            imag_ptr[j + step] = r0;
-        }
+        // new_0 = -i * old_1 = (i1, -r1)
+        r[0] = i1;
+        i[0] = -r1;
+        // new_1 = i * old_0 = (-i0, r0)
+        r[1] = -i0;
+        i[1] = r0;
     });
 }
 
@@ -156,18 +130,9 @@ void apply_y(Statevector& sv, int q) {
 // =============================================================================
 void apply_z(Statevector& sv, int q) {
     detail::check_qubit(q, sv.n_qubits, "z");
-    const size_t step = 1ULL << q;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
-
-    for_each_pair_run(sv, q, [=](size_t base, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t j = base + step; j < base + step + len; ++j) {
-            real_ptr[j] = -real_ptr[j];
-            imag_ptr[j] = -imag_ptr[j];
-        }
+    for_each_pair_diagonal<kPairSet>(sv, q, [](auto, auto& r, auto& i) {
+        r = -r;
+        i = -i;
     });
 }
 
@@ -176,25 +141,16 @@ void apply_z(Statevector& sv, int q) {
 // =============================================================================
 void apply_h(Statevector& sv, int q) {
     detail::check_qubit(q, sv.n_qubits, "h");
-    const size_t step = 1ULL << q;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
+    for_each_pair<kPairBoth>(sv, q, [](auto* r, auto* i) {
+        const auto r0 = r[0];
+        const auto i0 = i[0];
+        const auto r1 = r[1];
+        const auto i1 = i[1];
 
-    for_each_pair_run(sv, q, [=](size_t base, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t j = base; j < base + len; ++j) {
-            double r0 = real_ptr[j];
-            double i0 = imag_ptr[j];
-            double r1 = real_ptr[j + step];
-            double i1 = imag_ptr[j + step];
-
-            real_ptr[j]        = INV_SQRT2 * (r0 + r1);
-            imag_ptr[j]        = INV_SQRT2 * (i0 + i1);
-            real_ptr[j + step] = INV_SQRT2 * (r0 - r1);
-            imag_ptr[j + step] = INV_SQRT2 * (i0 - i1);
-        }
+        r[0] = INV_SQRT2 * (r0 + r1);
+        i[0] = INV_SQRT2 * (i0 + i1);
+        r[1] = INV_SQRT2 * (r0 - r1);
+        i[1] = INV_SQRT2 * (i0 - i1);
     });
 }
 
@@ -203,21 +159,11 @@ void apply_h(Statevector& sv, int q) {
 // =============================================================================
 void apply_s(Statevector& sv, int q) {
     detail::check_qubit(q, sv.n_qubits, "s");
-    const size_t step = 1ULL << q;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
-
-    for_each_pair_run(sv, q, [=](size_t base, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t j = base + step; j < base + step + len; ++j) {
-            // Multiply by i: (r + im*i) * i = -im + r*i
-            double r = real_ptr[j];
-            double im = imag_ptr[j];
-            real_ptr[j] = -im;
-            imag_ptr[j] = r;
-        }
+    for_each_pair_diagonal<kPairSet>(sv, q, [](auto, auto& r, auto& i) {
+        // Multiply by i: (r + im*i) * i = -im + r*i
+        const auto r1 = r;
+        r = -i;
+        i = r1;
     });
 }
 
@@ -226,21 +172,11 @@ void apply_s(Statevector& sv, int q) {
 // =============================================================================
 void apply_sdg(Statevector& sv, int q) {
     detail::check_qubit(q, sv.n_qubits, "sdg");
-    const size_t step = 1ULL << q;
-    double* const rp = sv.real_parts;
-    double* const ip = sv.imag_parts;
-
-    for_each_pair_run(sv, q, [=](size_t base, auto len) {
-        double* __restrict__ real_ptr = rp;
-        double* __restrict__ imag_ptr = ip;
-        #pragma omp simd aligned(real_ptr, imag_ptr: 64)
-        for (size_t j = base + step; j < base + step + len; ++j) {
-            // Multiply by -i: (r + im*i) * (-i) = im - r*i
-            double r = real_ptr[j];
-            double im = imag_ptr[j];
-            real_ptr[j] = im;
-            imag_ptr[j] = -r;
-        }
+    for_each_pair_diagonal<kPairSet>(sv, q, [](auto, auto& r, auto& i) {
+        // Multiply by -i: (r + im*i) * (-i) = im - r*i
+        const auto r1 = r;
+        r = i;
+        i = -r1;
     });
 }
 

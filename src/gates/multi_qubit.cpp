@@ -18,9 +18,29 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 namespace lindblad {
 namespace gates {
+
+// =============================================================================
+// Three-qubit sweep: every group of one run
+// =============================================================================
+// Calls f(k) for each group k < len of a run (detail::for_each_run). A run of
+// compile-time length (one or two groups, when the lowest qubit is 0 or 1) is
+// straight-line code: an omp simd loop around one or two iterations costs more
+// to enter than its swaps take. A longer run is an omp simd loop, vectorised
+// across the run.
+template <class Len, class F>
+static inline void for_each_in_run(Len len, F&& f) {
+    if constexpr (std::is_same_v<Len, size_t>) {
+        #pragma omp simd
+        for (size_t k = 0; k < len; ++k) f(k);
+    } else {
+        for (size_t k = 0; k < Len::value; ++k) f(k);
+    }
+}
 
 // =============================================================================
 // CCX (Toffoli): flip target when both controls are 1
@@ -38,14 +58,20 @@ void apply_ccx(Statevector& sv, int c1, int c2, int tgt) {
     const size_t c2b = 1ULL << c2;
     const size_t tb  = 1ULL << tgt;
 
-    detail::for_each_run(sv.dim, qs.data(), 3, [&](size_t run, auto len) {
-        for (size_t k = 0; k < len; ++k) {
-            const size_t base = run + k;
-            const size_t i = base | c1b | c2b;       // c1=1, c2=1, tgt=0
-            const size_t j = base | c1b | c2b | tb;  // c1=1, c2=1, tgt=1
-            std::swap(sv.real_parts[i], sv.real_parts[j]);
-            std::swap(sv.imag_parts[i], sv.imag_parts[j]);
-        }
+    double* const rp = sv.real_parts;
+    double* const ip = sv.imag_parts;
+
+    // A run's base indices have every gate bit clear, so the run's c1=1, c2=1,
+    // tgt=0 amplitudes are one contiguous stretch starting at the run's base
+    // with those bits set, and their tgt=1 partners the stretch tb above.
+    detail::for_each_run(sv.dim, qs.data(), 3, [=](size_t run, auto len) {
+        double* __restrict__ real_ptr = rp;
+        double* __restrict__ imag_ptr = ip;
+        const size_t first = run | c1b | c2b;
+        for_each_in_run(len, [&](size_t k) {
+            std::swap(real_ptr[first + k], real_ptr[first + k + tb]);
+            std::swap(imag_ptr[first + k], imag_ptr[first + k + tb]);
+        });
     });
 }
 
@@ -63,12 +89,17 @@ void apply_ccz(Statevector& sv, int c1, int c2, int tgt) {
     const size_t c2b = 1ULL << c2;
     const size_t tb  = 1ULL << tgt;
 
-    detail::for_each_run(sv.dim, qs.data(), 3, [&](size_t run, auto len) {
-        for (size_t k = 0; k < len; ++k) {
-            const size_t i = (run + k) | c1b | c2b | tb;  // all three = 1
-            sv.real_parts[i] = -sv.real_parts[i];
-            sv.imag_parts[i] = -sv.imag_parts[i];
-        }
+    double* const rp = sv.real_parts;
+    double* const ip = sv.imag_parts;
+
+    detail::for_each_run(sv.dim, qs.data(), 3, [=](size_t run, auto len) {
+        double* __restrict__ real_ptr = rp;
+        double* __restrict__ imag_ptr = ip;
+        const size_t first = run | c1b | c2b | tb;  // all three = 1
+        for_each_in_run(len, [&](size_t k) {
+            real_ptr[first + k] = -real_ptr[first + k];
+            imag_ptr[first + k] = -imag_ptr[first + k];
+        });
     });
 }
 
@@ -86,14 +117,18 @@ void apply_cswap(Statevector& sv, int ctrl, int q1, int q2) {
     const size_t q1b   = 1ULL << q1;
     const size_t q2b   = 1ULL << q2;
 
-    detail::for_each_run(sv.dim, qs.data(), 3, [&](size_t run, auto len) {
-        for (size_t k = 0; k < len; ++k) {
-            const size_t base = run + k;
-            const size_t i = base | ctrlb | q1b;  // ctrl=1, q1=1, q2=0
-            const size_t j = base | ctrlb | q2b;  // ctrl=1, q1=0, q2=1
-            std::swap(sv.real_parts[i], sv.real_parts[j]);
-            std::swap(sv.imag_parts[i], sv.imag_parts[j]);
-        }
+    double* const rp = sv.real_parts;
+    double* const ip = sv.imag_parts;
+
+    detail::for_each_run(sv.dim, qs.data(), 3, [=](size_t run, auto len) {
+        double* __restrict__ real_ptr = rp;
+        double* __restrict__ imag_ptr = ip;
+        const size_t first = run | ctrlb | q1b;  // ctrl=1, q1=1, q2=0
+        const size_t other = run | ctrlb | q2b;  // ctrl=1, q1=0, q2=1
+        for_each_in_run(len, [&](size_t k) {
+            std::swap(real_ptr[first + k], real_ptr[other + k]);
+            std::swap(imag_ptr[first + k], imag_ptr[other + k]);
+        });
     });
 }
 
@@ -129,24 +164,28 @@ void apply_rccx(Statevector& sv, int c1, int c2, int tgt) {
     const size_t c2b = 1ULL << c2;
     const size_t tb  = 1ULL << tgt;
 
-    detail::for_each_run(sv.dim, qs.data(), 3, [&](size_t run, auto len) {
-        for (size_t k = 0; k < len; ++k) {
-            const size_t base = run + k;
-            // |101>: c1=1, c2=0, t=1 picks up a -1 phase
-            const size_t i101 = base | c1b | tb;
-            sv.real_parts[i101] = -sv.real_parts[i101];
-            sv.imag_parts[i101] = -sv.imag_parts[i101];
+    double* const rp = sv.real_parts;
+    double* const ip = sv.imag_parts;
+
+    detail::for_each_run(sv.dim, qs.data(), 3, [=](size_t run, auto len) {
+        double* __restrict__ real_ptr = rp;
+        double* __restrict__ imag_ptr = ip;
+        const size_t i101 = run | c1b | tb;   // c1=1, c2=0, t=1
+        const size_t i110 = run | c1b | c2b;  // c1=1, c2=1, t=0
+        const size_t i111 = i110 | tb;        // c1=1, c2=1, t=1
+        for_each_in_run(len, [&](size_t k) {
+            // |101> picks up a -1 phase
+            real_ptr[i101 + k] = -real_ptr[i101 + k];
+            imag_ptr[i101 + k] = -imag_ptr[i101 + k];
             // c1=1, c2=1 pair:
             //   new|110> = -i * old|111>,  new|111> = i * old|110>
-            const size_t i110 = base | c1b | c2b;
-            const size_t i111 = i110 | tb;
-            const double r0 = sv.real_parts[i110], im0 = sv.imag_parts[i110];
-            const double r1 = sv.real_parts[i111], im1 = sv.imag_parts[i111];
-            sv.real_parts[i110] = im1;   // -i*(r1 + i*im1) = im1 - i*r1
-            sv.imag_parts[i110] = -r1;
-            sv.real_parts[i111] = -im0;  //  i*(r0 + i*im0) = -im0 + i*r0
-            sv.imag_parts[i111] = r0;
-        }
+            const double r0 = real_ptr[i110 + k], im0 = imag_ptr[i110 + k];
+            const double r1 = real_ptr[i111 + k], im1 = imag_ptr[i111 + k];
+            real_ptr[i110 + k] = im1;   // -i*(r1 + i*im1) = im1 - i*r1
+            imag_ptr[i110 + k] = -r1;
+            real_ptr[i111 + k] = -im0;  //  i*(r0 + i*im0) = -im0 + i*r0
+            imag_ptr[i111 + k] = r0;
+        });
     });
 }
 
