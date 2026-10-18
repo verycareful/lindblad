@@ -97,6 +97,13 @@ inline std::size_t insert_zeros(std::size_t k, const int* sorted_q, int m) noexc
     return k;
 }
 
+// The next index after b with every bit of mask clear, b's own mask bits
+// being clear: setting them and adding one carries into the next free bit, and
+// clearing them again leaves the next such index.
+inline std::size_t next_clear(std::size_t b, std::size_t mask) noexcept {
+    return ((b | mask) + 1) & ~mask;
+}
+
 // The threads for a statevector pass worth `work` amplitudes: each thread gets
 // at least parallel_grain() of them, the team never exceeds the threads a
 // region may use, and a pass with only one thread's worth runs serially. Work

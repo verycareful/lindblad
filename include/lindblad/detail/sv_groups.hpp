@@ -38,10 +38,9 @@
 //           A block-group is a block of bases with every gate bit clear. A
 //           thread sweeps its share as runs of consecutive block-groups, the
 //           next run's first block following from the last by a masked
-//           increment. A run shorter than kStretchBlocks is swept block by
-//           block: each block-group loads its members' blocks as Lane8, runs g
-//           once and stores them. A longer run is one omp simd loop over its
-//           amplitudes, calling g on doubles, which the compiler vectorises.
+//           increment; each block-group loads its members' blocks as Lane8,
+//           runs g once and stores them. (A diagonal gate's long runs are
+//           one omp simd loop instead, see kStretchBlocks.)
 //   lanes   q_min < kLaneBits: a run is shorter than one cache line, so the
 //           groups are swept by TILES of whole cache lines instead. A tile is
 //           2^M blocks of each array; deinterleave sorts their lanes by the
@@ -52,7 +51,7 @@
 //           away.
 //
 // Both paths need kLanes * 2^M amplitudes at least (one tile); a smaller state
-// runs g with T = double, one group per iteration of an omp simd loop over
+// runs g with T = double, one group per iteration of a loop over
 // for_each_run's runs. Both paths split their block-groups or tiles across a
 // team as for_each_share splits any flat pass, sized for dim amplitudes of work
 // (sv_team); a share is whole cache lines, so no two threads write one line.
@@ -70,6 +69,18 @@
 
 namespace lindblad {
 namespace detail {
+
+// The run length, in blocks, from which a diagonal gate's blocks path sweeps a
+// run as one omp simd loop over its amplitudes (the member function on
+// doubles) rather than block by block (on Lane8). A loop pays its entry once
+// per run, which a run of one or two blocks cannot amortise, while a long
+// run's simd loop is the compiler's own vectorisation of a contiguous
+// stretch. Measured with RZ at n = 18 on one thread: blocks are 1.5x faster
+// for runs of one block and level at four, the simd loop 1 to 4 percent faster
+// from eight. A whole-group function always runs on Lane8: the compiler does
+// not reliably vectorise a heavier one inside a simd loop (a dense 4x4 block
+// on high qubits ran 3.5x to 5.8x slower that way, measured at n = 22).
+inline constexpr std::size_t kStretchBlocks = 8;
 
 namespace sv_groups_impl {
 
@@ -112,6 +123,8 @@ inline constexpr std::size_t member(std::size_t y) {
 
 // ---- doubles: states smaller than one tile -----------------------------------
 
+// A state this small (under kLanes * 2^M amplitudes) is a few dozen
+// amplitudes, so the loop is plain: there is nothing for vectorising to win.
 template <int M, unsigned Touched, class G>
 inline void by_runs(double* re, double* im, std::size_t dim, const int* q, const G& g) {
     constexpr std::size_t N = std::size_t{1} << M;
@@ -124,7 +137,6 @@ inline void by_runs(double* re, double* im, std::size_t dim, const int* q, const
         double* __restrict__ rp = re;
         double* __restrict__ ip = im;
         const Offsets<M> o = off;
-        #pragma omp simd aligned(rp, ip: 64)
         for (std::size_t j = base; j < base + len; ++j) {
             double r[N];
             double i[N];
@@ -149,22 +161,6 @@ inline void by_runs(double* re, double* im, std::size_t dim, const int* q, const
 
 // ---- blocks path ------------------------------------------------------------
 
-// The block index of the next block-group after b, for a gate on the block
-// index bits in mask: b's gate bits are clear, so setting them and adding one
-// carries into the next free bit, and clearing them again leaves the next
-// index with every gate bit clear.
-inline std::size_t next_clear(std::size_t b, std::size_t mask) noexcept {
-    return ((b | mask) + 1) & ~mask;
-}
-
-// The run length, in blocks, from which the blocks path sweeps a run as one
-// omp simd loop over its amplitudes (g on doubles) rather than block by block
-// (g on Lane8). A loop pays its entry once per run, which a run of one or two
-// blocks cannot amortise, while a long run's simd loop is the compiler's own
-// vectorisation of a contiguous stretch. Measured with RZ at n = 18 on one
-// thread: blocks are 1.5x faster for runs of one block and level at four, the
-// simd loop 1 to 4 percent faster from eight.
-inline constexpr std::size_t kStretchBlocks = 8;
 
 // The gate's qubits as bit positions in the block index (sorted), their mask,
 // and the length of a run of consecutive block-groups: 2^(q_min - kLaneBits).
@@ -221,30 +217,6 @@ inline void by_blocks(double* re, double* im, std::size_t dim, const int* q, con
         double* __restrict__ rp = re;
         double* __restrict__ ip = im;
         for_each_block_run(begin, end, gates, [&](std::size_t first, std::size_t len) {
-            if (len >= kStretchBlocks) {
-                const std::size_t a = first << kLaneBits;
-                #pragma omp simd
-                for (std::size_t j = a; j < a + (len << kLaneBits); ++j) {
-                    double r[N];
-                    double i[N];
-                    for_each_member<N>([&](auto x) {
-                        constexpr std::size_t X = decltype(x)::value;
-                        if constexpr (touches<Touched, X>) {
-                            r[X] = rp[j + o.template offset<X>()];
-                            i[X] = ip[j + o.template offset<X>()];
-                        }
-                    });
-                    gl(r, i);
-                    for_each_member<N>([&](auto x) {
-                        constexpr std::size_t X = decltype(x)::value;
-                        if constexpr (touches<Touched, X>) {
-                            rp[j + o.template offset<X>()] = r[X];
-                            ip[j + o.template offset<X>()] = i[X];
-                        }
-                    });
-                }
-                return;
-            }
             for (std::size_t k = 0; k < len; ++k) {
                 const std::size_t a = (first + k) << kLaneBits;
                 Lane8 r[N];

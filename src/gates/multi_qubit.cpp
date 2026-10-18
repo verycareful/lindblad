@@ -9,6 +9,7 @@
 
 #include "lindblad/gates.hpp"
 
+#include "lindblad/detail/sv_dense.hpp"
 #include "lindblad/detail/sv_runs.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
@@ -221,23 +222,29 @@ void apply_unitary(
     const std::vector<Complex128>& matrix = detail::check_unitary_fixing(
         matrix_in, block_size, validation, "unitary", fixed);
 
-    // Precompute target masks
-    std::vector<size_t> target_masks(k);
-    for (int i = 0; i < k; ++i) {
-        target_masks[i] = 1ULL << targets[i];
+    // Up to kDenseMaxQubits targets on a state of at least one tile: the
+    // vectorised products (sv_dense.hpp). One or two targets on a smaller
+    // state: the one- and two-qubit sweep.
+    if (k <= detail::kDenseMaxQubits && sv.dim >= (detail::kLanes << k)) {
+        detail::apply_dense(sv.real_parts, sv.imag_parts, sv.dim, targets, matrix);
+        return;
+    }
+    if (k <= 2) {
+        detail::apply_small_dense(sv.real_parts, sv.imag_parts, sv.dim, targets, matrix);
+        return;
     }
 
-    // Sort targets to iterate in a canonical order
+    // Otherwise one group at a time. Member s of a group sits offset[s] above
+    // the group's base, the same offsets for every group; the base of group g
+    // is g with a zero inserted at every target position.
+    std::vector<size_t> offset(block_size, 0);
+    for (size_t s = 0; s < block_size; ++s)
+        for (int i = 0; i < k; ++i)
+            if ((s >> i) & 1) offset[s] |= 1ULL << targets[i];
     std::vector<int> sorted_targets = targets;
     std::sort(sorted_targets.begin(), sorted_targets.end());
 
-    // For each "background" index (indices of amplitudes not in the target qubits),
-    // apply the matrix to the 2^k dimensional subspace.
-
-    // Iterate over all indices, but only process each group once.
     // A group is identified by the bits NOT in the target set.
-
-    // Count number of background groups
     size_t n_groups = sv.dim >> k;
 
     // Work-shape dispatch. Each amplitude costs block_size complex
@@ -264,26 +271,12 @@ void apply_unitary(
         std::vector<double> old_imag(block_size);
 
         for (size_t g = 0; g < n_groups; ++g) {
-            // Map group index g to a background index (zeros at target bits).
-            size_t bg_idx = 0;
-            size_t g_bits = g;
-            int target_idx = 0;
-            for (int b = 0; b < sv.n_qubits; ++b) {
-                if (target_idx < k && b == sorted_targets[target_idx]) {
-                    target_idx++;
-                } else {
-                    if (g_bits & 1) bg_idx |= (1ULL << b);
-                    g_bits >>= 1;
-                }
-            }
+            const size_t bg_idx = detail::insert_zeros(g, sorted_targets.data(), k);
 
-            // Subspace indices + snapshot (serial: O(block_size * k), small
+            // Subspace indices + snapshot (serial: O(block_size), small
             // relative to the O(block_size^2) multiply below).
             for (size_t s = 0; s < block_size; ++s) {
-                size_t idx = bg_idx;
-                for (int ti = 0; ti < k; ++ti) {
-                    if ((s >> ti) & 1) idx |= target_masks[ti];
-                }
+                const size_t idx = bg_idx + offset[s];
                 indices[s] = idx;
                 old_real[s] = sv.real_parts[idx];
                 old_imag[s] = sv.imag_parts[idx];
@@ -322,29 +315,9 @@ void apply_unitary(
             tl_old_imag.resize(block_size);
         }
 
-        size_t g = gg;
-        // Map group index g to a background index (zeros at all target bit positions)
-        size_t bg_idx = 0;
-        size_t g_bits = g;
-        int target_idx = 0;
-
-        for (int b = 0; b < sv.n_qubits; ++b) {
-            if (target_idx < k && b == sorted_targets[target_idx]) {
-                target_idx++;
-            } else {
-                if (g_bits & 1) bg_idx |= (1ULL << b);
-                g_bits >>= 1;
-            }
-        }
-
-        // Compute all 2^k indices in this subspace
-        for (size_t s = 0; s < block_size; ++s) {
-            size_t idx = bg_idx;
-            for (int ti = 0; ti < k; ++ti) {
-                if ((s >> ti) & 1) idx |= target_masks[ti];
-            }
-            tl_indices[s] = idx;
-        }
+        const size_t bg_idx =
+            detail::insert_zeros(static_cast<size_t>(gg), sorted_targets.data(), k);
+        for (size_t s = 0; s < block_size; ++s) tl_indices[s] = bg_idx + offset[s];
 
         // Snapshot current amplitudes
         for (size_t s = 0; s < block_size; ++s) {

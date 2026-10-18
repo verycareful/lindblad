@@ -262,69 +262,70 @@ $\text{RCCX} = H \cdot T \cdot CX(c_2,tgt) \cdot T^\dagger \cdot CX(c_1,tgt) \cd
 void apply_unitary(
     Statevector& sv,
     const std::vector<int>& targets,
-    const std::vector<Complex128>& matrix  // row-major, 2^k × 2^k
+    const std::vector<Complex128>& matrix,  // row-major, 2^k × 2^k
+    ValidationOptions validation = {}
 )
 ```
 
+`targets[j]` is bit j of a member index: member `s` of a group is the amplitude
+whose `targets[j]` bit equals bit j of `s`, for every j, and the new member `r`
+is $\sum_s M[r][s] \cdot \text{old}_s$.
+
 **Algorithm**:
 
-1. **Validation**: Check that `matrix.size() == (1 << targets.size())^2`
-2. **Grouping by Background State**: Partition all $2^n$ amplitudes into $2^{n-k}$ groups, each corresponding to a unique assignment of non-target qubits
-3. **Subspace Application**: For each group, apply the $2^k \times 2^k$ matrix to the k target qubits' subspace
+1. **Validation**: the targets must be in range and distinct, `matrix.size()`
+   must be $(2^k)^2$, and the matrix must be unitary under `validation` (see
+   [Validation and Error Handling](#validation-and-error-handling)).
+2. **Path**: one of the three below, chosen by `k`, the state size and whether
+   the matrix is diagonal (every off-diagonal entry exactly zero).
 
-**Implementation Details**:
-```cpp
-size_t n_groups = sv.dim >> k;  // 2^(n-k) groups
+**One or two targets, dense matrix**: the $2 \times 2$ or $4 \times 4$ product
+is a group function for the sweep the one- and two-qubit gates use (see
+[Sweeping the State](#sweeping-the-state)), so it runs on eight groups at a
+time with the gate's coefficients held in registers.
 
-#pragma omp parallel for num_threads(group_team) if(group_team > 1) schedule(static)
-for (int gg = 0; gg < static_cast<int>(n_groups); ++gg) {
-    size_t g = gg;
-    // Map group index g to background index by inserting zeros at target positions
-    size_t bg_idx = 0;
-    // ... bit manipulation to compute background index ...
-    
-    // Compute 2^k indices in this subspace
-    std::vector<size_t> indices(block_size);
-    for (size_t s = 0; s < block_size; ++s) {
-        size_t idx = bg_idx;
-        for (int ti = 0; ti < k; ++ti) {
-            if ((s >> ti) & 1) {
-                idx |= target_masks[ti];
-            }
-        }
-        indices[s] = idx;
-    }
-    
-    // Read current amplitudes
-    std::vector<double> old_real(block_size), old_imag(block_size);
-    for (size_t s = 0; s < block_size; ++s) {
-        old_real[s] = sv.real_parts[indices[s]];
-        old_imag[s] = sv.imag_parts[indices[s]];
-    }
-    
-    // Apply matrix: new[row] = sum_col matrix[row*block_size + col] * old[col]
-    for (size_t row = 0; row < block_size; ++row) {
-        double new_r = 0.0, new_i = 0.0;
-        for (size_t col = 0; col < block_size; ++col) {
-            const Complex128& m = matrix[row * block_size + col];
-            new_r += m.real * old_real[col] - m.imag * old_imag[col];
-            new_i += m.real * old_imag[col] + m.imag * old_real[col];
-        }
-        sv.real_parts[indices[row]] = new_r;
-        sv.imag_parts[indices[row]] = new_i;
-    }
-}
-```
+**Up to six targets**, on a state of at least $8 \cdot 2^k$ amplitudes: the
+product runs on 8-lane values, each lane holding a different group, so one pass
+over the matrix updates eight groups.
+
+- A target below qubit 3 pairs amplitudes within one cache line (a low
+  target); the others pair whole cache lines (high targets). A tile is
+  $2^k$ cache lines of each array that together hold every member of eight
+  groups.
+- Each tile is loaded, its lanes are shuffled once per low target so that each
+  8-lane value holds one member of all eight groups, the matrix multiplies the
+  values four rows at a time (each input value is loaded once per four rows),
+  and the inverse shuffles put every lane back before the store.
+- The matrix is split into real and imaginary parts and renumbered into the
+  shuffled order once per call, not once per group.
+
+**Diagonal matrix**, up to six targets: each amplitude is scaled by its own
+diagonal entry, one complex multiply per amplitude in place of $2^k$. A block
+fused from diagonal gates (Z, S, T, RZ, P, CZ, CP, ...) always takes this path.
+Each cache line is multiplied by an 8-lane coefficient holding the entries of
+its members. When two lines of one group lie 4 KiB or more apart, they are
+visited in separate passes over the state, so no load waits on a store whose
+address only appears to overlap; lines closer than that are visited in address
+order within one pass.
+
+**More than six targets**, or a state smaller than one tile: one group at a
+time. The members' offsets above the group's base are the same for every
+group, so they are computed once per call; the base of group `g` is `g` with a
+zero inserted at each target position.
 
 **Complexity**:
-- **Time**: $O(2^n \cdot 2^{2k})$ (iterate over $2^{n-k}$ groups, apply $2^{2k}$ matrix operations)
-- **Space**: $O(2^k)$ for temporary vectors per OpenMP thread
-- **Parallelization**: work-shape dispatch. Each amplitude costs `block_size`
-  complex multiply-adds, so the group loop's team is sized for
-  `dim * block_size / 2` amplitudes of one-qubit work (see
-  [Sweeping the State](#sweeping-the-state)). When `k` is large and there are
-  fewer background groups than that team could use (a full-register oracle has
-  a single group), the row multiply inside each group parallelizes instead.
+- **Time**: $O(2^n \cdot 2^k)$ complex multiply-adds for a dense matrix
+  ($2^{n-k}$ groups, a $2^k \times 2^k$ product each); $O(2^n)$ for a diagonal
+  one.
+- **Space**: the matrix in the kernel's layout, $O(2^{2k})$, once per call.
+- **Parallelization**: each amplitude of a dense product costs $2^k$ complex
+  multiply-adds, so the team is sized for $2^n \cdot 2^k / 2$ amplitudes of
+  one-qubit work; a diagonal product is sized for $2^n$ (see
+  [OpenMP Parallelization](#openmp-parallelization)). Above six targets, when
+  there are fewer groups than that team could use (a full-register oracle has
+  a single group), the rows of each group's product are split across the team
+  instead. Every amplitude is computed the same way whatever the team, so the
+  result does not depend on the thread count.
 
 ## Multi-Controlled and Permutation Operations
 
@@ -380,9 +381,9 @@ for routing and basis translation (see the [QASM](qasm.md) and
 
 ### Sweeping the State
 
-One- and two-qubit gates are swept by `detail::for_each_group`, which takes the gate's group function and runs it eight groups at a time, either on 8-lane values (each lane holds one group) or in an `omp simd` loop. The sweep picks one of two paths by the lowest qubit `q_min` the gate touches:
+One- and two-qubit gates are swept by `detail::for_each_group`, which takes the gate's group function and runs it eight groups at a time on 8-lane values, each lane holding one group. The sweep picks one of two paths by the lowest qubit `q_min` the gate touches:
 
-- **Blocks** (`q_min >= 3`): the groups' base indices come in runs of `2^q_min` consecutive indices, at least eight, so the same member of eight consecutive groups is one whole cache line. Each thread sweeps its share run by run, the next run following from the last by a masked increment. A short run (under eight cache lines) is swept a cache line at a time: the sweep loads each member's line directly, calls the group function on the 8-lane values, and stores the lines back. A longer run is one `omp simd` loop over its amplitudes calling the group function on doubles, which the compiler vectorizes; a loop's entry cost is then spread over the whole run.
+- **Blocks** (`q_min >= 3`): the groups' base indices come in runs of `2^q_min` consecutive indices, at least eight, so the same member of eight consecutive groups is one whole cache line. Each thread sweeps its share run by run, the next run following from the last by a masked increment. The run is swept a cache line at a time: the sweep loads each member's line directly, calls the group function on the 8-lane values, and stores the lines back. Diagonal gates sweep a long run (eight cache lines or more) as one `omp simd` loop over its amplitudes instead, which the compiler vectorizes for a function that scales one member; a dense group function (a fused $4 \times 4$ block, for one) is too heavy for the compiler to vectorize that way, so whole-group sweeps always use the 8-lane values.
 - **Lanes** (`q_min < 3`): a run is shorter than a cache line (one to four amplitudes). The sweep takes tiles of whole cache lines and shuffles their lanes so that one 8-lane value holds the same member of eight different groups. The group function runs once on those values, and the inverse shuffle puts every lane back. A gate qubit at 3 or above chooses which cache lines form a tile, since its partner line lies `2^q` amplitudes away.
 
 Each thread copies the group function and takes `restrict` pointers to the amplitude arrays once for its share, so the gate's coefficients stay in registers across the whole share.

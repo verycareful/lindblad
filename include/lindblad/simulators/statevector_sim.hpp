@@ -33,6 +33,41 @@ namespace lindblad {
 
 class StatevectorSimulator {
 public:
+    // What the fusion pre-pass weighs when it decides which gates to merge,
+    // each in units of one single-qubit gate's pass over the state: a pass of
+    // a dense k-qubit block (entry k - 1), of a diagonal block of any width,
+    // and of one CZ, CP or CCZ on qubits at 3 or above, which touch a quarter
+    // of the state's cache lines (the pre-pass doubles it for each of a
+    // gate's qubits fewer up there, up to 1). Any other gate costs 1. All zero
+    // means unset.
+    struct FusionCosts {
+        double dense[6] = {};
+        double diagonal = 0.0;
+        double controlled_phase = 0.0;
+
+        bool unset() const noexcept {
+            for (double c : dense)
+                if (c != 0.0) return false;
+            return diagonal == 0.0 && controlled_phase == 0.0;
+        }
+    };
+
+    // How unset fusion costs are measured (see Options::fusion_costs).
+    //   Hybrid      each dense block's arithmetic timed on the run's own
+    //               threads, on a small state held in the cores' caches, and
+    //               weighed against the gate passes, timed on those threads
+    //               over the run's state. Under half a second, once per
+    //               process.
+    //   OneThread   every timing on one thread. Steady and quick, but with
+    //               many threads on a state larger than the caches it rates
+    //               dense blocks dearer than they are, so the plan fuses less
+    //               than it could.
+    //   RunThreads  every kernel timed on the run's own threads over the run's
+    //               state, in longer stretches: a few seconds for the first
+    //               fused run, and it varies from run to run where a state
+    //               about the size of the caches is partly evicted.
+    enum class FusionCalibration { Hybrid, OneThread, RunThreads };
+
     struct Options {
         // The most OpenMP threads any parallel region of run(),
         // simulate_circuit() or eval_expectation() may use; 0 leaves OpenMP's
@@ -81,6 +116,16 @@ public:
                                     // exceeds one L3 instance (hw::llc_bytes;
                                     // 32 MiB assumed when undetectable)
         int fusion_max_qubit = 5;   // max fused-block width, 2..6 (Aer default 5)
+        // Unset (the default): measured on this machine the first time a run
+        // fuses, once per process for each thread count and state size. The
+        // measurement follows the machine's speed, so two runs can choose
+        // different fusions and differ in the last bits of their results.
+        // Set (every entry the run uses positive), it fixes the fusion plan,
+        // and a seeded run gives the same bits every time;
+        // measured_fusion_costs gives the values to set.
+        FusionCosts fusion_costs;
+        // How unset fusion_costs are measured.
+        FusionCalibration fusion_calibration = FusionCalibration::Hybrid;
 
         // Whether run() reports where its time went, in Result::phase_times
         // (PhaseTimes in types.hpp). Off reads no clock for it; on reads a few
@@ -109,6 +154,13 @@ public:
 
     StatevectorSimulator() = default;
     explicit StatevectorSimulator(const Options& opts) : options(opts) {}
+
+    // The fusion costs a run on n_qubits would measure with the calling
+    // thread's current thread limit and the given calibration: measured now
+    // unless this process already measured them. Copy them into
+    // Options::fusion_costs to fix the fusion plan of later runs.
+    static FusionCosts measured_fusion_costs(
+        int n_qubits, FusionCalibration calibration = FusionCalibration::Hybrid);
 
     // plan = the harness: where the run starts and what is watched while it
     // runs. Default constructed it starts at |0...0> and watches nothing, which

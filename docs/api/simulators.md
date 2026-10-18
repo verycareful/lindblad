@@ -221,6 +221,8 @@ struct Options {
     bool fusion_enable = true;     // master switch for gate fusion
     int fusion_threshold = 0;      // min qubits to engage fusion; 0 = auto
     int fusion_max_qubit = 5;      // max fused-block width, 2..6
+    FusionCosts fusion_costs;      // unset = measured on this machine
+    FusionCalibration fusion_calibration = FusionCalibration::Hybrid;
     bool record_phase_times = false;  // fill Result::phase_times
 };
 ```
@@ -277,6 +279,8 @@ struct Options {
 - **fusion_enable**: Master switch for the gate-fusion pre-pass (see Gate Fusion below); `false` runs every circuit unfused
 - **fusion_threshold**: Minimum circuit qubit count at which fusion engages. `0` (the default) derives the point from the hardware at runtime: the first $n$ whose statevector ($16 \cdot 2^n$ bytes) exceeds one last-level-cache instance. An explicit value pins the point verbatim; values below the auto point can regress cache-resident circuits, so overriding downward is for experimentation, not production. `run()` rejects negative values.
 - **fusion_max_qubit**: Maximum width of a fused block in qubits, valid range 2 to 6. Follows the Qiskit Aer option name; Aer's default width (5) is also the default here.
+- **fusion_costs**: What the fusion pre-pass weighs when it chooses blocks (see [Gate Fusion](#gate-fusion-r117)): the cost of a pass of a dense block on $k$ qubits (`dense[k - 1]`), of a diagonal block of any width (`diagonal`), and of one CZ, CP or CCZ whose qubits are at 3 or above (`controlled_phase`), each in units of one single-qubit gate's pass over the state. Left unset (every entry zero, the default), they are measured on this machine the first time a run fuses. Set, nothing is measured: the values are used as given, so they can come from an earlier measurement or from your own knowledge of the machine, and they fix the fusion plan, so a seeded run gives the same bits on every run. A set value must have every entry the run uses (`dense[0]` to `dense[fusion_max_qubit - 1]`, `diagonal`, `controlled_phase`) finite and positive, else `run()` throws `lindblad::InvalidArgument`.
+- **fusion_calibration**: How unset `fusion_costs` are measured: `Hybrid` (the default), `OneThread` or `RunThreads`. `Hybrid` and `OneThread` take under half a second, once per process; `RunThreads` takes a few seconds the first time. See [Gate Fusion](#gate-fusion-r117) for what each measures and how they differ.
 - **record_phase_times**: whether `run()` reports where its wall-clock time
   went, in `Result::phase_times` (see [Phase Times](#phase-times)). `false`,
   the default, reads no clock for it
@@ -379,9 +383,43 @@ For variational inner loops, `StatevectorSimulator::eval_expectation(circuit, ob
 
 ### Gate Fusion (R.1.17)
 
-When the statevector outgrows one last-level-cache instance, `run()` executes a fused equivalent of the circuit: consecutive fusable gates are greedily merged while the union of their supports stays within `fusion_max_qubit` qubits, each block is composed into a dense $2^k \times 2^k$ unitary (by applying the member gates to basis columns through the simulator's own dispatch, so every gate type composes exactly), and the block is applied as a single `apply_unitary` stride pass. Bandwidth-bound simulation is where fusion pays — $k$ gates cost $k$ full sweeps of $2^n$ amplitudes unfused, one sweep fused — while cache-resident states are compute-bound: there the specialised per-gate kernels win and a dense block would only add arithmetic. Measurements on a 32 MiB-L3 machine put the boundary exactly at the cache size (fusing a state equal to the LLC instance ran 3.3x slower; twice the LLC, 2.7x faster), so the engagement point is the first $n$ whose state exceeds one LLC instance — detected at runtime, per L3 instance rather than package total because on multi-CCD parts a thread's working set lives in its own CCD's slice. When the cache size cannot be detected, 32 MiB is assumed (engaging at $n \geq 22$), which errs toward engaging later: a missed fusion win costs far less than a mid-range regression. `fusion_threshold` pins the point explicitly; `fusion_enable = false` disables the pre-pass entirely. Below the engagement point circuits execute unfused and bit-identically to earlier releases.
+When the statevector outgrows one last-level-cache instance, `run()` executes a fused equivalent of the circuit. Consecutive fusable gates may be merged into blocks of at most `fusion_max_qubit` qubits; each block is composed into one $2^k \times 2^k$ unitary (by applying the member gates to basis columns through the simulator's own dispatch, so every gate type composes exactly) and applied as a single `apply_unitary` pass.
 
-Semantics are untouched by construction: `MEASURE` / `RESET` / `BARRIER`, classically-conditioned instructions, unresolved parameterised gates, and the structured ops (`MCX` / `MCP` / `PERMUTATION`, which already have fast native paths) are never fused — they flush the current block and pass through verbatim. Single-gate blocks emit the original instruction. The fused plan is built once per `run()` and, on the per-shot trajectory path, reused across every shot.
+Which gates merge is decided by cost. Within each stretch of fusable gates, `run()` picks the plan with the lowest total cost over every way of splitting the stretch into consecutive blocks that fit the width limit, using `Options::fusion_costs`:
+
+- a gate left on its own costs its own pass: 1 for most gates, `dense` or `diagonal` for a `UNITARY` instruction, and for CZ, CP and CCZ the share of the state's cache lines it loads and stores: `controlled_phase` when two of its qubits are at 3 or above (a quarter of the lines), twice that for each qubit fewer up there, never more than 1;
+- a block of diagonal gates (Z, S, S†, T, T†, RZ, P, U1, CZ, CP, CRZ, RZZ, CCZ, or a diagonal `UNITARY`) is diagonal itself and costs `diagonal`, about one pass at any width;
+- any other block costs `dense[k - 1]` for its width $k$;
+- when two plans cost the same, the one with fewer merged gates wins, so equal costs leave gates as written.
+
+A block of two gates is therefore merged only when one pass of the block is cheaper than the two gates' passes. A long run of controlled phases, as in a QFT, becomes a few diagonal blocks, each one complex multiply per amplitude.
+
+**Measured costs.** How much a dense block costs relative to a single-qubit gate depends on the machine (its arithmetic rate against its memory bandwidth) and on how many threads the run uses, so unset `fusion_costs` are measured, the first time a run fuses, on a prefix of the run's own state before its initial state is written (no memory beyond the state the budget already counts). The prefix is the whole state up to four last-level-cache instances, and four instances' worth beyond that. Every time taken is the fastest of seven short stretches, and every cost is rounded to quarter steps. The result is kept for the rest of the process, one entry per calibration mode, thread count and state size class. `Options::fusion_calibration` chooses how:
+
+- `Hybrid` (the default) times each dense block's arithmetic on the team the block's own pass would get, on a scratch state small enough for every thread's share to stay in its core's cache (never larger than the run's state, so a short pass pays its fixed costs as the run's does), and takes the longer of that and a single-qubit gate's pass. The gate passes, the diagonal block and the controlled phase are timed on the run's threads over the run's state. Only the arithmetic is timed away from the run's memory, so the measurement is short (under half a second) and follows the run's threads: on a state much larger than the caches, a dense block costs barely more than one gate, because its arithmetic spreads over the threads while every pass waits on memory.
+- `OneThread` times everything on one thread. It is the steadiest from run to run, but on many threads and a state larger than the caches it rates dense blocks and controlled phases dearer than they are, so the plan fuses less than it could rather than more.
+- `RunThreads` times every kernel directly on the run's threads over the run's state, in longer stretches, and takes a few seconds the first time.
+
+A state about the size of the last-level cache times unevenly in every mode, since how much of it stays in cache varies from run to run; the measured costs there can differ between processes.
+
+Because the measurement follows the machine's speed, two runs can choose different fusions and their results can then differ in the last bits. Setting `fusion_costs` fixes the plan; `measured_fusion_costs` returns the values to set:
+
+```cpp
+#include "lindblad/simulators/statevector_sim.hpp"
+
+using lindblad::StatevectorSimulator;
+
+// Measure once (or reuse this process's measurement), then pin it.
+StatevectorSimulator::Options opts;
+opts.fusion_costs = StatevectorSimulator::measured_fusion_costs(24);
+StatevectorSimulator sim(opts);  // every run of sim fuses the same way
+```
+
+`static FusionCosts measured_fusion_costs(int n_qubits, FusionCalibration calibration = FusionCalibration::Hybrid)` returns the costs a run on `n_qubits` would measure under the calling thread's current thread limit, measuring them on a scratch state unless this process already did. It throws `lindblad::InvalidArgument` when `n_qubits` is below 1.
+
+**Engagement point.** Fusion engages from the first $n$ whose state exceeds one last-level-cache instance, detected at runtime, per L3 instance rather than package total because on multi-CCD parts a thread's working set lives in its own CCD's slice. When the cache size cannot be detected, 32 MiB is assumed (engaging at $n \geq 22$). `fusion_threshold` pins the point explicitly and `fusion_enable = false` disables the pre-pass entirely. Building the fused plan costs well under a microsecond per instruction, which is negligible at the engagement point but can outweigh the gain for a state of a few thousand amplitudes when the point is pinned low. Below the engagement point circuits execute unfused.
+
+Semantics are untouched by construction: `MEASURE` / `RESET` / `BARRIER`, classically-conditioned instructions, unresolved parameterised gates, and the structured ops (`MCX` / `MCP` / `PERMUTATION`, which already have fast native paths) are never fused; they end the stretch and pass through verbatim. Single-gate blocks emit the original instruction. The fused plan is built once per `run()` and, on the per-shot trajectory path, reused across every shot.
 
 ### Complexity Analysis
 
