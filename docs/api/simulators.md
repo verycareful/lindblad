@@ -400,7 +400,7 @@ A block of two gates is therefore merged only when one pass of the block is chea
 - `OneThread` times everything on one thread. It is the steadiest from run to run, but on many threads and a state larger than the caches it rates dense blocks and controlled phases dearer than they are, so the plan fuses less than it could rather than more.
 - `RunThreads` times every kernel directly on the run's threads over the run's state, in longer stretches, and takes a few seconds the first time.
 
-A state about the size of the last-level cache times unevenly in every mode, since how much of it stays in cache varies from run to run; the measured costs there can differ between processes.
+A state about the size of the last-level cache times unevenly in every mode, since how much of it stays in cache varies from run to run; the measured costs there can differ between processes. A measured block cost, dense or diagonal, is never below 1: a block's pass loads and stores every cache line once, as a single-qubit gate's does, so a lower reading can only come from the two passes meeting different cache states, and a plan built on it would fuse far more than pays.
 
 Because the measurement follows the machine's speed, two runs can choose different fusions and their results can then differ in the last bits. Setting `fusion_costs` fixes the plan; `measured_fusion_costs` returns the values to set:
 

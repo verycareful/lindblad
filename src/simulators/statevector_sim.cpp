@@ -637,6 +637,14 @@ double sv_round_cost(double c) {
     return std::max(kFusionCostStep, std::round(c / kFusionCostStep) * kFusionCostStep);
 }
 
+// A block's pass, dense or diagonal, loads and stores every cache line once,
+// as an H pass does, so it never costs less than one. A lower reading means
+// the two passes were timed in different cache states, which happens on a
+// state about the size of the last-level cache, where how much of it stays
+// cached varies from moment to moment; a plan built on it fuses far more than
+// pays (a QFT then runs about a quarter slower than unfused).
+double sv_block_cost(double c) { return std::max(1.0, sv_round_cost(c)); }
+
 // The kernels a measurement times, on re, im, 2^m amplitudes.
 struct CalibrationKernels {
     double* re;
@@ -765,7 +773,7 @@ FusionCosts sv_measure_fusion_costs(double* re, double* im, int m, int first_k, 
     const double h_pass = t[0];
     if (first_k == 1) {
         costs.controlled_phase = sv_round_cost(t[1] / h_pass);
-        costs.diagonal = sv_round_cost(t[2] / h_pass);
+        costs.diagonal = sv_block_cost(t[2] / h_pass);
     }
 
     for (int k = first_k; k <= last_k; ++k) {
@@ -774,7 +782,7 @@ FusionCosts sv_measure_fusion_costs(double* re, double* im, int m, int first_k, 
             const std::vector<Complex128> f = CalibrationKernels::dft(k);
             auto dense = [&] { detail::apply_dense(run.re, run.im, run.dim(), tk, f); };
             const auto pair = sv_fastest(stretch, h, dense);
-            costs.dense[k - 1] = sv_round_cost(pair[1] / pair[0]);
+            costs.dense[k - 1] = sv_block_cost(pair[1] / pair[0]);
         } else {
             const double h_per_amp = h_pass / static_cast<double>(run.dim());
             costs.dense[k - 1] =
