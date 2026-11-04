@@ -104,9 +104,9 @@ public:
     std::vector<Complex128> to_matrix() const;
     double expectation_value(const Statevector& sv) const;
 
-    // Compute ⟨H⟩ for a batch of statevectors simultaneously.
-    // Amortises the Pauli mask precomputation across all states.
-    // Evaluations are parallelised across states with OpenMP.
+    // Compute ⟨H⟩ for a batch of statevectors. The terms are grouped once for
+    // the whole batch. With at least one state per available thread, threads
+    // take whole states; with fewer, each state is swept by the whole team.
     std::vector<double> expectation_value_batch(
         const std::vector<const Statevector*>& states
     ) const;

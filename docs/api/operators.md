@@ -99,11 +99,20 @@ Every refusal is `std::invalid_argument` and names the call that refused.
   `expectation_value` and composes homomorphically. Throws for an operator
   with no terms or with terms of different widths.
 - `expectation_value(statevector)`: computes ⟨psi|H|psi⟩ without cloning.
-  Throws unless every term is exactly `statevector.n_qubits` wide.
-- `expectation_value_batch(states)`: batch version with shared mask
-  precompute. Takes pointers to `Statevector` instances, checks every state
-  against the width rule before evaluating any, and refuses an operator with
-  no terms even when `states` is empty.
+  A Pauli string pairs amplitude $k$ only with $k \oplus x\_\text{mask}$, so
+  terms with the same X mask (`XX` and `YY` on the same qubits, or every
+  string of `I` and `Z`) are evaluated together in one sweep of the state:
+  each pair's product is formed once and every term adds it with its own
+  sign. A Heisenberg chain therefore takes about one sweep per neighbouring
+  pair plus one for all its `ZZ` terms, rather than one per term. Throws
+  unless every term is exactly `statevector.n_qubits` wide.
+- `expectation_value_batch(states)`: the same evaluation for many states,
+  with the terms grouped once for the whole batch. When there are at least
+  as many states as available threads, each thread takes whole states;
+  otherwise the states are evaluated one at a time, each across all threads.
+  Takes pointers to `Statevector` instances, checks every state against the
+  width rule before evaluating any, and refuses an operator with no terms
+  even when `states` is empty.
 - `n_qubits()`: number of qubits in the first term, and 0 for an operator with
   no terms (which has no width)
 - `from_list(label_coeff)`: throws when the labels differ in length

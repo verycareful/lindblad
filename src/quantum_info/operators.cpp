@@ -8,12 +8,14 @@
 // Commercial License Agreement with the Author.
 
 #include "lindblad/operators.hpp"
+#include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/pauli_rules.hpp"
 #include "lindblad/detail/report.hpp"
 #include "lindblad/detail/sv_runs.hpp"
 #include "lindblad/statevector.hpp"
 #include "lindblad/simulators/density_matrix_sim.hpp"
 #include "lindblad/gates.hpp"
+#include "lindblad/hw_info.hpp"
 #include "lindblad/validation.hpp"
 
 #include <algorithm>
@@ -339,93 +341,151 @@ std::vector<Complex128> SparsePauliOp::to_matrix() const {
     return matrix;
 }
 
+// =============================================================================
+// Expectation values - one sweep per group of terms sharing an X mask
+// =============================================================================
+// A Pauli string is P = i^{#Y} X^x Z^z (Y = iXZ, so z holds the Y positions
+// too), and P|j⟩ = i^{#Y} (-1)^{popcount(j & z)} |j XOR x⟩. So
+//
+//   ⟨ψ|P|ψ⟩ = i^{#Y} sum_k conj(ψ_k) ψ_j (-1)^{popcount(j & z)},  j = k XOR x:
+//
+// only the pair (k, k XOR x) meets. Terms with the same x pair the same
+// amplitudes, so one sweep serves all of them: each pair's product
+// conj(ψ_k) ψ_j is formed once, and each term adds it with its own sign. The
+// factor i^{#Y} is one constant per term, folded into its coefficient once;
+// applying it per amplitude instead drops it wherever a Y position of the
+// input bit is 0, which makes every Y-containing term wrong (issue #30).
+namespace {
+
+struct PauliGroup {
+    std::uint64_t x = 0;
+    std::vector<std::uint64_t> z;  // per term
+    std::vector<double> cr, ci;    // per term: coeff * i^{#Y}
+};
+
+// The terms grouped by X mask, groups in order of first appearance and terms
+// in their own order within a group.
+std::vector<PauliGroup> group_by_x(const std::vector<PauliString>& terms) {
+    std::vector<PauliGroup> groups;
+    std::unordered_map<std::uint64_t, std::size_t> index;
+    for (const auto& term : terms) {
+        std::uint64_t x = 0, z = 0, y = 0;
+        for (int q = 0; q < term.n_qubits(); ++q) {
+            const std::uint64_t bit = std::uint64_t{1} << q;
+            const char c = term.pauli[static_cast<std::size_t>(q)];
+            if (c == 'X') x |= bit;
+            else if (c == 'Z') z |= bit;
+            else if (c == 'Y') { x |= bit; z |= bit; y |= bit; }
+        }
+        // i^{#Y}: 0 -> 1, 1 -> i, 2 -> -1, 3 -> -i
+        double pr = 1.0, pi = 0.0;
+        switch (LINDBLAD_POPCOUNT64(y) & 3) {
+            case 1: pr = 0.0; pi = 1.0; break;
+            case 2: pr = -1.0; break;
+            case 3: pr = 0.0; pi = -1.0; break;
+            default: break;
+        }
+        const auto [at, fresh] = index.try_emplace(x, groups.size());
+        if (fresh) groups.emplace_back().x = x;
+        PauliGroup& g = groups[at->second];
+        g.z.push_back(z);
+        g.cr.push_back(pr * term.coeff.real - pi * term.coeff.imag);
+        g.ci.push_back(pr * term.coeff.imag + pi * term.coeff.real);
+    }
+    return groups;
+}
+
+// Amplitudes per tile: a tile's pair products, two arrays of this many
+// doubles (8 KiB), stay in L1 while every term of the group passes over them.
+constexpr std::size_t kExpectationTile = 512;
+
+// sum over the group's terms of Re(c_t * i^{#Y} * the term's sum over k), for
+// k in [b, e). Each term's pass over a tile is a plain reduction the compiler
+// vectorises: a sign from a popcount, two multiply-adds.
+double group_share(const double* rp, const double* ip, const PauliGroup& g,
+                   std::size_t b, std::size_t e) {
+    const std::uint64_t x = g.x;
+    // One term shares its products with nothing, so it takes them straight
+    // into its sums: storing them to the tile and reading them back is
+    // traffic with nothing to gain, and on a state larger than the caches,
+    // where the pass waits on memory, it is a few percent of the pass.
+    if (g.z.size() == 1) {
+        const std::uint64_t z = g.z[0];
+        double sr = 0.0, si = 0.0;
+#if !defined(_MSC_VER)
+        #pragma omp simd reduction(+:sr, si)
+#endif
+        for (std::size_t k = b; k < e; ++k) {
+            const std::size_t j = k ^ x;
+            const double sign =
+                1.0 - 2.0 * static_cast<double>(LINDBLAD_POPCOUNT64(j & z) & 1);
+            sr += sign * (rp[k] * rp[j] + ip[k] * ip[j]);
+            si += sign * (rp[k] * ip[j] - ip[k] * rp[j]);
+        }
+        return g.cr[0] * sr - g.ci[0] * si;
+    }
+    double dr[kExpectationTile];
+    double di[kExpectationTile];
+    double total = 0.0;
+    for (std::size_t s = b; s < e; s += kExpectationTile) {
+        const std::size_t len = std::min(kExpectationTile, e - s);
+        // conj(ψ_k) ψ_j = (r_k r_j + i_k i_j) + i (r_k i_j - i_k r_j)
+        for (std::size_t i = 0; i < len; ++i) {
+            const std::size_t k = s + i;
+            const std::size_t j = k ^ x;
+            dr[i] = rp[k] * rp[j] + ip[k] * ip[j];
+            di[i] = rp[k] * ip[j] - ip[k] * rp[j];
+        }
+        for (std::size_t t = 0; t < g.z.size(); ++t) {
+            const std::uint64_t z = g.z[t];
+            double sr = 0.0, si = 0.0;
+#if !defined(_MSC_VER)
+            #pragma omp simd reduction(+:sr, si)
+#endif
+            for (std::size_t i = 0; i < len; ++i) {
+                const std::uint64_t j = (s + i) ^ x;
+                const double sign =
+                    1.0 - 2.0 * static_cast<double>(LINDBLAD_POPCOUNT64(j & z) & 1);
+                sr += sign * dr[i];
+                si += sign * di[i];
+            }
+            total += g.cr[t] * sr - g.ci[t] * si;
+        }
+    }
+    return total;
+}
+
+// ⟨ψ|H|ψ⟩ for H given as its groups. parallel = whether each group's sweep
+// may use a team: its shares are summed in thread order (detail::reduce_shares),
+// so the last bits depend on the team size and on nothing else. A group's
+// work counts one pass per term.
+double expectation_of_groups(const double* rp, const double* ip, std::size_t dim,
+                             const std::vector<PauliGroup>& groups, bool parallel) {
+    double result = 0.0;
+    for (const PauliGroup& g : groups) {
+        if (!parallel) {
+            result += group_share(rp, ip, g, 0, dim);
+            continue;
+        }
+        result += detail::reduce_shares(
+            dim, detail::saturating_mul(dim, g.z.size()), 0.0,
+            [rp, ip, &g](std::size_t b, std::size_t e) { return group_share(rp, ip, g, b, e); },
+            [](double acc, double part) { return acc + part; });
+    }
+    return result;
+}
+
+}  // namespace
+
 double SparsePauliOp::expectation_value(const Statevector& sv) const {
-    // ⟨ψ|H|ψ⟩ = sum_term coeff * ⟨ψ|P|ψ⟩
-    //
-    // Computed without cloning the statevector. For a Pauli string
-    // P = ⊗ P_q, the matrix element ⟨k|P|j⟩ is non-zero for exactly
-    // one j per k: j = k XOR x_mask (where x_mask has bits set at X and Y
-    // positions). The phase is determined by Z and Y parities.
-    //
-    // This traverses the statevector once per term with no heap allocation.
+    // ⟨ψ|H|ψ⟩ = sum_t coeff_t ⟨ψ|P_t|ψ⟩, without copying the state: one sweep
+    // per distinct X mask (see Expectation values above).
     //
     // The masks come from each term's own string, so the width check is what
     // keeps j = k ^ x_mask inside the amplitude arrays.
     detail::check_observable(*this, sv.n_qubits, "SparsePauliOp::expectation_value");
-
-    double result = 0.0;
-    const double* rp = sv.real_parts;
-    const double* ip = sv.imag_parts;
-    const size_t dim = sv.dim;
-
-    for (const auto& term : terms) {
-        const int n = term.n_qubits();
-        uint64_t x_mask = 0, z_mask = 0, y_mask = 0;
-        for (int q = 0; q < n; ++q) {
-            char c = term.pauli[q];
-            if (c == 'X') {
-                x_mask |= (1ULL << q);
-            } else if (c == 'Z') {
-                z_mask |= (1ULL << q);
-            } else if (c == 'Y') {
-                x_mask |= (1ULL << q);
-                y_mask |= (1ULL << q);
-                z_mask |= (1ULL << q);
-            }
-        }
-
-        // i^{#Y} factor is constant per Pauli term (independent of k).
-        // i^y_count: 0->1+0i, 1->0+1i, 2->-1+0i, 3->0-1i
-        const int y_count = LINDBLAD_POPCOUNT64(y_mask) & 3;
-        double y_r = 1.0, y_i = 0.0;
-        switch (y_count) {
-            case 1: y_r =  0.0; y_i =  1.0; break;
-            case 2: y_r = -1.0; y_i =  0.0; break;
-            case 3: y_r =  0.0; y_i = -1.0; break;
-            default: break;
-        }
-
-        // Summed share by share and added in thread order
-        // (detail::reduce_shares), so the last bits depend on the team size
-        // and on nothing else.
-        struct Sum {
-            double re;
-            double im;
-        };
-        const Sum sum = detail::reduce_shares(
-            dim, dim, Sum{0.0, 0.0},
-            [rp, ip, x_mask, z_mask, y_r, y_i](size_t b, size_t e) {
-                double re = 0.0, im = 0.0;
-                for (size_t k = b; k < e; ++k) {
-                    const size_t j = k ^ x_mask;
-
-                    // Phase from Z parity: Z acts on the input (column) state
-                    // |j⟩, not |k⟩. Y = iXZ: Z contributes (-1)^{j_bit} for
-                    // each Y/Z qubit in j = k^x_mask.
-                    const int z_parity = LINDBLAD_POPCOUNT64(j & z_mask) & 1;
-                    const double phase_r = z_parity ? -y_r : y_r;
-                    const double phase_i = z_parity ? -y_i : y_i;
-
-                    // conj(ψ_k) * ψ_j = (r_k*r_j + i_k*i_j) + i*(r_k*i_j - i_k*r_j)
-                    const double r_k = rp[k], i_k = ip[k];
-                    const double r_j = rp[j], i_j = ip[j];
-                    const double dot_r = r_k * r_j + i_k * i_j;
-                    const double dot_i = r_k * i_j - i_k * r_j;
-
-                    re += phase_r * dot_r - phase_i * dot_i;
-                    im += phase_r * dot_i + phase_i * dot_r;
-                }
-                return Sum{re, im};
-            },
-            [](Sum acc, Sum part) { return Sum{acc.re + part.re, acc.im + part.im}; });
-        const double re = sum.re;
-        const double im = sum.im;
-
-        // Accumulate: Re(coeff * (re + i*im))
-        result += term.coeff.real * re - term.coeff.imag * im;
-    }
-
-    return result;
+    return expectation_of_groups(sv.real_parts, sv.imag_parts, sv.dim, group_by_x(terms),
+                                 true);
 }
 
 std::vector<double> SparsePauliOp::expectation_value_batch(
@@ -444,60 +504,24 @@ std::vector<double> SparsePauliOp::expectation_value_batch(
     std::vector<double> results(M, 0.0);
     if (M == 0) return results;
 
-    // Precompute masks once for all terms — shared across states.
-    struct TermMasks { uint64_t x_mask, z_mask, y_mask; Complex128 coeff; };
-    std::vector<TermMasks> masks(terms.size());
-    for (size_t t = 0; t < terms.size(); ++t) {
-        const int n = terms[t].n_qubits();
-        uint64_t xm = 0, zm = 0, ym = 0;
-        for (int q = 0; q < n; ++q) {
-            char c = terms[t].pauli[q];
-            if (c == 'X') { xm |= (1ULL << q); }
-            else if (c == 'Z') { zm |= (1ULL << q); }
-            else if (c == 'Y') { xm |= (1ULL << q); ym |= (1ULL << q); zm |= (1ULL << q); }
+    // The groups are built once for the whole batch. With at least one state
+    // per thread, each thread takes whole states and sweeps them alone; with
+    // fewer, the states go one at a time, each swept by the team, so no
+    // thread waits while a batch smaller than the team runs.
+    const std::vector<PauliGroup> groups = group_by_x(terms);
+    if (M >= hw::available_threads()) {
+        #pragma omp parallel for schedule(dynamic, 1)
+        for (int sii = 0; sii < static_cast<int>(M); ++sii) {
+            const Statevector* sv = states[static_cast<size_t>(sii)];
+            results[static_cast<size_t>(sii)] =
+                expectation_of_groups(sv->real_parts, sv->imag_parts, sv->dim, groups, false);
         }
-        masks[t] = {xm, zm, ym, terms[t].coeff};
-    }
-
-    // Parallelise over states; each state is independent.
-    #pragma omp parallel for schedule(dynamic, 1)
-    for (int sii = 0; sii < static_cast<int>(M); ++sii) {
-        size_t si = sii;
-        const Statevector* sv = states[si];
-        const double* rp = sv->real_parts;
-        const double* ip = sv->imag_parts;
-        const size_t dim = sv->dim;
-        double state_result = 0.0;
-
-        for (const auto& m : masks) {
-            double re = 0.0, im = 0.0;
-            const uint64_t xm = m.x_mask, zm = m.z_mask, ym = m.y_mask;
-
-#if !defined(_MSC_VER)
-            #pragma omp simd reduction(+:re,im)
-#endif
-            for (size_t k = 0; k < dim; ++k) {
-                const size_t j = k ^ xm;
-                const int z_parity = LINDBLAD_POPCOUNT64(j & zm) & 1;
-                const int y_count  = LINDBLAD_POPCOUNT64(ym) & 3;
-                double phase_r = 1.0, phase_i = 0.0;
-                switch (y_count) {
-                    case 1: phase_r =  0.0; phase_i =  1.0; break;
-                    case 2: phase_r = -1.0; phase_i =  0.0; break;
-                    case 3: phase_r =  0.0; phase_i = -1.0; break;
-                    default: break;
-                }
-                if (z_parity) { phase_r = -phase_r; phase_i = -phase_i; }
-                const double r_k = rp[k], i_k = ip[k];
-                const double r_j = rp[j], i_j = ip[j];
-                const double dot_r = r_k * r_j + i_k * i_j;
-                const double dot_i = r_k * i_j - i_k * r_j;
-                re += phase_r * dot_r - phase_i * dot_i;
-                im += phase_r * dot_i + phase_i * dot_r;
-            }
-            state_result += m.coeff.real * re - m.coeff.imag * im;
+    } else {
+        for (size_t si = 0; si < M; ++si) {
+            const Statevector* sv = states[si];
+            results[si] =
+                expectation_of_groups(sv->real_parts, sv->imag_parts, sv->dim, groups, true);
         }
-        results[si] = state_result;
     }
     return results;
 }
