@@ -1293,6 +1293,15 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // that serves every shot names none.
         const bool walked_per_shot = (has_measure && !terminal_only) || has_reset;
         const bool per_shot = shots > 0 && walked_per_shot;
+        // Whether a path below has already summed |amp|^2 over the final state
+        // and accepted the sum through require_norm_to_sample, which refuses a
+        // sum that is not finite or not above epsilon. An accepted sum makes
+        // the final-state check after the branches redundant: a NaN or
+        // infinite amplitude makes the sum NaN or infinite, and a positive sum
+        // needs a nonzero amplitude. The one-pass paths that sample set it;
+        // the per-shot path samples each trajectory before its end, never the
+        // state it hands back, so it leaves it unset.
+        bool final_state_checked = false;
 
         if (per_shot) {
             // Per-shot trajectories: re-initialise and re-simulate for every
@@ -1415,6 +1424,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                                                sv_work->dim, static_cast<size_t>(shots));
             detail::require_norm_to_sample(std::sqrt(sampler.total()),
                                            "StatevectorSimulator::run");
+            final_state_checked = true;
             // Sample with the per-call RNG seeded above from {seed, tid}:
             // identical seeds on DIFFERENT threads stay statistically
             // independent (B9_StatevectorRngParallelIndependence, relied on
@@ -1449,7 +1459,10 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             if (walked_per_shot) failure.shot_done();
             clock.charge(&PhaseTimes::evolution);
             if (shots > 0) {
+                // sample_counts sums the whole state and refuses it through
+                // require_norm_to_sample before it draws.
                 result.counts = sv_work->sample_counts(shots, seed);
+                final_state_checked = true;
             }
             clock.charge(&PhaseTimes::sampling);
         }
@@ -1478,8 +1491,10 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         //
         // What it does refuse is no state at all: zero or non-finite, which
         // only a matrix let through under ValidationOptions Warn or Ignore can
-        // produce. Returned, it would be taken for an answer.
-        if (!detail::state_is_finite_and_nonzero(*sv_work)) {
+        // produce. Returned, it would be taken for an answer. A run whose
+        // sampler already accepted this state's norm (final_state_checked)
+        // skips the scan, which is a full read of the state.
+        if (!final_state_checked && !detail::state_is_finite_and_nonzero(*sv_work)) {
             detail::raise<RuntimeFailure>("StatevectorSimulator::run",
                 "the final state is zero or not finite, so there is no state to return; "
                 "a matrix let through by ValidationOptions Warn or Ignore can do this");
