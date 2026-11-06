@@ -13,6 +13,7 @@
 #include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/report.hpp"
+#include "lindblad/detail/shot_loop.hpp"
 #include "lindblad/detail/sv_dense.hpp"
 #include "lindblad/detail/sv_groups.hpp"
 #include "lindblad/detail/sv_runs.hpp"
@@ -54,8 +55,8 @@ thread_local std::mt19937_64 sv_sim_rng{std::random_device{}()};
 
 // Forward declaration: shared Born-rule collapse helper (defined with the
 // trajectory helpers below; used by the MEASURE/RESET dispatch cases).
-static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng,
-                             const char* ctx);
+template <class Rng>
+static int sv_collapse_qubit(Statevector& sv, int qubit, Rng& rng, const char* ctx);
 
 // =============================================================================
 // apply_instruction — dispatch to the appropriate gate function
@@ -180,11 +181,14 @@ void StatevectorSimulator::apply_instruction(Statevector& sv,
 // rather than triplicating the same O(dim) loops at each call site. Both
 // passes iterate the two qubit-value halves as strided blocks with branch-free
 // inner loops, split across a team by the statevector thread rule for a
-// streaming pass (detail::streaming_work). The two sums are folded in thread order
-// (detail::reduce_shares): the outcome is drawn against prob0 / total, so a
-// sum whose last bits changed from run to run could change a seeded outcome.
-static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng,
-                             const char* ctx) {
+// streaming pass (detail::streaming_work). The two sums are folded over fixed
+// segments in segment order (detail::reduce_shares): the outcome is drawn
+// against prob0 / total, so a sum whose last bits changed with the team could
+// change a seeded outcome between a run on one thread and one on many.
+// Rng = any UniformRandomBitGenerator: the thread's std::mt19937_64 for a
+// MEASURE or RESET applied on its own, a shot's ShotRng inside a run.
+template <class Rng>
+static int sv_collapse_qubit(Statevector& sv, int qubit, Rng& rng, const char* ctx) {
     const size_t step = 1ULL << qubit;
     const size_t dim = sv.dim;
     const size_t n_blocks = dim / (2 * step);
@@ -254,24 +258,28 @@ static int sv_collapse_qubit(Statevector& sv, int qubit, std::mt19937_64& rng,
 }
 
 // Execute one trajectory: classical conditions are honoured against `clreg`,
-// MEASURE collapses the state and records its outcome into `clreg`.
+// MEASURE collapses the state and records its outcome into `clreg`, and RESET
+// collapses its qubit and flips a 1 back to 0. Every draw comes from `rng`:
+// a RESET is handled here rather than by apply_instruction, whose RESET draws
+// from the thread's own engine, which a shot thread never seeds.
 // first = the instruction to start from: 0, or the end of a prefix a snapshot
 // has already run.
 // ctx = the public entry point a refused collapse names.
 // runner = the run's observation harness, or null when nothing is watching.
-// failure = the run's failure path, told which instruction is about to
-//           execute; null outside run().
+// position = where the shot has reached, told which instruction is about to
+//            execute; null outside run().
 // An instruction that is skipped (a barrier, or a conditioned gate whose
 // condition does not hold) still fires its anchors: the anchor names a point
 // the run reached, and a caller watching every instruction wants to see the
 // state at that point whether or not it changed.
+template <class Rng>
 static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
                               const QuantumCircuit& circuit,
                               std::vector<int>& clreg, int n_clbits,
-                              std::mt19937_64& rng, std::size_t first,
+                              Rng& rng, std::size_t first,
                               const char* ctx,
                               detail::ObservationRunner* runner = nullptr,
-                              detail::FailureCollector* failure = nullptr) {
+                              detail::ShotPosition* position = nullptr) {
     using GT = Instruction::GateType;
 
     const StateView view(StateForm::Statevector, &sv, sv.n_qubits);
@@ -282,7 +290,7 @@ static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
         const Instruction& inst = circuit.instructions[i];
         ++index;
         if (runner) runner->before_instruction(index, inst, view);
-        if (failure) failure->at_instruction(index, &inst);
+        if (position) position->at_instruction(index, &inst);
 
         bool skip = inst.type == GT::BARRIER;
         if (!skip && inst.has_condition) {
@@ -298,6 +306,9 @@ static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
                 const int outcome =
                     sv_collapse_qubit(sv, qubit, rng, ctx);
                 if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
+            } else if (inst.type == GT::RESET) {
+                if (sv_collapse_qubit(sv, inst.qubits[0], rng, ctx) == 1)
+                    gates::apply_x(sv, inst.qubits[0]);
             } else {
                 sim.apply_instruction(sv, inst, {Validation::Ignore});
             }
@@ -307,13 +318,14 @@ static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
     }
 
     if (runner) runner->at_end(view, index);
-    if (failure) failure->leave_instructions();
+    if (position) position->leave_instructions();
 }
 
 // One sample of the whole register from `sv`'s own normalised distribution,
 // qubit 0 the rightmost character. Refuses a state with no norm before the
 // draw.
-static std::string sv_sample_register(const Statevector& sv, std::mt19937_64& rng) {
+template <class Rng>
+static std::string sv_sample_register(const Statevector& sv, Rng& rng) {
     const auto weight = [&sv](std::size_t i) {
         return sv.real_parts[i] * sv.real_parts[i] + sv.imag_parts[i] * sv.imag_parts[i];
     };
@@ -1059,6 +1071,29 @@ private:
 }  // namespace
 
 // Every field of Options, for a failed run's record.
+// Copies `from`'s amplitudes into `to` (same width), split across a team by
+// the streaming-pass rule; a shot thread capped to one runs it serially.
+static void sv_copy_amplitudes(Statevector& to, const Statevector& from) {
+    double* tr = to.real_parts;
+    double* ti = to.imag_parts;
+    const double* fr = from.real_parts;
+    const double* fi = from.imag_parts;
+    detail::for_each_share(to.dim, detail::streaming_work(to.dim),
+                           [=](std::size_t b, std::size_t e) {
+                               std::memcpy(tr + b, fr + b, (e - b) * sizeof(double));
+                               std::memcpy(ti + b, fi + b, (e - b) * sizeof(double));
+                           });
+}
+
+// One shot's work for detail::shot_team, in one-qubit-gate amplitudes: the
+// instructions it runs, each a pass over the state, and its restore.
+static std::size_t sv_shot_work(std::size_t dim, std::size_t instructions) {
+    const std::uint64_t passes = static_cast<std::uint64_t>(instructions);
+    return static_cast<std::size_t>(detail::saturating_add(
+        detail::saturating_mul(static_cast<std::uint64_t>(dim), passes),
+        detail::streaming_work(dim)));
+}
+
 static void record_options(detail::FailureCollector& failure,
                            const StatevectorSimulator::Options& o) {
     using detail::option_value;
@@ -1067,6 +1102,8 @@ static void record_options(detail::FailureCollector& failure,
     failure.add_option("max_memory_mb", option_value(o.max_memory_mb));
     failure.add_option("qubit_limit", option_value(o.qubit_limit));
     failure.add_option("prefix_reuse", option_value(o.prefix_reuse));
+    failure.add_option("max_parallel_shots", option_value(o.max_parallel_shots));
+    failure.add_option("shot_memory", option_value(o.shot_memory));
     failure.add_option("precision", option_value(o.precision));
     failure.add_option("zero_threshold", option_value(o.zero_threshold));
     failure.add_option("threshold", option_value(o.threshold));
@@ -1121,6 +1158,9 @@ StatevectorSimulator::Result StatevectorSimulator::run(
     thread_local std::unique_ptr<Statevector> sv_work;
     std::optional<QuantumCircuit> repaired_storage;
     QuantumCircuit fused_storage;
+    // A shot that failed on a thread of a shot team: its state, which the
+    // record holds in place of the run's buffer.
+    std::optional<FailedRun::State> adopted_state;
 
     try {
         detail::check_circuit_has_qubits(circuit_in.n_qubits,
@@ -1173,6 +1213,9 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                 "Options::fusion_threshold must be >= 0 (0 = auto), got " +
                     std::to_string(options.fusion_threshold));
         }
+        detail::check_require(options.max_parallel_shots >= 0, "StatevectorSimulator::run",
+                              "Options::max_parallel_shots must be >= 0 (0 = automatic, "
+                              "1 = serial), got " + std::to_string(options.max_parallel_shots));
         if (!options.fusion_costs.unset())
             sv_check_fusion_costs(options.fusion_costs, options.fusion_max_qubit);
 
@@ -1216,11 +1259,12 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // second full pass over the state for nothing.
         if (!fresh || !plan.initial.is_default())
             detail::apply_initial_state(plan, *sv_work, "StatevectorSimulator::run");
-        // Derive a per-thread seed so parallel batches (e.g. Estimator::run_batch)
-        // produce statistically independent RNG streams rather than every thread
-        // reseeding to the same Mersenne Twister state. The single-threaded path
-        // is unaffected: outside a parallel region omp_get_thread_num() returns 0
-        // and the same `seed` always produces the same RNG stream.
+        // The calling thread's index salts every stream the run draws from (the
+        // terminal sampler's engine below and the shot chunks' streams), so
+        // parallel batches (e.g. Estimator::run_batch) running one seed on
+        // several threads draw independently rather than repeating each
+        // other. Outside a parallel region the index is 0, so the same `seed`
+        // always gives the same streams.
         const uint64_t base_seed = (seed == 0)
             ? static_cast<uint64_t>(std::random_device{}())
             : seed;
@@ -1304,84 +1348,196 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         bool final_state_checked = false;
 
         if (per_shot) {
-            // Per-shot trajectories: re-initialise and re-simulate for every
-            // shot so each collapse is drawn independently.
+            // Per-shot trajectories: every shot restarts from the same state
+            // and draws its own collapses. The shots are cut into chunks
+            // (detail::chunk_shots) that depend on the shot count only; chunk c
+            // draws from its own stream, seeded from the run's seed, the
+            // calling thread's index and c, and a thread always runs a whole
+            // chunk (detail::run_shot_chunks). The counts, the final state and
+            // a failure's record are therefore the same whether one thread
+            // runs every chunk or a team shares them.
             //
             // The stretch before the first MEASURE, RESET or conditioned
             // instruction is the same in every shot and draws nothing. When
             // Options::prefix_reuse allows, an unobserved run of more than one
-            // shot runs it once into a snapshot every shot copies, and the
-            // seeded counts are those of a rerun. The snapshot lives only in
-            // this block, so it is gone before the run returns.
+            // shot runs it once into a snapshot every shot copies. The snapshot
+            // lives only in this block, so it is gone before the run returns.
+            using GT = Instruction::GateType;
             result.counts.clear();
-            std::vector<int> clreg(n_clbits, 0);
             runner->begin_run(circuit.n_qubits, shots);
+            const bool observed_run = runner->active();
+            const char* const ctx = "StatevectorSimulator::run";
 
             const std::uint64_t state_bytes = detail::complex_bytes(sv_work->dim);
             const bool reuse =
-                !runner->active() && shots > 1 &&
+                !observed_run && shots > 1 &&
                 detail::take_prefix_snapshot(options.prefix_reuse, state_bytes,
                                              detail::saturating_mul(2, state_bytes),
                                              options.max_memory_mb);
             std::size_t prefix_end = 0;
-            std::unique_ptr<Statevector> snapshot;
             if (reuse) {
-                using GT = Instruction::GateType;
                 while (prefix_end < exec->instructions.size()) {
-                    failure.at_instruction(static_cast<int>(prefix_end),
-                                           &exec->instructions[prefix_end]);
                     const Instruction& inst = exec->instructions[prefix_end];
                     if (inst.type == GT::MEASURE || inst.type == GT::RESET ||
                         inst.has_condition)
                         break;
+                    ++prefix_end;
+                }
+            }
+
+            // The team, sized before any shot runs, so a refusal comes before
+            // the first gate. Every extra shot thread holds one more state.
+            const detail::ShotChunks chunks = detail::chunk_shots(shots);
+            detail::ShotTeamRequest request;
+            request.entry_point = ctx;
+            request.max_parallel_shots = options.max_parallel_shots;
+            request.memory = options.shot_memory;
+            request.cap_bytes = cap_bytes;
+            request.held_bytes = detail::saturating_add(footprint, reuse ? state_bytes : 0);
+            request.per_thread_bytes = state_bytes;
+            request.work_per_shot = sv_shot_work(sv_work->dim,
+                                                 exec->instructions.size() - prefix_end);
+            request.serial_only = observed_run;
+            const detail::ShotTeam team = detail::shot_team(request, chunks);
+
+            std::unique_ptr<Statevector> snapshot;
+            if (reuse) {
+                for (std::size_t i = 0; i < prefix_end; ++i) {
+                    const Instruction& inst = exec->instructions[i];
+                    failure.at_instruction(static_cast<int>(i), &inst);
                     if (inst.type != GT::BARRIER)
                         apply_instruction(*sv_work, inst, {Validation::Ignore});
-                    ++prefix_end;
                 }
                 failure.leave_instructions();
                 snapshot = std::make_unique<Statevector>(circuit.n_qubits,
                                                          options.qubit_limit);
-                std::memcpy(snapshot->real_parts, sv_work->real_parts,
-                            sv_work->dim * sizeof(double));
-                std::memcpy(snapshot->imag_parts, sv_work->imag_parts,
-                            sv_work->dim * sizeof(double));
+                sv_copy_amplitudes(*snapshot, *sv_work);
             }
 
-            for (int shot = 0; shot < shots; ++shot) {
-                failure.set_shot(shot);
-                if (snapshot) {
-                    std::memcpy(sv_work->real_parts, snapshot->real_parts,
-                                sv_work->dim * sizeof(double));
-                    std::memcpy(sv_work->imag_parts, snapshot->imag_parts,
-                                sv_work->dim * sizeof(double));
-                } else {
-                    detail::apply_initial_state(plan, *sv_work, "StatevectorSimulator::run");
-                }
-                clreg.assign(n_clbits, 0);
-                runner->begin_shot(shot, clreg);
-                sv_run_trajectory(*this, *sv_work, *exec, clreg, n_clbits,
-                                  sv_sim_rng, prefix_end, "StatevectorSimulator::run",
-                                  runner->active() ? &*runner : nullptr, &failure);
-                clock.charge(&PhaseTimes::evolution);
+            // One shot thread's work. Thread 0 is the calling thread and runs
+            // on the run's own buffer; every other thread allocates its own,
+            // on that thread, so its pages are first touched where they are
+            // used. While a team runs, each thread's gates run on that thread
+            // alone (ScopedThreadCap(1)), and the phase clock, which tiles one
+            // thread's time, is charged once for the whole loop.
+            struct ShotWorker {
+                StatevectorSimulator* sim;
+                Statevector* sv;
+                const Statevector* snapshot;
+                const RunPlan* plan;
+                const QuantumCircuit* exec;
+                std::size_t first;
+                int n_clbits;
+                bool has_measure;
+                bool capped;
+                detail::ObservationRunner* runner;     // serial runs only
+                detail::ObservationRunner* observing;  // when observers are active
+                PhaseClock* clock;                     // serial runs only
+                std::vector<int> clreg;
+                detail::ShotPosition pos;
 
-                std::string bits;
-                if (has_measure) {
-                    // Build bitstring: clbit 0 is LSB (rightmost), highest
-                    // clbit is MSB.
-                    bits.assign(static_cast<std::size_t>(n_clbits), '0');
-                    for (int c = 0; c < n_clbits; ++c) {
-                        if (clreg[c]) bits[n_clbits - 1 - c] = '1';
+                void restore() {
+                    if (snapshot)
+                        sv_copy_amplitudes(*sv, *snapshot);
+                    else
+                        detail::apply_initial_state(*plan, *sv, "StatevectorSimulator::run");
+                }
+
+                void run_chunk(int, int first_shot, int n, ShotRng& rng,
+                               std::unordered_map<std::string, int>& counts,
+                               detail::ShotFailure& out) {
+                    int shot = first_shot;
+                    try {
+                        const detail::ScopedThreadCap one(capped ? 1 : 0,
+                                                          "StatevectorSimulator::run");
+                        for (; shot < first_shot + n; ++shot) {
+                            pos.set_shot(shot);
+                            restore();
+                            clreg.assign(clreg.size(), 0);
+                            if (runner) runner->begin_shot(shot, clreg);
+                            sv_run_trajectory(*sim, *sv, *exec, clreg, n_clbits, rng, first,
+                                              "StatevectorSimulator::run", observing, &pos);
+                            if (clock) clock->charge(&PhaseTimes::evolution);
+
+                            std::string bits;
+                            if (has_measure) {
+                                // clbit 0 is the rightmost character.
+                                bits.assign(static_cast<std::size_t>(n_clbits), '0');
+                                for (int c = 0; c < n_clbits; ++c)
+                                    if (clreg[static_cast<std::size_t>(c)])
+                                        bits[static_cast<std::size_t>(n_clbits - 1 - c)] = '1';
+                            } else {
+                                // No MEASURE: the shot is one sample of the whole
+                                // register from this trajectory's end state, as the
+                                // single-pass path samples a circuit with no MEASURE.
+                                bits = sv_sample_register(*sv, rng);
+                            }
+                            counts[bits]++;
+                            if (clock) clock->charge(&PhaseTimes::sampling);
+                        }
+                    } catch (...) {
+                        out.shot = shot;
+                        out.instruction = pos.instruction;
+                        out.inst = pos.inst;
+                        out.started = pos.started;
+                        out.error = std::current_exception();
+                        out.partial = std::move(counts);
+                        out.state = std::move(*sv);
                     }
-                } else {
-                    // No MEASURE: the shot is one sample of the whole register
-                    // from this trajectory's end state, as the single-pass
-                    // path samples a circuit with no MEASURE.
-                    bits = sv_sample_register(*sv_work, sv_sim_rng);
                 }
-                result.counts[bits]++;
-                clock.charge(&PhaseTimes::sampling);
-                failure.shot_done();
+            };
+
+            Statevector* const run_buffer = sv_work.get();
+            const Statevector* const snap = snapshot.get();
+            const bool serial = team.threads <= 1;
+            std::vector<std::unique_ptr<Statevector>> own(
+                static_cast<std::size_t>(team.threads));
+            const auto make_worker = [&](int t) {
+                Statevector* sv = run_buffer;
+                if (t != 0) {
+                    own[static_cast<std::size_t>(t)] =
+                        std::make_unique<Statevector>(circuit.n_qubits, options.qubit_limit);
+                    sv = own[static_cast<std::size_t>(t)].get();
+                }
+                return ShotWorker{this,
+                                  sv,
+                                  snap,
+                                  &plan,
+                                  exec,
+                                  prefix_end,
+                                  n_clbits,
+                                  has_measure,
+                                  !serial,
+                                  serial ? &*runner : nullptr,
+                                  observed_run ? &*runner : nullptr,
+                                  serial ? &clock : nullptr,
+                                  std::vector<int>(static_cast<std::size_t>(n_clbits), 0),
+                                  {}};
+            };
+
+            detail::OrderedCounts chunk_counts(chunks.count);
+            detail::ChunkFailures chunk_failures(chunks.count);
+            const int owner = detail::run_shot_chunks(chunks, team, base_seed, tid,
+                                                      chunk_counts, chunk_failures,
+                                                      make_worker);
+            if (std::optional<detail::ShotFailure> failed = chunk_failures.take()) {
+                // The serial record: the shots before the failing one, and that
+                // shot's state, whichever thread ran it.
+                result.counts = chunk_counts.take();
+                for (auto& [key, n] : failed->partial) result.counts[key] += n;
+                failure.adopt_shot_failure(failed->shot, failed->instruction, failed->inst,
+                                           failed->shot, failed->started);
+                if (!std::holds_alternative<std::monostate>(failed->state))
+                    adopted_state = std::move(failed->state);
+                std::rethrow_exception(failed->error);
             }
+            result.counts = chunk_counts.take();
+            // The final state is the last shot's, held by the thread that ran
+            // the last chunk; its buffer becomes the run's.
+            if (owner != 0) std::swap(sv_work, own[static_cast<std::size_t>(owner)]);
+            failure.set_shot(shots - 1);
+            failure.set_shots_completed(shots);
+            if (!serial) clock.charge(&PhaseTimes::evolution);
         } else if (shots > 0 && terminal_only) {
             // Terminal-measurement fast path: a single evolution with MEASURE
             // skipped (the pre-measurement state is deterministic), then
@@ -1448,14 +1604,16 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             clock.charge(&PhaseTimes::sampling);
         } else {
             // Single seeded trajectory (shots == 0 semantics; also the plain
-            // forward pass for measurement-free circuits with shots > 0).
+            // forward pass for measurement-free circuits with shots > 0). It
+            // is shot 0 of a one-chunk run and draws from chunk 0's stream.
             std::vector<int> clreg(n_clbits, 0);
             runner->begin_run(circuit.n_qubits, 1);
             if (walked_per_shot) failure.set_shot(0);
             runner->begin_shot(0, clreg);
+            ShotRng rng = detail::chunk_stream(base_seed, tid, 0);
             sv_run_trajectory(*this, *sv_work, *exec, clreg, n_clbits,
-                              sv_sim_rng, 0, "StatevectorSimulator::run",
-                              runner->active() ? &*runner : nullptr, &failure);
+                              rng, 0, "StatevectorSimulator::run",
+                              runner->active() ? &*runner : nullptr, &failure.position());
             if (walked_per_shot) failure.shot_done();
             clock.charge(&PhaseTimes::evolution);
             if (shots > 0) {
@@ -1521,7 +1679,14 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                 // failed the run; the run's own failure is what the caller
                 // must see.
             }
-            if (sv_work) {
+            if (adopted_state) {
+                // A shot team's failing shot: its state is the record's. The
+                // run's buffer may have been that state, so it is dropped
+                // either way and the next run on this thread allocates a
+                // fresh one.
+                state = std::move(*adopted_state);
+                sv_work.reset();
+            } else if (sv_work) {
                 // The buffer moves into the record, so the next run on this
                 // thread allocates a fresh one.
                 state = std::move(*sv_work);

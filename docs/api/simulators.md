@@ -143,6 +143,24 @@ observed run repeats the prefix in every shot, so each anchor fires once per
 shot with that shot's index. On the MPS backend the profile figures count what
 was performed: the shared start's splits once, each trajectory's own per shot.
 
+**Shots across threads.** The statevector simulator runs the shots of a run
+sampled shot by shot across a team of threads. The shots are cut into at most
+`SHOT_CHUNK_TARGET` (512, in `lindblad/types.hpp`) chunks of consecutive shots,
+a cut that depends on the shot count alone. Each chunk draws from its own
+`ShotRng` (xoshiro256**, in `lindblad/shot_rng.hpp`), started from the run's
+seed and the chunk's index, and one thread always runs a whole chunk. A seeded
+run therefore gives the same counts, the same `final_state` and, when it fails,
+the same record on any number of threads, including one: every sum the run
+draws against is folded in a fixed order, whatever the team. The record of a
+failed run names the lowest-numbered failing shot, and its counts hold exactly
+the shots before it, as a run on one thread would. A seed reproduces a run's
+counts within one release of the library, not across releases.
+
+The team comes from `Options::max_parallel_shots` (0, automatic, by default)
+and `Options::shot_memory`, each extra thread holding a state of its own; while
+it runs, each thread runs its gates alone. A run with an observer attached, or
+one called from inside a parallel region, runs its shots on one thread.
+
 Every sample and every collapse, on every backend, draws from the state's own
 normalised distribution: each outcome's weight divided by the total. A state
 short of unit norm (a truncated MPS chain, or a state a caller set under
@@ -215,6 +233,8 @@ struct Options {
     uint64_t max_memory_mb = 0;    // MiB; 0 = automatic
     QubitLimit qubit_limit = QubitLimit::Enforce;  // 30 qubits; Lift: 59
     PrefixReuse prefix_reuse = PrefixReuse::Hardware;
+    int max_parallel_shots = 0;    // shot threads; 0 = automatic, 1 = serial
+    ShotMemory shot_memory = ShotMemory::Shrink;
     int precision = 64;            // 32 or 64 bit (not yet used)
     bool zero_threshold = true;
     double threshold = 1e-10;      // Unused; for API compatibility
@@ -274,6 +294,27 @@ struct Options {
   `Manual`, or `Off`; see [Execution Semantics](#execution-semantics-frozen-in-r112)).
   The snapshot is released before the result's copy is made, so for this
   simulator it never raises the two-state peak
+- **max_parallel_shots**: how many threads a run sampled shot by shot runs its
+  shots on (see [Execution Semantics](#execution-semantics-frozen-in-r112)).
+  `0`, the default, is automatic: the shots go across threads only when at
+  least `SHOT_TEAM_MIN_CACHED_STATES` (8, in `lindblad/types.hpp`) states fit
+  one last-level-cache instance, which is 18 qubits on a 32 MiB cache. Above
+  that, each thread would stream its own state from memory, and running every
+  gate across threads is faster. The team then grows with the run's work, as
+  a gate kernel's does. `1` is serial,
+  with every gate threaded as usual; `k >= 2` is at most `k` threads, never more
+  than the run has chunks. The counts do not depend on it. A negative value is
+  refused with `InvalidArgument`
+- **shot_memory**: how the shot threads' states meet `max_memory_mb`, each
+  thread holding one state ($16 \cdot 2^n$ bytes) beside the run's own and the
+  prefix snapshot. `ShotMemory::Shrink`, the default, runs as many threads as
+  fit and never refuses a run that fits on one thread. `SerialIfShort` runs the
+  whole team asked for or one thread. `Exact` runs exactly
+  `max_parallel_shots` threads, which must then be set, and refuses the run with
+  `InvalidArgument` before the first gate when their states do not fit.
+  `FixedShare` splits what the cap leaves into one share per thread and refuses
+  a named team whose share cannot hold a state; an automatic team takes only as
+  many shares as hold one. Declared in `lindblad/types.hpp`
 - **precision**: Reserved for future 32-bit float variants
 - **zero_threshold**, **threshold**: Legacy fields; may be removed in future versions
 - **fusion_enable**: Master switch for the gate-fusion pre-pass (see Gate Fusion below); `false` runs every circuit unfused
@@ -329,8 +370,11 @@ from entry to the point its result is complete, with no gap and no overlap, so
   restores and collapses included), or the single seeded trajectory, together
   with the observation harness
 - **sampling**: turning states into counts: the sampler's block sums, the
-  draws, the bitstrings and the counts map. In a run sampled shot by shot, each
-  shot's bitstring and count land here, which costs two clock reads per shot
+  draws, the bitstrings and the counts map. In a run sampled shot by shot on one
+  thread, each shot's bitstring and count land here, which costs two clock
+  reads per shot. When its shots run on several threads, the whole shot loop is
+  charged to evolution and none of it here, since one clock cannot divide
+  several threads' time
 - **final_copy**: the checks on the finished state and handing it over as
   `final_state` (the working buffer is moved, not copied)
 

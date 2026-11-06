@@ -29,6 +29,37 @@ namespace detail {
 struct StateFileAccess;
 
 // =============================================================================
+// ShotPosition - where one thread's shot has reached
+// =============================================================================
+// The shot a thread is running and the instruction about to execute in it. A
+// run's FailureCollector holds the calling thread's; a worker that runs shots
+// on another thread owns its own, and the run adopts the failing one's.
+struct ShotPosition {
+    int shot = -1;
+    int instruction = -1;
+    const Instruction* inst = nullptr;
+    bool started = false;  // some instruction has been reached through this position
+
+    // A new shot starts before its first instruction.
+    void set_shot(int s) noexcept {
+        shot = s;
+        instruction = -1;
+        inst = nullptr;
+    }
+    void at_instruction(int index, const Instruction* i) noexcept {
+        started = true;
+        instruction = index;
+        inst = i;
+    }
+    // What fails next (sampling, the end-of-run checks) belongs to no
+    // instruction.
+    void leave_instructions() noexcept {
+        instruction = -1;
+        inst = nullptr;
+    }
+};
+
+// =============================================================================
 // FailureCollector - one run's failure path
 // =============================================================================
 // Constructed before a run's try block, holding pointers to what the caller
@@ -57,22 +88,36 @@ public:
     // The instruction about to execute. Marks work as started.
     void at_instruction(int index, const Instruction* inst) noexcept {
         work_started_ = true;
-        instruction_ = index;
-        inst_ = inst;
+        position_.at_instruction(index, inst);
     }
     // A pass over the instructions has ended: what fails next (sampling, the
     // end-of-run checks) belongs to no instruction.
-    void leave_instructions() noexcept {
-        instruction_ = -1;
-        inst_ = nullptr;
-    }
-    bool work_started() const noexcept { return work_started_; }
-    void set_shot(int shot) noexcept {
-        shot_ = shot;
-        instruction_ = -1;
-        inst_ = nullptr;
-    }
+    void leave_instructions() noexcept { position_.leave_instructions(); }
+    bool work_started() const noexcept { return work_started_ || position_.started; }
+    void set_shot(int shot) noexcept { position_.set_shot(shot); }
     void shot_done() noexcept { ++shots_completed_; }
+
+    // The calling thread's position, for code that tracks it through a
+    // ShotPosition pointer. Reaching an instruction through it marks work as
+    // started, as at_instruction does.
+    ShotPosition& position() noexcept { return position_; }
+
+    // Shots run through positions of their own (a shot loop's workers): how
+    // far they got, for a failure that comes after the loop.
+    void set_shots_completed(int n) noexcept { shots_completed_ = n; }
+
+    // A shot run through another position failed: the record names that shot
+    // and instruction, and the shots completed before it, in place of what
+    // this thread tracked. started = whether that position had reached an
+    // instruction; a failure before any instruction leaves no record.
+    void adopt_shot_failure(int shot, int instruction, const Instruction* inst,
+                            int shots_completed, bool started) noexcept {
+        if (started) work_started_ = true;
+        position_.shot = shot;
+        position_.instruction = instruction;
+        position_.inst = inst;
+        shots_completed_ = shots_completed;
+    }
 
     // The noise model a density-matrix run used. Held by pointer and copied
     // only if the run fails.
@@ -105,9 +150,7 @@ private:
     const RunPlan* plan_;
     std::uint64_t seed_ = 0;
     bool work_started_ = false;
-    int shot_ = -1;
-    int instruction_ = -1;
-    const Instruction* inst_ = nullptr;
+    ShotPosition position_;
     int shots_completed_ = 0;
     const NoiseModel* noise_model_ = nullptr;
     std::vector<std::pair<std::string, std::string>> options_;
@@ -165,6 +208,7 @@ std::string option_value(SvdRejection value);
 std::string option_value(SvdReport value);
 std::string option_value(CanonicalForm value);
 std::string option_value(UncheckedGates value);
+std::string option_value(ShotMemory value);
 
 }  // namespace detail
 }  // namespace lindblad

@@ -103,6 +103,21 @@ public:
         // types.hpp. The snapshot is released before the result's copy is
         // made, so here it never raises the two-state peak.
         PrefixReuse prefix_reuse = PrefixReuse::Hardware;
+        // How many threads a run sampled shot by shot (mid-circuit
+        // measurement, feedforward, a RESET that can change the state) runs
+        // its shots on: 0, the default, is automatic (the run's work decides,
+        // as it does for a gate kernel's threads); 1 is serial; k >= 2 is at
+        // most k. Each shot thread holds its own state beside the run's, and
+        // shot_memory says how those states meet max_memory_mb. While shots
+        // run on more than one thread, each gate runs on one. A run with an
+        // observer, or one called from inside a parallel region, runs its
+        // shots on one thread. Seeded counts, the final state and a failed
+        // run's record are the same whatever the team. Negative values are
+        // refused.
+        int max_parallel_shots = 0;
+        // How the shot threads share the memory cap; see ShotMemory in
+        // types.hpp.
+        ShotMemory shot_memory = ShotMemory::Shrink;
         int precision = 64;            // 32 or 64 bit
         bool zero_threshold = true;
         double threshold = 1e-10;

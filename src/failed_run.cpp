@@ -186,6 +186,7 @@ std::string option_value(QubitLimit value) {
     return json_escape(value == QubitLimit::Lift ? "Lift" : "Enforce");
 }
 std::string option_value(PrefixReuse value) { return json_escape(to_string(value)); }
+std::string option_value(ShotMemory value) { return json_escape(to_string(value)); }
 std::string option_value(SVDMethod value) { return json_escape(to_string(value)); }
 std::string option_value(SvdRejection value) { return json_escape(to_string(value)); }
 std::string option_value(SvdReport value) { return json_escape(to_string(value)); }
@@ -206,7 +207,7 @@ void FailureCollector::fail(std::exception_ptr failure,
                             std::unordered_map<std::string, int>&& counts,
                             ObservationBundle&& observations,
                             FailedRun::State&& state) {
-    if (!work_started_) std::rethrow_exception(failure);
+    if (!work_started()) std::rethrow_exception(failure);
 
     std::optional<std::filesystem::path> saved;
     std::string unsaved;
@@ -215,11 +216,11 @@ void FailureCollector::fail(std::exception_ptr failure,
     bool stored = false;
     try {
         FailurePoint point;
-        point.shot = shot_;
-        point.instruction = instruction_;
-        if (inst_ != nullptr) {
-            point.gate = inst_->gate_name();
-            point.qubits = inst_->qubits;
+        point.shot = position_.shot;
+        point.instruction = position_.instruction;
+        if (position_.inst != nullptr) {
+            point.gate = position_.inst->gate_name();
+            point.qubits = position_.inst->qubits;
         }
         reached = std::move(point);
 

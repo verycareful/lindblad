@@ -33,6 +33,9 @@ BackendResult LocalBackend::run(
     // max_parallel_threads; the caller's own setting is back on return.
     const detail::ScopedThreadCap threads(config.max_parallel_threads,
                                           "LocalBackend::run");
+    detail::check_require(config.max_parallel_shots >= 0, "LocalBackend::run",
+                          "Config::max_parallel_shots must be >= 0 (0 = automatic, 1 = "
+                          "serial), got " + std::to_string(config.max_parallel_shots));
     // Auto-select simulator
     SimType sim_type = config.simulator;
     if (sim_type == SimType::AUTO) {
@@ -52,6 +55,8 @@ BackendResult LocalBackend::run(
             StatevectorSimulator sim;
             sim.options.max_memory_mb = config.max_memory_mb;
             sim.options.qubit_limit = config.qubit_limit;
+            sim.options.max_parallel_shots = config.max_parallel_shots;
+            sim.options.shot_memory = config.shot_memory;
             auto sv_result = sim.run(circuit, shots, seed);
             result.counts = std::move(sv_result.counts);
             result.simulation_time_seconds = sv_result.simulation_time_seconds;

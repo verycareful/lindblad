@@ -61,6 +61,11 @@ Fields and defaults:
   is automatic, the memory the machine reports available (see
   [The memory cap](failures.md#the-memory-cap)). Passed to whichever backend
   the run reaches
+- `max_parallel_shots = 0`, `shot_memory = ShotMemory::Shrink`: how many
+  threads a run sampled shot by shot runs its shots on, and how their states
+  share `max_memory_mb`. Passed to the statevector simulator (see its
+  [Options](simulators.md#options)). A negative `max_parallel_shots` is refused
+  with `InvalidArgument` whichever backend the run would reach
 - `mps_bond_dim = 64`: bond dimension for MPS simulator
 - `qubit_limit = QubitLimit::Enforce`: passed to the statevector simulator (30
   qubits, or 59 under `QubitLimit::Lift`) and to the MPS simulator's dense

@@ -490,6 +490,88 @@ constexpr const char* to_string(PrefixReuse r) noexcept {
 }
 
 // =============================================================================
+// ShotMemory - how a run's shot threads share its memory cap
+// =============================================================================
+// A run that walks its shots one by one runs them across a team of threads,
+// each holding its own working state (and its own scratch) beside what the run
+// already holds. max_parallel_shots chooses the team (0 = automatic, 1 =
+// serial, k >= 2 = at most k); this chooses how the team meets the run's memory
+// cap (max_memory_mb, or the automatic cap when that is 0).
+//
+//   Shrink        = the team shrinks to as many working states as fit beside
+//                   what the run holds, never below one. A run that fits
+//                   serially is never refused because of its threads. The
+//                   default.
+//   FixedShare    = the team is the one asked for, and the cap left after what
+//                   the run holds is split evenly across it: every thread is
+//                   held to its own share, and a thread whose state outgrows
+//                   its share fails the run. For a backend whose state has a
+//                   fixed size, a share smaller than one state is refused
+//                   before the first shot.
+//   SerialIfShort = the whole team asked for fits, or the run is serial.
+//   Exact         = exactly the team asked for (max_parallel_shots must then
+//                   be set), refused before the first shot when its states do
+//                   not fit.
+//
+// The counts a seeded run produces do not depend on the team, so this changes
+// only how fast a run goes and how much memory it holds.
+enum class ShotMemory { Shrink, FixedShare, SerialIfShort, Exact };
+
+// The enumerator's name, for diagnostics.
+constexpr const char* to_string(ShotMemory m) noexcept {
+    switch (m) {
+        case ShotMemory::Shrink:        return "Shrink";
+        case ShotMemory::FixedShare:    return "FixedShare";
+        case ShotMemory::SerialIfShort: return "SerialIfShort";
+        case ShotMemory::Exact:         return "Exact";
+    }
+    return "ShotMemory(?)";
+}
+
+// =============================================================================
+// Shot chunks - the unit a shot thread takes, and its random stream
+// =============================================================================
+// The shots of a run are cut into chunks of
+//
+//   chunk = ceil(shots / SHOT_CHUNK_TARGET)
+//
+// consecutive shots, so a run has at most SHOT_CHUNK_TARGET chunks. Each chunk
+// draws from its own random stream (ShotRng in shot_rng.hpp), started from the
+// run's seed and the chunk's index, and a thread always runs a whole chunk, so
+// a seeded run gives the same counts on any number of threads: the chunks and
+// their streams depend on the shot count only.
+//
+// The value is measured. When a run's shots run on more than one thread, every
+// chunk's counts are merged in chunk order under one lock, which cost 0.5 to
+// 0.7 us of wall time per chunk on a 24-thread machine whatever the chunk's
+// size, so the chunk count is a fixed cost of a parallel run: about 0.35 ms at
+// 512. 512 chunks still balance a team well: 21 or 22 chunks per thread at 24
+// threads, and whole numbers of chunks per thread up to 128 threads. A run on
+// one thread keeps one counts map across its chunks and pays nothing per
+// chunk.
+inline constexpr int SHOT_CHUNK_TARGET = 512;
+
+// =============================================================================
+// Automatic shot teams - when a run's shots go across threads
+// =============================================================================
+// With max_parallel_shots = 0, a run's shots run across threads only when at
+// least SHOT_TEAM_MIN_CACHED_STATES of its per-thread working states fit in one
+// last-level-cache instance (hw::llc_bytes); the team is then sized by the
+// run's work, as a gate kernel's is. Below that, each shot thread streams its
+// own state from memory with its gates on one thread, and the run is faster
+// with its shots on one thread and every gate threaded.
+//
+// The value is measured: on a 32 MiB-L3 part with 24 threads, statevector runs
+// sampled shot by shot (a mid-circuit measurement, and three rounds of
+// measuring every qubit) ran 10 to 18 times faster across shot threads up to
+// 16 qubits and 1.3 to 1.7 times faster at 18 qubits (8 states per cache), but
+// 0.4 to 0.9 times as fast at 19 (4 states) and 0.2 to 0.4 at 20 (2), whatever
+// the team. At 17 and 18 qubits teams larger than the cache holds still ran
+// faster than ones it holds, so the cache decides whether the shots go across
+// threads, not how many threads they take.
+inline constexpr std::size_t SHOT_TEAM_MIN_CACHED_STATES = 8;
+
+// =============================================================================
 // QubitLimit - how wide a register a dense representation may be
 // =============================================================================
 // Enforce keeps the default ceilings, sized so a dense state fits a
@@ -563,9 +645,12 @@ inline constexpr std::size_t DEFAULT_MIN_AMPLITUDES_PER_THREAD = 2048;
 //                included), or the single seeded trajectory; and the
 //                observation harness that rides on them.
 //   sampling   = turning states into counts: the sampler's block sums, draws,
-//                bitstrings and the counts map. A run sampled shot by shot
-//                charges each shot's bitstring and count here, so asking costs
-//                two clock reads per shot.
+//                bitstrings and the counts map. A run sampled shot by shot on
+//                one thread charges each shot's bitstring and count here, so
+//                asking costs two clock reads per shot. When its shots run on
+//                several threads, the whole shot loop is charged to evolution
+//                and none of it here: one clock cannot tile several threads'
+//                time.
 //   final_copy = the checks on the finished state and handing it to the
 //                result (the working buffer is moved, not copied).
 //

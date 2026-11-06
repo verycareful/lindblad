@@ -214,7 +214,7 @@ Common issues include:
 
 - MAQAOA is not just QAOA with a different name; its parameter shape can change substantially.
 - Layerwise optimization changes how the optimizer state evolves across layers, and it is not monotone in the budget: each layer starts from where the previous one converged, so a larger per-layer budget can end at a worse final energy. Compare budgets by the final energy.
-- Above `2^20` amplitudes (20 qubits, the production instance size) the statevector kernels and the expectation-value reduction run in parallel, and the summation order depends on the thread count. The energy differs in its last bits between thread counts, and the minimiser can turn that into a different final energy. To reproduce a run at that size, pin `OMP_NUM_THREADS` as well as `seed`.
+- The statevector kernels and the expectation-value sum give the same bits on any thread count, so `seed` reproduces a run's energies, and the minimiser's path through them, whatever `OMP_NUM_THREADS` is. From the width where gate fusion engages (a state larger than one last-level-cache instance), the fused plan follows this machine's measured speed, so two processes can differ in the last bits there (see [Gate Fusion](../api/simulators.md#gate-fusion-r117)).
 - `term_indexed_gammas` should be documented carefully in examples because it changes the expected parameter count.
 - If you set orbit assignments, the parameter count can drop significantly.
 

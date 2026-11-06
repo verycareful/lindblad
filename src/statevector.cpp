@@ -253,9 +253,8 @@ std::vector<double> Statevector::probabilities() const {
 // Norm
 // =============================================================================
 
-// Each thread sums its share and the shares are added in thread order
-// (detail::reduce_shares), so the last bits depend on the team size and on
-// nothing else.
+// Summed over fixed segments added in segment order (detail::reduce_shares),
+// so the value has the same bits on any team.
 double Statevector::norm_sq() const {
     const double* re = real_parts;
     const double* im = imag_parts;
@@ -295,10 +294,11 @@ void Statevector::normalize() {
     });
 }
 
-// Measured through the quarantined sum rather than through norm_sq() above:
-// this value is compared against a tolerance, and norm_sq() splits the sum
-// across threads, so its last bits depend on the thread count.
-// A verdict that changes with how many cores happened to be free is not one.
+// Measured through the tree-ordered sum rather than through norm_sq() above:
+// this value is compared against a tolerance, and the tree order holds its
+// rounding error to the same bound at every register width (state_norm_sq),
+// where norm_sq()'s segment sums accumulate linearly and their error grows
+// with the register.
 bool Statevector::is_normalized(double atol) const {
     return std::abs(detail::state_norm_sq(real_parts, imag_parts, dim) - 1.0) <=
            atol;
@@ -327,8 +327,8 @@ Complex128 Statevector::inner_product(const Statevector& other) const {
         throw std::invalid_argument("Dimension mismatch for inner product");
     }
 
-    // ⟨this|other⟩ = sum_i conj(this_i) * other_i, summed share by share and
-    // added in thread order (detail::reduce_shares).
+    // ⟨this|other⟩ = sum_i conj(this_i) * other_i, summed segment by segment
+    // and added in segment order (detail::reduce_shares).
     struct Sum {
         double re;
         double im;

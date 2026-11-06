@@ -456,21 +456,21 @@ double group_share(const double* rp, const double* ip, const PauliGroup& g,
 }
 
 // ⟨ψ|H|ψ⟩ for H given as its groups. parallel = whether each group's sweep
-// may use a team: its shares are summed in thread order (detail::reduce_shares),
-// so the last bits depend on the team size and on nothing else. A group's
-// work counts one pass per term.
+// may use a team. Either way the sweep is summed over the same fixed segments
+// in the same order (detail::reduce_shares, detail::fold_segments), so the
+// value has the same bits on any team and whether or not the batch ran states
+// side by side. A group's work counts one pass per term.
 double expectation_of_groups(const double* rp, const double* ip, std::size_t dim,
                              const std::vector<PauliGroup>& groups, bool parallel) {
     double result = 0.0;
     for (const PauliGroup& g : groups) {
-        if (!parallel) {
-            result += group_share(rp, ip, g, 0, dim);
-            continue;
-        }
-        result += detail::reduce_shares(
-            dim, detail::saturating_mul(dim, g.z.size()), 0.0,
-            [rp, ip, &g](std::size_t b, std::size_t e) { return group_share(rp, ip, g, b, e); },
-            [](double acc, double part) { return acc + part; });
+        const auto share = [rp, ip, &g](std::size_t b, std::size_t e) {
+            return group_share(rp, ip, g, b, e);
+        };
+        const auto add = [](double acc, double part) { return acc + part; };
+        result += parallel ? detail::reduce_shares(
+                                 dim, detail::saturating_mul(dim, g.z.size()), 0.0, share, add)
+                           : detail::fold_segments(dim, 0.0, share, add);
     }
     return result;
 }

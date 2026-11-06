@@ -70,7 +70,7 @@ VQE uses `Estimator` internally to evaluate the ansatz energy against the target
 
 The classical loop runs through one internal seam over two minimiser libraries. `options.optimizer` selects the algorithm: `"COBYLA"` (default, FLOP's implementation), or NLopt's `"NLOPT_COBYLA"`, `"NELDER_MEAD"` and `"BOBYQA"`. Energy evaluations go through the estimator attached to the `VQE` instance.
 
-Two things about the numbers a run produces. A fixed `seed` gives the same starting point on every compiler and floating-point model, so a trajectory is reproducible across builds. Above `2^20` amplitudes the statevector kernels and the expectation-value reduction run in parallel, and the summation order then depends on the thread count; the energy differs in its last bits between thread counts, and a derivative-free minimiser can turn that into a different trajectory and a different final energy. To reproduce a run at that size, pin `OMP_NUM_THREADS` as well as the seed.
+Two things about the numbers a run produces. A fixed `seed` gives the same starting point on every compiler and floating-point model, so a trajectory is reproducible across builds. The statevector kernels and the expectation-value sum give the same bits on any thread count, so the trajectory does not depend on `OMP_NUM_THREADS` either. From the width where gate fusion engages (a state larger than one last-level-cache instance), the fused plan follows this machine's measured speed, so two processes can differ in the last bits there (see [Gate Fusion](../api/simulators.md#gate-fusion-r117)).
 
 ## Public API Details
 

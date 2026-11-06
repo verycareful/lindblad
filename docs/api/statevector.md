@@ -86,8 +86,9 @@ not the amplitudes that were just rejected.
 
 ## Norm and Normalization
 
-- `norm_sq()` and `norm()` compute the squared norm and norm. Both use an
-  OpenMP reduction, so their last bits depend on the thread count. They are for
+- `norm_sq()` and `norm()` compute the squared norm and norm. Both sum over
+  fixed segments in a fixed order, so they give the same value on any thread
+  count. Their rounding error grows with the register, so they are for
   computation, not for comparing against a tolerance.
 - `normalize()` scales to unit norm. It throws `std::runtime_error` when there
   is no norm to divide out, which is a zero or non-finite state. It does not

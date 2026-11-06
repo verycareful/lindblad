@@ -54,6 +54,12 @@ public:
         // The memory cap, passed to whichever backend the run reaches; see
         // StatevectorSimulator::Options::max_memory_mb. 0 is automatic.
         uint64_t max_memory_mb = 0;
+        // How many threads a run sampled shot by shot runs its shots on, and
+        // how they share max_memory_mb, on whichever backend the run reaches;
+        // see StatevectorSimulator::Options::max_parallel_shots and
+        // ShotMemory in types.hpp. 0 is automatic; negative is refused.
+        int max_parallel_shots = 0;
+        ShotMemory shot_memory = ShotMemory::Shrink;
         int mps_bond_dim = 64;
         // Passed to the backend the run reaches: the statevector limit (30
         // qubits under Enforce, 59 under Lift) and the MPS dense-fallback limit

@@ -155,14 +155,19 @@ inline std::size_t share_unit(std::size_t count) noexcept {
 // The items [0, count) are cut into one contiguous share per thread of a team
 // of sv_team(work), never more threads than share units.
 //
-// for_each_share calls body(begin, end) once per share. reduce_shares has each
-// share return its partial, body(begin, end) -> T, and folds the partials with
-// combine(acc, partial) starting from init, in THREAD ORDER after the region.
-// The fold order is fixed by the code, not by which thread finished first, so a
-// sum depends on the team size but is the same on every run with that team: an
-// OpenMP reduction clause leaves the order to the runtime, and libomp combines
-// small teams atomically, in arrival order. A team of one returns
-// combine(init, body(0, count)). T must be default-constructible.
+// for_each_share calls body(begin, end) once per share.
+//
+// reduce_shares does not cut by thread. It cuts the items into segments whose
+// number depends on the count alone (reduce_segments), has each segment return
+// its partial, body(begin, end) -> T, and folds the partials with
+// combine(acc, partial) starting from init, in SEGMENT ORDER. A thread computes
+// a contiguous run of whole segments. The fold is therefore the same sequence
+// of operations on any team, one thread included, so a floating-point sum has
+// the same bits whatever max_parallel_threads, the grain, or a shot loop that
+// caps the kernels to one thread allows: a seeded run's collapses, and so its
+// counts and final state, do not depend on the thread count. An OpenMP
+// reduction clause would leave the order to the runtime (libomp combines small
+// teams atomically, in arrival order). T must be default-constructible.
 template <class Body>
 inline void for_each_share(std::size_t count, std::size_t work, Body&& body) {
     if (count == 0) return;
@@ -187,22 +192,54 @@ inline void for_each_share(std::size_t count, std::size_t work, Body&& body) {
     }
 }
 
+// The number of segments reduce_shares cuts n_units share units into: one per
+// kSegmentMinUnits units, at least 1 and at most kReduceSegments. Both bounds
+// are fixed, so the cut depends on the count only. kReduceSegments keeps a
+// full team balanced to within a few percent (24 threads take 42 or 43
+// segments each) for a partials array of a few KiB; kSegmentMinUnits keeps a
+// small state's pass from paying a body call per cache line.
+inline constexpr std::size_t kReduceSegments = 1024;
+inline constexpr std::size_t kSegmentMinUnits = 16;
+
+inline std::size_t reduce_segments(std::size_t n_units) noexcept {
+    return std::clamp<std::size_t>(n_units / kSegmentMinUnits, 1, kReduceSegments);
+}
+
+// reduce_shares on the calling thread alone: the same segments folded in the
+// same order, so it returns the same bits as reduce_shares on any team. For a
+// caller that is itself one of a team's threads.
+template <class T, class Body, class Combine>
+inline T fold_segments(std::size_t count, T init, Body&& body, Combine&& combine) {
+    if (count == 0) return init;
+    const std::size_t unit = sv_runs_impl::share_unit(count);
+    const std::size_t n_units = count / unit;
+    const std::size_t n_seg = reduce_segments(n_units);
+    T acc = init;
+    for (std::size_t s = 0; s < n_seg; ++s) {
+        const sv_runs_impl::Share g = sv_runs_impl::share_of(n_units, unit, n_seg, s);
+        acc = combine(acc, body(g.begin, g.end));
+    }
+    return acc;
+}
+
 template <class T, class Body, class Combine>
 inline T reduce_shares(std::size_t count, std::size_t work, T init, Body&& body,
                        Combine&& combine) {
     if (count == 0) return init;
     const std::size_t unit = sv_runs_impl::share_unit(count);
     const std::size_t n_units = count / unit;
+    const std::size_t n_seg = reduce_segments(n_units);
+    const auto segment = [&](std::size_t s) {
+        return sv_runs_impl::share_of(n_units, unit, n_seg, s);
+    };
     const int team = static_cast<int>(
-        std::min<std::size_t>(static_cast<std::size_t>(sv_team(work)), n_units));
+        std::min<std::size_t>(static_cast<std::size_t>(sv_team(work)), n_seg));
     // The partials are allocated without throwing, so a pass that cannot get
     // them runs serially and reduce_shares adds no exception of its own (the
     // finite check that calls it is noexcept).
     std::unique_ptr<T[]> partial;
-    if (team > 1) partial.reset(new (std::nothrow) T[static_cast<std::size_t>(team)]);
-    if (!partial) return combine(init, body(std::size_t{0}, count));
-    for (int t = 0; t < team; ++t) partial[static_cast<std::size_t>(t)] = init;
-    std::size_t used = 1;  // threads the region actually ran with
+    if (team > 1) partial.reset(new (std::nothrow) T[n_seg]);
+    if (!partial) return fold_segments(count, init, body, combine);
     #pragma omp parallel num_threads(team)
     {
         std::size_t threads = 1;
@@ -211,12 +248,14 @@ inline T reduce_shares(std::size_t count, std::size_t work, T init, Body&& body,
         threads = static_cast<std::size_t>(omp_get_num_threads());
         t = static_cast<std::size_t>(omp_get_thread_num());
 #endif
-        if (t == 0) used = threads;
-        const sv_runs_impl::Share s = sv_runs_impl::share_of(n_units, unit, threads, t);
-        if (s.begin < s.end) partial[t] = body(s.begin, s.end);
+        const sv_runs_impl::Share mine = sv_runs_impl::share_of(n_seg, 1, threads, t);
+        for (std::size_t s = mine.begin; s < mine.end; ++s) {
+            const sv_runs_impl::Share g = segment(s);
+            partial[s] = body(g.begin, g.end);
+        }
     }
     T acc = init;
-    for (std::size_t t = 0; t < used; ++t) acc = combine(acc, partial[t]);
+    for (std::size_t s = 0; s < n_seg; ++s) acc = combine(acc, partial[s]);
     return acc;
 }
 
