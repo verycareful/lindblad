@@ -209,6 +209,7 @@ std::string option_value(SvdReport value);
 std::string option_value(CanonicalForm value);
 std::string option_value(UncheckedGates value);
 std::string option_value(ShotMemory value);
+std::string option_value(ShotCounting value);
 
 }  // namespace detail
 }  // namespace lindblad

@@ -244,6 +244,8 @@ struct Options {
     PrefixReuse prefix_reuse = PrefixReuse::Hardware;
     int max_parallel_shots = 0;    // shot threads; 0 = automatic, 1 = serial
     ShotMemory shot_memory = ShotMemory::Shrink;
+    ShotCounting shot_counting = ShotCounting::Auto;
+    double shot_counting_distinct_fraction = 0;  // 0 = default (0.5)
     int precision = 64;            // 32 or 64 bit (not yet used)
     bool zero_threshold = true;
     double threshold = 1e-10;      // Unused; for API compatibility
@@ -324,6 +326,32 @@ struct Options {
   `FixedShare` splits what the cap leaves into one share per thread and refuses
   a named team whose share cannot hold a state; an automatic team takes only as
   many shares as hold one. Declared in `lindblad/types.hpp`
+- **shot_counting**, **shot_counting_distinct_fraction**: how a run sampled
+  shot by shot keeps its counts. The counts are the same in every mode; only
+  the speed differs. Each chunk of shots is counted on its own thread and the
+  chunks are merged in order on one, so on a team that merge is serial work. A
+  register of up to 64 clbits can be counted under a 64-bit integer, which is
+  cheap when outcomes repeat, but whose bitstring is then built when the run
+  returns, on one thread, once per distinct outcome; a bitstring key costs a
+  string per shot, built on the shot's own thread, and the merge builds none.
+  `ShotCounting::Auto`, the default, chooses per chunk on each thread: when
+  more than `shot_counting_distinct_fraction` of a chunk's shots were distinct
+  outcomes, its counts go under bitstrings at once and the next chunk is
+  counted under bitstrings, otherwise under integers. `Packed` counts under
+  integers throughout, `PackedPerChunk` under integers within a chunk with
+  each thread building its chunk's bitstrings as the chunk ends, and `Strings`
+  under a bitstring for every shot. A register wider than 64 clbits is counted
+  under bitstrings in every mode. `shot_counting_distinct_fraction = 0` selects
+  the default, 0.5; any other value must lie in (0, 1], else the run is refused
+  with `InvalidArgument` before the first gate. At 1, `Auto` counts as `Packed`.
+  `Auto` is within 5% of the fastest of the four modes on most runs: measured on
+  a 24-thread machine over statevector, density-matrix and Clifford runs with 16
+  to 10^6 distinct outcomes, it was on 54 of 56 run and team pairs. On a team a
+  chunk is judged by its own distinct outcomes, which overstates how distinct the
+  whole run is, so a short run that repeats a few thousand outcomes can be
+  counted under bitstrings when integers are faster (10^5 shots with 2413
+  distinct outcomes on 24 threads took 11.8 ms under `Auto` and 9.2 ms under
+  `Packed`); set `Packed` for such a run. Declared in `lindblad/types.hpp`
 - **precision**: Reserved for future 32-bit float variants
 - **zero_threshold**, **threshold**: Legacy fields; may be removed in future versions
 - **fusion_enable**: Master switch for the gate-fusion pre-pass (see Gate Fusion below); `false` runs every circuit unfused
@@ -631,6 +659,8 @@ struct Options {
     PrefixReuse prefix_reuse = PrefixReuse::Hardware;
     int max_parallel_shots = 0;                        // shot threads; 0 = automatic, 1 = serial
     ShotMemory shot_memory = ShotMemory::Shrink;
+    ShotCounting shot_counting = ShotCounting::Auto;
+    double shot_counting_distinct_fraction = 0;        // 0 = default (0.5)
 };
 ```
 
@@ -665,6 +695,9 @@ struct Options {
   run's own and the prefix snapshot. The modes are those of the statevector
   simulator: `Shrink` (the default), `SerialIfShort`, `Exact` and `FixedShare`.
   Terminal sampling needs no memory per thread, so no mode limits its team
+- **shot_counting**, **shot_counting_distinct_fraction**: how the counts of
+  trajectories and of terminal sampling are kept, with the modes and the
+  cutoff of the statevector simulator. The counts are the same in every mode
 
 ### DensityMatrixSimulator Workflow
 
@@ -864,6 +897,8 @@ sim.options.elimination = StabilizerState::Elimination::Plain;
 sim.options.max_memory_mb = 0;  // MiB; 0 = automatic
 sim.options.max_parallel_shots = 0;  // shot threads; 0 = automatic, 1 = serial
 sim.options.shot_memory = ShotMemory::Shrink;
+sim.options.shot_counting = ShotCounting::Auto;
+sim.options.shot_counting_distinct_fraction = 0;  // 0 = default (0.5)
 ```
 
 `max_memory_mb` is the memory cap every backend answers to (see
@@ -890,6 +925,13 @@ from a copy of the trajectory's end state), and a `PerShot` thread holds one
 working copy. A `Slab` thread holds only its outcome vector, so no mode limits
 that team in practice. A team that cannot be had is refused with
 `InvalidArgument` before the first gate.
+
+`shot_counting` and `shot_counting_distinct_fraction` are how the counts of
+trajectories, `PerShot` and `Slab` sampling are kept, with the modes and the
+cutoff of the statevector simulator. `Slab` sampling of a wide random state is
+where they matter most: nearly every outcome is distinct, so `Auto` counts it
+under bitstrings built on the shot threads. The counts are the same in every
+mode.
 
 A gate with no tableau form, or a rotation that is not a multiple of $\pi/2$,
 is refused with `InvalidArgument` before the first gate, through the same

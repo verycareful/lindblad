@@ -529,6 +529,75 @@ constexpr const char* to_string(ShotMemory m) noexcept {
 }
 
 // =============================================================================
+// ShotCounting - how a run sampled shot by shot keeps its counts
+// =============================================================================
+// Every mode gives the same counts; only the bookkeeping, and so the speed,
+// differs. Shots are counted per chunk (the chunks below) and the chunks'
+// counts are merged in chunk order under one lock, so on a team the merge is
+// serial work as long as the outcomes are many. Two costs trade off:
+//
+//   - an integer key (the register packed into 64 bits) is cheap to count
+//     and to merge, but its string is built when the run hands its counts
+//     back, on one thread, once per distinct outcome;
+//   - a string key costs a string per shot, built on the shot's own thread,
+//     and merges by moving the string's entry, so the serial merge builds
+//     nothing.
+//
+// Integer keys win when outcomes repeat (few strings to build at the end);
+// string keys win when nearly every outcome is distinct (the end would build
+// one per shot, serially).
+//
+//   Auto           = chosen per chunk by each shot thread from its last chunk:
+//                    when more than shot_counting_distinct_fraction of that
+//                    chunk's shots were distinct outcomes, its counts go under
+//                    their strings at once (on that thread) and the next chunk
+//                    is counted under strings; otherwise under integers. A
+//                    thread's first chunk is counted under integers. The
+//                    default.
+//   Packed         = integer keys throughout; the strings are built at the
+//                    end.
+//   PackedPerChunk = integer keys within a chunk; each shot thread puts its
+//                    chunk under strings when the chunk ends, so the merge
+//                    builds none. A run on one thread builds them at the end.
+//   Strings        = a string key for every shot.
+//
+// A register wider than 64 clbits is counted under strings in every mode.
+enum class ShotCounting { Auto, Packed, PackedPerChunk, Strings };
+
+// The enumerator's name, for diagnostics.
+constexpr const char* to_string(ShotCounting m) noexcept {
+    switch (m) {
+        case ShotCounting::Auto:           return "Auto";
+        case ShotCounting::Packed:         return "Packed";
+        case ShotCounting::PackedPerChunk: return "PackedPerChunk";
+        case ShotCounting::Strings:        return "Strings";
+    }
+    return "ShotCounting(?)";
+}
+
+// ShotCounting::Auto counts a thread's next chunk under strings when more than
+// this fraction of its last chunk's shots were distinct outcomes. Options::
+// shot_counting_distinct_fraction = 0 selects it; a caller's value lies in
+// (0, 1]. At 1 a chunk can never exceed it, so Auto counts as Packed.
+//
+// The value is measured, on a Ryzen 9 7900X (24 threads, pinned, teams of 1, 6,
+// 12 and 24) over 14 runs: statevector and density-matrix rounds, density-matrix
+// terminal sampling, and Clifford Slab, PerShot and mid-circuit runs, with 16 to
+// 10^6 distinct outcomes. Auto is within 5% of the fastest of the four modes on
+// 54 of the 56 run and team pairs.
+//
+// Two limits are known. On a team, a chunk of SHOT_CHUNK_TARGET shots is judged
+// by its own distinct outcomes, which overstates how distinct the whole run is:
+// a statevector run of 10^5 shots with 2413 distinct outcomes looks about 90%
+// distinct to each chunk, so it is counted under strings, which costs 20% on a
+// 24-thread team of a 10 ms run (9.9 ms against 11.8 ms) and 1% or less on
+// teams of 6 and 12. Setting ShotCounting::Packed removes it. And on a
+// 24-thread Clifford Slab run of 10^5 shots at 50 qubits, PackedPerChunk is 13%
+// faster than Auto (12.7 ms against 14.4 ms), both well ahead of the Packed
+// merge.
+inline constexpr double SHOT_COUNTING_DISTINCT_FRACTION = 0.5;
+
+// =============================================================================
 // Shot chunks - the unit a shot thread takes, and its random stream
 // =============================================================================
 // The shots of a run are cut into chunks of

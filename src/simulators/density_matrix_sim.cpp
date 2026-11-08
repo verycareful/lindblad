@@ -943,6 +943,9 @@ static void record_options(detail::FailureCollector& failure,
     failure.add_option("prefix_reuse", option_value(o.prefix_reuse));
     failure.add_option("max_parallel_shots", option_value(o.max_parallel_shots));
     failure.add_option("shot_memory", option_value(o.shot_memory));
+    failure.add_option("shot_counting", option_value(o.shot_counting));
+    failure.add_option("shot_counting_distinct_fraction",
+                       option_value(o.shot_counting_distinct_fraction));
 }
 
 DensityMatrixSimulator::Result DensityMatrixSimulator::run(
@@ -974,6 +977,8 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
         detail::check_require(options.max_parallel_shots >= 0, "DensityMatrixSimulator::run",
                               "Options::max_parallel_shots must be >= 0 (0 = automatic, "
                               "1 = serial), got " + std::to_string(options.max_parallel_shots));
+        detail::check_shot_counting("DensityMatrixSimulator::run",
+                                    options.shot_counting_distinct_fraction);
         // A run holds one density matrix; a prefix snapshot, when taken, is
         // judged on its own below.
         const std::uint64_t one_matrix =
@@ -1287,8 +1292,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 detail::ShotPosition pos;
 
                 void run_chunk(int, int first_shot, int n, ShotRng& rng,
-                               std::unordered_map<std::string, int>& counts,
-                               detail::ShotFailure& out) {
+                               detail::ShotCounts& counts, detail::ShotFailure& out) {
                     const char* const where = "DensityMatrixSimulator::run";
                     int shot = first_shot;
                     try {
@@ -1334,14 +1338,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                             if (watcher) watcher->at_end(view, static_cast<int>(end) - 1);
                             pos.leave_instructions();
 
-                            if (record) {
-                                // clbit 0 is the rightmost character.
-                                std::string bits(static_cast<std::size_t>(n_clbits), '0');
-                                for (int c = 0; c < n_clbits; ++c)
-                                    if (clreg[static_cast<std::size_t>(c)])
-                                        bits[static_cast<std::size_t>(n_clbits - 1 - c)] = '1';
-                                counts[bits]++;
-                            }
+                            if (record) counts.add(clreg);
                         }
                     } catch (...) {
                         out.shot = shot;
@@ -1383,15 +1380,17 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                                   {}};
             };
 
-            detail::OrderedCounts chunk_counts(chunks.count);
+            detail::OrderedCounts chunk_counts("DensityMatrixSimulator::run", chunks.count,
+                                               n_clbits,
+                                               options.shot_counting,
+                                               options.shot_counting_distinct_fraction);
             detail::ChunkFailures chunk_failures(chunks.count);
             const int owner = detail::run_shot_chunks(chunks, team, base_seed, 0, chunk_counts,
                                                       chunk_failures, make_worker);
             if (std::optional<detail::ShotFailure> failed = chunk_failures.take()) {
                 // The serial record: the shots before the failing one, and that
                 // shot's matrix, whichever thread ran it.
-                result.counts = chunk_counts.take();
-                for (auto& [key, count] : failed->partial) result.counts[key] += count;
+                result.counts = chunk_counts.take(std::move(failed->partial));
                 failure.adopt_shot_failure(failed->shot, failed->instruction, failed->inst,
                                            failed->shot, failed->started);
                 if (!std::holds_alternative<std::monostate>(failed->state))
@@ -1472,18 +1471,17 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                     const std::vector<double>* cum;
                     const std::vector<std::pair<int, int>>* meas;
                     const NoiseModel* noise_model;
-                    int n_qubits;
                     int n_clbits;
+                    std::vector<int> reg;  // n_clbits; the shot's register
 
                     void run_chunk(int, int first_shot, int n, ShotRng& rng,
-                                   std::unordered_map<std::string, int>& counts,
-                                   detail::ShotFailure& out) {
+                                   detail::ShotCounts& counts, detail::ShotFailure& out) {
                         int shot = first_shot;
                         try {
                             std::uniform_real_distribution<double> udist(0.0, 1.0);
                             for (; shot < first_shot + n; ++shot)
-                                counts[key(detail::born_draw_cumulative(*cum, udist(rng)),
-                                           rng, udist)]++;
+                                add_key(counts, detail::born_draw_cumulative(*cum, udist(rng)),
+                                        rng, udist);
                         } catch (...) {
                             out.shot = shot;
                             out.started = true;
@@ -1492,21 +1490,19 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                         }
                     }
 
-                    // The shot's key. With no MEASURE the whole register is
-                    // read, qubit-indexed; otherwise each measured qubit's bit
-                    // lands at its clbit, flipped through the qubit's
-                    // confusion matrix under readout error (issue #33). An
+                    // Counts the shot's key. With no MEASURE the whole
+                    // register is read, qubit-indexed; otherwise each measured
+                    // qubit's bit lands at its clbit, flipped through the
+                    // qubit's confusion matrix under readout error (issue
+                    // #33). Two measures onto one clbit OR their bits. An
                     // ideal model draws nothing extra.
-                    std::string key(std::size_t outcome, ShotRng& rng,
-                                    std::uniform_real_distribution<double>& udist) const {
+                    void add_key(detail::ShotCounts& counts, std::size_t outcome, ShotRng& rng,
+                                 std::uniform_real_distribution<double>& udist) {
                         if (meas->empty()) {
-                            std::string bits(static_cast<std::size_t>(n_qubits), '0');
-                            for (int b = n_qubits - 1; b >= 0; --b)
-                                if ((outcome >> b) & 1)
-                                    bits[static_cast<std::size_t>(n_qubits - 1 - b)] = '1';
-                            return bits;
+                            counts.add_value(outcome);
+                            return;
                         }
-                        std::string bits(static_cast<std::size_t>(n_clbits), '0');
+                        std::fill(reg.begin(), reg.end(), 0);
                         for (const auto& [q, c] : *meas) {
                             if (c < 0 || c >= n_clbits) continue;
                             int bit = static_cast<int>((outcome >> q) & 1);
@@ -1517,9 +1513,9 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                                     : ro_it->second.prob_meas_0_prep_1;
                                 if (flip_p > 0.0 && udist(rng) < flip_p) bit ^= 1;
                             }
-                            if (bit) bits[static_cast<std::size_t>(n_clbits - 1 - c)] = '1';
+                            if (bit) reg[static_cast<std::size_t>(c)] = 1;
                         }
-                        return bits;
+                        counts.add(reg);
                     }
                 };
 
@@ -1536,20 +1532,23 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 request.work_per_shot = static_cast<std::size_t>(circuit.n_qubits) + meas.size();
                 const detail::ShotTeam team = detail::shot_team(request, chunks);
 
-                const SampleWorker sampler{&cum, &meas, &noise_model, circuit.n_qubits,
-                                           n_clbits};
-                detail::OrderedCounts chunk_counts(chunks.count);
+                // Each thread takes its own copy of the sampler (its register).
+                const SampleWorker sampler{&cum, &meas, &noise_model, n_clbits,
+                                           std::vector<int>(static_cast<std::size_t>(n_clbits), 0)};
+                detail::OrderedCounts chunk_counts("DensityMatrixSimulator::run", chunks.count,
+                                                   meas.empty() ? circuit.n_qubits : n_clbits,
+                                               options.shot_counting,
+                                               options.shot_counting_distinct_fraction);
                 detail::ChunkFailures chunk_failures(chunks.count);
                 detail::run_shot_chunks(chunks, team, base_seed, 0, chunk_counts,
                                         chunk_failures, [&](int) { return sampler; });
-                result.counts = chunk_counts.take();
-                if (std::optional<detail::ShotFailure> failed = chunk_failures.take()) {
-                    // The shots drawn before the failing one stay in the
-                    // record. Sampling belongs to no shot's trajectory, so the
-                    // record names none.
-                    for (auto& [key, count] : failed->partial) result.counts[key] += count;
-                    std::rethrow_exception(failed->error);
-                }
+                std::optional<detail::ShotFailure> failed = chunk_failures.take();
+                // The shots drawn before a failing one stay in the record.
+                // Sampling belongs to no shot's trajectory, so the record names
+                // none.
+                result.counts = chunk_counts.take(failed ? std::move(failed->partial)
+                                                         : detail::ShotCounts());
+                if (failed) std::rethrow_exception(failed->error);
             }
 
             if (!dm_is_finite_with_trace(dm)) {

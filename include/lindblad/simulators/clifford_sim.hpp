@@ -328,6 +328,12 @@ public:
         // How the shot threads share the memory cap; see ShotMemory in
         // types.hpp.
         ShotMemory shot_memory = ShotMemory::Shrink;
+        // How a run sampled shot by shot keeps its counts, and the Auto mode's
+        // cutoff (0 = SHOT_COUNTING_DISTINCT_FRACTION, else in (0, 1]; other
+        // values are refused); see ShotCounting in types.hpp. Counts are the
+        // same in every mode.
+        ShotCounting shot_counting = ShotCounting::Auto;
+        double shot_counting_distinct_fraction = 0.0;
     };
 
     Options options;

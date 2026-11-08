@@ -8,6 +8,7 @@
 // Commercial License Agreement with the Author.
 
 #include "lindblad/backends/local_backend.hpp"
+#include "lindblad/detail/shot_loop.hpp"
 #include "lindblad/detail/report.hpp"
 #include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/simulators/clifford_sim.hpp"
@@ -36,6 +37,7 @@ BackendResult LocalBackend::run(
     detail::check_require(config.max_parallel_shots >= 0, "LocalBackend::run",
                           "Config::max_parallel_shots must be >= 0 (0 = automatic, 1 = "
                           "serial), got " + std::to_string(config.max_parallel_shots));
+    detail::check_shot_counting("LocalBackend::run", config.shot_counting_distinct_fraction);
     // Auto-select simulator
     SimType sim_type = config.simulator;
     if (sim_type == SimType::AUTO) {
@@ -57,6 +59,8 @@ BackendResult LocalBackend::run(
             sim.options.qubit_limit = config.qubit_limit;
             sim.options.max_parallel_shots = config.max_parallel_shots;
             sim.options.shot_memory = config.shot_memory;
+            sim.options.shot_counting = config.shot_counting;
+            sim.options.shot_counting_distinct_fraction = config.shot_counting_distinct_fraction;
             auto sv_result = sim.run(circuit, shots, seed);
             result.counts = std::move(sv_result.counts);
             result.simulation_time_seconds = sv_result.simulation_time_seconds;
@@ -67,6 +71,8 @@ BackendResult LocalBackend::run(
             sim.options.max_memory_mb = config.max_memory_mb;
             sim.options.max_parallel_shots = config.max_parallel_shots;
             sim.options.shot_memory = config.shot_memory;
+            sim.options.shot_counting = config.shot_counting;
+            sim.options.shot_counting_distinct_fraction = config.shot_counting_distinct_fraction;
             auto dm_result = sim.run(circuit, noise_model, shots, seed);
             result.counts = std::move(dm_result.counts);
             result.simulation_time_seconds = dm_result.simulation_time_seconds;
@@ -77,6 +83,8 @@ BackendResult LocalBackend::run(
             sim.options.max_memory_mb = config.max_memory_mb;
             sim.options.max_parallel_shots = config.max_parallel_shots;
             sim.options.shot_memory = config.shot_memory;
+            sim.options.shot_counting = config.shot_counting;
+            sim.options.shot_counting_distinct_fraction = config.shot_counting_distinct_fraction;
             auto cliff_result = sim.run(circuit, shots, seed);
             result.counts = std::move(cliff_result.counts);
             break;

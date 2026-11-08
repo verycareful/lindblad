@@ -60,6 +60,11 @@ public:
         // ShotMemory in types.hpp. 0 is automatic; negative is refused.
         int max_parallel_shots = 0;
         ShotMemory shot_memory = ShotMemory::Shrink;
+        // How the run's counts are kept, on whichever backend the run reaches;
+        // see ShotCounting in types.hpp and StatevectorSimulator::Options::
+        // shot_counting_distinct_fraction.
+        ShotCounting shot_counting = ShotCounting::Auto;
+        double shot_counting_distinct_fraction = 0.0;
         int mps_bond_dim = 64;
         // Passed to the backend the run reaches: the statevector limit (30
         // qubits under Enforce, 59 under Lift) and the MPS dense-fallback limit

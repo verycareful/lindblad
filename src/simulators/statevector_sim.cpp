@@ -321,11 +321,11 @@ static void sv_run_trajectory(StatevectorSimulator& sim, Statevector& sv,
     if (position) position->leave_instructions();
 }
 
-// One sample of the whole register from `sv`'s own normalised distribution,
-// qubit 0 the rightmost character. Refuses a state with no norm before the
-// draw.
+// One sample of the whole register from `sv`'s own normalised distribution:
+// the basis index drawn, bit q being qubit q. Refuses a state with no norm
+// before the draw.
 template <class Rng>
-static std::string sv_sample_register(const Statevector& sv, Rng& rng) {
+static std::size_t sv_sample_register(const Statevector& sv, Rng& rng) {
     const auto weight = [&sv](std::size_t i) {
         return sv.real_parts[i] * sv.real_parts[i] + sv.imag_parts[i] * sv.imag_parts[i];
     };
@@ -333,11 +333,7 @@ static std::string sv_sample_register(const Statevector& sv, Rng& rng) {
     for (std::size_t i = 0; i < sv.dim; ++i) total += weight(i);
     detail::require_norm_to_sample(std::sqrt(total), "StatevectorSimulator::run");
     std::uniform_real_distribution<double> udist(0.0, 1.0);
-    const std::size_t outcome = detail::born_draw_linear(sv.dim, total, udist(rng), weight);
-    std::string bits(static_cast<std::size_t>(sv.n_qubits), '0');
-    for (int q = 0; q < sv.n_qubits; ++q)
-        if ((outcome >> q) & 1u) bits[static_cast<std::size_t>(sv.n_qubits - 1 - q)] = '1';
-    return bits;
+    return detail::born_draw_linear(sv.dim, total, udist(rng), weight);
 }
 
 // True when no instruction (other than BARRIER) acts on a qubit after that
@@ -1104,6 +1100,9 @@ static void record_options(detail::FailureCollector& failure,
     failure.add_option("prefix_reuse", option_value(o.prefix_reuse));
     failure.add_option("max_parallel_shots", option_value(o.max_parallel_shots));
     failure.add_option("shot_memory", option_value(o.shot_memory));
+    failure.add_option("shot_counting", option_value(o.shot_counting));
+    failure.add_option("shot_counting_distinct_fraction",
+                       option_value(o.shot_counting_distinct_fraction));
     failure.add_option("precision", option_value(o.precision));
     failure.add_option("zero_threshold", option_value(o.zero_threshold));
     failure.add_option("threshold", option_value(o.threshold));
@@ -1216,6 +1215,8 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         detail::check_require(options.max_parallel_shots >= 0, "StatevectorSimulator::run",
                               "Options::max_parallel_shots must be >= 0 (0 = automatic, "
                               "1 = serial), got " + std::to_string(options.max_parallel_shots));
+        detail::check_shot_counting("StatevectorSimulator::run",
+                                    options.shot_counting_distinct_fraction);
         if (!options.fusion_costs.unset())
             sv_check_fusion_costs(options.fusion_costs, options.fusion_max_qubit);
 
@@ -1444,8 +1445,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                 }
 
                 void run_chunk(int, int first_shot, int n, ShotRng& rng,
-                               std::unordered_map<std::string, int>& counts,
-                               detail::ShotFailure& out) {
+                               detail::ShotCounts& counts, detail::ShotFailure& out) {
                     int shot = first_shot;
                     try {
                         const detail::ScopedThreadCap one(capped ? 1 : 0,
@@ -1459,20 +1459,14 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                                               "StatevectorSimulator::run", observing, &pos);
                             if (clock) clock->charge(&PhaseTimes::evolution);
 
-                            std::string bits;
                             if (has_measure) {
-                                // clbit 0 is the rightmost character.
-                                bits.assign(static_cast<std::size_t>(n_clbits), '0');
-                                for (int c = 0; c < n_clbits; ++c)
-                                    if (clreg[static_cast<std::size_t>(c)])
-                                        bits[static_cast<std::size_t>(n_clbits - 1 - c)] = '1';
+                                counts.add(clreg);
                             } else {
                                 // No MEASURE: the shot is one sample of the whole
                                 // register from this trajectory's end state, as the
                                 // single-pass path samples a circuit with no MEASURE.
-                                bits = sv_sample_register(*sv, rng);
+                                counts.add_value(sv_sample_register(*sv, rng));
                             }
-                            counts[bits]++;
                             if (clock) clock->charge(&PhaseTimes::sampling);
                         }
                     } catch (...) {
@@ -1515,7 +1509,12 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                                   {}};
             };
 
-            detail::OrderedCounts chunk_counts(chunks.count);
+            // A shot's key is its classical register, or with no MEASURE the
+            // qubit register sampled from its end state.
+            detail::OrderedCounts chunk_counts("StatevectorSimulator::run", chunks.count,
+                                               has_measure ? n_clbits : circuit.n_qubits,
+                                               options.shot_counting,
+                                               options.shot_counting_distinct_fraction);
             detail::ChunkFailures chunk_failures(chunks.count);
             const int owner = detail::run_shot_chunks(chunks, team, base_seed, tid,
                                                       chunk_counts, chunk_failures,
@@ -1523,8 +1522,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             if (std::optional<detail::ShotFailure> failed = chunk_failures.take()) {
                 // The serial record: the shots before the failing one, and that
                 // shot's state, whichever thread ran it.
-                result.counts = chunk_counts.take();
-                for (auto& [key, n] : failed->partial) result.counts[key] += n;
+                result.counts = chunk_counts.take(std::move(failed->partial));
                 failure.adopt_shot_failure(failed->shot, failed->instruction, failed->inst,
                                            failed->shot, failed->started);
                 if (!std::holds_alternative<std::monostate>(failed->state))

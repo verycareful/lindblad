@@ -1452,15 +1452,6 @@ static bool clifford_measures_are_terminal(const QuantumCircuit& circuit,
     return true;
 }
 
-// One shot's key: bit 0 of `reg` is the rightmost character.
-static std::string clifford_key(const std::vector<int>& reg) {
-    const std::size_t width = reg.size();
-    std::string bitstring(width, '0');
-    for (std::size_t c = 0; c < width; ++c)
-        if (reg[c]) bitstring[width - 1 - c] = '1';
-    return bitstring;
-}
-
 // One shot's work for detail::shot_team, which counts in one-qubit-gate
 // amplitudes. A tableau shot is counted in 64-bit word operations and
 // converted through TABLEAU_WORDS_PER_AMPLITUDE.
@@ -1516,6 +1507,9 @@ static void record_options(detail::FailureCollector& failure,
     failure.add_option("max_memory_mb", detail::option_value(o.max_memory_mb));
     failure.add_option("max_parallel_shots", detail::option_value(o.max_parallel_shots));
     failure.add_option("shot_memory", detail::option_value(o.shot_memory));
+    failure.add_option("shot_counting", detail::option_value(o.shot_counting));
+    failure.add_option("shot_counting_distinct_fraction",
+                       detail::option_value(o.shot_counting_distinct_fraction));
 }
 
 CliffordSimulator::Result CliffordSimulator::run(
@@ -1525,6 +1519,8 @@ CliffordSimulator::Result CliffordSimulator::run(
     using GT = Instruction::GateType;
     ScopedWarningFlush flush_on_exit;
     detail::check_circuit_has_qubits(circuit_in.n_qubits, "CliffordSimulator::run");
+    detail::check_shot_counting("CliffordSimulator::run",
+                                options.shot_counting_distinct_fraction);
     // Everything the instructions decide on their own, operand indices first,
     // including every gate with no tableau form, before any state is touched.
     detail::preflight_instructions(
@@ -1762,7 +1758,10 @@ CliffordSimulator::Result CliffordSimulator::run(
             request.memory = options.shot_memory;
             request.cap_bytes = cap_bytes;
             request.held_bytes = three_tableaux;
-            detail::OrderedCounts chunk_counts(chunks.count);
+            detail::OrderedCounts chunk_counts("CliffordSimulator::run", chunks.count,
+                                               key_width,
+                                               options.shot_counting,
+                                               options.shot_counting_distinct_fraction);
             detail::ChunkFailures chunk_failures(chunks.count);
 
             // What one more shot thread holds: a Slab thread its outcome vector
@@ -1865,7 +1864,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                     std::vector<int> clreg;
 
                     void run_chunk(int, int first_shot, int n, ShotRng& rng,
-                                   std::unordered_map<std::string, int>& counts,
+                                   detail::ShotCounts& counts,
                                    detail::ShotFailure& out) {
                         int shot = first_shot;
                         try {
@@ -1897,7 +1896,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                                     clreg[static_cast<size_t>(clbit)] = static_cast<int>(
                                         (y[static_cast<size_t>(q / 64)] >> (q % 64)) & 1ULL);
                                 }
-                                counts[clifford_key(clreg)]++;
+                                counts.add(clreg);
                             }
                         } catch (...) {
                             out.shot = shot;
@@ -1928,7 +1927,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                     std::vector<int> clreg;
 
                     void run_chunk(int, int first_shot, int n, ShotRng& rng,
-                                   std::unordered_map<std::string, int>& counts,
+                                   detail::ShotCounts& counts,
                                    detail::ShotFailure& out) {
                         int shot = first_shot;
                         try {
@@ -1940,7 +1939,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                                     if (qc.second >= 0 && qc.second < key_width)
                                         clreg[static_cast<size_t>(qc.second)] = outcome;
                                 }
-                                counts[clifford_key(clreg)]++;
+                                counts.add(clreg);
                             }
                         } catch (...) {
                             out.shot = shot;
@@ -1962,12 +1961,13 @@ CliffordSimulator::Result CliffordSimulator::run(
                     });
             }
 
-            result.counts = chunk_counts.take();
-            if (std::optional<detail::ShotFailure> failed = chunk_failures.take()) {
-                // The shots drawn before the failing one stay in the record.
-                // Sampling belongs to no shot's trajectory, so the record names
-                // none.
-                for (auto& [key, count] : failed->partial) result.counts[key] += count;
+            std::optional<detail::ShotFailure> failed = chunk_failures.take();
+            // The shots drawn before a failing one stay in the record.
+            // Sampling belongs to no shot's trajectory, so the record names
+            // none.
+            result.counts = chunk_counts.take(failed ? std::move(failed->partial)
+                                                     : detail::ShotCounts());
+            if (failed) {
                 failure.set_shots_completed(failed->shot);
                 std::rethrow_exception(failed->error);
             }
@@ -2081,7 +2081,7 @@ CliffordSimulator::Result CliffordSimulator::run(
             detail::ShotPosition pos;
 
             void run_chunk(int, int first_shot, int n, ShotRng& rng,
-                           std::unordered_map<std::string, int>& counts,
+                           detail::ShotCounts& counts,
                            detail::ShotFailure& out) {
                 const char* const where = "CliffordSimulator::run";
                 int shot = first_shot;
@@ -2133,7 +2133,7 @@ CliffordSimulator::Result CliffordSimulator::run(
 
                         if (!record) continue;
                         if (has_measure) {
-                            counts[clifford_key(clreg)]++;
+                            counts.add(clreg);
                         } else {
                             // No MEASURE: one sample of the whole register from
                             // this trajectory's end state, drawn on a copy so
@@ -2142,7 +2142,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                             std::vector<int> reg(static_cast<size_t>(n_qubits), 0);
                             for (int q = 0; q < n_qubits; ++q)
                                 reg[static_cast<size_t>(q)] = probe->measure(q, true, rng);
-                            counts[clifford_key(reg)]++;
+                            counts.add(reg);
                         }
                     }
                 } catch (...) {
@@ -2185,15 +2185,19 @@ CliffordSimulator::Result CliffordSimulator::run(
                                     {}};
         };
 
-        detail::OrderedCounts chunk_counts(chunks.count);
+        // A shot's key is its classical register, or with no MEASURE the
+        // qubit register sampled from its end state.
+        detail::OrderedCounts chunk_counts("CliffordSimulator::run", chunks.count,
+                                           has_measure ? n_clbits : circuit.n_qubits,
+                                               options.shot_counting,
+                                               options.shot_counting_distinct_fraction);
         detail::ChunkFailures chunk_failures(chunks.count);
         const int owner = detail::run_shot_chunks(chunks, team, base_seed, 0, chunk_counts,
                                                   chunk_failures, make_worker);
         if (std::optional<detail::ShotFailure> failed = chunk_failures.take()) {
             // The serial record: the shots before the failing one, and that
             // shot's tableau, whichever thread ran it.
-            result.counts = chunk_counts.take();
-            for (auto& [key, count] : failed->partial) result.counts[key] += count;
+            result.counts = chunk_counts.take(std::move(failed->partial));
             failure.adopt_shot_failure(failed->shot, failed->instruction, failed->inst,
                                        failed->shot, failed->started);
             if (!std::holds_alternative<std::monostate>(failed->state))

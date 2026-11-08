@@ -187,6 +187,7 @@ std::string option_value(QubitLimit value) {
 }
 std::string option_value(PrefixReuse value) { return json_escape(to_string(value)); }
 std::string option_value(ShotMemory value) { return json_escape(to_string(value)); }
+std::string option_value(ShotCounting value) { return json_escape(to_string(value)); }
 std::string option_value(SVDMethod value) { return json_escape(to_string(value)); }
 std::string option_value(SvdRejection value) { return json_escape(to_string(value)); }
 std::string option_value(SvdReport value) { return json_escape(to_string(value)); }

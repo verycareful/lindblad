@@ -44,6 +44,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -121,6 +122,69 @@ struct ShotTeam {
 //     ShotMemory in types.hpp).
 ShotTeam shot_team(const ShotTeamRequest& req, const ShotChunks& chunks);
 
+// Refuses (InvalidArgument, naming entry_point) a shot_counting_distinct_
+// fraction that is not 0 and not in (0, 1], NaN included. Called before the
+// run's first gate.
+void check_shot_counting(const char* entry_point, double distinct_fraction);
+
+// =============================================================================
+// ShotCounts - the outcome counts of a chunk or a run
+// =============================================================================
+// A run's keys all have one width: its classical register, or the qubit count
+// when the register is sampled from the end state. Clbit c is bit c of the key
+// and the c-th character from the right of its string.
+//
+// A key of up to PACKED_MAX_WIDTH bits can be counted under its packed
+// integer, so a repeated outcome costs one integer hash and no string; a wider
+// key is always counted under its string. to_strings() puts the counts under
+// their strings, one per distinct outcome; when and on which thread that
+// happens is the run's ShotCounting (types.hpp), applied by OrderedCounts.
+//
+// merge() moves the other map's entries in as they are (node handles), so a
+// key new to this map costs no allocation; only keys both maps hold are added.
+class ShotCounts {
+public:
+    using Strings = std::unordered_map<std::string, int>;
+    static constexpr int PACKED_MAX_WIDTH = 64;
+
+    // strings = count under strings from the first shot.
+    explicit ShotCounts(int width = 0, bool strings = false) noexcept
+        : width_(width), packed_mode_(!strings && width <= PACKED_MAX_WIDTH) {}
+
+    int width() const noexcept { return width_; }
+    bool under_strings() const noexcept { return !packed_mode_; }
+    bool empty() const noexcept { return packed_mode_ ? packed_.empty() : strings_.empty(); }
+    // Distinct outcomes counted.
+    std::size_t size() const noexcept {
+        return packed_mode_ ? packed_.size() : strings_.size();
+    }
+
+    // One shot whose clbit c reads reg[c] (nonzero is 1). reg.size() == width().
+    void add(const std::vector<int>& reg);
+    // One shot whose key is the integer `outcome`, bit c being clbit c. Bits at
+    // or above width() are ignored. For a key wider than 64 bits the clbits at
+    // and above 64 read 0.
+    void add_value(std::uint64_t outcome);
+
+    // Puts every count under its string. Later shots are counted under their
+    // strings too.
+    void to_strings();
+
+    // Adds every count of `other` and leaves `other` empty. `other` has this
+    // width or is empty; any other width is a defect, reported as an
+    // InternalError naming entry_point.
+    void merge(ShotCounts&& other, std::string_view entry_point);
+
+    // The counts under their strings. Leaves this empty.
+    Strings strings();
+
+private:
+    int width_ = 0;
+    bool packed_mode_ = true;                        // counting under packed_
+    std::unordered_map<std::uint64_t, int> packed_;
+    Strings strings_;
+};
+
 // =============================================================================
 // OrderedCounts - chunk counts merged in chunk order
 // =============================================================================
@@ -129,24 +193,53 @@ ShotTeam shot_team(const ShotTeamRequest& req, const ShotChunks& chunks);
 // contiguous run of chunks from chunk 0. After a failure in chunk f that is
 // exactly chunks 0 .. f-1: every chunk below f finishes, and nothing above f
 // is merged past the gap f leaves.
+//
+// The merge runs under the lock, one chunk after another, so its cost per
+// chunk bounds the speedup of a run whose shots are cheap: it moves entries
+// and adds the counts of repeated keys, and builds a string only for a packed
+// chunk merged into counts already under strings. The run's ShotCounting
+// decides, per chunk, which keys a worker counts under and whether it puts
+// them under strings before committing (begin_strings, end_chunk).
 class OrderedCounts {
 public:
-    using Counts = std::unordered_map<std::string, int>;
+    // entry_point = the run's public name, for an InternalError; width = the
+    // run's key width (see ShotCounts); mode and distinct_fraction = the run's
+    // Options::shot_counting and shot_counting_distinct_fraction, already
+    // checked (check_shot_counting); a fraction of 0 is
+    // SHOT_COUNTING_DISTINCT_FRACTION.
+    OrderedCounts(const char* entry_point, int chunk_count, int width,
+                  ShotCounting mode, double distinct_fraction);
 
-    explicit OrderedCounts(int chunk_count);
+    // Whether a worker counts its first chunk under strings.
+    bool begin_strings() const noexcept { return mode_ == ShotCounting::Strings; }
+    // An empty map of the run's width, counting under strings or not.
+    ShotCounts fresh(bool strings) const noexcept { return ShotCounts(width_, strings); }
 
-    void commit(int c, Counts&& counts);
+    // Ends a worker's chunk of `shots` shots, which added `gained` distinct
+    // outcomes to `counts`, and returns whether its next chunk is counted under
+    // strings. team = the run has more than one shot thread. Puts `counts`
+    // under strings, on the calling thread, when the mode says:
+    // PackedPerChunk on a team; Auto when gained > distinct_fraction * shots.
+    bool end_chunk(ShotCounts& counts, int shots, std::size_t gained, bool team) const;
+
+    void commit(int c, ShotCounts&& counts);
     // Every chunk at once, from a team of one that kept a single map.
-    void commit_all(Counts&& counts);
-    // The merged counts. Leaves this empty.
-    Counts take();
+    void commit_all(ShotCounts&& counts);
+    // The merged counts with `tail` added (a failing chunk's shots before the
+    // failure; empty when no shot failed), under their strings. Leaves this
+    // empty.
+    ShotCounts::Strings take(ShotCounts&& tail = ShotCounts());
     // Shots in the chunks merged so far.
     int shots_committed(const ShotChunks& chunks) const;
 
 private:
     mutable std::mutex mutex_;
-    std::vector<std::optional<Counts>> pending_;
-    Counts merged_;
+    const char* entry_point_ = "";
+    int width_ = 0;
+    ShotCounting mode_ = ShotCounting::Auto;
+    double distinct_fraction_ = SHOT_COUNTING_DISTINCT_FRACTION;
+    std::vector<std::optional<ShotCounts>> pending_;
+    ShotCounts merged_;
     int next_ = 0;  // the lowest chunk not yet merged
 };
 
@@ -161,7 +254,7 @@ struct ShotFailure {
     bool started = false;              // its worker had reached an instruction
     std::exception_ptr error;
     FailedRun::State state;            // the failing shot's working state, if any
-    std::unordered_map<std::string, int> partial;  // its chunk's shots before it
+    ShotCounts partial;                // its chunk's shots before it
 };
 
 // Thread-safe. Keeps the failure with the lowest shot.
@@ -190,11 +283,11 @@ private:
 // once per thread, on that thread, and returns a Worker providing
 //
 //   void run_chunk(int c, int first_shot, int n, ShotRng& rng,
-//                  std::unordered_map<std::string, int>& counts,
-//                  ShotFailure& failure_out);
+//                  ShotCounts& counts, ShotFailure& failure_out);
 //
 // run_chunk runs shots [first_shot, first_shot + n) drawing from rng and adds
-// each shot's key to counts. When a shot throws, it fills failure_out (shot set,
+// each shot's key to counts, whose width is the one `counts` (OrderedCounts)
+// was built with. When a shot throws, it fills failure_out (shot set,
 // error captured, counts so far moved into partial) and returns; it never lets
 // an exception out. A worker whose chunk failed takes no further chunk: chunks
 // are handed out in ascending order, so every later one is above the failure.
@@ -230,13 +323,15 @@ int run_shot_chunks(const ShotChunks& chunks, const ShotTeam& team,
         int held = -1;  // the chunk this thread is working on, for fail_at
         try {
             auto worker = make_worker(t);
-            std::unordered_map<std::string, int> chunk_counts;
+            bool strings = counts.begin_strings();
+            ShotCounts chunk_counts = counts.fresh(strings);
             for (int c = next.fetch_add(1, std::memory_order_relaxed); c < chunks.count;
                  c = next.fetch_add(1, std::memory_order_relaxed)) {
                 if (c >= failures.limit()) break;
                 held = c;
                 ShotFailure failure;
                 ShotRng rng = chunk_stream(base_seed, salt, c);
+                const std::size_t had = chunk_counts.size();
                 worker.run_chunk(c, chunks.first(c), chunks.size(c), rng, chunk_counts,
                                  failure);
                 if (failure.shot >= 0) {
@@ -244,9 +339,11 @@ int run_shot_chunks(const ShotChunks& chunks, const ShotTeam& team,
                     return;
                 }
                 if (c == chunks.count - 1) owner.store(t, std::memory_order_relaxed);
+                strings = counts.end_chunk(chunk_counts, chunks.size(c),
+                                           chunk_counts.size() - had, !serial);
                 if (!serial) {
                     counts.commit(c, std::move(chunk_counts));
-                    chunk_counts.clear();
+                    chunk_counts = counts.fresh(strings);
                 }
                 held = -1;
             }
