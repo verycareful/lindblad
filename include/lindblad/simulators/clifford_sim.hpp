@@ -10,6 +10,7 @@
 #pragma once
 
 #include "lindblad/observation.hpp"
+#include "lindblad/shot_rng.hpp"
 #include "lindblad/types.hpp"
 
 #include <cstdint>
@@ -84,7 +85,10 @@ public:
 
     // Measurement — returns 0 or 1.
     // rng is only consumed when the outcome is random (stabilizer has X-support on qubit).
+    // The two overloads collapse identically and differ only in the engine the
+    // random bit is drawn from; a run's shots draw from ShotRng.
     int measure(int qubit, bool random, std::mt19937_64& rng);
+    int measure(int qubit, bool random, ShotRng& rng);
 
     // The computational-basis outcome distribution of a stabilizer state is
     // UNIFORM over a coset of a linear subspace of F_2^n, never anything more
@@ -244,6 +248,11 @@ private:
 
     void rowmult(int dest, int src);
 
+    // measure() for either engine. Defined, and instantiated for both, in the
+    // source file only.
+    template <class Engine>
+    int measure_with(int qubit, bool random, Engine& rng);
+
     // The failed-run state file writes and rebuilds the tableau's storage.
     friend struct detail::StateFileAccess;
 };
@@ -301,6 +310,24 @@ public:
         // goes on. At ordinary widths it never binds: it is here so every
         // backend answers to the same option.
         uint64_t max_memory_mb = 0;
+
+        // How many threads a run's shots run on: 0, the default, is automatic
+        // (the run's work decides, as it does for a statevector gate kernel's
+        // threads); 1 is serial; k >= 2 is at most k. It covers every loop a
+        // run walks shot by shot: trajectories (mid-circuit measurement,
+        // feedforward, reset), where each shot thread holds its own tableau
+        // beside the run's three and shot_memory says how those tableaux meet
+        // max_memory_mb; PerShot sampling, where each shot thread holds one
+        // working copy; and Slab sampling, where a shot thread holds only its
+        // outcome vector and counts. A run with an observer, or one called from
+        // inside a parallel region, runs its trajectories on one thread; the
+        // sampling of a terminal circuit fires no observer and is not held to
+        // one. Seeded counts, the final state and a failed run's record are the
+        // same whatever the team. Negative values are refused.
+        int max_parallel_shots = 0;
+        // How the shot threads share the memory cap; see ShotMemory in
+        // types.hpp.
+        ShotMemory shot_memory = ShotMemory::Shrink;
     };
 
     Options options;

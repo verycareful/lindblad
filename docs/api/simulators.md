@@ -143,11 +143,13 @@ observed run repeats the prefix in every shot, so each anchor fires once per
 shot with that shot's index. On the MPS backend the profile figures count what
 was performed: the shared start's splits once, each trajectory's own per shot.
 
-**Shots across threads.** The statevector and density-matrix simulators run
-the shots of a run sampled shot by shot across a team of threads. On the
-density-matrix backend that covers both of its shot loops: the trajectories of
-a circuit with mid-circuit measurement or feedforward, and the sampling of
-terminal measurements from the final matrix's diagonal. The shots are cut into at most
+**Shots across threads.** The statevector, density-matrix and Clifford
+simulators run the shots of a run sampled shot by shot across a team of
+threads. On the density-matrix backend that covers both of its shot loops: the
+trajectories of a circuit with mid-circuit measurement or feedforward, and the
+sampling of terminal measurements from the final matrix's diagonal. On the
+Clifford backend it covers its three: the trajectories, `Slab` sampling and
+`PerShot` sampling. The shots are cut into at most
 `SHOT_CHUNK_TARGET` (512, in `lindblad/types.hpp`) chunks of consecutive shots,
 a cut that depends on the shot count alone. Each chunk draws from its own
 `ShotRng` (xoshiro256**, in `lindblad/shot_rng.hpp`), started from the run's
@@ -162,8 +164,11 @@ counts within one release of the library, not across releases.
 The team comes from `Options::max_parallel_shots` (0, automatic, by default)
 and `Options::shot_memory`, each extra thread holding a state of its own (a
 thread sampling terminal measurements holds only its counts); while it runs,
-each thread runs its gates alone. A run with an observer attached, or
-one called from inside a parallel region, runs its shots on one thread.
+each thread runs its gates alone. A run called from inside a parallel region
+runs its shots on one thread, and so does a run with an observer attached
+whose shots are trajectories. Sampling terminal measurements fires no
+observer, since the observers fire once on the single gate pass before it, so
+an observer does not hold that loop to one thread.
 
 Every sample and every collapse, on every backend, draws from the state's own
 normalised distribution: each outcome's weight divided by the total. A state
@@ -857,6 +862,8 @@ CliffordSimulator sim;
 sim.options.sampling = CliffordSimulator::Options::Sampling::Auto;
 sim.options.elimination = StabilizerState::Elimination::Plain;
 sim.options.max_memory_mb = 0;  // MiB; 0 = automatic
+sim.options.max_parallel_shots = 0;  // shot threads; 0 = automatic, 1 = serial
+sim.options.shot_memory = ShotMemory::Shrink;
 ```
 
 `max_memory_mb` is the memory cap every backend answers to (see
@@ -866,6 +873,23 @@ working copy or the sampling slab, and a run whose three exceed the cap is
 refused before any is allocated. At ordinary widths it never binds. A
 conversion an observer asks for, a dense statevector of $16 \cdot 2^n$ bytes,
 is checked against it while the run goes on.
+
+`max_parallel_shots` is how many threads a run's shots run on (see
+[Execution Semantics](#execution-semantics-frozen-in-r112)), as for the
+statevector simulator: `0`, the default, is automatic, `1` is serial, and
+`k >= 2` is at most `k` threads, never more than the run has chunks. A tableau
+is small beside a last-level cache, so the automatic team grows with the run's
+work alone. The counts and `final_state` do not depend on it. A negative value
+is refused with `InvalidArgument`.
+
+`shot_memory` is how the shot threads meet `max_memory_mb`, with the modes of
+the statevector simulator: `Shrink` (the default), `SerialIfShort`, `Exact` and
+`FixedShare`. Beside the run's three buffers, a trajectory thread holds one
+tableau of its own (two for a circuit with no MEASURE, whose sample is drawn
+from a copy of the trajectory's end state), and a `PerShot` thread holds one
+working copy. A `Slab` thread holds only its outcome vector, so no mode limits
+that team in practice. A team that cannot be had is refused with
+`InvalidArgument` before the first gate.
 
 A gate with no tableau form, or a rotation that is not a multiple of $\pi/2$,
 is refused with `InvalidArgument` before the first gate, through the same

@@ -18,8 +18,11 @@
 #include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/report.hpp"
+#include "lindblad/detail/shot_loop.hpp"
 
 #include <optional>
+#include <variant>
+#include <memory>
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -420,7 +423,10 @@ void StabilizerState::apply_ecr(int q1, int q2) {
 
 // ----- measurement -----
 
-int StabilizerState::measure(int qubit, bool random, std::mt19937_64& rng) {
+// A random outcome takes one fair bit from the engine; a determined one draws
+// nothing. random = false collapses a random outcome onto 0.
+template <class Engine>
+int StabilizerState::measure_with(int qubit, bool random, Engine& rng) {
     detail::check_qubit(qubit, n_qubits, "StabilizerState::measure");
     const int N = n_qubits;
 
@@ -467,6 +473,14 @@ int StabilizerState::measure(int qubit, bool random, std::mt19937_64& rng) {
         pop_scratch();
         return outcome;
     }
+}
+
+int StabilizerState::measure(int qubit, bool random, std::mt19937_64& rng) {
+    return measure_with(qubit, random, rng);
+}
+
+int StabilizerState::measure(int qubit, bool random, ShotRng& rng) {
+    return measure_with(qubit, random, rng);
 }
 
 // ----- expectation_pauli -----
@@ -1438,6 +1452,55 @@ static bool clifford_measures_are_terminal(const QuantumCircuit& circuit,
     return true;
 }
 
+// One shot's key: bit 0 of `reg` is the rightmost character.
+static std::string clifford_key(const std::vector<int>& reg) {
+    const std::size_t width = reg.size();
+    std::string bitstring(width, '0');
+    for (std::size_t c = 0; c < width; ++c)
+        if (reg[c]) bitstring[width - 1 - c] = '1';
+    return bitstring;
+}
+
+// One shot's work for detail::shot_team, which counts in one-qubit-gate
+// amplitudes. A tableau shot is counted in 64-bit word operations and
+// converted through TABLEAU_WORDS_PER_AMPLITUDE.
+//
+// Word operations of the row-major tableau on n qubits, with
+// R = 2n rows of w = words_per_row(n) words:
+//   - a copy of the tableau, or a measurement (its row eliminations reach
+//     every row at worst): R * w
+//   - a gate, which reads and writes a bit or two in every row: R
+//   - the shot's key and its count: one per key character
+static constexpr std::size_t TABLEAU_WORDS_PER_AMPLITUDE = 1;
+
+static std::size_t tableau_words_per_row(int n_qubits) {
+    return (2 * static_cast<std::size_t>(n_qubits) + 63) / 64 + 1;
+}
+
+// A trajectory: its restore, `gates` gates, `measures` measurements or
+// resets, and its key.
+static std::size_t clifford_trajectory_work(int n_qubits, std::size_t gates,
+                                            std::size_t measures, std::size_t key_width) {
+    const std::size_t rows = 2 * static_cast<std::size_t>(n_qubits);
+    const std::size_t pass = rows * tableau_words_per_row(n_qubits);
+    const std::size_t words = pass * (1 + measures) + rows * gates + key_width;
+    return words / TABLEAU_WORDS_PER_AMPLITUDE;
+}
+
+// PerShot sampling: a copy of the tableau and one measurement per measured
+// qubit, then the key.
+static std::size_t clifford_pershot_work(int n_qubits, std::size_t measures) {
+    return clifford_trajectory_work(n_qubits, 0, measures, measures);
+}
+
+// Slab sampling: one draw per 64 free directions, half the dim basis vectors
+// of W words folded in on average, then the measured bits read and the key.
+static std::size_t clifford_slab_work(int dim, int W, std::size_t measured) {
+    const std::size_t d = static_cast<std::size_t>(std::max(dim, 0));
+    const std::size_t words = d / 64 + d * static_cast<std::size_t>(W) / 2 + 2 * measured;
+    return words / TABLEAU_WORDS_PER_AMPLITUDE;
+}
+
 // Every field of Options, for a failed run's record.
 static void record_options(detail::FailureCollector& failure,
                            const CliffordSimulator::Options& o) {
@@ -1451,6 +1514,8 @@ static void record_options(detail::FailureCollector& failure,
     failure.add_option("sampling", detail::json_escape(sampling));
     failure.add_option("elimination", detail::json_escape(elimination));
     failure.add_option("max_memory_mb", detail::option_value(o.max_memory_mb));
+    failure.add_option("max_parallel_shots", detail::option_value(o.max_parallel_shots));
+    failure.add_option("shot_memory", detail::option_value(o.shot_memory));
 }
 
 CliffordSimulator::Result CliffordSimulator::run(
@@ -1494,6 +1559,8 @@ CliffordSimulator::Result CliffordSimulator::run(
     std::optional<StabilizerState> start_slot;
     std::optional<StabilizerState> state_slot;
     bool prefix_running = false;
+    // A failing shot's tableau, handed over by the thread that ran it.
+    std::optional<FailedRun::State> adopted_state;
 
     try {
         const int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
@@ -1501,7 +1568,6 @@ CliffordSimulator::Result CliffordSimulator::run(
         const uint64_t base_seed =
             seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed;
         failure.set_seed(base_seed);
-        std::mt19937_64 rng(base_seed);
 
         // Angles reaching here have passed clifford_verdict() in the pass before
         // the first gate, which classifies through the same function; this stays
@@ -1645,18 +1711,6 @@ CliffordSimulator::Result CliffordSimulator::run(
             }
         };
 
-        // Records one shot, bit 0 of `reg` the rightmost character: the classical
-        // register (n_clbits wide) when the circuit measures, the whole qubit
-        // register (n_qubits wide) when it does not.
-        auto record = [&](const std::vector<int>& reg) {
-            const std::size_t width = reg.size();
-            std::string bitstring(width, '0');
-            for (std::size_t c = 0; c < width; ++c)
-                if (reg[c]) bitstring[width - 1 - c] = '1';
-            result.counts[bitstring]++;
-            failure.shot_done();
-        };
-
         // Anchors resolve against the circuit before any state is touched, so an
         // anchor that cannot fire stops the run here.
         runner.emplace(plan, circuit, StateForm::Stabilizer, "CliffordSimulator::run");
@@ -1680,6 +1734,54 @@ CliffordSimulator::Result CliffordSimulator::run(
             // follows it differs from shot to shot, and how it does so is what
             // Options::sampling selects.
             //
+            // Where each outcome is recorded, read once. Terminal Z measurements
+            // commute, so their order does not affect the distribution, only
+            // the qubit-to-clbit mapping. A circuit with no MEASURE samples the
+            // whole register, qubit q at key position q, n_qubits wide, as
+            // every other backend samples such a circuit.
+            std::vector<std::pair<int, int>> measured;  // (qubit, key bit)
+            for (const auto& inst : circuit.instructions) {
+                if (inst.type != GT::MEASURE) continue;
+                const int q = inst.qubits[0];
+                measured.emplace_back(q, inst.clbits.empty() ? q : inst.clbits[0]);
+            }
+            if (!has_measure)
+                for (int q = 0; q < circuit.n_qubits; ++q) measured.emplace_back(q, q);
+            const int key_width = has_measure ? n_clbits : circuit.n_qubits;
+
+            // Every shot of a terminal circuit samples the one state `base`,
+            // and the shots run in chunks across a team
+            // (detail::run_shot_chunks): chunk c draws from its own stream, so
+            // the counts do not depend on the team. No observer fires here
+            // (they fired once, on the gate pass), so an observed run's
+            // sampling is not held to one thread.
+            const detail::ShotChunks chunks = detail::chunk_shots(shots);
+            detail::ShotTeamRequest request;
+            request.entry_point = "CliffordSimulator::run";
+            request.max_parallel_shots = options.max_parallel_shots;
+            request.memory = options.shot_memory;
+            request.cap_bytes = cap_bytes;
+            request.held_bytes = three_tableaux;
+            detail::OrderedCounts chunk_counts(chunks.count);
+            detail::ChunkFailures chunk_failures(chunks.count);
+
+            // What one more shot thread holds: a Slab thread its outcome vector
+            // and register, a PerShot thread a working copy of the tableau.
+            const bool slab_sampling = options.sampling != Options::Sampling::PerShot;
+            const int W = (circuit.n_qubits + 63) / 64;
+            request.per_thread_bytes =
+                slab_sampling
+                    ? detail::saturating_add(
+                          detail::saturating_mul(sizeof(uint64_t), static_cast<std::uint64_t>(W)),
+                          detail::saturating_mul(sizeof(int),
+                                                 static_cast<std::uint64_t>(key_width)))
+                    : detail::form_bytes(StateForm::Stabilizer, circuit.n_qubits);
+            // Every refusal shot_team can make depends on the options and the
+            // memory, never on the work, so asking with no work counted refuses
+            // a team that cannot be had before the first gate. The team itself
+            // is sized after the gate pass, from the work the sampling will do.
+            if (shots > 0) (void)detail::shot_team(request, chunks);
+
             // Gates run bit-sliced, where each one is a few word operations over
             // the columns it touches rather than a strided visit to every row. The
             // single transpose afterwards buys back the row-major layout that
@@ -1735,7 +1837,9 @@ CliffordSimulator::Result CliffordSimulator::run(
             // is the returned state, so the measurements have to be drawn into it.
             // Terminal Z measurements commute, so the order they are drawn in does
             // not matter. counts stays empty, which is the rest of the contract.
+            // The draws come from chunk 0's stream, as shot 0's would.
             if (shots == 0) {
+                ShotRng rng = detail::chunk_stream(base_seed, 0, 0);
                 for (const auto& inst : circuit.instructions) {
                     if (inst.type != GT::MEASURE) continue;
                     (void)base.measure(inst.qubits[0], true, rng);
@@ -1746,83 +1850,128 @@ CliffordSimulator::Result CliffordSimulator::run(
             }
 
             // Auto picks the slab here, which is where it applies.
-            if (options.sampling != Options::Sampling::PerShot) {
-                // Where each outcome is recorded, read once. Terminal Z
-                // measurements commute, so their order does not affect the
-                // distribution, only the qubit-to-clbit mapping.
-                //
-                // A circuit with no MEASURE samples the whole register, qubit q
-                // at key position q, n_qubits wide, as every other backend
-                // samples such a circuit.
-                std::vector<std::pair<int, int>> measured;  // (qubit, key bit)
-                for (const auto& inst : circuit.instructions) {
-                    if (inst.type != GT::MEASURE) continue;
-                    const int q = inst.qubits[0];
-                    measured.emplace_back(q, inst.clbits.empty() ? q : inst.clbits[0]);
-                }
-                if (!has_measure)
-                    for (int q = 0; q < circuit.n_qubits; ++q) measured.emplace_back(q, q);
-                const int key_width = has_measure ? n_clbits : circuit.n_qubits;
-
-                const int W = base.words_per_vector();
-
+            if (slab_sampling) {
                 // Extracting the slab is one elimination over the whole tableau,
-                // paid once for every shot.
+                // paid once for every shot. A shot thread reads it and holds
+                // only its outcome vector, its register and its counts.
                 const StabilizerState::OutcomeSlab slab = base.outcome_slab(options.elimination);
-                std::vector<uint64_t> y(static_cast<size_t>(W), 0ULL);
-                std::vector<int> clreg(static_cast<size_t>(key_width), 0);
 
-                // The generator yields 64 bits at a time and they are spent one
-                // free direction at a time, so a shot costs one draw per 64
-                // dimensions rather than one draw per dimension.
-                uint64_t pool = 0;
-                int pool_left = 0;
+                struct SlabWorker {
+                    const StabilizerState::OutcomeSlab* slab;
+                    const std::vector<std::pair<int, int>>* measured;
+                    int W;
+                    int key_width;
+                    std::vector<uint64_t> y;
+                    std::vector<int> clreg;
 
-                for (int s = 0; s < shots; ++s) {
-                    y = slab.offset;
-                    for (int d = 0; d < slab.dim; ++d) {
-                        if (pool_left == 0) { pool = rng(); pool_left = 64; }
-                        const bool take = (pool & 1ULL) != 0;
-                        pool >>= 1;
-                        --pool_left;
-                        if (take) {
-                            const std::vector<uint64_t>& v = slab.basis[static_cast<size_t>(d)];
-                            for (int w = 0; w < W; ++w) {
-                                y[static_cast<size_t>(w)] ^= v[static_cast<size_t>(w)];
+                    void run_chunk(int, int first_shot, int n, ShotRng& rng,
+                                   std::unordered_map<std::string, int>& counts,
+                                   detail::ShotFailure& out) {
+                        int shot = first_shot;
+                        try {
+                            // The generator yields 64 bits at a time and they
+                            // are spent one free direction at a time, so a shot
+                            // costs one draw per 64 dimensions rather than one
+                            // draw per dimension. The pool starts empty in every
+                            // chunk, so no chunk's draws depend on another's.
+                            uint64_t pool = 0;
+                            int pool_left = 0;
+                            for (; shot < first_shot + n; ++shot) {
+                                y = slab->offset;
+                                for (int d = 0; d < slab->dim; ++d) {
+                                    if (pool_left == 0) { pool = rng(); pool_left = 64; }
+                                    const bool take = (pool & 1ULL) != 0;
+                                    pool >>= 1;
+                                    --pool_left;
+                                    if (take) {
+                                        const std::vector<uint64_t>& v =
+                                            slab->basis[static_cast<size_t>(d)];
+                                        for (int w = 0; w < W; ++w)
+                                            y[static_cast<size_t>(w)] ^= v[static_cast<size_t>(w)];
+                                    }
+                                }
+                                std::fill(clreg.begin(), clreg.end(), 0);
+                                for (const auto& qc : *measured) {
+                                    const int q = qc.first, clbit = qc.second;
+                                    if (clbit < 0 || clbit >= key_width) continue;
+                                    clreg[static_cast<size_t>(clbit)] = static_cast<int>(
+                                        (y[static_cast<size_t>(q / 64)] >> (q % 64)) & 1ULL);
+                                }
+                                counts[clifford_key(clreg)]++;
                             }
+                        } catch (...) {
+                            out.shot = shot;
+                            out.started = true;
+                            out.error = std::current_exception();
+                            out.partial = std::move(counts);
                         }
                     }
-                    std::fill(clreg.begin(), clreg.end(), 0);
-                    for (const auto& qc : measured) {
-                        const int q = qc.first, clbit = qc.second;
-                        if (clbit < 0 || clbit >= key_width) continue;
-                        clreg[static_cast<size_t>(clbit)] = static_cast<int>(
-                            (y[static_cast<size_t>(q / 64)] >> (q % 64)) & 1ULL);
-                    }
-                    record(clreg);
-                }
+                };
+
+                request.work_per_shot = clifford_slab_work(slab.dim, W, measured.size());
+                const detail::ShotTeam team = detail::shot_team(request, chunks);
+                detail::run_shot_chunks(chunks, team, base_seed, 0, chunk_counts, chunk_failures,
+                    [&](int) {
+                        return SlabWorker{&slab, &measured, W, key_width,
+                                          std::vector<uint64_t>(static_cast<size_t>(W), 0ULL),
+                                          std::vector<int>(static_cast<size_t>(key_width), 0)};
+                    });
             } else {
-                for (int s = 0; s < shots; ++s) {
-                    StabilizerState state = base;
-                    if (!has_measure) {
-                        // The whole register, qubit q at key position q.
-                        std::vector<int> reg(static_cast<size_t>(circuit.n_qubits), 0);
-                        for (int q = 0; q < circuit.n_qubits; ++q)
-                            reg[static_cast<size_t>(q)] = state.measure(q, true, rng);
-                        record(reg);
-                        continue;
+                // PerShot replays the measurements on a copy of `base` for
+                // every shot. A shot thread holds its own copy, refilled from
+                // the shared `base` at each shot.
+                struct PerShotWorker {
+                    const StabilizerState* base;
+                    const std::vector<std::pair<int, int>>* measured;
+                    int key_width;
+                    StabilizerState state;
+                    std::vector<int> clreg;
+
+                    void run_chunk(int, int first_shot, int n, ShotRng& rng,
+                                   std::unordered_map<std::string, int>& counts,
+                                   detail::ShotFailure& out) {
+                        int shot = first_shot;
+                        try {
+                            for (; shot < first_shot + n; ++shot) {
+                                state = *base;
+                                std::fill(clreg.begin(), clreg.end(), 0);
+                                for (const auto& qc : *measured) {
+                                    const int outcome = state.measure(qc.first, true, rng);
+                                    if (qc.second >= 0 && qc.second < key_width)
+                                        clreg[static_cast<size_t>(qc.second)] = outcome;
+                                }
+                                counts[clifford_key(clreg)]++;
+                            }
+                        } catch (...) {
+                            out.shot = shot;
+                            out.started = true;
+                            out.error = std::current_exception();
+                            out.partial = std::move(counts);
+                        }
                     }
-                    std::vector<int> clreg(n_clbits, 0);
-                    for (const auto& inst : circuit.instructions) {
-                        if (inst.type != GT::MEASURE) continue;
-                        int q = inst.qubits[0];
-                        int clbit = inst.clbits.empty() ? q : inst.clbits[0];
-                        int outcome = state.measure(q, true, rng);
-                        if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
-                    }
-                    record(clreg);
-                }
+                };
+
+                request.work_per_shot = clifford_pershot_work(circuit.n_qubits, measured.size());
+                const detail::ShotTeam team = detail::shot_team(request, chunks);
+                const int n_qubits = circuit.n_qubits;
+                detail::run_shot_chunks(chunks, team, base_seed, 0, chunk_counts, chunk_failures,
+                    [&](int) {
+                        return PerShotWorker{&base, &measured, key_width,
+                                             StabilizerState(n_qubits),
+                                             std::vector<int>(static_cast<size_t>(key_width), 0)};
+                    });
             }
+
+            result.counts = chunk_counts.take();
+            if (std::optional<detail::ShotFailure> failed = chunk_failures.take()) {
+                // The shots drawn before the failing one stay in the record.
+                // Sampling belongs to no shot's trajectory, so the record names
+                // none.
+                for (auto& [key, count] : failed->partial) result.counts[key] += count;
+                failure.set_shots_completed(failed->shot);
+                std::rethrow_exception(failed->error);
+            }
+            failure.set_shots_completed(shots);
 
             runner->end_run();
             result.final_state = std::move(base);
@@ -1854,82 +2003,210 @@ CliffordSimulator::Result CliffordSimulator::run(
         // Everything before the first MEASURE, RESET or conditioned instruction is
         // the same in every shot and draws nothing, so an unobserved run of more
         // than one shot runs it once into a start tableau every shot copies; the
-        // random stream, so the seeded counts, are those of a rerun. A tableau is
+        // random streams, so the seeded counts, are those of a rerun. A tableau is
         // small beside the gates it saves. An observed run reruns every shot, so
         // each anchor fires once per shot with that shot's index.
         const bool reuse = !watcher && trajectories > 1;
         std::size_t prefix_end = 0;
-        StabilizerState& start = start_slot.emplace(circuit.n_qubits);
         if (reuse) {
-            detail::apply_initial_state(plan, start, "CliffordSimulator::run");
-            prefix_running = true;
             while (prefix_end < circuit.instructions.size()) {
                 const Instruction& inst = circuit.instructions[prefix_end];
                 if (inst.type == GT::MEASURE || inst.type == GT::RESET ||
                     inst.has_condition)
                     break;
-                failure.at_instruction(static_cast<int>(prefix_end), &inst);
-                if (inst.type != GT::BARRIER) apply_gate(start, inst);
                 ++prefix_end;
+            }
+        }
+
+        // The team, sized before any instruction runs, so a refusal comes
+        // before the first gate. Every extra shot thread holds
+        // its own tableau, and a second one when it samples a circuit with no
+        // MEASURE from a copy of its end state.
+        const bool probe_each_shot = shots > 0 && !has_measure;
+        std::size_t shot_gates = 0, shot_measures = 0;
+        for (std::size_t i = prefix_end; i < circuit.instructions.size(); ++i) {
+            const GT t = circuit.instructions[i].type;
+            if (t == GT::MEASURE || t == GT::RESET) ++shot_measures;
+            else if (t != GT::BARRIER) ++shot_gates;
+        }
+        if (probe_each_shot) shot_measures += 1 + static_cast<std::size_t>(circuit.n_qubits);
+        const std::uint64_t tableau_bytes =
+            detail::form_bytes(StateForm::Stabilizer, circuit.n_qubits);
+        const detail::ShotChunks chunks = detail::chunk_shots(shots);
+        detail::ShotTeamRequest request;
+        request.entry_point = "CliffordSimulator::run";
+        request.max_parallel_shots = options.max_parallel_shots;
+        request.memory = options.shot_memory;
+        request.cap_bytes = cap_bytes;
+        request.held_bytes = three_tableaux;
+        request.per_thread_bytes =
+            detail::saturating_mul(probe_each_shot ? 2 : 1, tableau_bytes);
+        request.work_per_shot = clifford_trajectory_work(
+            circuit.n_qubits, shot_gates, shot_measures,
+            static_cast<std::size_t>(has_measure ? n_clbits : circuit.n_qubits));
+        request.serial_only = watcher != nullptr;
+        const detail::ShotTeam team = detail::shot_team(request, chunks);
+
+        StabilizerState& start = start_slot.emplace(circuit.n_qubits);
+        if (reuse) {
+            detail::apply_initial_state(plan, start, "CliffordSimulator::run");
+            prefix_running = true;
+            for (std::size_t i = 0; i < prefix_end; ++i) {
+                const Instruction& inst = circuit.instructions[i];
+                failure.at_instruction(static_cast<int>(i), &inst);
+                if (inst.type != GT::BARRIER) apply_gate(start, inst);
             }
             prefix_running = false;
             failure.leave_instructions();
         }
 
-        for (int s = 0; s < trajectories; ++s) {
-            failure.set_shot(s);
-            StabilizerState& state =
-                state_slot.emplace(reuse ? start : StabilizerState(circuit.n_qubits));
-            if (!reuse) detail::apply_initial_state(plan, state, "CliffordSimulator::run");
-            std::vector<int> clreg(n_clbits, 0);
+        // One shot thread's work. Thread 0 evolves the run's own tableau
+        // (state_slot); every other thread allocates its own, on that thread.
+        // The start tableau and the circuit are read by every thread and
+        // written by none. The register is per shot, cleared at every shot.
+        struct TrajectoryWorker {
+            StabilizerState* state;
+            const StabilizerState* start;     // null when the prefix is not reused
+            const RunPlan* plan;
+            const QuantumCircuit* circuit;
+            const decltype(apply_gate)* apply;
+            std::size_t first;
+            int n_clbits;
+            bool record;                       // shots > 0
+            bool has_measure;
+            detail::ObservationRunner* runner;   // serial runs only
+            detail::ObservationRunner* watcher;  // when observers are active
+            std::vector<int> clreg;
+            std::optional<StabilizerState> probe;
+            detail::ShotPosition pos;
 
-            const StateView view(StateForm::Stabilizer, &state, circuit.n_qubits);
-            runner->begin_shot(s, clreg);
-            if (watcher) watcher->at_start(view);
+            void run_chunk(int, int first_shot, int n, ShotRng& rng,
+                           std::unordered_map<std::string, int>& counts,
+                           detail::ShotFailure& out) {
+                const char* const where = "CliffordSimulator::run";
+                int shot = first_shot;
+                try {
+                    const int n_qubits = state->n_qubits;
+                    const StateView view(StateForm::Stabilizer, state, n_qubits);
+                    const std::size_t end = circuit->instructions.size();
+                    for (; shot < first_shot + n; ++shot) {
+                        pos.set_shot(shot);
+                        if (start) {
+                            *state = *start;
+                        } else {
+                            *state = StabilizerState(n_qubits);
+                            detail::apply_initial_state(*plan, *state, where);
+                        }
+                        clreg.assign(clreg.size(), 0);
+                        if (runner) runner->begin_shot(shot, clreg);
+                        if (watcher) watcher->at_start(view);
 
-            int index = static_cast<int>(prefix_end) - 1;
-            for (std::size_t i = prefix_end; i < circuit.instructions.size(); ++i) {
-                const Instruction& inst = circuit.instructions[i];
-                ++index;
-                if (watcher) watcher->before_instruction(index, inst, view);
-                failure.at_instruction(index, &inst);
-                detail::FiringGuard fire(watcher, index, inst, view);
-                if (inst.has_condition) {
-                    int cv = (inst.condition_clbit < n_clbits)
-                             ? clreg[inst.condition_clbit] : 0;
-                    if (cv != inst.condition_value) continue;
-                }
-                if (inst.type == GT::MEASURE) {
-                    int q = inst.qubits[0];
-                    int clbit = inst.clbits.empty() ? q : inst.clbits[0];
-                    int outcome = state.measure(q, true, rng);
-                    if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
-                } else if (inst.type == GT::RESET) {
-                    int q = inst.qubits[0];
-                    if (state.measure(q, true, rng) == 1) state.apply_x(q);
-                } else if (inst.type != GT::BARRIER) {
-                    apply_gate(state, inst);
+                        int index = static_cast<int>(first) - 1;
+                        for (std::size_t i = first; i < end; ++i) {
+                            const Instruction& inst = circuit->instructions[i];
+                            ++index;
+                            if (watcher) watcher->before_instruction(index, inst, view);
+                            pos.at_instruction(index, &inst);
+                            detail::FiringGuard fire(watcher, index, inst, view);
+                            if (inst.has_condition) {
+                                const int cv = (inst.condition_clbit < n_clbits)
+                                    ? clreg[static_cast<std::size_t>(inst.condition_clbit)]
+                                    : 0;
+                                if (cv != inst.condition_value) continue;
+                            }
+                            if (inst.type == Instruction::GateType::MEASURE) {
+                                const int q = inst.qubits[0];
+                                const int clbit = inst.clbits.empty() ? q : inst.clbits[0];
+                                const int outcome = state->measure(q, true, rng);
+                                if (clbit >= 0 && clbit < n_clbits)
+                                    clreg[static_cast<std::size_t>(clbit)] = outcome;
+                            } else if (inst.type == Instruction::GateType::RESET) {
+                                const int q = inst.qubits[0];
+                                if (state->measure(q, true, rng) == 1) state->apply_x(q);
+                            } else if (inst.type != Instruction::GateType::BARRIER) {
+                                (*apply)(*state, inst);
+                            }
+                        }
+
+                        if (watcher) watcher->at_end(view, index);
+                        pos.leave_instructions();
+
+                        if (!record) continue;
+                        if (has_measure) {
+                            counts[clifford_key(clreg)]++;
+                        } else {
+                            // No MEASURE: one sample of the whole register from
+                            // this trajectory's end state, drawn on a copy so
+                            // the returned state is the trajectory's own.
+                            if (probe) *probe = *state; else probe.emplace(*state);
+                            std::vector<int> reg(static_cast<size_t>(n_qubits), 0);
+                            for (int q = 0; q < n_qubits; ++q)
+                                reg[static_cast<size_t>(q)] = probe->measure(q, true, rng);
+                            counts[clifford_key(reg)]++;
+                        }
+                    }
+                } catch (...) {
+                    out.shot = shot;
+                    out.instruction = pos.instruction;
+                    out.inst = pos.inst;
+                    out.started = pos.started;
+                    out.error = std::current_exception();
+                    out.partial = std::move(counts);
+                    out.state = std::move(*state);
                 }
             }
+        };
 
-            if (watcher) watcher->at_end(view, index);
-            failure.leave_instructions();
-
-            if (shots > 0) {
-                if (has_measure) {
-                    record(clreg);
-                } else {
-                    // No MEASURE: one sample of the whole register from this
-                    // trajectory's end state, drawn on a copy so the returned
-                    // state is the trajectory's own.
-                    StabilizerState probe = state;
-                    std::vector<int> reg(static_cast<size_t>(circuit.n_qubits), 0);
-                    for (int q = 0; q < circuit.n_qubits; ++q)
-                        reg[static_cast<size_t>(q)] = probe.measure(q, true, rng);
-                    record(reg);
-                }
+        StabilizerState* const run_state = &state_slot.emplace(circuit.n_qubits);
+        const StabilizerState* const shared_start = reuse ? &start : nullptr;
+        const bool serial = team.threads <= 1;
+        std::vector<std::unique_ptr<StabilizerState>> own(
+            static_cast<std::size_t>(team.threads));
+        const auto make_worker = [&](int t) {
+            StabilizerState* st = run_state;
+            if (t != 0) {
+                own[static_cast<std::size_t>(t)] =
+                    std::make_unique<StabilizerState>(circuit.n_qubits);
+                st = own[static_cast<std::size_t>(t)].get();
             }
+            return TrajectoryWorker{st,
+                                    shared_start,
+                                    &plan,
+                                    &circuit,
+                                    &apply_gate,
+                                    prefix_end,
+                                    n_clbits,
+                                    shots > 0,
+                                    has_measure,
+                                    serial ? &*runner : nullptr,
+                                    watcher,
+                                    std::vector<int>(static_cast<std::size_t>(n_clbits), 0),
+                                    std::nullopt,
+                                    {}};
+        };
+
+        detail::OrderedCounts chunk_counts(chunks.count);
+        detail::ChunkFailures chunk_failures(chunks.count);
+        const int owner = detail::run_shot_chunks(chunks, team, base_seed, 0, chunk_counts,
+                                                  chunk_failures, make_worker);
+        if (std::optional<detail::ShotFailure> failed = chunk_failures.take()) {
+            // The serial record: the shots before the failing one, and that
+            // shot's tableau, whichever thread ran it.
+            result.counts = chunk_counts.take();
+            for (auto& [key, count] : failed->partial) result.counts[key] += count;
+            failure.adopt_shot_failure(failed->shot, failed->instruction, failed->inst,
+                                       failed->shot, failed->started);
+            if (!std::holds_alternative<std::monostate>(failed->state))
+                adopted_state = std::move(failed->state);
+            std::rethrow_exception(failed->error);
         }
+        result.counts = chunk_counts.take();
+        // The final state is the last shot's, held by the thread that ran the
+        // last chunk; its tableau becomes the run's.
+        if (owner != 0) std::swap(*state_slot, *own[static_cast<std::size_t>(owner)]);
+        failure.begin_work();
+        failure.set_shot(trajectories - 1);
+        failure.set_shots_completed(shots);
 
         runner->end_run();
 
@@ -1957,7 +2234,9 @@ CliffordSimulator::Result CliffordSimulator::run(
                 // failed the run; the run's own failure is what the caller
                 // must see.
             }
-            if (state_slot) {
+            if (adopted_state) {
+                state = std::move(*adopted_state);
+            } else if (state_slot) {
                 state = std::move(*state_slot);
             } else if (prefix_running && start_slot) {
                 state = std::move(*start_slot);

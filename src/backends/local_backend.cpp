@@ -75,6 +75,8 @@ BackendResult LocalBackend::run(
         case SimType::CLIFFORD: {
             CliffordSimulator sim;
             sim.options.max_memory_mb = config.max_memory_mb;
+            sim.options.max_parallel_shots = config.max_parallel_shots;
+            sim.options.shot_memory = config.shot_memory;
             auto cliff_result = sim.run(circuit, shots, seed);
             result.counts = std::move(cliff_result.counts);
             break;
