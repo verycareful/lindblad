@@ -151,6 +151,22 @@ public:
         // types.hpp. Here the snapshot is a second density matrix, so
         // Hardware and Manual take it only when that second one fits.
         PrefixReuse prefix_reuse = PrefixReuse::Hardware;
+        // How many threads a run's shots run on: 0, the default, is automatic
+        // (the run's work decides, as it does for a statevector gate kernel's
+        // threads); 1 is serial; k >= 2 is at most k. It covers both loops a
+        // run can walk shot by shot: trajectories (mid-circuit measurement,
+        // feedforward), where each shot thread holds its own density matrix
+        // beside the run's and shot_memory says how those matrices meet
+        // max_memory_mb, and the sampling of terminal measurements, where a
+        // shot thread holds only its counts. While trajectories run on more
+        // than one thread, each kernel runs on one. A run with an observer, or
+        // one called from inside a parallel region, runs its shots on one
+        // thread. Seeded counts, the final state and a failed run's record are
+        // the same whatever the team. Negative values are refused.
+        int max_parallel_shots = 0;
+        // How the shot threads share the memory cap; see ShotMemory in
+        // types.hpp.
+        ShotMemory shot_memory = ShotMemory::Shrink;
     };
 
     Options options;

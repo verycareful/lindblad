@@ -143,8 +143,11 @@ observed run repeats the prefix in every shot, so each anchor fires once per
 shot with that shot's index. On the MPS backend the profile figures count what
 was performed: the shared start's splits once, each trajectory's own per shot.
 
-**Shots across threads.** The statevector simulator runs the shots of a run
-sampled shot by shot across a team of threads. The shots are cut into at most
+**Shots across threads.** The statevector and density-matrix simulators run
+the shots of a run sampled shot by shot across a team of threads. On the
+density-matrix backend that covers both of its shot loops: the trajectories of
+a circuit with mid-circuit measurement or feedforward, and the sampling of
+terminal measurements from the final matrix's diagonal. The shots are cut into at most
 `SHOT_CHUNK_TARGET` (512, in `lindblad/types.hpp`) chunks of consecutive shots,
 a cut that depends on the shot count alone. Each chunk draws from its own
 `ShotRng` (xoshiro256**, in `lindblad/shot_rng.hpp`), started from the run's
@@ -157,8 +160,9 @@ the shots before it, as a run on one thread would. A seed reproduces a run's
 counts within one release of the library, not across releases.
 
 The team comes from `Options::max_parallel_shots` (0, automatic, by default)
-and `Options::shot_memory`, each extra thread holding a state of its own; while
-it runs, each thread runs its gates alone. A run with an observer attached, or
+and `Options::shot_memory`, each extra thread holding a state of its own (a
+thread sampling terminal measurements holds only its counts); while it runs,
+each thread runs its gates alone. A run with an observer attached, or
 one called from inside a parallel region, runs its shots on one thread.
 
 Every sample and every collapse, on every backend, draws from the state's own
@@ -620,6 +624,8 @@ row/column relabel or diagonal phase (no dense matrix).
 struct Options {
     uint64_t max_memory_mb = 0;                        // MiB; 0 = automatic
     PrefixReuse prefix_reuse = PrefixReuse::Hardware;
+    int max_parallel_shots = 0;                        // shot threads; 0 = automatic, 1 = serial
+    ShotMemory shot_memory = ShotMemory::Shrink;
 };
 ```
 
@@ -639,6 +645,21 @@ struct Options {
   `Hardware` takes it only when the machine reports at least twice its size
   available and the run with it still fits `max_memory_mb`, and `Manual` only
   when it fits `max_memory_mb`
+- **max_parallel_shots**: how many threads a run's shots run on (see
+  [Execution Semantics](#execution-semantics-frozen-in-r112)), as for the
+  statevector simulator. `0`, the default, is automatic. For trajectories the
+  shots go across threads only when at least `SHOT_TEAM_MIN_CACHED_STATES`
+  density matrices fit one last-level-cache instance, which is 9 qubits on a
+  32 MiB cache, and the team then grows with the run's work. Terminal sampling
+  holds no matrix per thread, so its team grows with the shot count alone. `1`
+  is serial, with every kernel threaded as usual; `k >= 2` is at most `k`
+  threads, never more than the run has chunks. The counts do not depend on it.
+  A negative value is refused with `InvalidArgument`
+- **shot_memory**: how the trajectory threads' matrices meet `max_memory_mb`,
+  each thread holding one density matrix ($16 \cdot 4^n$ bytes) beside the
+  run's own and the prefix snapshot. The modes are those of the statevector
+  simulator: `Shrink` (the default), `SerialIfShort`, `Exact` and `FixedShare`.
+  Terminal sampling needs no memory per thread, so no mode limits its team
 
 ### DensityMatrixSimulator Workflow
 

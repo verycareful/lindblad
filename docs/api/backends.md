@@ -63,9 +63,11 @@ Fields and defaults:
   the run reaches
 - `max_parallel_shots = 0`, `shot_memory = ShotMemory::Shrink`: how many
   threads a run sampled shot by shot runs its shots on, and how their states
-  share `max_memory_mb`. Passed to the statevector simulator (see its
-  [Options](simulators.md#options)). A negative `max_parallel_shots` is refused
-  with `InvalidArgument` whichever backend the run would reach
+  share `max_memory_mb`. Passed to the statevector and density-matrix
+  simulators (see the statevector [Options](simulators.md#options) and the
+  [density-matrix options](simulators.md#densitymatrixsimulator-options)). A
+  negative `max_parallel_shots` is refused with `InvalidArgument` whichever
+  backend the run would reach
 - `mps_bond_dim = 64`: bond dimension for MPS simulator
 - `qubit_limit = QubitLimit::Enforce`: passed to the statevector simulator (30
   qubits, or 59 under `QubitLimit::Lift`) and to the MPS simulator's dense

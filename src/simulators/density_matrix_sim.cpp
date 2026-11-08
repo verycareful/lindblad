@@ -20,6 +20,8 @@
 #include "lindblad/detail/failure_collector.hpp"
 #include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/preflight.hpp"
+#include "lindblad/detail/shot_loop.hpp"
+#include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/noise.hpp"
@@ -867,12 +869,80 @@ static bool dm_is_finite_with_trace(const DensityMatrix& dm) noexcept {
     return trace > 0.0;
 }
 
+// One mid-circuit MEASURE on a trajectory's matrix: draws the outcome from the
+// diagonal, collapses and renormalises the matrix onto it, and returns the bit
+// the classical register records, which readout error may flip.
+//
+// The diagonal's two halves, qubit bit 0 and bit 1, are summed first. Their raw
+// sum is the trace, judged before the draw as normalize() judges it, so a state
+// with no trace is refused with the engine untouched. Each half is then clamped
+// at 0, which only raises the total, and the draw divides by that total:
+// prob0 / total is exactly 1 or 0 when the other half is empty, so an outcome
+// of weight zero is never drawn and p_out is positive.
+//
+// Readout error (issue #33) flips the RECORDED value with the qubit's confusion
+// probability. The matrix stays collapsed to the true outcome; only the
+// classical record (and any feedforward reading it) sees the noisy bit. The
+// flip draws from the same engine, after the outcome; an ideal model draws
+// nothing extra.
+static int dm_measure_qubit(DensityMatrix& dm, int qubit, const NoiseModel& noise_model,
+                            ShotRng& rng) {
+    double prob0 = 0.0;
+    double prob1 = 0.0;
+    for (size_t i = 0; i < dm.dim; ++i) {
+        const double w = dm.data[i * dm.dim + i].real;
+        if ((i >> qubit) & 1) prob1 += w;
+        else                  prob0 += w;
+    }
+    detail::require_norm_to_sample(prob0 + prob1, "DensityMatrixSimulator::run");
+    prob0 = std::max(0.0, prob0);
+    prob1 = std::max(0.0, prob1);
+    const double total = prob0 + prob1;
+
+    std::uniform_real_distribution<double> udist(0.0, 1.0);
+    const int outcome = (udist(rng) < prob0 / total) ? 0 : 1;
+    const double p_out = (outcome == 0) ? prob0 : prob1;
+
+    // Project: zero out rho_{ij} where qubit bit of i or j != outcome.
+    for (size_t i = 0; i < dm.dim; ++i) {
+        const int bi = (i >> qubit) & 1;
+        for (size_t j = 0; j < dm.dim; ++j) {
+            const int bj = (j >> qubit) & 1;
+            if (bi != outcome || bj != outcome)
+                dm.data[i * dm.dim + j] = Complex128(0.0, 0.0);
+        }
+    }
+    const double inv_p = 1.0 / p_out;
+    for (auto& v : dm.data) { v.real *= inv_p; v.imag *= inv_p; }
+
+    int recorded = outcome;
+    auto ro_it = noise_model.readout_errors.find(qubit);
+    if (ro_it != noise_model.readout_errors.end()) {
+        const double flip_p = (outcome == 0)
+            ? ro_it->second.prob_meas_1_prep_0
+            : ro_it->second.prob_meas_0_prep_1;
+        if (flip_p > 0.0 && udist(rng) < flip_p) recorded ^= 1;
+    }
+    return recorded;
+}
+
+// One trajectory shot's work for detail::shot_team, in one-qubit-gate
+// amplitudes: its restore and each instruction it runs, every one a pass over
+// the matrix's entries.
+static std::size_t dm_shot_work(std::size_t entries, std::size_t instructions) {
+    return static_cast<std::size_t>(detail::saturating_mul(
+        static_cast<std::uint64_t>(entries),
+        detail::saturating_add(static_cast<std::uint64_t>(instructions), 1)));
+}
+
 // Every field of Options, for a failed run's record.
 static void record_options(detail::FailureCollector& failure,
                            const DensityMatrixSimulator::Options& o) {
     using detail::option_value;
     failure.add_option("max_memory_mb", option_value(o.max_memory_mb));
     failure.add_option("prefix_reuse", option_value(o.prefix_reuse));
+    failure.add_option("max_parallel_shots", option_value(o.max_parallel_shots));
+    failure.add_option("shot_memory", option_value(o.shot_memory));
 }
 
 DensityMatrixSimulator::Result DensityMatrixSimulator::run(
@@ -894,10 +964,16 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
     std::optional<detail::ObservationRunner> runner;
     std::optional<DensityMatrix> dm_slot;
     std::optional<QuantumCircuit> repaired_storage;
+    // The failing shot's matrix when a shot loop failed; it held that matrix on
+    // whichever thread ran the shot.
+    std::optional<FailedRun::State> adopted_state;
 
     try {
         detail::check_circuit_has_qubits(circuit_in.n_qubits,
                                          "DensityMatrixSimulator::run");
+        detail::check_require(options.max_parallel_shots >= 0, "DensityMatrixSimulator::run",
+                              "Options::max_parallel_shots must be >= 0 (0 = automatic, "
+                              "1 = serial), got " + std::to_string(options.max_parallel_shots));
         // A run holds one density matrix; a prefix snapshot, when taken, is
         // judged on its own below.
         const std::uint64_t one_matrix =
@@ -1120,21 +1196,22 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
         runner->set_budget(&budget);
 
         if (needs_per_shot) {
-            // Per-shot trajectory path (feedforward and/or mid-circuit
-            // measurement). Each shot: fresh DM, iterate instructions with
-            // condition checks, collapse DM on MEASURE, record to clreg.
-            // shots == 0 runs exactly one seeded trajectory for final_state.
-            std::mt19937_64 rng(base_seed);
-            std::uniform_real_distribution<double> udist(0.0, 1.0);
-            std::vector<int> clreg(n_clbits, 0);
-
+            // Per-shot trajectories (feedforward and/or mid-circuit
+            // measurement): every shot restarts from the same matrix, walks
+            // the instructions with their conditions, and collapses the matrix
+            // at each MEASURE. shots == 0 walks one trajectory, shot 0, for
+            // final_state and records no counts.
+            //
+            // The shots are cut into chunks (detail::chunk_shots) that depend
+            // on the shot count only; chunk c draws from its own stream, seeded
+            // from the run's seed and c, and a thread always runs a whole chunk
+            // (detail::run_shot_chunks). The counts, the final state and a
+            // failure's record are therefore the same whether one thread runs
+            // every chunk or a team shares them.
+            using GT = Instruction::GateType;
+            const char* const ctx = "DensityMatrixSimulator::run";
             const int n_shots = std::max(1, shots);
-            // Reuse ONE density-matrix buffer across shots:
-            // re-initialise to |0><0| per shot instead of allocating a fresh
-            // 4^N matrix each time. After the loop `dm` holds the last shot's
-            // (collapsed) state, which becomes final_state.
             DensityMatrix& dm = dm_slot.emplace(circuit.n_qubits);
-            const StateView view(StateForm::DensityMatrix, &dm, circuit.n_qubits);
             runner->begin_run(circuit.n_qubits, n_shots);
 
             // The stretch before the first MEASURE or conditioned instruction
@@ -1150,137 +1227,191 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                                              detail::saturating_mul(2, matrix_bytes),
                                              options.max_memory_mb);
             std::size_t prefix_end = 0;
-            std::unique_ptr<DensityMatrix> snapshot;
             if (reuse) {
-                detail::apply_initial_state(plan, dm, "DensityMatrixSimulator::run");
-                using GT = Instruction::GateType;
                 while (prefix_end < n_inst) {
                     const auto& inst = circuit.instructions[prefix_end];
                     if (inst.type == GT::MEASURE || inst.has_condition) break;
-                    failure.at_instruction(static_cast<int>(prefix_end), &inst);
-                    if (inst.type != GT::BARRIER) apply_inst(dm, prefix_end);
                     ++prefix_end;
+                }
+            }
+
+            // The team, sized before any instruction runs, so a refusal comes
+            // before the first gate. Every extra shot thread holds one more
+            // matrix.
+            const detail::ShotChunks chunks = detail::chunk_shots(shots);
+            detail::ShotTeamRequest request;
+            request.entry_point = ctx;
+            request.max_parallel_shots = options.max_parallel_shots;
+            request.memory = options.shot_memory;
+            request.cap_bytes = cap_bytes;
+            request.held_bytes = detail::saturating_add(one_matrix, reuse ? matrix_bytes : 0);
+            request.per_thread_bytes = matrix_bytes;
+            request.work_per_shot = dm_shot_work(dm.data.size(), n_inst - prefix_end);
+            request.serial_only = watcher != nullptr;
+            const detail::ShotTeam team = detail::shot_team(request, chunks);
+
+            std::unique_ptr<DensityMatrix> snapshot;
+            if (reuse) {
+                detail::apply_initial_state(plan, dm, ctx);
+                for (std::size_t ii = 0; ii < prefix_end; ++ii) {
+                    const auto& inst = circuit.instructions[ii];
+                    failure.at_instruction(static_cast<int>(ii), &inst);
+                    if (inst.type != GT::BARRIER) apply_inst(dm, ii);
                 }
                 failure.leave_instructions();
                 snapshot = std::make_unique<DensityMatrix>(dm);
                 budget.set_held(detail::saturating_mul(2, matrix_bytes));
             }
 
-            for (int shot = 0; shot < n_shots; ++shot) {
-                failure.set_shot(shot);
-                if (snapshot) {
-                    dm = *snapshot;
-                } else {
-                    detail::apply_initial_state(plan, dm, "DensityMatrixSimulator::run");
-                }
-                clreg.assign(n_clbits, 0);
-                runner->begin_shot(shot, clreg);
-                if (watcher) watcher->at_start(view);
+            // One shot thread's work. Thread 0 is the calling thread and runs
+            // on the run's own matrix; every other thread allocates its own,
+            // on that thread, so its pages are first touched where they are
+            // used. While a team runs, each thread's kernels run on that
+            // thread alone (ScopedThreadCap(1)). apply_inst reads only the plan
+            // resolved above, and the kernels keep their scratch per thread,
+            // so every thread may call it at once.
+            struct ShotWorker {
+                DensityMatrix* dm;
+                const DensityMatrix* snapshot;
+                const RunPlan* plan;
+                const QuantumCircuit* circuit;
+                const NoiseModel* noise_model;
+                const decltype(apply_inst)* apply;
+                std::size_t first;
+                int n_clbits;
+                bool record;                           // shots > 0
+                bool capped;
+                detail::ObservationRunner* runner;     // serial runs only
+                detail::ObservationRunner* watcher;    // when observers are active
+                std::vector<int> clreg;
+                detail::ShotPosition pos;
 
-                for (size_t ii = prefix_end; ii < n_inst; ++ii) {
-                    const auto& inst = circuit.instructions[ii];
-                    using GT = Instruction::GateType;
-                    if (watcher) {
-                        watcher->before_instruction(static_cast<int>(ii), inst, view);
-                    }
-                    failure.at_instruction(static_cast<int>(ii), &inst);
-                    detail::FiringGuard fire(watcher, static_cast<int>(ii), inst, view);
-                    if (inst.type == GT::BARRIER) continue;
+                void run_chunk(int, int first_shot, int n, ShotRng& rng,
+                               std::unordered_map<std::string, int>& counts,
+                               detail::ShotFailure& out) {
+                    const char* const where = "DensityMatrixSimulator::run";
+                    int shot = first_shot;
+                    try {
+                        const detail::ScopedThreadCap one(capped ? 1 : 0, where);
+                        const StateView view(StateForm::DensityMatrix, dm, dm->n_qubits);
+                        const std::size_t end = circuit->instructions.size();
+                        for (; shot < first_shot + n; ++shot) {
+                            pos.set_shot(shot);
+                            if (snapshot)
+                                *dm = *snapshot;
+                            else
+                                detail::apply_initial_state(*plan, *dm, where);
+                            clreg.assign(clreg.size(), 0);
+                            if (runner) runner->begin_shot(shot, clreg);
+                            if (watcher) watcher->at_start(view);
 
-                    // Classical condition check
-                    if (inst.has_condition) {
-                        int cv = (inst.condition_clbit < n_clbits)
-                                 ? clreg[inst.condition_clbit] : 0;
-                        if (cv != inst.condition_value) continue;
-                    }
+                            for (std::size_t ii = first; ii < end; ++ii) {
+                                const auto& inst = circuit->instructions[ii];
+                                if (watcher)
+                                    watcher->before_instruction(static_cast<int>(ii), inst, view);
+                                pos.at_instruction(static_cast<int>(ii), &inst);
+                                detail::FiringGuard fire(watcher, static_cast<int>(ii), inst,
+                                                         view);
+                                if (inst.type == GT::BARRIER) continue;
+                                if (inst.has_condition) {
+                                    const int cv = (inst.condition_clbit < n_clbits)
+                                        ? clreg[static_cast<std::size_t>(inst.condition_clbit)]
+                                        : 0;
+                                    if (cv != inst.condition_value) continue;
+                                }
+                                if (inst.type == GT::MEASURE) {
+                                    const int qubit = inst.qubits[0];
+                                    const int clbit =
+                                        inst.clbits.empty() ? qubit : inst.clbits[0];
+                                    const int recorded =
+                                        dm_measure_qubit(*dm, qubit, *noise_model, rng);
+                                    if (clbit >= 0 && clbit < n_clbits)
+                                        clreg[static_cast<std::size_t>(clbit)] = recorded;
+                                    continue;
+                                }
+                                (*apply)(*dm, ii);
+                            }
+                            if (watcher) watcher->at_end(view, static_cast<int>(end) - 1);
+                            pos.leave_instructions();
 
-                    if (inst.type == GT::MEASURE) {
-                        const int qubit = inst.qubits[0];
-                        const int clbit = inst.clbits.empty() ? qubit : inst.clbits[0];
-
-                        // The diagonal's two halves, qubit bit 0 and bit 1.
-                        // Their raw sum is the trace, judged before the draw
-                        // as normalize() judges it, so a state with no trace
-                        // is refused with the engine untouched. Each half is
-                        // then clamped at 0, which only raises the total, and
-                        // the draw divides by that total: prob0 / total is
-                        // exactly 1 or 0 when the other half is empty, so an
-                        // outcome of weight zero is never drawn and p_out is
-                        // positive.
-                        double prob0 = 0.0;
-                        double prob1 = 0.0;
-                        for (size_t i = 0; i < dm.dim; ++i) {
-                            const double w = dm.data[i * dm.dim + i].real;
-                            if ((i >> qubit) & 1) prob1 += w;
-                            else                  prob0 += w;
-                        }
-                        detail::require_norm_to_sample(prob0 + prob1,
-                                                       "DensityMatrixSimulator::run");
-                        prob0 = std::max(0.0, prob0);
-                        prob1 = std::max(0.0, prob1);
-                        const double total = prob0 + prob1;
-
-                        const int outcome = (udist(rng) < prob0 / total) ? 0 : 1;
-                        const double p_out = (outcome == 0) ? prob0 : prob1;
-
-                        // Project: zero out rho_{ij} where qubit bit of i or j != outcome
-                        for (size_t i = 0; i < dm.dim; ++i) {
-                            const int bi = (i >> qubit) & 1;
-                            for (size_t j = 0; j < dm.dim; ++j) {
-                                const int bj = (j >> qubit) & 1;
-                                if (bi != outcome || bj != outcome)
-                                    dm.data[i * dm.dim + j] = Complex128(0.0, 0.0);
+                            if (record) {
+                                // clbit 0 is the rightmost character.
+                                std::string bits(static_cast<std::size_t>(n_clbits), '0');
+                                for (int c = 0; c < n_clbits; ++c)
+                                    if (clreg[static_cast<std::size_t>(c)])
+                                        bits[static_cast<std::size_t>(n_clbits - 1 - c)] = '1';
+                                counts[bits]++;
                             }
                         }
-                        // Renormalize
-                        const double inv_p = 1.0 / p_out;
-                        for (auto& v : dm.data) { v.real *= inv_p; v.imag *= inv_p; }
-
-                        // Readout error (issue #33): flip the RECORDED value
-                        // with the qubit's confusion probability. The state
-                        // stays collapsed to the true outcome; only the
-                        // classical record (and any feedforward reading it)
-                        // sees the noisy bit. Uses the run RNG so seeds stay
-                        // reproducible; ideal models draw nothing extra.
-                        int recorded = outcome;
-                        auto ro_it = noise_model.readout_errors.find(qubit);
-                        if (ro_it != noise_model.readout_errors.end()) {
-                            const double flip_p = (outcome == 0)
-                                ? ro_it->second.prob_meas_1_prep_0
-                                : ro_it->second.prob_meas_0_prep_1;
-                            if (flip_p > 0.0 && udist(rng) < flip_p) recorded ^= 1;
-                        }
-                        if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = recorded;
-                        continue;
+                    } catch (...) {
+                        out.shot = shot;
+                        out.instruction = pos.instruction;
+                        out.inst = pos.inst;
+                        out.started = pos.started;
+                        out.error = std::current_exception();
+                        out.partial = std::move(counts);
+                        out.state = std::move(*dm);
                     }
-
-                    apply_inst(dm, ii);
                 }
+            };
 
-                if (watcher) {
-                    watcher->at_end(view, static_cast<int>(n_inst) - 1);
+            DensityMatrix* const run_matrix = &dm;
+            const DensityMatrix* const snap = snapshot.get();
+            const bool serial = team.threads <= 1;
+            std::vector<std::unique_ptr<DensityMatrix>> own(
+                static_cast<std::size_t>(team.threads));
+            const auto make_worker = [&](int t) {
+                DensityMatrix* m = run_matrix;
+                if (t != 0) {
+                    own[static_cast<std::size_t>(t)] =
+                        std::make_unique<DensityMatrix>(circuit.n_qubits);
+                    m = own[static_cast<std::size_t>(t)].get();
                 }
-                failure.leave_instructions();
+                return ShotWorker{m,
+                                  snap,
+                                  &plan,
+                                  &circuit,
+                                  &noise_model,
+                                  &apply_inst,
+                                  prefix_end,
+                                  n_clbits,
+                                  shots > 0,
+                                  !serial,
+                                  serial ? &*runner : nullptr,
+                                  watcher,
+                                  std::vector<int>(static_cast<std::size_t>(n_clbits), 0),
+                                  {}};
+            };
 
-                // Record shot result
-                if (shots > 0) {
-                    std::string bits(n_clbits, '0');
-                    for (int c = 0; c < n_clbits; ++c) {
-                        if (clreg[c]) bits[n_clbits - 1 - c] = '1';
-                    }
-                    result.counts[bits]++;
-                    failure.shot_done();
-                }
+            detail::OrderedCounts chunk_counts(chunks.count);
+            detail::ChunkFailures chunk_failures(chunks.count);
+            const int owner = detail::run_shot_chunks(chunks, team, base_seed, 0, chunk_counts,
+                                                      chunk_failures, make_worker);
+            if (std::optional<detail::ShotFailure> failed = chunk_failures.take()) {
+                // The serial record: the shots before the failing one, and that
+                // shot's matrix, whichever thread ran it.
+                result.counts = chunk_counts.take();
+                for (auto& [key, count] : failed->partial) result.counts[key] += count;
+                failure.adopt_shot_failure(failed->shot, failed->instruction, failed->inst,
+                                           failed->shot, failed->started);
+                if (!std::holds_alternative<std::monostate>(failed->state))
+                    adopted_state = std::move(failed->state);
+                std::rethrow_exception(failed->error);
             }
+            result.counts = chunk_counts.take();
+            // The final state is the last shot's, held by the thread that ran
+            // the last chunk; its matrix becomes the run's.
+            if (owner != 0) std::swap(dm, *own[static_cast<std::size_t>(owner)]);
+            failure.begin_work();
+            failure.set_shot(n_shots - 1);
+            failure.set_shots_completed(shots);
 
-            // `dm` is the last shot's final (collapsed) state.
             if (!dm_is_finite_with_trace(dm)) {
                 detail::raise<RuntimeFailure>("DensityMatrixSimulator::run",
                     "the final state is zero or not finite, so there is no state to "
                     "return; a matrix or channel let through by ValidationOptions Warn "
                     "or Ignore can do this");
             }
-
         } else {
             // Standard single-pass mode: gates applied once, MEASURE deferred.
             DensityMatrix& dm = dm_slot.emplace(circuit.n_qubits);
@@ -1332,39 +1463,92 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 std::vector<double> cum(probs.size());
                 std::partial_sum(probs.begin(), probs.end(), cum.begin());
 
-                std::mt19937_64 rng(base_seed);
-                std::uniform_real_distribution<double> udist(0.0, 1.0);
+                // Each shot is one draw from cum and, under readout error, one
+                // flip draw per measured qubit. The shots run in chunks across
+                // a team (detail::run_shot_chunks), chunk c drawing from its
+                // own stream, so the counts do not depend on the team. A
+                // thread holds no matrix of its own, only its chunk's counts.
+                struct SampleWorker {
+                    const std::vector<double>* cum;
+                    const std::vector<std::pair<int, int>>* meas;
+                    const NoiseModel* noise_model;
+                    int n_qubits;
+                    int n_clbits;
 
-                for (int s = 0; s < shots; ++s) {
-                    const size_t outcome = detail::born_draw_cumulative(cum, udist(rng));
-
-                    if (meas.empty()) {
-                        std::string bits(circuit.n_qubits, '0');
-                        for (int b = circuit.n_qubits - 1; b >= 0; --b) {
-                            if ((outcome >> b) & 1)
-                                bits[circuit.n_qubits - 1 - b] = '1';
+                    void run_chunk(int, int first_shot, int n, ShotRng& rng,
+                                   std::unordered_map<std::string, int>& counts,
+                                   detail::ShotFailure& out) {
+                        int shot = first_shot;
+                        try {
+                            std::uniform_real_distribution<double> udist(0.0, 1.0);
+                            for (; shot < first_shot + n; ++shot)
+                                counts[key(detail::born_draw_cumulative(*cum, udist(rng)),
+                                           rng, udist)]++;
+                        } catch (...) {
+                            out.shot = shot;
+                            out.started = true;
+                            out.error = std::current_exception();
+                            out.partial = std::move(counts);
                         }
-                        result.counts[bits]++;
-                    } else {
-                        std::string bits(n_clbits, '0');
-                        for (const auto& [q, c] : meas) {
+                    }
+
+                    // The shot's key. With no MEASURE the whole register is
+                    // read, qubit-indexed; otherwise each measured qubit's bit
+                    // lands at its clbit, flipped through the qubit's
+                    // confusion matrix under readout error (issue #33). An
+                    // ideal model draws nothing extra.
+                    std::string key(std::size_t outcome, ShotRng& rng,
+                                    std::uniform_real_distribution<double>& udist) const {
+                        if (meas->empty()) {
+                            std::string bits(static_cast<std::size_t>(n_qubits), '0');
+                            for (int b = n_qubits - 1; b >= 0; --b)
+                                if ((outcome >> b) & 1)
+                                    bits[static_cast<std::size_t>(n_qubits - 1 - b)] = '1';
+                            return bits;
+                        }
+                        std::string bits(static_cast<std::size_t>(n_clbits), '0');
+                        for (const auto& [q, c] : *meas) {
                             if (c < 0 || c >= n_clbits) continue;
                             int bit = static_cast<int>((outcome >> q) & 1);
-                            // Readout error (issue #33): per-shot, per-qubit
-                            // flip of the recorded bit through the confusion
-                            // matrix. Ideal models draw nothing extra, so
-                            // seeded ideal runs are bit-for-bit unchanged.
-                            auto ro_it = noise_model.readout_errors.find(q);
-                            if (ro_it != noise_model.readout_errors.end()) {
+                            auto ro_it = noise_model->readout_errors.find(q);
+                            if (ro_it != noise_model->readout_errors.end()) {
                                 const double flip_p = (bit == 0)
                                     ? ro_it->second.prob_meas_1_prep_0
                                     : ro_it->second.prob_meas_0_prep_1;
                                 if (flip_p > 0.0 && udist(rng) < flip_p) bit ^= 1;
                             }
-                            if (bit) bits[n_clbits - 1 - c] = '1';
+                            if (bit) bits[static_cast<std::size_t>(n_clbits - 1 - c)] = '1';
                         }
-                        result.counts[bits]++;
+                        return bits;
                     }
+                };
+
+                const detail::ShotChunks chunks = detail::chunk_shots(shots);
+                detail::ShotTeamRequest request;
+                request.entry_point = "DensityMatrixSimulator::run";
+                request.max_parallel_shots = options.max_parallel_shots;
+                request.memory = options.shot_memory;
+                request.cap_bytes = cap_bytes;
+                // The matrix, its probabilities and their running sum.
+                request.held_bytes = detail::saturating_add(
+                    one_matrix, detail::saturating_mul(2 * sizeof(double), probs.size()));
+                request.per_thread_bytes = 0;
+                request.work_per_shot = static_cast<std::size_t>(circuit.n_qubits) + meas.size();
+                const detail::ShotTeam team = detail::shot_team(request, chunks);
+
+                const SampleWorker sampler{&cum, &meas, &noise_model, circuit.n_qubits,
+                                           n_clbits};
+                detail::OrderedCounts chunk_counts(chunks.count);
+                detail::ChunkFailures chunk_failures(chunks.count);
+                detail::run_shot_chunks(chunks, team, base_seed, 0, chunk_counts,
+                                        chunk_failures, [&](int) { return sampler; });
+                result.counts = chunk_counts.take();
+                if (std::optional<detail::ShotFailure> failed = chunk_failures.take()) {
+                    // The shots drawn before the failing one stay in the
+                    // record. Sampling belongs to no shot's trajectory, so the
+                    // record names none.
+                    for (auto& [key, count] : failed->partial) result.counts[key] += count;
+                    std::rethrow_exception(failed->error);
                 }
             }
 
@@ -1405,7 +1589,12 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 // failed the run; the run's own failure is what the caller
                 // must see.
             }
-            if (dm_slot) {
+            if (adopted_state) {
+                // A shot loop's failing shot: its matrix is the record's,
+                // whichever thread held it.
+                state = std::move(*adopted_state);
+                dm_slot.reset();
+            } else if (dm_slot) {
                 state = std::move(*dm_slot);
                 dm_slot.reset();
             }

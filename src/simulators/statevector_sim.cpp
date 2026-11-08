@@ -1535,6 +1535,10 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             // The final state is the last shot's, held by the thread that ran
             // the last chunk; its buffer becomes the run's.
             if (owner != 0) std::swap(sv_work, own[static_cast<std::size_t>(owner)]);
+            // The shots ran through the workers' positions, so the work is
+            // marked here: a failure in the checks after the loop still leaves
+            // a record, naming the last shot.
+            failure.begin_work();
             failure.set_shot(shots - 1);
             failure.set_shots_completed(shots);
             if (!serial) clock.charge(&PhaseTimes::evolution);

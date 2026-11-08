@@ -65,6 +65,8 @@ BackendResult LocalBackend::run(
         case SimType::DENSITY_MATRIX: {
             DensityMatrixSimulator sim;
             sim.options.max_memory_mb = config.max_memory_mb;
+            sim.options.max_parallel_shots = config.max_parallel_shots;
+            sim.options.shot_memory = config.shot_memory;
             auto dm_result = sim.run(circuit, noise_model, shots, seed);
             result.counts = std::move(dm_result.counts);
             result.simulation_time_seconds = dm_result.simulation_time_seconds;
