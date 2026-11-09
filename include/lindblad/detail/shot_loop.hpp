@@ -98,6 +98,7 @@ struct ShotTeamRequest {
     std::uint64_t held_bytes = 0;        // what the run holds with one working state
     std::uint64_t per_thread_bytes = 0;  // one more thread's working state and scratch
     std::size_t work_per_shot = 0;       // one shot's work, in one-qubit-gate amplitudes
+    std::size_t min_cached_states = 0;   // the automatic rule's margin: 0 SHOT_TEAM_MIN_CACHED_STATES
     bool serial_only = false;            // the backend needs one thread for this run
 };
 
@@ -113,8 +114,9 @@ struct ShotTeam {
 //     inside a parallel region run on one thread. Exact asking for k >= 2
 //     inside a parallel region is refused, since it cannot be honoured.
 //   - The team wanted is max_parallel_shots when it is >= 2. Automatic runs on
-//     one thread unless SHOT_TEAM_MIN_CACHED_STATES per-thread states fit one
-//     last-level-cache instance (types.hpp), and is then
+//     one thread unless min_cached_states (0 = SHOT_TEAM_MIN_CACHED_STATES)
+//     per-thread states fit one last-level-cache instance (types.hpp), and is
+//     then
 //     min(available threads, shots * work_per_shot / parallel_grain()), the
 //     statevector kernels' rule applied to the whole run's work.
 //   - Never more threads than chunks.

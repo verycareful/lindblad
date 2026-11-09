@@ -68,6 +68,10 @@ Fields and defaults:
   [density-matrix options](simulators.md#densitymatrixsimulator-options)). A
   negative `max_parallel_shots` is refused with `InvalidArgument` whichever
   backend the run would reach
+- `shot_team_min_cached_states = 0`: how many states must fit one
+  last-level-cache instance before an automatic shot team goes across threads;
+  0 is the library's value (8). Passed to the same three simulators (see the
+  statevector [Options](simulators.md#options))
 - `shot_counting = ShotCounting::Auto`, `shot_counting_distinct_fraction = 0`:
   how a run sampled shot by shot keeps its counts, passed to the same three
   simulators (see the statevector [Options](simulators.md#options)). The counts

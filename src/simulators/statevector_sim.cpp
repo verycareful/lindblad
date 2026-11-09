@@ -1100,6 +1100,8 @@ static void record_options(detail::FailureCollector& failure,
     failure.add_option("prefix_reuse", option_value(o.prefix_reuse));
     failure.add_option("max_parallel_shots", option_value(o.max_parallel_shots));
     failure.add_option("shot_memory", option_value(o.shot_memory));
+    failure.add_option("shot_team_min_cached_states",
+                       option_value(o.shot_team_min_cached_states));
     failure.add_option("shot_counting", option_value(o.shot_counting));
     failure.add_option("shot_counting_distinct_fraction",
                        option_value(o.shot_counting_distinct_fraction));
@@ -1393,6 +1395,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             request.entry_point = ctx;
             request.max_parallel_shots = options.max_parallel_shots;
             request.memory = options.shot_memory;
+            request.min_cached_states = options.shot_team_min_cached_states;
             request.cap_bytes = cap_bytes;
             request.held_bytes = detail::saturating_add(footprint, reuse ? state_bytes : 0);
             request.per_thread_bytes = state_bytes;

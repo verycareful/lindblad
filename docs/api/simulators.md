@@ -161,10 +161,10 @@ failed run names the lowest-numbered failing shot, and its counts hold exactly
 the shots before it, as a run on one thread would. A seed reproduces a run's
 counts within one release of the library, not across releases.
 
-The team comes from `Options::max_parallel_shots` (0, automatic, by default)
-and `Options::shot_memory`, each extra thread holding a state of its own (a
-thread sampling terminal measurements holds only its counts); while it runs,
-each thread runs its gates alone. A run called from inside a parallel region
+The team comes from `Options::max_parallel_shots` (0, automatic, by default),
+`Options::shot_team_min_cached_states` and `Options::shot_memory`, each extra
+thread holding a state of its own (a thread sampling terminal measurements
+holds only its counts); while it runs, each thread runs its gates alone. A run called from inside a parallel region
 runs its shots on one thread, and so does a run with an observer attached
 whose shots are trajectories. Sampling terminal measurements fires no
 observer, since the observers fire once on the single gate pass before it, so
@@ -244,6 +244,7 @@ struct Options {
     PrefixReuse prefix_reuse = PrefixReuse::Hardware;
     int max_parallel_shots = 0;    // shot threads; 0 = automatic, 1 = serial
     ShotMemory shot_memory = ShotMemory::Shrink;
+    std::size_t shot_team_min_cached_states = 0;  // 0 = default (8)
     ShotCounting shot_counting = ShotCounting::Auto;
     double shot_counting_distinct_fraction = 0;  // 0 = default (0.5)
     int precision = 64;            // 32 or 64 bit (not yet used)
@@ -316,6 +317,13 @@ struct Options {
   with every gate threaded as usual; `k >= 2` is at most `k` threads, never more
   than the run has chunks. The counts do not depend on it. A negative value is
   refused with `InvalidArgument`
+- **shot_team_min_cached_states**: how many states must fit one last-level-cache
+  instance before an automatic team (`max_parallel_shots = 0`) puts the shots
+  across threads. `0`, the default, is `SHOT_TEAM_MIN_CACHED_STATES` (8). A
+  smaller value moves the hand-over to wider registers (each halving admits one
+  more qubit), a larger one to narrower ones. A named team
+  (`max_parallel_shots >= 2`) does not consult it, and a value so large that no
+  state fits keeps every automatic run serial. The counts do not depend on it
 - **shot_memory**: how the shot threads' states meet `max_memory_mb`, each
   thread holding one state ($16 \cdot 2^n$ bytes) beside the run's own and the
   prefix snapshot. `ShotMemory::Shrink`, the default, runs as many threads as
@@ -659,6 +667,7 @@ struct Options {
     PrefixReuse prefix_reuse = PrefixReuse::Hardware;
     int max_parallel_shots = 0;                        // shot threads; 0 = automatic, 1 = serial
     ShotMemory shot_memory = ShotMemory::Shrink;
+    std::size_t shot_team_min_cached_states = 0;       // 0 = default (8)
     ShotCounting shot_counting = ShotCounting::Auto;
     double shot_counting_distinct_fraction = 0;        // 0 = default (0.5)
 };
@@ -690,6 +699,10 @@ struct Options {
   is serial, with every kernel threaded as usual; `k >= 2` is at most `k`
   threads, never more than the run has chunks. The counts do not depend on it.
   A negative value is refused with `InvalidArgument`
+- **shot_team_min_cached_states**: the margin of the automatic trajectory team,
+  as for the statevector simulator: how many density matrices must fit one
+  last-level-cache instance (`0` is `SHOT_TEAM_MIN_CACHED_STATES`, 8). Terminal
+  sampling holds no matrix per thread, so no value keeps it on one thread
 - **shot_memory**: how the trajectory threads' matrices meet `max_memory_mb`,
   each thread holding one density matrix ($16 \cdot 4^n$ bytes) beside the
   run's own and the prefix snapshot. The modes are those of the statevector
@@ -897,6 +910,7 @@ sim.options.elimination = StabilizerState::Elimination::Plain;
 sim.options.max_memory_mb = 0;  // MiB; 0 = automatic
 sim.options.max_parallel_shots = 0;  // shot threads; 0 = automatic, 1 = serial
 sim.options.shot_memory = ShotMemory::Shrink;
+sim.options.shot_team_min_cached_states = 0;  // 0 = default (8)
 sim.options.shot_counting = ShotCounting::Auto;
 sim.options.shot_counting_distinct_fraction = 0;  // 0 = default (0.5)
 ```
@@ -916,6 +930,11 @@ statevector simulator: `0`, the default, is automatic, `1` is serial, and
 is small beside a last-level cache, so the automatic team grows with the run's
 work alone. The counts and `final_state` do not depend on it. A negative value
 is refused with `InvalidArgument`.
+
+`shot_team_min_cached_states` is the margin of the automatic team, as for the
+statevector simulator (`0` is `SHOT_TEAM_MIN_CACHED_STATES`, 8). A tableau is
+small beside a last-level cache, so it moves the hand-over only for a register
+wide enough that the tableaux no longer fit.
 
 `shot_memory` is how the shot threads meet `max_memory_mb`, with the modes of
 the statevector simulator: `Shrink` (the default), `SerialIfShort`, `Exact` and

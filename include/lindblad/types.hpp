@@ -628,7 +628,8 @@ inline constexpr int SHOT_CHUNK_TARGET = 512;
 // last-level-cache instance (hw::llc_bytes); the team is then sized by the
 // run's work, as a gate kernel's is. Below that, each shot thread streams its
 // own state from memory with its gates on one thread, and the run is faster
-// with its shots on one thread and every gate threaded.
+// with its shots on one thread and every gate threaded. A run moves the margin
+// with Options::shot_team_min_cached_states (0 keeps this value).
 //
 // The value is measured: on a 32 MiB-L3 part with 24 threads, statevector runs
 // sampled shot by shot (a mid-circuit measurement, and three rounds of

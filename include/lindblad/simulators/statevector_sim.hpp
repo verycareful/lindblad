@@ -118,6 +118,13 @@ public:
         // How the shot threads share the memory cap; see ShotMemory in
         // types.hpp.
         ShotMemory shot_memory = ShotMemory::Shrink;
+        // How many of its working states must fit in one last-level cache
+        // instance before an automatic team (max_parallel_shots = 0) puts a
+        // run's shots across threads: 0 is SHOT_TEAM_MIN_CACHED_STATES; see
+        // types.hpp. A smaller value moves the hand-over to wider registers,
+        // a larger one to narrower. A named team (max_parallel_shots >= 2)
+        // does not consult it, and counts are the same at any value.
+        std::size_t shot_team_min_cached_states = 0;
         // How a run sampled shot by shot keeps its counts, and the Auto mode's
         // cutoff (0 = SHOT_COUNTING_DISTINCT_FRACTION, else in (0, 1]; other
         // values are refused); see ShotCounting in types.hpp. Counts are the

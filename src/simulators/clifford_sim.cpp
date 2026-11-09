@@ -1507,6 +1507,8 @@ static void record_options(detail::FailureCollector& failure,
     failure.add_option("max_memory_mb", detail::option_value(o.max_memory_mb));
     failure.add_option("max_parallel_shots", detail::option_value(o.max_parallel_shots));
     failure.add_option("shot_memory", detail::option_value(o.shot_memory));
+    failure.add_option("shot_team_min_cached_states",
+                       detail::option_value(o.shot_team_min_cached_states));
     failure.add_option("shot_counting", detail::option_value(o.shot_counting));
     failure.add_option("shot_counting_distinct_fraction",
                        detail::option_value(o.shot_counting_distinct_fraction));
@@ -1756,6 +1758,7 @@ CliffordSimulator::Result CliffordSimulator::run(
             request.entry_point = "CliffordSimulator::run";
             request.max_parallel_shots = options.max_parallel_shots;
             request.memory = options.shot_memory;
+            request.min_cached_states = options.shot_team_min_cached_states;
             request.cap_bytes = cap_bytes;
             request.held_bytes = three_tableaux;
             detail::OrderedCounts chunk_counts("CliffordSimulator::run", chunks.count,
@@ -2037,6 +2040,7 @@ CliffordSimulator::Result CliffordSimulator::run(
         request.entry_point = "CliffordSimulator::run";
         request.max_parallel_shots = options.max_parallel_shots;
         request.memory = options.shot_memory;
+        request.min_cached_states = options.shot_team_min_cached_states;
         request.cap_bytes = cap_bytes;
         request.held_bytes = three_tableaux;
         request.per_thread_bytes =

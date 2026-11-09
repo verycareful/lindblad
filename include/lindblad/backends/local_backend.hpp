@@ -60,6 +60,9 @@ public:
         // ShotMemory in types.hpp. 0 is automatic; negative is refused.
         int max_parallel_shots = 0;
         ShotMemory shot_memory = ShotMemory::Shrink;
+        // On whichever backend the run reaches; see StatevectorSimulator::
+        // Options::shot_team_min_cached_states. 0 is automatic.
+        std::size_t shot_team_min_cached_states = 0;
         // How the run's counts are kept, on whichever backend the run reaches;
         // see ShotCounting in types.hpp and StatevectorSimulator::Options::
         // shot_counting_distinct_fraction.

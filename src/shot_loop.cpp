@@ -45,16 +45,19 @@ ShotRng seeded_stream(std::uint64_t base_seed, std::uint32_t salt, std::uint64_t
 // The cache assumed when the operating system reports none: the size of one
 // L3 instance on current desktop and server parts. Too large an assumption
 // sends a run's shots across threads where they run slower; the automatic
-// rule's margin (SHOT_TEAM_MIN_CACHED_STATES) is what limits that cost.
+// rule's margin (SHOT_TEAM_MIN_CACHED_STATES, or the run's own) is what limits
+// that cost.
 constexpr std::size_t kLlcFallbackBytes = std::size_t(32) << 20;
 
 // Whether enough per-thread states fit one cache instance for an automatic
-// team to beat running every gate across threads (types.hpp).
-bool states_fit_cache(std::uint64_t per_thread_bytes) {
+// team to beat running every gate across threads (types.hpp). min_states is
+// the run's margin, 0 being SHOT_TEAM_MIN_CACHED_STATES.
+bool states_fit_cache(std::uint64_t per_thread_bytes, std::size_t min_states) {
     if (per_thread_bytes == 0) return true;
+    if (min_states == 0) min_states = SHOT_TEAM_MIN_CACHED_STATES;
     std::size_t llc = hw::llc_bytes();
     if (llc == 0) llc = kLlcFallbackBytes;
-    return static_cast<std::uint64_t>(llc) / per_thread_bytes >= SHOT_TEAM_MIN_CACHED_STATES;
+    return static_cast<std::uint64_t>(llc) / per_thread_bytes >= min_states;
 }
 
 bool in_parallel_region() noexcept {
@@ -122,7 +125,7 @@ ShotTeam shot_team(const ShotTeamRequest& req, const ShotChunks& chunks) {
     if (k >= 2) {
         wanted = static_cast<std::size_t>(k);
     } else {
-        if (!states_fit_cache(req.per_thread_bytes)) return serial();
+        if (!states_fit_cache(req.per_thread_bytes, req.min_cached_states)) return serial();
         const std::uint64_t work = saturating_mul(
             static_cast<std::uint64_t>(req.work_per_shot),
             static_cast<std::uint64_t>(chunks.shots));
