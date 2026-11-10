@@ -79,6 +79,8 @@ public:
     virtual void begin_run(int n_qubits, int n_shots);
     virtual void observe(const ObservationContext& ctx) = 0;
     virtual void end_run();
+    virtual std::unique_ptr<Observer> clone() const;       // null: keeps the run on one thread
+    virtual void merge(Observer& other);                   // folds a clone's firings in
 };
 
 struct PreflightContext {
@@ -334,7 +336,7 @@ its results into the run's `ObservationBundle`.
 
 | Observer | Reads | Notes |
 |---|---|---|
-| `StateObserver` | the state itself | native form by default; naming a form asks for a conversion |
+| `StateObserver` | the state itself | native form by default; naming a form asks for a conversion; keeps its run on one thread |
 | `ProbabilityObserver` | the full outcome distribution | `average()` across firings |
 | `AmplitudeObserver` | named amplitudes | cost is the number of indices, not `2^n` |
 | `ExpectationObserver` | expectation of a `SparsePauliOp` | `mean()` and `variance()` across firings |
@@ -359,6 +361,44 @@ struct FiringPoint {
 the k-th, which is the same k the observer's own results are indexed by. An
 observer can be attached to several anchors, so a bare sequence of readings
 would otherwise be ambiguous.
+
+### Observers on a shot team
+
+A run whose shots are trajectories (mid-circuit measurement, feedforward or a
+reset) can walk them across a team of threads, as set by `max_parallel_shots`
+on the simulator (see [Simulators](simulators.md)). An observer takes part by
+saying how it is split, with two virtual functions:
+
+- `clone()` returns a new observer with the same configuration (what it
+  watches, its label) and none of the results. Returning null, the default,
+  declines.
+- `merge(other)` appends the firings of a clone to this observer's own.
+
+Each chunk of shots fires into a clone of its own, on whichever thread runs it,
+in shot order and then instruction order within the chunk. When the team is
+done, the thread that called `run()` calls `merge` once per chunk, in chunk
+order, so the original ends the run holding the same firings in the same order
+as a run on one thread gives it: `points()` and every result vector are
+identical for every team size. The original receives no firing while a team
+runs. A clone gets `begin_run` with the arguments the run gave the original,
+and never `end_run`.
+
+One declining observer keeps the whole run on the calling thread, as does
+attaching a `StateObserver`, because the states it keeps are charged to the
+run's memory budget in shot order, which a team cannot reproduce. Every other
+built-in observer clones. A `CallbackObserver` declines, since a callback may
+touch anything. `clone()` is called from several threads at once on the same
+observer, so it must read configuration only.
+
+An observer that throws fails the run the same way on every team size: the
+record names the lowest failing shot, and the original holds the firings of the
+shots before it and of that shot up to the failing call.
+
+What a team's observers allocate is charged to a budget of each thread's own,
+with every thread's state counted as held. A temporary a guarded observation
+takes is therefore judged against the room left once all the states exist.
+Under `Cost::Unlimited`, and for what an observer you wrote allocates, the
+threads' temporaries are not summed against the cap.
 
 ### Entropy
 
@@ -505,9 +545,11 @@ early throws, which is the point of deciding it then. Deciding sooner changes WH
 reached, never what it is; an observer ruled out this way is then dropped, so it
 costs nothing per anchor for the rest of the run.
 
-Observers are invoked from the thread that called `run()`, in shot order and
-then instruction order, and never concurrently by that run, so an
-implementation may hold mutable state without locking. One plan handed to
+An observer whose `clone()` returns null, the default, is invoked from the
+thread that called `run()`, in shot order and then instruction order, and never
+concurrently by that run, so an implementation may hold mutable state without
+locking. Such an observer keeps the whole run on that thread (see
+[Observers on a shot team](#observers-on-a-shot-team)). One plan handed to
 several concurrent `run()` calls shares its observers across those threads, and
 the synchronisation is then the caller's, since the plan is the caller's.
 

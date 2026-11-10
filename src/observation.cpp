@@ -169,6 +169,14 @@ const std::string& Observer::label() const {
 void Observer::begin_run(int, int) {}
 void Observer::end_run() {}
 
+std::unique_ptr<Observer> Observer::clone() const { return nullptr; }
+
+void Observer::merge(Observer&) {
+    detail::raise_internal("Observer::merge",
+        "an observer that clones (clone() returned an observer) does not implement "
+        "merge(), so the firings of its clones have nowhere to go");
+}
+
 // =============================================================================
 // Anchor
 // =============================================================================
@@ -935,29 +943,30 @@ ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& 
                                      StateForm form, std::string_view entry_point)
     : plan_(plan), entry_point_(entry_point) {
     const int count = static_cast<int>(circuit.instructions.size());
+    Resolution res;
 
     for (const auto& attachment : plan.observations.attachments()) {
         switch (attachment.anchor.kind()) {
             case Anchor::Kind::Start:
-                start_.push_back(&attachment);
+                res.start.push_back(&attachment);
                 break;
             case Anchor::Kind::End:
-                end_.push_back(&attachment);
+                res.end.push_back(&attachment);
                 break;
             case Anchor::Kind::EveryInstruction:
-                every_.push_back(&attachment);
+                res.every.push_back(&attachment);
                 break;
             case Anchor::Kind::EveryLayer:
-                layer_.push_back(&attachment);
+                res.layer.push_back(&attachment);
                 break;
             case Anchor::Kind::BeforeMeasurement:
-                before_measure_.push_back(&attachment);
+                res.before_measure.push_back(&attachment);
                 break;
             case Anchor::Kind::AfterMeasurement:
-                after_measure_.push_back(&attachment);
+                res.after_measure.push_back(&attachment);
                 break;
             case Anchor::Kind::Predicate:
-                predicate_.push_back(&attachment);
+                res.predicate.push_back(&attachment);
                 break;
 
             case Anchor::Kind::InstructionIndex: {
@@ -971,7 +980,7 @@ ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& 
                         " does not resolve: the circuit has " +
                         std::to_string(count) + " instructions.");
                 }
-                indexed_[index].push_back(&attachment);
+                res.indexed[index].push_back(&attachment);
                 break;
             }
 
@@ -987,13 +996,13 @@ ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& 
                         "carries that label. A transpiler pass that removed or "
                         "replaced the instruction removes its label with it.");
                 }
-                labelled_[label].push_back(&attachment);
+                res.labelled[label].push_back(&attachment);
                 break;
             }
         }
     }
 
-    if (!layer_.empty()) compute_layer_boundaries(circuit);
+    if (!res.layer.empty()) compute_layer_boundaries(circuit, res);
 
     // Anchors are resolved first, above, because an anchor that names nothing is
     // a broken plan whatever the observers attached to it are, and its message
@@ -1044,32 +1053,111 @@ ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& 
             group.erase(std::remove_if(group.begin(), group.end(), is_dropped),
                         group.end());
         };
-        prune(start_);
-        prune(end_);
-        prune(every_);
-        prune(layer_);
-        prune(before_measure_);
-        prune(after_measure_);
-        prune(predicate_);
+        prune(res.start);
+        prune(res.end);
+        prune(res.every);
+        prune(res.layer);
+        prune(res.before_measure);
+        prune(res.after_measure);
+        prune(res.predicate);
         // Keyed groups lose their key as well as their contents, so an emptied
         // one does not keep the run looking watched.
-        for (auto it = indexed_.begin(); it != indexed_.end();) {
+        for (auto it = res.indexed.begin(); it != res.indexed.end();) {
             prune(it->second);
-            it = it->second.empty() ? indexed_.erase(it) : std::next(it);
+            it = it->second.empty() ? res.indexed.erase(it) : std::next(it);
         }
-        for (auto it = labelled_.begin(); it != labelled_.end();) {
+        for (auto it = res.labelled.begin(); it != res.labelled.end();) {
             prune(it->second);
-            it = it->second.empty() ? labelled_.erase(it) : std::next(it);
+            it = it->second.empty() ? res.labelled.erase(it) : std::next(it);
         }
     }
 
     // What survived, rather than what was attached: a run whose every observer
     // was ruled out does no per-instruction work at all, which is the whole
     // point of deciding early.
-    active_ = !start_.empty() || !end_.empty() || !every_.empty() ||
-              !layer_.empty() || !before_measure_.empty() ||
-              !after_measure_.empty() || !predicate_.empty() ||
-              !indexed_.empty() || !labelled_.empty();
+    active_ = !res.start.empty() || !res.end.empty() || !res.every.empty() ||
+              !res.layer.empty() || !res.before_measure.empty() ||
+              !res.after_measure.empty() || !res.predicate.empty() ||
+              !res.indexed.empty() || !res.labelled.empty();
+
+    // Which attachment stands for each surviving observer, and the observer
+    // each attachment calls. An observer on three anchors is one observer.
+    const auto& attachments = plan.observations.attachments();
+    first_attachment_ = attachments.data();
+    observer_.resize(attachments.size());
+    res.primary.assign(attachments.size(), -1);
+    for (std::size_t i = 0; i < attachments.size(); ++i) {
+        Observer* observer = attachments[i].observer.get();
+        observer_[i] = observer;
+        if (std::find(dropped.begin(), dropped.end(), observer) != dropped.end()) continue;
+        int primary = static_cast<int>(i);
+        for (std::size_t j = 0; j < i; ++j) {
+            if (attachments[j].observer.get() == observer) {
+                primary = res.primary[j];
+                break;
+            }
+        }
+        res.primary[i] = primary;
+    }
+    resolution_ = std::make_shared<const Resolution>(std::move(res));
+}
+
+// The fork constructor. Everything resolved is shared; only the observers are
+// this fork's own, filled in by fork().
+ObservationRunner::ObservationRunner(const ObservationRunner& base, RunBudget* budget)
+    : plan_(base.plan_),
+      entry_point_(base.entry_point_),
+      active_(base.active_),
+      resolution_(base.resolution_),
+      first_attachment_(base.first_attachment_),
+      observer_(base.observer_.size(), nullptr),
+      n_qubits_(base.n_qubits_),
+      n_shots_(base.n_shots_),
+      bundle_(base.bundle_),
+      budget_(budget) {}
+
+bool ObservationRunner::forkable() {
+    if (!active_) return false;
+    if (forkable_ < 0) {
+        forkable_ = 1;
+        const auto& primary = resolution_->primary;
+        for (std::size_t i = 0; i < primary.size(); ++i) {
+            if (primary[i] != static_cast<int>(i)) continue;
+            if (observer_[i]->clone() == nullptr) {
+                forkable_ = 0;
+                break;
+            }
+        }
+    }
+    return forkable_ == 1;
+}
+
+std::unique_ptr<ObservationRunner> ObservationRunner::fork(RunBudget* budget) const {
+    std::unique_ptr<ObservationRunner> out(new ObservationRunner(*this, budget));
+    const auto& primary = resolution_->primary;
+    for (std::size_t i = 0; i < primary.size(); ++i) {
+        if (primary[i] < 0) continue;
+        if (primary[i] == static_cast<int>(i)) {
+            std::unique_ptr<Observer> clone = observer_[i]->clone();
+            if (!clone) return nullptr;
+            out->observer_[i] = clone.get();
+            out->owned_.push_back(std::move(clone));
+        } else {
+            out->observer_[i] = out->observer_[static_cast<std::size_t>(primary[i])];
+        }
+    }
+    // The clones see what the original saw: one begin_run per live attachment.
+    for (std::size_t i = 0; i < primary.size(); ++i) {
+        if (primary[i] >= 0) out->observer_[i]->begin_run(n_qubits_, n_shots_);
+    }
+    return out;
+}
+
+void ObservationRunner::merge(ObservationRunner& forked) {
+    const auto& primary = resolution_->primary;
+    for (std::size_t i = 0; i < primary.size(); ++i) {
+        if (primary[i] == static_cast<int>(i)) observer_[i]->merge(*forked.observer_[i]);
+    }
 }
 
 // Layer boundaries from the scheduler's own timing rule (asap_schedule_times),
@@ -1085,7 +1173,8 @@ ObservationRunner::ObservationRunner(const RunPlan& plan, const QuantumCircuit& 
 // the layers it interleaves, and no boundary is recorded for them: the state
 // "at the end of that layer" never exists during this run, and reporting some
 // other state under its name would be the wrong answer.
-void ObservationRunner::compute_layer_boundaries(const QuantumCircuit& circuit) {
+void ObservationRunner::compute_layer_boundaries(const QuantumCircuit& circuit,
+                                                 Resolution& resolution) {
     const std::vector<int> times = asap_schedule_times(circuit);
     const int count = static_cast<int>(times.size());
     if (count == 0) return;
@@ -1099,11 +1188,12 @@ void ObservationRunner::compute_layer_boundaries(const QuantumCircuit& circuit) 
     int prefix_max = -1;
     for (int i = 0; i < count; ++i) {
         prefix_max = std::max(prefix_max, times[static_cast<std::size_t>(i)]);
-        if (placed_by[static_cast<std::size_t>(prefix_max)] == i + 1) layer_end_.insert(i);
+        if (placed_by[static_cast<std::size_t>(prefix_max)] == i + 1) resolution.layer_end.insert(i);
     }
 }
 
 void ObservationRunner::begin_run(int n_qubits, int n_shots) {
+    n_qubits_ = n_qubits;
     n_shots_ = n_shots;
     for (const auto& attachment : plan_.observations.attachments()) {
         attachment.observer->begin_run(n_qubits, n_shots);
@@ -1168,7 +1258,7 @@ void ObservationRunner::fire(const std::vector<const ObservationPlan::Attachment
                                      phase,
                                      budget_,
                                      entry_point_};
-        attachment->observer->observe(ctx);
+        observer_of(*attachment).observe(ctx);
     }
 }
 
@@ -1176,14 +1266,14 @@ void ObservationRunner::fire(const std::vector<const ObservationPlan::Attachment
 // executed: the start of the first shot, or just before its first
 // instruction. Everything later is MidRun, where stopping would discard work.
 void ObservationRunner::at_start(const StateView& state) {
-    if (start_.empty()) return;
-    fire(start_, state, -1, shot_ == 0 ? RunPhase::BeforeFirstGate : RunPhase::MidRun);
+    if (resolution_->start.empty()) return;
+    fire(resolution_->start, state, -1, shot_ == 0 ? RunPhase::BeforeFirstGate : RunPhase::MidRun);
 }
 
 void ObservationRunner::at_end(const StateView& state, int last_index) {
     rethrow_if_failed();
-    if (end_.empty()) return;
-    fire(end_, state, last_index, RunPhase::MidRun);
+    if (resolution_->end.empty()) return;
+    fire(resolution_->end, state, last_index, RunPhase::MidRun);
 }
 
 void ObservationRunner::capture_failure(std::exception_ptr failure) {
@@ -1203,35 +1293,35 @@ void ObservationRunner::before_instruction(int index, const Instruction& inst,
                                            const StateView& state) {
     // The first point after a firing guard where throwing is safe.
     rethrow_if_failed();
-    if (before_measure_.empty()) return;
+    if (resolution_->before_measure.empty()) return;
     if (inst.type != Instruction::GateType::MEASURE) return;
-    fire(before_measure_, state, index,
+    fire(resolution_->before_measure, state, index,
          (shot_ == 0 && index == 0) ? RunPhase::BeforeFirstGate : RunPhase::MidRun);
 }
 
 void ObservationRunner::after_instruction(int index, const Instruction& inst,
                                           const StateView& state) {
-    if (!every_.empty()) fire(every_, state, index, RunPhase::MidRun);
+    if (!resolution_->every.empty()) fire(resolution_->every, state, index, RunPhase::MidRun);
 
-    if (!indexed_.empty()) {
-        const auto it = indexed_.find(index);
-        if (it != indexed_.end()) fire(it->second, state, index, RunPhase::MidRun);
+    if (!resolution_->indexed.empty()) {
+        const auto it = resolution_->indexed.find(index);
+        if (it != resolution_->indexed.end()) fire(it->second, state, index, RunPhase::MidRun);
     }
 
-    if (!labelled_.empty() && !inst.label.empty()) {
-        const auto it = labelled_.find(inst.label);
-        if (it != labelled_.end()) fire(it->second, state, index, RunPhase::MidRun);
+    if (!resolution_->labelled.empty() && !inst.label.empty()) {
+        const auto it = resolution_->labelled.find(inst.label);
+        if (it != resolution_->labelled.end()) fire(it->second, state, index, RunPhase::MidRun);
     }
 
-    if (!layer_.empty() && layer_end_.count(index) != 0) {
-        fire(layer_, state, index, RunPhase::MidRun);
+    if (!resolution_->layer.empty() && resolution_->layer_end.count(index) != 0) {
+        fire(resolution_->layer, state, index, RunPhase::MidRun);
     }
 
-    if (!after_measure_.empty() && inst.type == Instruction::GateType::MEASURE) {
-        fire(after_measure_, state, index, RunPhase::MidRun);
+    if (!resolution_->after_measure.empty() && inst.type == Instruction::GateType::MEASURE) {
+        fire(resolution_->after_measure, state, index, RunPhase::MidRun);
     }
 
-    for (const auto* attachment : predicate_) {
+    for (const auto* attachment : resolution_->predicate) {
         if (attachment->anchor.predicate()(inst, index)) {
             static const std::vector<int> no_clbits;
             const std::string anchor = attachment->anchor.name();
@@ -1239,7 +1329,7 @@ void ObservationRunner::after_instruction(int index, const Instruction& inst,
                                          clbits_ ? *clbits_ : no_clbits, plan_,
                                          bundle_, RunPhase::MidRun, budget_,
                                          entry_point_};
-            attachment->observer->observe(ctx);
+            observer_of(*attachment).observe(ctx);
         }
     }
 }

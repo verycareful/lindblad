@@ -181,10 +181,14 @@ the team existed once the threads slept. `OMP_WAIT_POLICY=passive` (the standard
 variable; libomp's `KMP_BLOCKTIME=0` is the same here) makes idle threads sleep
 instead, at the price of a wake-up on each new region. It changes timing only,
 never results. A run called from inside a parallel region
-runs its shots on one thread, and so does a run with an observer attached
-whose shots are trajectories. Sampling terminal measurements fires no
-observer, since the observers fire once on the single gate pass before it, so
-an observer does not hold that loop to one thread.
+runs its shots on one thread, and so does a run with an observer attached that
+does not split (a `CallbackObserver`, a `StateObserver`, or one you wrote
+without `clone()`); the other observers fire into a clone per chunk and are
+folded back in shot order, so a watched run gives the same results on every
+team (see [Observation](observation.md#observers-on-a-shot-team)). Sampling
+terminal measurements fires no observer, since the observers fire once on the
+single gate pass before it, so an observer does not hold that loop to one
+thread.
 
 Every sample and every collapse, on every backend, draws from the state's own
 normalised distribution: each outcome's weight divided by the total. A state

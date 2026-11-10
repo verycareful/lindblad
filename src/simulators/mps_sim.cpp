@@ -35,6 +35,7 @@
 #include "lindblad/detail/svd_truncate.hpp"
 #include "lindblad/detail/eigen_backend.hpp"
 #include "lindblad/detail/theta_harvest.hpp"
+#include "lindblad/detail/chunk_observers.hpp"
 #include "lindblad/detail/shot_loop.hpp"
 #include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/gates.hpp"
@@ -2173,8 +2174,8 @@ MPSSimulator::Result MPSSimulator::run(
         // `first` = the instruction to start from: 0, or the end of a prefix a
         // shared start chain has already run. `pos` is the position of the
         // thread running it and `rng` the stream its draws come from; `watch`
-        // is null unless an observer is attached, which keeps the run on one
-        // thread.
+        // is the runner the chunk fires into, null unless an observer is
+        // attached.
         auto run_trajectory = [&](MPSState& state, std::vector<int>& clreg,
                                   std::size_t first, ShotRng& shot_rng,
                                   detail::ShotPosition& pos,
@@ -2318,9 +2319,10 @@ MPSSimulator::Result MPSSimulator::run(
             trajectories.per_thread_bytes = thread_bytes;
             trajectories.work_per_shot = mps_trajectory_work(
                 circuit.n_qubits, max_bond_dim, one_site, two_site, shot_measures);
-            trajectories.serial_only = watcher != nullptr;
+            trajectories.serial_only = watcher != nullptr && !watcher->forkable();
             const detail::ShotTeam team = detail::shot_team(trajectories, chunks);
             const bool serial = team.threads <= 1;
+            detail::ChunkObservers chunk_observers(watcher, chunks.count, !serial);
 
             // One shot thread's work. Every thread evolves a chain of its own
             // (its slot, filled on that thread) under a budget of its own: the
@@ -2340,8 +2342,7 @@ MPSSimulator::Result MPSSimulator::run(
                 bool capped;                      // a team: kernels stay on this thread
                 std::uint64_t held;               // the run's budget: chains it keeps
                 detail::RunBudget* budget;
-                detail::ObservationRunner* runner;   // serial runs only
-                detail::ObservationRunner* watcher;  // when observers are active
+                detail::ChunkObservers* observers;   // null when nothing is watched
                 std::optional<MPSState>* slot;
                 std::vector<std::unique_ptr<MPSState>>* profiles;
                 std::vector<int> clreg;
@@ -2358,6 +2359,8 @@ MPSSimulator::Result MPSSimulator::run(
                     std::optional<MPSState>& chain = *slot;
                     int shot = first_shot;
                     try {
+                        detail::ObservationRunner* const watcher =
+                            observers ? observers->begin_chunk(c, budget) : nullptr;
                         auto& profile = (*profiles)[static_cast<std::size_t>(c)];
                         profile = std::make_unique<MPSState>(n_qubits, 1);
                         for (; shot < first_shot + n; ++shot) {
@@ -2370,7 +2373,7 @@ MPSSimulator::Result MPSSimulator::run(
                             chain->budget_link.shot = shot;
                             budget->set_state(chain_bytes(chain->tensors()));
                             clreg.assign(clreg.size(), 0);
-                            if (runner) runner->begin_shot(shot, clreg);
+                            if (watcher) watcher->begin_shot(shot, clreg);
                             (*run)(*chain, clreg, first, rng, pos, watcher);
 
                             if (has_measure) {
@@ -2413,12 +2416,25 @@ MPSSimulator::Result MPSSimulator::run(
                 detail::RunBudget* thread_budget = &budget;
                 std::uint64_t held = run_held;
                 if (!serial) {
+                    // A thread's chain stays within thread_bytes by
+                    // construction, so an unwatched thread is held to that
+                    // bound (or to its share). A watched thread's observers
+                    // also take copies, which are judged against the room the
+                    // run has left once every other thread's chain is there:
+                    // the run's cap, with the other threads' bounds held.
+                    const bool room = watcher != nullptr && team.share_bytes == 0;
                     budgets[static_cast<std::size_t>(t)] =
                         std::make_unique<detail::RunBudget>(
-                            team.share_bytes == 0 ? thread_bytes : team.share_bytes, 0,
-                            "MPSSimulator::run");
+                            room ? cap_bytes
+                                 : (team.share_bytes == 0 ? thread_bytes : team.share_bytes),
+                            0, "MPSSimulator::run");
                     thread_budget = budgets[static_cast<std::size_t>(t)].get();
-                    held = 0;
+                    held = room ? detail::saturating_add(
+                                      run_held,
+                                      detail::saturating_mul(
+                                          static_cast<std::uint64_t>(team.threads - 1),
+                                          thread_bytes))
+                                : 0;
                 }
                 return TrajectoryWorker{&run_trajectory,
                                         reuse ? &start : nullptr,
@@ -2431,8 +2447,7 @@ MPSSimulator::Result MPSSimulator::run(
                                         !serial,
                                         held,
                                         thread_budget,
-                                        serial ? &*runner : nullptr,
-                                        watcher,
+                                        watcher ? &chunk_observers : nullptr,
                                         &chains[static_cast<std::size_t>(t)],
                                         &chunk_profile,
                                         std::vector<int>(static_cast<std::size_t>(n_clbits), 0),
@@ -2461,9 +2476,13 @@ MPSSimulator::Result MPSSimulator::run(
                                            failed->shot, failed->started);
                 if (std::holds_alternative<MPSState>(failed->state))
                     adopted_state = std::move(std::get<MPSState>(failed->state));
+                // The observers hold the firings of every shot before the
+                // failing one and of the failing shot up to its instruction.
+                chunk_observers.merge_through(failed->shot / chunks.chunk);
                 std::rethrow_exception(failed->error);
             }
             result.counts = chunk_counts.take();
+            chunk_observers.merge_through(chunks.count - 1);
             // The returned chain is the last shot's, held by the thread that ran
             // the last chunk, carrying the run's totals: its own profile is
             // already inside its chunk's, so it starts from none.

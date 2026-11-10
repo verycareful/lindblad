@@ -78,6 +78,12 @@ protected:
     // that declined to produce one does not record a point for it either.
     void record(const ObservationContext& ctx, ObservationBundle::Payload payload);
 
+    // Appends a clone's firings (points and labelled payloads) after this
+    // observer's own and leaves the clone empty. Every subclass that clones
+    // calls it from merge(), then appends its own result vectors in the same
+    // order, so results[k] still belongs to point(k).
+    void absorb(BundleWriter& other);
+
 private:
     struct Entry {
         int index;
@@ -97,6 +103,9 @@ private:
 // Default is the backend's own representation, which never converts and never
 // refuses. Naming a form asks for that one, which answers to the knobs.
 
+// Not cloneable: the states it keeps are charged to the run's memory budget in
+// shot order, which a team cannot reproduce, so a run with a StateObserver
+// stays on one thread.
 class StateObserver : public BundleWriter {
 public:
     explicit StateObserver(std::string label = {})
@@ -133,6 +142,8 @@ public:
 
     bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
+    std::unique_ptr<Observer> clone() const override;
+    void merge(Observer& other) override;
 
     const std::vector<double>& probabilities(std::size_t k = 0) const;
 
@@ -156,6 +167,8 @@ public:
 
     bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
+    std::unique_ptr<Observer> clone() const override;
+    void merge(Observer& other) override;
 
     const std::vector<std::size_t>& indices() const { return indices_; }
     const std::vector<Complex128>& amplitudes(std::size_t k = 0) const;
@@ -183,6 +196,8 @@ public:
     // std::invalid_argument here, before the run (the rules in operators.hpp).
     bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
+    std::unique_ptr<Observer> clone() const override;
+    void merge(Observer& other) override;
 
     const std::vector<double>& values() const { return values_; }
     double value(std::size_t k = 0) const;
@@ -208,6 +223,8 @@ public:
     explicit PurityObserver(std::string label = {}) : BundleWriter(std::move(label)) {}
 
     void observe(const ObservationContext& ctx) override;
+    std::unique_ptr<Observer> clone() const override;
+    void merge(Observer& other) override;
 
     const std::vector<double>& values() const { return values_; }
     double value(std::size_t k = 0) const;
@@ -227,6 +244,8 @@ public:
         : BundleWriter(std::move(label)) {}
 
     void observe(const ObservationContext& ctx) override;
+    std::unique_ptr<Observer> clone() const override;
+    void merge(Observer& other) override;
 
     const std::vector<int>& clbits(std::size_t k = 0) const;
 
@@ -247,6 +266,8 @@ public:
 
     bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
+    std::unique_ptr<Observer> clone() const override;
+    void merge(Observer& other) override;
 
     const std::vector<int>& bond_dimensions(std::size_t k = 0) const;
 
@@ -261,6 +282,8 @@ public:
 
     bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
+    std::unique_ptr<Observer> clone() const override;
+    void merge(Observer& other) override;
 
     const std::vector<double>& values() const { return values_; }
 
@@ -296,6 +319,8 @@ public:
 
     bool preflight(const PreflightContext& ctx) override;
     void observe(const ObservationContext& ctx) override;
+    std::unique_ptr<Observer> clone() const override;
+    void merge(Observer& other) override;
 
     const std::vector<double>& values() const { return values_; }
     double value(std::size_t k = 0) const;

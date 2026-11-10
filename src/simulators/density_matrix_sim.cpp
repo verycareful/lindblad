@@ -20,6 +20,7 @@
 #include "lindblad/detail/failure_collector.hpp"
 #include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/preflight.hpp"
+#include "lindblad/detail/chunk_observers.hpp"
 #include "lindblad/detail/shot_loop.hpp"
 #include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/detail/validate.hpp"
@@ -1255,7 +1256,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             request.held_bytes = detail::saturating_add(one_matrix, reuse ? matrix_bytes : 0);
             request.per_thread_bytes = matrix_bytes;
             request.work_per_shot = dm_shot_work(dm.data.size(), n_inst - prefix_end);
-            request.serial_only = watcher != nullptr;
+            request.serial_only = watcher != nullptr && !watcher->forkable();
             const detail::ShotTeam team = detail::shot_team(request, chunks);
 
             std::unique_ptr<DensityMatrix> snapshot;
@@ -1289,17 +1290,20 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 int n_clbits;
                 bool record;                           // shots > 0
                 bool capped;
-                detail::ObservationRunner* runner;     // serial runs only
-                detail::ObservationRunner* watcher;    // when observers are active
+                detail::ChunkObservers* observers;     // null when nothing is watched
+                std::optional<detail::RunBudget> budget;  // a team thread's observers charge it
                 std::vector<int> clreg;
                 detail::ShotPosition pos;
 
-                void run_chunk(int, int first_shot, int n, ShotRng& rng,
+                void run_chunk(int c, int first_shot, int n, ShotRng& rng,
                                detail::ShotCounts& counts, detail::ShotFailure& out) {
                     const char* const where = "DensityMatrixSimulator::run";
                     int shot = first_shot;
                     try {
                         const detail::ScopedThreadCap one(capped ? 1 : 0, where);
+                        detail::ObservationRunner* const watcher =
+                            observers ? observers->begin_chunk(c, budget ? &*budget : nullptr)
+                                      : nullptr;
                         const StateView view(StateForm::DensityMatrix, dm, dm->n_qubits);
                         const std::size_t end = circuit->instructions.size();
                         for (; shot < first_shot + n; ++shot) {
@@ -1309,7 +1313,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                             else
                                 detail::apply_initial_state(*plan, *dm, where);
                             clreg.assign(clreg.size(), 0);
-                            if (runner) runner->begin_shot(shot, clreg);
+                            if (watcher) watcher->begin_shot(shot, clreg);
                             if (watcher) watcher->at_start(view);
 
                             for (std::size_t ii = first; ii < end; ++ii) {
@@ -1358,6 +1362,7 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             DensityMatrix* const run_matrix = &dm;
             const DensityMatrix* const snap = snapshot.get();
             const bool serial = team.threads <= 1;
+            detail::ChunkObservers chunk_observers(watcher, chunks.count, !serial);
             std::vector<std::unique_ptr<DensityMatrix>> own(
                 static_cast<std::size_t>(team.threads));
             const auto make_worker = [&](int t) {
@@ -1377,8 +1382,11 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                                   n_clbits,
                                   shots > 0,
                                   !serial,
-                                  serial ? &*runner : nullptr,
-                                  watcher,
+                                  watcher ? &chunk_observers : nullptr,
+                                  detail::team_budget(!serial && watcher != nullptr, team,
+                                                      cap_bytes, request.held_bytes,
+                                                      matrix_bytes,
+                                                      "DensityMatrixSimulator::run"),
                                   std::vector<int>(static_cast<std::size_t>(n_clbits), 0),
                                   {}};
             };
@@ -1398,9 +1406,13 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                                            failed->shot, failed->started);
                 if (!std::holds_alternative<std::monostate>(failed->state))
                     adopted_state = std::move(failed->state);
+                // The observers hold the firings of every shot before the
+                // failing one and of the failing shot up to its instruction.
+                chunk_observers.merge_through(failed->shot / chunks.chunk);
                 std::rethrow_exception(failed->error);
             }
             result.counts = chunk_counts.take();
+            chunk_observers.merge_through(chunks.count - 1);
             // The final state is the last shot's, held by the thread that ran
             // the last chunk; its matrix becomes the run's.
             if (owner != 0) std::swap(dm, *own[static_cast<std::size_t>(owner)]);

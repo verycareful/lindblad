@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <complex>
 #include <optional>
 #include <stdexcept>
@@ -46,6 +47,31 @@ std::shared_ptr<const Statevector> dense_state(const ObservationContext& ctx,
     return std::static_pointer_cast<const Statevector>(produced);
 }
 
+// The clone `other` must be of the same kind as the observer folding it in. A
+// mismatch is a defect in Lindblad's own folding, never a caller's mistake.
+template <class T>
+T& same_kind(Observer& other, const char* who) {
+    T* typed = dynamic_cast<T*>(&other);
+    if (typed == nullptr) {
+        detail::raise_internal(who, "merge was handed an observer of another kind");
+    }
+    return *typed;
+}
+
+// Moves `from` onto the end of `to`, in order, and leaves `from` empty.
+template <class V>
+void append_results(V& to, V& from) {
+    to.insert(to.end(), std::make_move_iterator(from.begin()),
+              std::make_move_iterator(from.end()));
+    from.clear();
+}
+
+// vector<bool> hands out proxies, which a move iterator cannot move from.
+void append_results(std::vector<bool>& to, std::vector<bool>& from) {
+    to.insert(to.end(), from.begin(), from.end());
+    from.clear();
+}
+
 }  // namespace
 
 // =============================================================================
@@ -58,6 +84,14 @@ void BundleWriter::record(const ObservationContext& ctx, ObservationBundle::Payl
     if (!labelled() || ctx.bundle == nullptr) return;
     bundle_ = ctx.bundle;
     entries_.push_back(Entry{ctx.instruction_index, ctx.shot, std::move(payload)});
+}
+
+void BundleWriter::absorb(BundleWriter& other) {
+    append_results(points_, other.points_);
+    append_results(entries_, other.entries_);
+    // Entries are written at end_run, to the bundle the first labelled firing
+    // saw. The original saw none during a team run, so it takes the clone's.
+    if (bundle_ == nullptr) bundle_ = other.bundle_;
 }
 
 const FiringPoint& BundleWriter::point(std::size_t k) const {
@@ -178,6 +212,16 @@ void ProbabilityObserver::observe(const ObservationContext& ctx) {
     record(ctx, std::move(probabilities));
 }
 
+std::unique_ptr<Observer> ProbabilityObserver::clone() const {
+    return std::make_unique<ProbabilityObserver>(label());
+}
+
+void ProbabilityObserver::merge(Observer& other) {
+    auto& from = same_kind<ProbabilityObserver>(other, "ProbabilityObserver::merge");
+    absorb(from);
+    append_results(values_, from.values_);
+}
+
 const std::vector<double>& ProbabilityObserver::probabilities(std::size_t k) const {
     check_index(k, values_.size(), "ProbabilityObserver");
     return values_[k];
@@ -260,6 +304,16 @@ void AmplitudeObserver::observe(const ObservationContext& ctx) {
     record(ctx, std::move(picked));
 }
 
+std::unique_ptr<Observer> AmplitudeObserver::clone() const {
+    return std::make_unique<AmplitudeObserver>(indices_, label());
+}
+
+void AmplitudeObserver::merge(Observer& other) {
+    auto& from = same_kind<AmplitudeObserver>(other, "AmplitudeObserver::merge");
+    absorb(from);
+    append_results(values_, from.values_);
+}
+
 const std::vector<Complex128>& AmplitudeObserver::amplitudes(std::size_t k) const {
     check_index(k, values_.size(), "AmplitudeObserver");
     return values_[k];
@@ -316,6 +370,16 @@ void ExpectationObserver::observe(const ObservationContext& ctx) {
     record(ctx, value);
 }
 
+std::unique_ptr<Observer> ExpectationObserver::clone() const {
+    return std::make_unique<ExpectationObserver>(observable_, label());
+}
+
+void ExpectationObserver::merge(Observer& other) {
+    auto& from = same_kind<ExpectationObserver>(other, "ExpectationObserver::merge");
+    absorb(from);
+    append_results(values_, from.values_);
+}
+
 double ExpectationObserver::value(std::size_t k) const {
     check_index(k, values_.size(), "ExpectationObserver");
     return values_[k];
@@ -356,6 +420,16 @@ void PurityObserver::observe(const ObservationContext& ctx) {
     record(ctx, purity);
 }
 
+std::unique_ptr<Observer> PurityObserver::clone() const {
+    return std::make_unique<PurityObserver>(label());
+}
+
+void PurityObserver::merge(Observer& other) {
+    auto& from = same_kind<PurityObserver>(other, "PurityObserver::merge");
+    absorb(from);
+    append_results(values_, from.values_);
+}
+
 double PurityObserver::value(std::size_t k) const {
     check_index(k, values_.size(), "PurityObserver");
     return values_[k];
@@ -368,6 +442,16 @@ double PurityObserver::value(std::size_t k) const {
 void ClassicalRegisterObserver::observe(const ObservationContext& ctx) {
     values_.push_back(ctx.clbits);
     record(ctx, ctx.clbits);
+}
+
+std::unique_ptr<Observer> ClassicalRegisterObserver::clone() const {
+    return std::make_unique<ClassicalRegisterObserver>(label());
+}
+
+void ClassicalRegisterObserver::merge(Observer& other) {
+    auto& from = same_kind<ClassicalRegisterObserver>(other, "ClassicalRegisterObserver::merge");
+    absorb(from);
+    append_results(values_, from.values_);
 }
 
 const std::vector<int>& ClassicalRegisterObserver::clbits(std::size_t k) const {
@@ -407,6 +491,16 @@ void BondDimensionObserver::observe(const ObservationContext& ctx) {
     record(ctx, std::move(bonds));
 }
 
+std::unique_ptr<Observer> BondDimensionObserver::clone() const {
+    return std::make_unique<BondDimensionObserver>(label());
+}
+
+void BondDimensionObserver::merge(Observer& other) {
+    auto& from = same_kind<BondDimensionObserver>(other, "BondDimensionObserver::merge");
+    absorb(from);
+    append_results(values_, from.values_);
+}
+
 const std::vector<int>& BondDimensionObserver::bond_dimensions(std::size_t k) const {
     check_index(k, values_.size(), "BondDimensionObserver");
     return values_[k];
@@ -434,6 +528,16 @@ void TruncationObserver::observe(const ObservationContext& ctx) {
     const double discarded = ctx.state.mps().truncation_error();
     values_.push_back(discarded);
     record(ctx, discarded);
+}
+
+std::unique_ptr<Observer> TruncationObserver::clone() const {
+    return std::make_unique<TruncationObserver>(label());
+}
+
+void TruncationObserver::merge(Observer& other) {
+    auto& from = same_kind<TruncationObserver>(other, "TruncationObserver::merge");
+    absorb(from);
+    append_results(values_, from.values_);
 }
 
 // =============================================================================
@@ -915,6 +1019,17 @@ void EntropyObserver::observe(const ObservationContext& ctx) {
     values_.push_back(value);
     entanglement_.push_back(entanglement);
     record(ctx, value);
+}
+
+std::unique_ptr<Observer> EntropyObserver::clone() const {
+    return std::make_unique<EntropyObserver>(region_, order_, label());
+}
+
+void EntropyObserver::merge(Observer& other) {
+    auto& from = same_kind<EntropyObserver>(other, "EntropyObserver::merge");
+    absorb(from);
+    append_results(values_, from.values_);
+    append_results(entanglement_, from.entanglement_);
 }
 
 double EntropyObserver::value(std::size_t k) const {

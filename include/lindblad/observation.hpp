@@ -200,12 +200,25 @@ struct ObservationContext {
 // privileged access, which is the property that keeps a user-written observer
 // a first-class citizen rather than an escape hatch.
 //
-// Threading: an observer is invoked from the thread that called run(), in shot
-// order and then instruction order, and never concurrently by that run. No
-// backend parallelises its shot loop, so an implementation may hold mutable
-// state without locking. What is NOT covered is one plan handed to several
-// run() calls at once: the observers are then shared across those threads and
-// the caller owns the synchronisation, since the plan belongs to the caller.
+// Threading: a run walks its shots across a team of threads when it can, and
+// an observer takes part only by saying how it is split. An observer whose
+// clone() returns null (the default) keeps the whole run on the thread that
+// called run(), where it is invoked in shot order and then instruction order,
+// never concurrently, and may hold mutable state without locking.
+//
+// An observer that implements clone() and merge() lets its run use a team.
+// Each chunk of shots then fires into a clone of its own, on whichever thread
+// runs that chunk, in shot order and then instruction order within the chunk.
+// After the team is done, the caller's thread folds the clones into the
+// original with merge(), one clone per chunk, in chunk order, so the original
+// ends up holding exactly the firings, in exactly the order, that a run on one
+// thread would have given it. A clone is never shared between threads. The
+// original receives no firing during a team run, only merge() calls and, at
+// the end of the run, end_run().
+//
+// What is NOT covered is one plan handed to several run() calls at once: the
+// observers are then shared across those threads and the caller owns the
+// synchronisation, since the plan belongs to the caller.
 //
 // An observer must not attach observers or mutate the plan from inside a call.
 
@@ -275,6 +288,28 @@ public:
 
     // Called once after the last shot. Running aggregates are finalised here.
     virtual void end_run();
+
+    // A new observer with this one's configuration (what it watches, its
+    // label) and none of its results, for one chunk of shots on a team. The
+    // runner calls begin_run on it, with the arguments the run gave this
+    // observer, before its first firing, and never calls end_run on it.
+    //
+    // Null, the default, declines: this observer, and so the whole run, stays
+    // on one thread. Decline when the observer cannot be split, or when what
+    // it keeps is charged to the run's memory budget in shot order
+    // (StateObserver), because a team cannot reproduce that order. A caller's
+    // observer needs no budget handling, as ObservationContext::budget says.
+    //
+    // Called from several threads at once on the same observer, so it must
+    // read configuration only.
+    virtual std::unique_ptr<Observer> clone() const;
+
+    // Folds a clone's firings into this observer, after the ones it already
+    // holds. `other` is a clone of *this (or of an observer of this type) and
+    // is left empty. Called on the thread that called run(), once per chunk,
+    // in chunk order. The default raises an internal error, since
+    // an observer that clones must say how its clones are folded back.
+    virtual void merge(Observer& other);
 };
 
 using ObserverPtr = std::shared_ptr<Observer>;
@@ -705,6 +740,26 @@ public:
     void begin_run(int n_qubits, int n_shots);
     void end_run();
 
+    // Whether this run can fire into forks: it is active and every observer
+    // that survived the pre-flight clones (Observer::clone). Decided once, by
+    // asking each observer for a clone and dropping it. A run that cannot fork
+    // stays on one thread.
+    bool forkable();
+
+    // A runner over clones of every surviving observer, for one chunk of shots
+    // on a team. Resolution (anchors, groups) is shared with this runner, so a
+    // fork costs one clone per observer. Call after begin_run: the clones are
+    // begun with the run's arguments. `budget` is what the clones' observers
+    // charge, the chunk's worker budget (null for a run without one). Safe to
+    // call from several threads at once. Null when an observer declines, which
+    // forkable() has ruled out. A fork is fired through the same calls as this
+    // runner; its end_run, flush_on_failure and merge are never used.
+    std::unique_ptr<ObservationRunner> fork(RunBudget* budget) const;
+
+    // Folds a fork's observers into this runner's, observer by observer, with
+    // Observer::merge. Forks are merged in chunk order on the calling thread.
+    void merge(ObservationRunner& forked);
+
     // The failure path's end of run: every observer's end_run, so firings
     // buffered in BundleWriters reach the bundle; an observer end_run has
     // already been called on is not called again. An observer that throws here
@@ -743,9 +798,37 @@ public:
 private:
     using Group = std::vector<const ObservationPlan::Attachment*>;
 
-    void compute_layer_boundaries(const QuantumCircuit& circuit);
+    // What anchor resolution produced: which attachments fire where. Built
+    // once, read-only afterwards, and shared by every fork of the runner.
+    struct Resolution {
+        Group start;
+        Group end;
+        Group every;
+        Group layer;
+        Group before_measure;
+        Group after_measure;
+        Group predicate;
+        std::unordered_map<int, Group> indexed;
+        std::unordered_map<std::string, Group> labelled;
+        std::unordered_set<int> layer_end;
+        // Per plan attachment: the first attachment of the same observer, or
+        // -1 when the pre-flight dropped that observer. An observer attached
+        // to several anchors is one observer, cloned and merged once.
+        std::vector<int> primary;
+    };
+
+    // The fork constructor: shares `base`'s resolution and owns clones.
+    ObservationRunner(const ObservationRunner& base, RunBudget* budget);
+
+    void compute_layer_boundaries(const QuantumCircuit& circuit, Resolution& resolution);
     void fire(const Group& group, const StateView& state, int instruction_index,
               RunPhase phase);
+
+    // The observer this runner calls for `attachment`: the plan's own, or this
+    // fork's clone of it.
+    Observer& observer_of(const ObservationPlan::Attachment& attachment) const {
+        return *observer_[static_cast<std::size_t>(&attachment - first_attachment_)];
+    }
 
     // Raise an observer failure caught in a destructor, if one is waiting.
     void rethrow_if_failed();
@@ -756,24 +839,18 @@ private:
     std::string_view entry_point_;
     bool active_ = false;
     std::size_t ended_count_ = 0;  // observers end_run has been called on
+    std::shared_ptr<const Resolution> resolution_;
+    const ObservationPlan::Attachment* first_attachment_ = nullptr;
+    std::vector<Observer*> observer_;                // per plan attachment
+    std::vector<std::unique_ptr<Observer>> owned_;   // a fork's clones
+    signed char forkable_ = -1;                      // -1 not asked yet, else 0 or 1
+    int n_qubits_ = 0;
 
     int shot_ = 0;
     int n_shots_ = 1;
     const std::vector<int>* clbits_ = nullptr;
     ObservationBundle* bundle_ = nullptr;
     RunBudget* budget_ = nullptr;
-
-    Group start_;
-    Group end_;
-    Group every_;
-    Group layer_;
-    Group before_measure_;
-    Group after_measure_;
-    Group predicate_;
-
-    std::unordered_map<int, Group> indexed_;
-    std::unordered_map<std::string, Group> labelled_;
-    std::unordered_set<int> layer_end_;
 };
 
 }  // namespace detail

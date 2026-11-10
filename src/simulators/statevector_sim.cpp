@@ -13,6 +13,7 @@
 #include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/report.hpp"
+#include "lindblad/detail/chunk_observers.hpp"
 #include "lindblad/detail/shot_loop.hpp"
 #include "lindblad/detail/sv_dense.hpp"
 #include "lindblad/detail/sv_groups.hpp"
@@ -1401,7 +1402,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             request.per_thread_bytes = state_bytes;
             request.work_per_shot = sv_shot_work(sv_work->dim,
                                                  exec->instructions.size() - prefix_end);
-            request.serial_only = observed_run;
+            request.serial_only = observed_run && !runner->forkable();
             const detail::ShotTeam team = detail::shot_team(request, chunks);
 
             std::unique_ptr<Statevector> snapshot;
@@ -1434,8 +1435,8 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                 int n_clbits;
                 bool has_measure;
                 bool capped;
-                detail::ObservationRunner* runner;     // serial runs only
-                detail::ObservationRunner* observing;  // when observers are active
+                detail::ChunkObservers* observers;     // null when nothing is watched
+                std::optional<detail::RunBudget> budget;  // a team thread's observers charge it
                 PhaseClock* clock;                     // serial runs only
                 std::vector<int> clreg;
                 detail::ShotPosition pos;
@@ -1447,17 +1448,20 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                         detail::apply_initial_state(*plan, *sv, "StatevectorSimulator::run");
                 }
 
-                void run_chunk(int, int first_shot, int n, ShotRng& rng,
+                void run_chunk(int c, int first_shot, int n, ShotRng& rng,
                                detail::ShotCounts& counts, detail::ShotFailure& out) {
                     int shot = first_shot;
                     try {
                         const detail::ScopedThreadCap one(capped ? 1 : 0,
                                                           "StatevectorSimulator::run");
+                        detail::ObservationRunner* const observing =
+                            observers ? observers->begin_chunk(c, budget ? &*budget : nullptr)
+                                      : nullptr;
                         for (; shot < first_shot + n; ++shot) {
                             pos.set_shot(shot);
                             restore();
                             clreg.assign(clreg.size(), 0);
-                            if (runner) runner->begin_shot(shot, clreg);
+                            if (observing) observing->begin_shot(shot, clreg);
                             sv_run_trajectory(*sim, *sv, *exec, clreg, n_clbits, rng, first,
                                               "StatevectorSimulator::run", observing, &pos);
                             if (clock) clock->charge(&PhaseTimes::evolution);
@@ -1487,6 +1491,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             Statevector* const run_buffer = sv_work.get();
             const Statevector* const snap = snapshot.get();
             const bool serial = team.threads <= 1;
+            detail::ChunkObservers chunk_observers(&*runner, chunks.count, !serial);
             std::vector<std::unique_ptr<Statevector>> own(
                 static_cast<std::size_t>(team.threads));
             const auto make_worker = [&](int t) {
@@ -1505,8 +1510,11 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                                   n_clbits,
                                   has_measure,
                                   !serial,
-                                  serial ? &*runner : nullptr,
-                                  observed_run ? &*runner : nullptr,
+                                  observed_run ? &chunk_observers : nullptr,
+                                  detail::team_budget(!serial && observed_run, team,
+                                                      cap_bytes, request.held_bytes,
+                                                      state_bytes,
+                                                      "StatevectorSimulator::run"),
                                   serial ? &clock : nullptr,
                                   std::vector<int>(static_cast<std::size_t>(n_clbits), 0),
                                   {}};
@@ -1530,9 +1538,13 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                                            failed->shot, failed->started);
                 if (!std::holds_alternative<std::monostate>(failed->state))
                     adopted_state = std::move(failed->state);
+                // The observers hold the firings of every shot before the
+                // failing one and of the failing shot up to its instruction.
+                chunk_observers.merge_through(failed->shot / chunks.chunk);
                 std::rethrow_exception(failed->error);
             }
             result.counts = chunk_counts.take();
+            chunk_observers.merge_through(chunks.count - 1);
             // The final state is the last shot's, held by the thread that ran
             // the last chunk; its buffer becomes the run's.
             if (owner != 0) std::swap(sv_work, own[static_cast<std::size_t>(owner)]);

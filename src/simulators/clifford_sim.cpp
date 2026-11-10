@@ -18,6 +18,7 @@
 #include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/report.hpp"
+#include "lindblad/detail/chunk_observers.hpp"
 #include "lindblad/detail/shot_loop.hpp"
 
 #include <optional>
@@ -2048,7 +2049,7 @@ CliffordSimulator::Result CliffordSimulator::run(
         request.work_per_shot = clifford_trajectory_work(
             circuit.n_qubits, shot_gates, shot_measures,
             static_cast<std::size_t>(has_measure ? n_clbits : circuit.n_qubits));
-        request.serial_only = watcher != nullptr;
+        request.serial_only = watcher != nullptr && !watcher->forkable();
         const detail::ShotTeam team = detail::shot_team(request, chunks);
 
         StabilizerState& start = start_slot.emplace(circuit.n_qubits);
@@ -2078,18 +2079,21 @@ CliffordSimulator::Result CliffordSimulator::run(
             int n_clbits;
             bool record;                       // shots > 0
             bool has_measure;
-            detail::ObservationRunner* runner;   // serial runs only
-            detail::ObservationRunner* watcher;  // when observers are active
+            detail::ChunkObservers* observers;   // null when nothing is watched
+            std::optional<detail::RunBudget> budget;  // a team thread's observers charge it
             std::vector<int> clreg;
             std::optional<StabilizerState> probe;
             detail::ShotPosition pos;
 
-            void run_chunk(int, int first_shot, int n, ShotRng& rng,
+            void run_chunk(int c, int first_shot, int n, ShotRng& rng,
                            detail::ShotCounts& counts,
                            detail::ShotFailure& out) {
                 const char* const where = "CliffordSimulator::run";
                 int shot = first_shot;
                 try {
+                    detail::ObservationRunner* const watcher =
+                        observers ? observers->begin_chunk(c, budget ? &*budget : nullptr)
+                                  : nullptr;
                     const int n_qubits = state->n_qubits;
                     const StateView view(StateForm::Stabilizer, state, n_qubits);
                     const std::size_t end = circuit->instructions.size();
@@ -2102,7 +2106,7 @@ CliffordSimulator::Result CliffordSimulator::run(
                             detail::apply_initial_state(*plan, *state, where);
                         }
                         clreg.assign(clreg.size(), 0);
-                        if (runner) runner->begin_shot(shot, clreg);
+                        if (watcher) watcher->begin_shot(shot, clreg);
                         if (watcher) watcher->at_start(view);
 
                         int index = static_cast<int>(first) - 1;
@@ -2164,6 +2168,7 @@ CliffordSimulator::Result CliffordSimulator::run(
         StabilizerState* const run_state = &state_slot.emplace(circuit.n_qubits);
         const StabilizerState* const shared_start = reuse ? &start : nullptr;
         const bool serial = team.threads <= 1;
+        detail::ChunkObservers chunk_observers(watcher, chunks.count, !serial);
         std::vector<std::unique_ptr<StabilizerState>> own(
             static_cast<std::size_t>(team.threads));
         const auto make_worker = [&](int t) {
@@ -2182,8 +2187,11 @@ CliffordSimulator::Result CliffordSimulator::run(
                                     n_clbits,
                                     shots > 0,
                                     has_measure,
-                                    serial ? &*runner : nullptr,
-                                    watcher,
+                                    watcher ? &chunk_observers : nullptr,
+                                    detail::team_budget(!serial && watcher != nullptr, team,
+                                                        cap_bytes, request.held_bytes,
+                                                        request.per_thread_bytes,
+                                                        "CliffordSimulator::run"),
                                     std::vector<int>(static_cast<std::size_t>(n_clbits), 0),
                                     std::nullopt,
                                     {}};
@@ -2206,9 +2214,13 @@ CliffordSimulator::Result CliffordSimulator::run(
                                        failed->shot, failed->started);
             if (!std::holds_alternative<std::monostate>(failed->state))
                 adopted_state = std::move(failed->state);
+            // The observers hold the firings of every shot before the failing
+            // one and of the failing shot up to its instruction.
+            chunk_observers.merge_through(failed->shot / chunks.chunk);
             std::rethrow_exception(failed->error);
         }
         result.counts = chunk_counts.take();
+        chunk_observers.merge_through(chunks.count - 1);
         // The final state is the last shot's, held by the thread that ran the
         // last chunk; its tableau becomes the run's.
         if (owner != 0) std::swap(*state_slot, *own[static_cast<std::size_t>(owner)]);
