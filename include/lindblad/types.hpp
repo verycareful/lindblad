@@ -636,10 +636,34 @@ inline constexpr int SHOT_CHUNK_TARGET = 512;
 // measuring every qubit) ran 10 to 18 times faster across shot threads up to
 // 16 qubits and 1.3 to 1.7 times faster at 18 qubits (8 states per cache), but
 // 0.4 to 0.9 times as fast at 19 (4 states) and 0.2 to 0.4 at 20 (2), whatever
-// the team. At 17 and 18 qubits teams larger than the cache holds still ran
-// faster than ones it holds, so the cache decides whether the shots go across
-// threads, not how many threads they take.
+// the team. Whether the shots go across threads is decided by one cache
+// instance (above); how many threads they take is decided by the caches
+// together (SHOT_TEAM_CACHE_SHARE_PERCENT, below).
 inline constexpr std::size_t SHOT_TEAM_MIN_CACHED_STATES = 8;
+
+// An automatic team also holds no more per-thread states than this share of
+// the machine's last-level cache holds in total (hw::llc_bytes times
+// hw::llc_instances), as a percentage. Threads spread over every cache
+// instance keep their states resident only while the states fit the caches
+// together; past that each thread streams its own state from memory and the
+// team runs slower than fewer threads. Applies to the automatic rule only: a
+// team the caller names is never cut.
+//
+// The value is measured: statevector runs sampled shot by shot with no shared
+// prefix, 200 shots of 17 and 18 qubits on a 24-thread part with two 32 MiB
+// caches, left to the operating system's placement. At 18 qubits (4 MiB a
+// state) the speedup over one thread with every gate threaded rose to 9.0 at
+// 12 threads (48 MiB, 75 percent of the 64 MiB) and fell to 6.7 at 16 (all of
+// it), 2.4 at 20 and 1.0 at 24. At 17 qubits it rose to 15 at 24 threads
+// (48 MiB). With the cap, 18 qubits runs 8.7 times faster than one thread with
+// shots of 20 layers (it was 1.0) and 7.8 times with shots that replay a shared
+// prefix (it was 2.0); the 17-qubit and narrower rows are unchanged.
+//
+// The cap assumes the operating system spreads the threads over the cache
+// instances, as it does by default. Threads the caller has pinned into one
+// instance keep all their states in that one cache, which the cap does not
+// see.
+inline constexpr std::size_t SHOT_TEAM_CACHE_SHARE_PERCENT = 75;
 
 // =============================================================================
 // QubitLimit - how wide a register a dense representation may be

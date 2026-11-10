@@ -48,6 +48,31 @@ detection uniform across platforms.
 Detected once and cached thread-safely through a function-local static, so every
 call after the first is a load.
 
+### `llc_instances`
+
+```cpp
+std::size_t llc_instances();
+```
+
+How many last-level (L3) cache instances the machine has: distinct caches, not
+the cores that share one. Two chiplets with an L3 each read `2`. Returns `0`
+when the count cannot be determined.
+
+The product with `llc_bytes()` is the cache that threads spread over the whole
+machine hold in total, which bounds how many private working sets such a team
+keeps resident; one instance alone (`llc_bytes()`) remains the yardstick for
+whether a single working set fits.
+
+- **Linux**: the distinct `shared_cpu_list` values of the level-3 caches that the
+  logical processors report under `/sys/devices/system/cpu`.
+- **Windows**: the number of level-3 `RelationCache` records.
+- **macOS**: `1` where the system reports an L3 size at all, else `0`.
+
+The count covers every logical processor the operating system lists, so a
+process confined to part of the machine sees the machine's figure.
+
+Detected once and cached thread-safely, like `llc_bytes`.
+
 ### `available_memory_bytes`
 
 ```cpp

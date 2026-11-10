@@ -60,6 +60,21 @@ bool states_fit_cache(std::uint64_t per_thread_bytes, std::size_t min_states) {
     return static_cast<std::uint64_t>(llc) / per_thread_bytes >= min_states;
 }
 
+// The most per-thread states an automatic team keeps resident: the share
+// (SHOT_TEAM_CACHE_SHARE_PERCENT) of the cache all the instances hold together,
+// in states of per_thread_bytes. The size and the count each fall back to one
+// instance of kLlcFallbackBytes when the machine does not report them.
+std::uint64_t resident_states(std::uint64_t per_thread_bytes) {
+    if (per_thread_bytes == 0) return std::numeric_limits<std::uint64_t>::max();
+    std::size_t llc = hw::llc_bytes();
+    if (llc == 0) llc = kLlcFallbackBytes;
+    std::size_t instances = hw::llc_instances();
+    if (instances == 0) instances = 1;
+    const std::uint64_t total = saturating_mul(static_cast<std::uint64_t>(llc),
+                                               static_cast<std::uint64_t>(instances));
+    return saturating_mul(total / per_thread_bytes, SHOT_TEAM_CACHE_SHARE_PERCENT) / 100;
+}
+
 bool in_parallel_region() noexcept {
 #ifdef _OPENMP
     return omp_in_parallel() != 0;
@@ -131,6 +146,8 @@ ShotTeam shot_team(const ShotTeamRequest& req, const ShotChunks& chunks) {
             static_cast<std::uint64_t>(req.work_per_shot),
             static_cast<std::uint64_t>(chunks.shots));
         wanted = std::min<std::uint64_t>(hw::available_threads(), work / parallel_grain());
+        if (req.cache_rule)
+            wanted = std::min<std::uint64_t>(wanted, resident_states(req.per_thread_bytes));
         wanted = std::max<std::size_t>(wanted, 1);
     }
     wanted = std::min(wanted, static_cast<std::size_t>(chunks.count));

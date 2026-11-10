@@ -35,6 +35,17 @@ namespace hw {
 // Detected once, cached thread-safely; subsequent calls are a load.
 std::size_t llc_bytes();
 
+// How many last-level (L3) cache instances the machine has, or 0 if unknown:
+// distinct caches, not cores that share one. Two chiplets with an L3 each read
+// 2. The product with llc_bytes() is the cache a team of threads spread over
+// the whole machine can hold in total, which is what bounds the number of
+// private working sets such a team keeps resident. Counted over every logical
+// processor the operating system lists, so a process confined to part of the
+// machine sees the machine's figure.
+//
+// Detected once, cached thread-safely; subsequent calls are a load.
+std::size_t llc_instances();
+
 // Memory the operating system reports it could hand out now without
 // swapping, in bytes, or 0 if unknown: Linux's MemAvailable (/proc/meminfo),
 // Windows' available physical memory, macOS's free and inactive pages. Read

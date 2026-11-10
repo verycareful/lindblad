@@ -15,8 +15,10 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <limits>
+#include <set>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -111,6 +113,51 @@ std::size_t detect_llc_bytes() {
         if (szf >> s) return parse_sysfs_size(s);
     }
     return 0;
+#endif
+}
+
+std::size_t detect_llc_instances() {
+#if defined(_WIN32)
+    // One RelationCache record per cache instance.
+    DWORD len = 0;
+    GetLogicalProcessorInformation(nullptr, &len);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || len == 0) return 0;
+    std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> buf(
+        len / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION) + 1);
+    if (!GetLogicalProcessorInformation(buf.data(), &len)) return 0;
+    const std::size_t n = len / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (buf[i].Relationship == RelationCache && buf[i].Cache.Level == 3) ++count;
+    }
+    return count;
+#elif defined(__APPLE__)
+    // One shared L3 where the system reports one at all.
+    return detect_llc_bytes() > 0 ? 1 : 0;
+#else
+    // Linux: every logical processor lists the processors that share each of
+    // its caches, so the L3 instances are the distinct lists.
+    namespace fs = std::filesystem;
+    std::set<std::string> lists;
+    std::error_code ec;
+    for (fs::directory_iterator it("/sys/devices/system/cpu", ec), end; !ec && it != end;
+         it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (name.size() < 4 || name.compare(0, 3, "cpu") != 0 ||
+            name.find_first_not_of("0123456789", 3) != std::string::npos)
+            continue;
+        for (int idx = 0; idx < 8; ++idx) {
+            const std::string base = it->path().string() + "/cache/index" + std::to_string(idx);
+            std::ifstream lvl(base + "/level");
+            int level = 0;
+            if (!(lvl >> level) || level != 3) continue;
+            std::ifstream shared(base + "/shared_cpu_list");
+            std::string list;
+            if (shared >> list) lists.insert(list);
+            break;
+        }
+    }
+    return lists.size();
 #endif
 }
 
@@ -296,6 +343,11 @@ std::size_t detect_available_memory_bytes() {
 
 std::size_t llc_bytes() {
     static const std::size_t cached = detect_llc_bytes();  // magic static: thread-safe
+    return cached;
+}
+
+std::size_t llc_instances() {
+    static const std::size_t cached = detect_llc_instances();  // magic static: thread-safe
     return cached;
 }
 

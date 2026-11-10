@@ -343,7 +343,12 @@ struct Options {
   smaller value moves the hand-over to wider registers (each halving admits one
   more qubit), a larger one to narrower ones. A named team
   (`max_parallel_shots >= 2`) does not consult it, and a value so large that no
-  state fits keeps every automatic run serial. The counts do not depend on it
+  state fits keeps every automatic run serial. An automatic team is also cut to
+  the states that fit the machine's caches together, 75 percent of
+  `hw::llc_bytes()` times `hw::llc_instances()`: past that the threads stream
+  their states from memory and run slower than fewer. The cut assumes the
+  operating system spreads the threads over the caches; threads pinned into
+  one cache instance keep all their states in it. A named team is never cut. The counts do not depend on it
 - **shot_memory**: how the shot threads' states meet `max_memory_mb`, each
   thread holding one state ($16 \cdot 2^n$ bytes) beside the run's own and the
   prefix snapshot. `ShotMemory::Shrink`, the default, runs as many threads as
