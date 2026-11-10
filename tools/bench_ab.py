@@ -81,7 +81,7 @@ from pathlib import Path
 
 UNIT_TO_MS = {"ns": 1e-6, "us": 1e-3, "ms": 1.0, "s": 1e3}
 PIN_ENV = {"OMP_PLACES": "threads", "OMP_PROC_BIND": "close"}
-OMP_KEYS = ("OMP_NUM_THREADS", "OMP_PLACES", "OMP_PROC_BIND")
+OMP_KEYS = ("OMP_NUM_THREADS", "OMP_PLACES", "OMP_PROC_BIND", "OMP_WAIT_POLICY", "KMP_BLOCKTIME")
 
 
 def sha256(path):

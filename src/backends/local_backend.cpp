@@ -96,6 +96,10 @@ BackendResult LocalBackend::run(
             MPSSimulator sim;
             sim.qubit_limit = config.qubit_limit;
             sim.max_memory_mb = config.max_memory_mb;
+            sim.max_parallel_shots = config.max_parallel_shots;
+            sim.shot_memory = config.shot_memory;
+            sim.shot_counting = config.shot_counting;
+            sim.shot_counting_distinct_fraction = config.shot_counting_distinct_fraction;
             auto mps_result = sim.run(circuit, config.mps_bond_dim, shots, seed);
             result.counts = std::move(mps_result.counts);
             result.simulation_time_seconds = mps_result.simulation_time_seconds;

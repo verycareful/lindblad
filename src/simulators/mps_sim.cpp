@@ -35,6 +35,8 @@
 #include "lindblad/detail/svd_truncate.hpp"
 #include "lindblad/detail/eigen_backend.hpp"
 #include "lindblad/detail/theta_harvest.hpp"
+#include "lindblad/detail/shot_loop.hpp"
+#include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/gates.hpp"
 #include "lindblad/hw_info.hpp"
 
@@ -49,10 +51,12 @@
 #include <complex>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <variant>
 
 namespace lindblad {
 
@@ -301,7 +305,8 @@ void MPSState::collapse_centre(int site, int outcome, double p_outcome) {
     fidelity.invalidate();
 }
 
-int MPSState::measure_qubit(int qubit, std::mt19937_64& rng) {
+template <class Engine>
+int MPSState::measure_qubit_with(int qubit, Engine& rng) {
     detail::check_qubit(qubit, n_qubits, "MPSState::measure_qubit");
     focus(qubit, qubit);
     // At the centre the site's slice norms ARE the raw marginals ⟨ψ|P_k|ψ⟩,
@@ -314,6 +319,14 @@ int MPSState::measure_qubit(int qubit, std::mt19937_64& rng) {
     const int outcome = (udist(rng) < p[0] / total) ? 0 : 1;
     collapse_centre(qubit, outcome, p[static_cast<std::size_t>(outcome)]);
     return outcome;
+}
+
+int MPSState::measure_qubit(int qubit, std::mt19937_64& rng) {
+    return measure_qubit_with(qubit, rng);
+}
+
+int MPSState::measure_qubit(int qubit, ShotRng& rng) {
+    return measure_qubit_with(qubit, rng);
 }
 
 // =============================================================================
@@ -1013,7 +1026,8 @@ std::array<double, 2> MPSState::centre_marginals(int site) const {
 // already collapsed onto those, and after the collapse one QR step carries the
 // centre to the next qubit. O(N·chi³) per call, with no environments.
 
-std::string MPSState::measure_sequential(std::mt19937_64& rng) {
+template <class Engine>
+std::string MPSState::measure_sequential_with(Engine& rng) {
     std::string bits(static_cast<size_t>(n_qubits), '0');
     if (n_qubits == 0) return bits;
     focus(0, 0);
@@ -1037,6 +1051,14 @@ std::string MPSState::measure_sequential(std::mt19937_64& rng) {
         if (q + 1 < n_qubits) focus(q + 1, q + 1);
     }
     return bits;
+}
+
+std::string MPSState::measure_sequential(std::mt19937_64& rng) {
+    return measure_sequential_with(rng);
+}
+
+std::string MPSState::measure_sequential(ShotRng& rng) {
+    return measure_sequential_with(rng);
 }
 
 // =============================================================================
@@ -1542,7 +1564,7 @@ static std::string mps_rejection(const Instruction& inst, int n_qubits, QubitLim
 // Helper: apply one instruction to an MPS state.
 // Handles RESET, all gate types. MEASURE and BARRIER must NOT be passed here.
 static void mps_apply_instruction(MPSState& mps, const Instruction& inst,
-                                  std::mt19937_64& rng) {
+                                  ShotRng& rng) {
     using GT = Instruction::GateType;
 
     if (inst.type == GT::RESET) {
@@ -1808,7 +1830,15 @@ static bool mps_measures_are_terminal(const QuantumCircuit& circuit) {
 // character (matches measure_sequential and the statevector sampling paths).
 // =============================================================================
 
-static std::string mps_sample(const MPSState& state, std::mt19937_64& rng) {
+// The vectors one sampling thread reuses from shot to shot.
+struct SampleScratch {
+    std::vector<std::complex<double>> v;
+    std::array<std::vector<std::complex<double>>, 2> w;
+};
+
+// One shot: qubit_bits[q] = the outcome of qubit q.
+static void mps_sample_into(const MPSState& state, ShotRng& rng, SampleScratch& scratch,
+                            std::vector<int>& qubit_bits) {
     if (state.open_span() != std::pair<int, int>{0, 0}) {
         detail::raise_internal("MPSSimulator::run",
             "mps_sample: the chain must be centred on qubit 0, so that every "
@@ -1816,11 +1846,12 @@ static std::string mps_sample(const MPSState& state, std::mt19937_64& rng) {
     }
     const std::vector<MPSTensor>& tensors = state.tensors();
     const int n = state.n_qubits;
-    std::string bits(static_cast<size_t>(n), '0');
+    qubit_bits.assign(static_cast<size_t>(n), 0);
     std::uniform_real_distribution<double> dist(0.0, 1.0);
 
-    std::vector<std::complex<double>> v{std::complex<double>(1.0, 0.0)};
-    std::array<std::vector<std::complex<double>>, 2> w;
+    std::vector<std::complex<double>>& v = scratch.v;
+    auto& w = scratch.w;
+    v.assign(1, std::complex<double>(1.0, 0.0));
     for (int q = 0; q < n; ++q) {
         const MPSTensor& T = tensors[static_cast<size_t>(q)];
         const int cl = T.bond_left, cr = T.bond_right;
@@ -1844,14 +1875,13 @@ static std::string mps_sample(const MPSState& state, std::mt19937_64& rng) {
         // chain's positive norm² and every later one is 1 to rounding.
         const double total = probs[0] + probs[1];
         const int outcome = (dist(rng) < probs[0] / total) ? 0 : 1;
-        bits[static_cast<size_t>(n - 1 - q)] = outcome ? '1' : '0';
+        qubit_bits[static_cast<size_t>(q)] = outcome;
 
         const double p_out = probs[static_cast<size_t>(outcome)];
         const double inv = 1.0 / std::sqrt(p_out);
         v = w[static_cast<size_t>(outcome)];
         for (auto& z : v) z *= inv;
     }
-    return bits;
 }
 
 // =============================================================================
@@ -1931,6 +1961,85 @@ static bool mps_is_finite_with_norm(const MPSState& chain) {
 }
 
 // Every setting of the simulator, for a failed run's record.
+// One shot's work for detail::shot_team, which counts in one-qubit-gate
+// amplitudes.
+//
+// A sampled shot visits every site once and contracts a bond-dimension vector
+// with the site's two slices: 2 * chi^2 complex multiply-adds per site.
+static std::size_t mps_sample_work(int n_qubits, int bond) {
+    const std::uint64_t chi = static_cast<std::uint64_t>(std::max(bond, 1));
+    return static_cast<std::size_t>(detail::saturating_mul(
+        static_cast<std::uint64_t>(std::max(n_qubits, 1)),
+        detail::saturating_mul(chi, chi)));
+}
+
+// A trajectory, in the same units. Each gate or measurement pays a fixed
+// MPS_STEP_OVERHEAD (the tensors it allocates and frees); a one-site gate then
+// costs about chi^2, a two-site update about chi^3 (the factorisation of a
+// (2 chi) x (2 chi) block), and a measurement or reset moves the centre and
+// collapses one site, about half that. A gate over three or more qubits is
+// counted as MPS_WIDE_GATE_SPLITS two-site updates.
+static constexpr std::uint64_t MPS_STEP_OVERHEAD = 20;
+static constexpr std::size_t MPS_WIDE_GATE_SPLITS = 6;
+
+static std::size_t mps_trajectory_work(int n_qubits, int max_bond_dim, std::size_t one_site,
+                                       std::size_t two_site, std::size_t measures) {
+    // The widest bond an n-qubit register can need is 2^(n/2).
+    const int reach = n_qubits >= 60 ? max_bond_dim : (1 << (n_qubits / 2));
+    const std::uint64_t chi =
+        static_cast<std::uint64_t>(std::max(1, std::min(max_bond_dim, reach)));
+    const std::uint64_t square = detail::saturating_mul(chi, chi);
+    const std::uint64_t cube = detail::saturating_mul(chi, square);
+    const auto step = [](std::uint64_t body, std::size_t count) {
+        return detail::saturating_mul(detail::saturating_add(MPS_STEP_OVERHEAD, body),
+                                      static_cast<std::uint64_t>(count));
+    };
+    return static_cast<std::size_t>(detail::saturating_add(
+        detail::saturating_add(step(detail::saturating_mul(2, square), one_site),
+                               step(cube, two_site)),
+        step(cube / 2, measures)));
+}
+
+// Whether the dispatcher takes `inst` through the statevector: a gate over
+// three or more qubits given as a matrix, MCX over more than two controls,
+// MCP and PERMUTATION (see mps_apply_instruction).
+static bool takes_dense_fallback(const Instruction& inst) {
+    using GT = Instruction::GateType;
+    switch (inst.type) {
+        case GT::UNITARY: return inst.qubits.size() >= 3;
+        case GT::MCX: return inst.qubits.size() > 3;
+        case GT::MCP:
+        case GT::PERMUTATION: return true;
+        default: return false;
+    }
+}
+
+// The most memory one shot thread can hold, in bytes: the widest chain the
+// bond cap allows plus the largest transient it can add. The bond left of
+// site i is at most min(chi, 2^i, 2^(n-i)): 2^i is the rank of a cut with i
+// qubits on its left, and 2^(n-i) the same from the right. The transient is
+// one two-site update at the widest bonds or, when the shot's gates take the
+// dense fallback, that fallback's peak (see charge_dense_fallback).
+static std::uint64_t mps_thread_bound_bytes(int n_qubits, int max_bond_dim, bool dense) {
+    const auto cap = [&](int exponent) -> std::uint64_t {
+        return exponent >= 30 ? static_cast<std::uint64_t>(max_bond_dim)
+                              : std::min<std::uint64_t>(max_bond_dim, std::uint64_t{1} << exponent);
+    };
+    std::uint64_t chain = 0;
+    for (int i = 0; i < n_qubits; ++i) {
+        const std::uint64_t left = std::min(cap(i), cap(n_qubits - i));
+        const std::uint64_t right = std::min(cap(i + 1), cap(n_qubits - i - 1));
+        chain = detail::saturating_add(
+            chain, detail::complex_bytes(detail::saturating_mul(2, detail::saturating_mul(left, right))));
+    }
+    std::uint64_t transient = two_site_peak_bytes(max_bond_dim, max_bond_dim, max_bond_dim);
+    if (dense) {
+        transient = std::max(transient, detail::saturating_mul(
+            4, detail::complex_bytes(detail::pow2_saturating(n_qubits))));
+    }
+    return detail::saturating_add(chain, transient);
+}
+
 static void record_options(detail::FailureCollector& failure, const MPSSimulator& sim,
                            int max_bond_dim) {
     using detail::option_value;
@@ -1943,6 +2052,11 @@ static void record_options(detail::FailureCollector& failure, const MPSSimulator
     failure.add_option("unchecked_gates", option_value(sim.unchecked_gates));
     failure.add_option("qubit_limit", option_value(sim.qubit_limit));
     failure.add_option("max_memory_mb", option_value(sim.max_memory_mb));
+    failure.add_option("max_parallel_shots", option_value(sim.max_parallel_shots));
+    failure.add_option("shot_memory", option_value(sim.shot_memory));
+    failure.add_option("shot_counting", option_value(sim.shot_counting));
+    failure.add_option("shot_counting_distinct_fraction",
+                       option_value(sim.shot_counting_distinct_fraction));
 }
 
 MPSSimulator::Result MPSSimulator::run(
@@ -1956,6 +2070,7 @@ MPSSimulator::Result MPSSimulator::run(
     // this call. The argument order differs from StatevectorSimulator::run
     // (circuit, shots, seed), so run(qc, 0, 0) meaning shots is a live way to
     // arrive here.
+    detail::check_shot_counting("MPSSimulator::run", shot_counting_distinct_fraction);
     detail::check_require(max_bond_dim >= 1, "MPSSimulator::run",
                           "max_bond_dim must be >= 1 (got " +
                               std::to_string(max_bond_dim) + ")");
@@ -1997,7 +2112,7 @@ MPSSimulator::Result MPSSimulator::run(
     detail::FailureCollector failure("MPSSimulator::run", "mps", circuit_in, shots, plan);
     std::optional<detail::ObservationRunner> runner;
     std::optional<MPSState> start_slot;
-    std::optional<MPSState> trajectory_slot;
+    std::optional<MPSState> adopted_state;  // the failing shot's chain
     bool prefix_running = false;
 
     try {
@@ -2005,7 +2120,9 @@ MPSSimulator::Result MPSSimulator::run(
         const uint64_t base_seed =
             seed == 0 ? static_cast<uint64_t>(std::random_device{}()) : seed;
         failure.set_seed(base_seed);
-        std::mt19937_64 rng(base_seed);
+        // Draws of work done once for every shot (a shared prefix) or of the
+        // single forward pass; each chunk of shots has a stream of its own.
+        ShotRng rng = detail::prefix_stream(base_seed, 0);
 
         // Execution strategy (see docs/api/simulators.md, Execution semantics):
         //   1. Terminal-only measurements (no feedforward, nothing acting on a
@@ -2036,7 +2153,6 @@ MPSSimulator::Result MPSSimulator::run(
         const bool walked_per_shot = (has_measure && !terminal_only) || has_reset;
         const bool per_shot = shots > 0 && walked_per_shot;
 
-        // One trajectory: honours classical conditions, records MEASURE outcomes.
         // Anchors resolve against the circuit before any state is touched, so an
         // anchor that cannot fire stops the run here.
         runner.emplace(plan, circuit, StateForm::MPS, "MPSSimulator::run");
@@ -2049,16 +2165,22 @@ MPSSimulator::Result MPSSimulator::run(
         // (MPSState::budget_link) and reports its own size as `state`; chains the
         // run keeps but is not evolving are `held`. An MPS run has no fixed
         // footprint to refuse before the first gate, so the cap is met here.
-        detail::RunBudget budget(detail::resolve_memory_cap_bytes(max_memory_mb), 0,
-                                 "MPSSimulator::run");
+        const std::uint64_t cap_bytes = detail::resolve_memory_cap_bytes(max_memory_mb);
+        detail::RunBudget budget(cap_bytes, 0, "MPSSimulator::run");
         runner->set_budget(&budget);
 
+        // One trajectory: honours classical conditions, records MEASURE outcomes.
         // `first` = the instruction to start from: 0, or the end of a prefix a
-        // shared start chain has already run.
+        // shared start chain has already run. `pos` is the position of the
+        // thread running it and `rng` the stream its draws come from; `watch`
+        // is null unless an observer is attached, which keeps the run on one
+        // thread.
         auto run_trajectory = [&](MPSState& state, std::vector<int>& clreg,
-                                  std::size_t first) {
+                                  std::size_t first, ShotRng& shot_rng,
+                                  detail::ShotPosition& pos,
+                                  detail::ObservationRunner* watch) {
             const StateView view(StateForm::MPS, &state, circuit.n_qubits);
-            if (watcher) watcher->at_start(view);
+            if (watch) watch->at_start(view);
 
             int index = static_cast<int>(first) - 1;
             for (std::size_t i = first; i < circuit.instructions.size(); ++i) {
@@ -2067,9 +2189,9 @@ MPSSimulator::Result MPSSimulator::run(
                 ++index;
                 state.budget_link.instruction = index;
                 state.budget_link.inst = &inst;
-                if (watcher) watcher->before_instruction(index, inst, view);
-                failure.at_instruction(index, &inst);
-                detail::FiringGuard fire(watcher, index, inst, view);
+                if (watch) watch->before_instruction(index, inst, view);
+                pos.at_instruction(index, &inst);
+                detail::FiringGuard fire(watch, index, inst, view);
                 if (inst.type == GT::BARRIER) continue;
                 if (inst.has_condition) {
                     int cv = (inst.condition_clbit < n_clbits)
@@ -2079,27 +2201,51 @@ MPSSimulator::Result MPSSimulator::run(
                 if (inst.type == GT::MEASURE) {
                     const int qubit = inst.qubits[0];
                     const int clbit = inst.clbits.empty() ? -1 : inst.clbits[0];
-                    const int outcome = state.measure_qubit(qubit, rng);
+                    const int outcome = state.measure_qubit(qubit, shot_rng);
                     if (clbit >= 0 && clbit < n_clbits) clreg[clbit] = outcome;
                     continue;
                 }
-                mps_apply_instruction(state, inst, rng);
+                mps_apply_instruction(state, inst, shot_rng);
             }
 
-            if (watcher) watcher->at_end(view, index);
-            failure.leave_instructions();
+            if (watch) watch->at_end(view, index);
+            pos.leave_instructions();
         };
 
         std::vector<int> clreg(n_clbits, 0);
 
+        // The shots run in chunks across a team (detail::run_shot_chunks):
+        // chunk c draws from its own stream, so the counts do not depend on
+        // the team. Both loops below are sized with the same request; what
+        // differs is the state a shot thread holds and the work a shot does.
+        const detail::ShotChunks chunks = detail::chunk_shots(shots);
+        detail::ShotTeamRequest request;
+        request.entry_point = "MPSSimulator::run";
+        request.max_parallel_shots = max_parallel_shots;
+        request.memory = shot_memory;
+        request.cache_rule = false;
+        request.cap_bytes = cap_bytes;
+        // Every refusal shot_team can make without a size to compare (a
+        // negative team, Exact with no team named, Exact inside a parallel
+        // region) comes before the first gate. The team itself is sized once
+        // the chains are known.
+        (void)detail::shot_team(request, chunks);
+        // What a run's trajectories hold apart from the shared start chain:
+        // the chain they evolve, and its profile accumulators.
+        std::vector<std::unique_ptr<MPSState>> chunk_profile(
+            static_cast<std::size_t>(chunks.count));
+        std::optional<MPSState> prefix_profile;
+
         if (per_shot) {
             // Per-shot trajectories: every shot runs on its own chain from the
             // initial state so that each collapse is drawn independently (required
-            // for mid-circuit measurement, feedforward and reset). Each trajectory
-            // then absorbs the profile figures the run has gathered so far and
-            // becomes result.final_state, so the chain the caller reads afterwards
-            // is the last trajectory in every respect (tensors, cap, cutoff,
-            // kernel) and carries the run's totals.
+            // for mid-circuit measurement, feedforward and reset). The chain the
+            // caller reads afterwards is the last shot's (tensors, cap, cutoff,
+            // kernel), carrying the totals of every split the run performed:
+            // each chunk's shots fold into a profile of their own, and the
+            // chunks' profiles, with the shared start's, are folded into the
+            // returned chain in chunk order, so the totals do not depend on the
+            // team.
             //
             // Everything before the first instruction that draws or reads a clbit
             // (a MEASURE, a RESET, a conditioned gate) is the same in every shot
@@ -2132,53 +2278,203 @@ MPSSimulator::Result MPSSimulator::run(
                 start.budget_link.detach();
                 prefix_running = false;
                 failure.leave_instructions();
-                result.final_state.absorb_profile(start);
+                prefix_profile.emplace(circuit.n_qubits, 1);
+                prefix_profile->absorb_profile(start);
                 detail::MPSDispatch::clear_profile(start);
             }
 
+            // The team, now that the start chain is known. Every extra thread
+            // holds a trajectory chain of its own, and how large it grows is
+            // not known before the shots run, but it is bounded: no bond is
+            // wider than max_bond_dim, nor than the chain's two halves can
+            // carry. A thread is therefore sized for the widest chain the cap
+            // on bonds allows plus its largest transient (one two-site update,
+            // or a dense fallback when the shot's gates take one), which keeps
+            // every memory mode within max_memory_mb: a team that is not
+            // asked for by name only forms where those bounds fit, and a team
+            // of one is always allowed.
+            const std::uint64_t start_bytes =
+                reuse ? chain_bytes(start.tensors()) : 0;
+            const std::uint64_t placeholder_bytes =
+                chain_bytes(result.final_state.tensors());
+            std::size_t one_site = 0, two_site = 0, shot_measures = 0;
+            bool dense = false;
+            for (std::size_t i = prefix_end; i < circuit.instructions.size(); ++i) {
+                const Instruction& tail = circuit.instructions[i];
+                if (tail.type == Instruction::GateType::MEASURE ||
+                    tail.type == Instruction::GateType::RESET)
+                    ++shot_measures;
+                else if (tail.type == Instruction::GateType::BARRIER) continue;
+                else if (tail.qubits.size() <= 1) ++one_site;
+                else if (tail.qubits.size() == 2) ++two_site;
+                else two_site += MPS_WIDE_GATE_SPLITS;
+                dense = dense || takes_dense_fallback(tail);
+            }
+            const std::uint64_t thread_bytes =
+                mps_thread_bound_bytes(circuit.n_qubits, max_bond_dim, dense);
+            detail::ShotTeamRequest trajectories = request;
+            trajectories.held_bytes = detail::saturating_add(
+                detail::saturating_add(start_bytes, placeholder_bytes), thread_bytes);
+            trajectories.per_thread_bytes = thread_bytes;
+            trajectories.work_per_shot = mps_trajectory_work(
+                circuit.n_qubits, max_bond_dim, one_site, two_site, shot_measures);
+            trajectories.serial_only = watcher != nullptr;
+            const detail::ShotTeam team = detail::shot_team(trajectories, chunks);
+            const bool serial = team.threads <= 1;
+
+            // One shot thread's work. Every thread evolves a chain of its own
+            // (its slot, filled on that thread) under a budget of its own: the
+            // run's budget for a team of one, whose observers charge it, else
+            // the thread's share. The start chain, the circuit and the plan
+            // are read by every thread and written by none. The register is
+            // per shot, cleared at every shot.
+            struct TrajectoryWorker {
+                const decltype(run_trajectory)* run;
+                const MPSState* start;           // null when the prefix is not reused
+                const MPSState* prototype;
+                const RunPlan* plan;
+                std::size_t first;
+                int n_clbits;
+                int n_qubits;
+                bool has_measure;
+                bool capped;                      // a team: kernels stay on this thread
+                std::uint64_t held;               // the run's budget: chains it keeps
+                detail::RunBudget* budget;
+                detail::ObservationRunner* runner;   // serial runs only
+                detail::ObservationRunner* watcher;  // when observers are active
+                std::optional<MPSState>* slot;
+                std::vector<std::unique_ptr<MPSState>>* profiles;
+                std::vector<int> clreg;
+                std::vector<int> qubit_bits;
+                SampleScratch scratch;
+                detail::ShotPosition pos;
+
+                void run_chunk(int c, int first_shot, int n, ShotRng& rng,
+                               detail::ShotCounts& counts,
+                               detail::ShotFailure& out) {
+                    const char* const where = "MPSSimulator::run";
+                    const ScopedMpsRun named_run(where);
+                    const detail::ScopedThreadCap one(capped ? 1 : 0, where);
+                    std::optional<MPSState>& chain = *slot;
+                    int shot = first_shot;
+                    try {
+                        auto& profile = (*profiles)[static_cast<std::size_t>(c)];
+                        profile = std::make_unique<MPSState>(n_qubits, 1);
+                        for (; shot < first_shot + n; ++shot) {
+                            pos.set_shot(shot);
+                            const MPSState& source = start ? *start : *prototype;
+                            if (chain) *chain = source; else chain.emplace(source);
+                            if (!start) detail::apply_initial_state(*plan, *chain, where);
+                            budget->set_held(held);
+                            chain->budget_link.attach(budget);
+                            chain->budget_link.shot = shot;
+                            budget->set_state(chain_bytes(chain->tensors()));
+                            clreg.assign(clreg.size(), 0);
+                            if (runner) runner->begin_shot(shot, clreg);
+                            (*run)(*chain, clreg, first, rng, pos, watcher);
+
+                            if (has_measure) {
+                                // The key is the classical register: clbit 0 is
+                                // the rightmost character, the highest clbit the
+                                // leftmost.
+                                counts.add(clreg);
+                            } else {
+                                // No MEASURE: the shot is one sample of the whole
+                                // register from this trajectory's end state,
+                                // qubit-indexed, as the one-pass path samples a
+                                // circuit with no MEASURE. Read-only, so the
+                                // returned chain is the trajectory's end state.
+                                chain->canonicalize(0);
+                                detail::require_norm_to_sample(
+                                    std::sqrt(chain->norm_sq()), where);
+                                mps_sample_into(*chain, rng, scratch, qubit_bits);
+                                counts.add(qubit_bits);
+                            }
+                            profile->absorb_profile(*chain);
+                        }
+                    } catch (...) {
+                        out.shot = shot;
+                        out.instruction = pos.instruction;
+                        out.inst = pos.inst;
+                        out.started = pos.started;
+                        out.error = std::current_exception();
+                        out.partial = std::move(counts);
+                        if (chain) out.state = std::move(*chain);
+                    }
+                }
+            };
+
+            std::vector<std::optional<MPSState>> chains(
+                static_cast<std::size_t>(team.threads));
+            std::vector<std::unique_ptr<detail::RunBudget>> budgets(
+                static_cast<std::size_t>(team.threads));
+            const std::uint64_t run_held = detail::saturating_add(start_bytes, placeholder_bytes);
+            const auto make_worker = [&](int t) {
+                detail::RunBudget* thread_budget = &budget;
+                std::uint64_t held = run_held;
+                if (!serial) {
+                    budgets[static_cast<std::size_t>(t)] =
+                        std::make_unique<detail::RunBudget>(
+                            team.share_bytes == 0 ? thread_bytes : team.share_bytes, 0,
+                            "MPSSimulator::run");
+                    thread_budget = budgets[static_cast<std::size_t>(t)].get();
+                    held = 0;
+                }
+                return TrajectoryWorker{&run_trajectory,
+                                        reuse ? &start : nullptr,
+                                        &prototype,
+                                        &plan,
+                                        prefix_end,
+                                        n_clbits,
+                                        circuit.n_qubits,
+                                        has_measure,
+                                        !serial,
+                                        held,
+                                        thread_budget,
+                                        serial ? &*runner : nullptr,
+                                        watcher,
+                                        &chains[static_cast<std::size_t>(t)],
+                                        &chunk_profile,
+                                        std::vector<int>(static_cast<std::size_t>(n_clbits), 0),
+                                        {},
+                                        {},
+                                        {}};
+            };
+
             result.counts.clear();
             runner->begin_run(circuit.n_qubits, shots);
-            for (int shot = 0; shot < shots; ++shot) {
-                failure.set_shot(shot);
-                MPSState& trajectory = trajectory_slot.emplace(reuse ? start : prototype);
-                if (!reuse) detail::apply_initial_state(plan, trajectory, "MPSSimulator::run");
-                // Held while this shot runs: the shared start and the previous
-                // shot's chain, which result.final_state keeps.
-                budget.set_held(detail::saturating_add(
-                    reuse ? chain_bytes(start.tensors()) : 0,
-                    chain_bytes(result.final_state.tensors())));
-                trajectory.budget_link.attach(&budget);
-                trajectory.budget_link.shot = shot;
-                budget.set_state(chain_bytes(trajectory.tensors()));
-                clreg.assign(n_clbits, 0);
-                runner->begin_shot(shot, clreg);
-                run_trajectory(trajectory, clreg, prefix_end);
-
-                std::string bits;
-                if (has_measure) {
-                    // Build bitstring: clbit 0 is LSB (rightmost), highest clbit
-                    // is MSB.
-                    bits.assign(static_cast<std::size_t>(n_clbits), '0');
-                    for (int c = 0; c < n_clbits; ++c) {
-                        if (clreg[c]) bits[n_clbits - 1 - c] = '1';
-                    }
-                } else {
-                    // No MEASURE: the shot is one sample of the whole register
-                    // from this trajectory's end state, qubit-indexed, as the
-                    // one-pass path samples a circuit with no MEASURE. Read-only,
-                    // so the returned chain is the trajectory's end state.
-                    trajectory.canonicalize(0);
-                    detail::require_norm_to_sample(std::sqrt(trajectory.norm_sq()),
-                                                   "MPSSimulator::run");
-                    bits = mps_sample(trajectory, rng);
-                }
-                result.counts[bits]++;
-                failure.shot_done();
-
-                trajectory.absorb_profile(result.final_state);
-                result.final_state = std::move(trajectory);
-                trajectory_slot.reset();
+            // A shot's key is its classical register, or with no MEASURE the
+            // qubit register sampled from its end state.
+            detail::OrderedCounts chunk_counts("MPSSimulator::run", chunks.count,
+                                               has_measure ? n_clbits : circuit.n_qubits,
+                                               shot_counting,
+                                               shot_counting_distinct_fraction);
+            detail::ChunkFailures chunk_failures(chunks.count);
+            const int owner = detail::run_shot_chunks(chunks, team, base_seed, 0,
+                                                      chunk_counts, chunk_failures,
+                                                      make_worker);
+            if (std::optional<detail::ShotFailure> failed = chunk_failures.take()) {
+                // The serial record: the shots before the failing one, and that
+                // shot's chain, whichever thread ran it.
+                result.counts = chunk_counts.take(std::move(failed->partial));
+                failure.adopt_shot_failure(failed->shot, failed->instruction, failed->inst,
+                                           failed->shot, failed->started);
+                if (std::holds_alternative<MPSState>(failed->state))
+                    adopted_state = std::move(std::get<MPSState>(failed->state));
+                std::rethrow_exception(failed->error);
             }
+            result.counts = chunk_counts.take();
+            // The returned chain is the last shot's, held by the thread that ran
+            // the last chunk, carrying the run's totals: its own profile is
+            // already inside its chunk's, so it starts from none.
+            result.final_state = std::move(*chains[static_cast<std::size_t>(owner)]);
+            detail::MPSDispatch::clear_profile(result.final_state);
+            if (prefix_profile) result.final_state.absorb_profile(*prefix_profile);
+            for (const auto& profile : chunk_profile)
+                if (profile) result.final_state.absorb_profile(*profile);
+            failure.begin_work();
+            failure.set_shot(shots - 1);
+            failure.set_shots_completed(shots);
         } else {
             detail::apply_initial_state(plan, result.final_state, "MPSSimulator::run");
             result.final_state.budget_link.attach(&budget);
@@ -2189,8 +2485,10 @@ MPSSimulator::Result MPSSimulator::run(
             if (shots == 0) {
                 // Single seeded trajectory (collapses measures, honours
                 // conditions); final_state is one reproducible trajectory.
+                ShotRng trajectory_rng = detail::chunk_stream(base_seed, 0, 0);
                 if (walked_per_shot) failure.set_shot(0);
-                run_trajectory(result.final_state, clreg, 0);
+                run_trajectory(result.final_state, clreg, 0, trajectory_rng,
+                               failure.position(), watcher);
                 if (walked_per_shot) failure.shot_done();
             } else {
                 // Terminal-only measurements (or none): one forward pass with
@@ -2232,19 +2530,6 @@ MPSSimulator::Result MPSSimulator::run(
                                                               : inst.clbits[0]);
 
                 const int nq = circuit.n_qubits;
-                auto record = [&](const std::string& qubit_bits, int count) {
-                    // qubit_bits: full register, qubit q at position nq-1-q.
-                    if (meas.empty()) {
-                        result.counts[qubit_bits] += count;
-                        return;
-                    }
-                    std::string key(n_clbits, '0');
-                    for (const auto& [q, c] : meas) {
-                        if (c < 0 || c >= n_clbits) continue;
-                        if (qubit_bits[nq - 1 - q] == '1') key[n_clbits - 1 - c] = '1';
-                    }
-                    result.counts[key] += count;
-                };
 
                 // Whichever path is cheaper for this chain and shot count; both
                 // sample the same distribution (see dense_sampling_is_cheaper).
@@ -2259,18 +2544,104 @@ MPSSimulator::Result MPSSimulator::run(
                     auto sv = result.final_state.to_statevector();
                     detail::require_norm_to_sample(sv.norm(), "MPSSimulator::run");
                     auto raw = sv.sample_counts(shots, seed);
-                    for (const auto& [bits, cnt] : raw) record(bits, cnt);
+                    for (const auto& [bits, cnt] : raw) {
+                        // bits: full register, qubit q at position nq-1-q.
+                        if (meas.empty()) {
+                            result.counts[bits] += cnt;
+                            continue;
+                        }
+                        std::string key(n_clbits, '0');
+                        for (const auto& [q, c] : meas) {
+                            if (c < 0 || c >= n_clbits) continue;
+                            if (bits[nq - 1 - q] == '1') key[n_clbits - 1 - c] = '1';
+                        }
+                        result.counts[key] += cnt;
+                    }
                 } else {
                     // Sequential MPS sampling from the centre on qubit 0: moving
                     // it there is a gauge change, so the returned chain holds the
                     // same state, and each shot then carries a vector rather than
-                    // an environment. O(N * chi^2) per shot.
+                    // an environment. O(N * chi^2) per shot. The chain is then
+                    // read by every shot thread and written by none.
                     result.final_state.canonicalize(0);
                     detail::require_norm_to_sample(
                         std::sqrt(result.final_state.norm_sq()), "MPSSimulator::run");
-                    for (int s = 0; s < shots; ++s) {
-                        record(mps_sample(result.final_state, rng), 1);
+
+                    int widest = 1;
+                    for (const MPSTensor& t : result.final_state.tensors())
+                        widest = std::max({widest, t.bond_left, t.bond_right});
+                    const int key_width = meas.empty() ? nq : n_clbits;
+                    // A sampling thread holds three vectors of the bond
+                    // dimension and its register.
+                    detail::ShotTeamRequest sampling = request;
+                    sampling.held_bytes = chain_bytes(result.final_state.tensors());
+                    sampling.per_thread_bytes = detail::saturating_add(
+                        detail::complex_bytes(detail::saturating_mul(
+                            3, static_cast<std::uint64_t>(widest))),
+                        detail::saturating_mul(sizeof(int),
+                                               static_cast<std::uint64_t>(nq + key_width)));
+                    sampling.work_per_shot = mps_sample_work(nq, widest);
+                    const detail::ShotTeam team = detail::shot_team(sampling, chunks);
+
+                    struct SampleWorker {
+                        const MPSState* chain;
+                        const std::vector<std::pair<int, int>>* meas;
+                        int n_clbits;
+                        std::vector<int> qubit_bits;
+                        std::vector<int> clreg;
+                        SampleScratch scratch;
+
+                        void run_chunk(int, int first_shot, int n, ShotRng& rng,
+                                       detail::ShotCounts& counts,
+                                       detail::ShotFailure& out) {
+                            const ScopedMpsRun named_run("MPSSimulator::run");
+                            int shot = first_shot;
+                            try {
+                                for (; shot < first_shot + n; ++shot) {
+                                    mps_sample_into(*chain, rng, scratch, qubit_bits);
+                                    if (meas->empty()) {
+                                        counts.add(qubit_bits);
+                                        continue;
+                                    }
+                                    // A clbit two measurements write reads 1 when
+                                    // either qubit does.
+                                    std::fill(clreg.begin(), clreg.end(), 0);
+                                    for (const auto& [q, c] : *meas) {
+                                        if (c < 0 || c >= n_clbits) continue;
+                                        if (qubit_bits[static_cast<std::size_t>(q)])
+                                            clreg[static_cast<std::size_t>(c)] = 1;
+                                    }
+                                    counts.add(clreg);
+                                }
+                            } catch (...) {
+                                out.shot = shot;
+                                out.started = true;
+                                out.error = std::current_exception();
+                                out.partial = std::move(counts);
+                            }
+                        }
+                    };
+
+                    detail::OrderedCounts chunk_counts("MPSSimulator::run", chunks.count,
+                                                       key_width, shot_counting,
+                                                       shot_counting_distinct_fraction);
+                    detail::ChunkFailures chunk_failures(chunks.count);
+                    const MPSState* const sampled = &result.final_state;
+                    const std::vector<std::pair<int, int>>* const measured = &meas;
+                    detail::run_shot_chunks(chunks, team, base_seed, 0, chunk_counts,
+                                            chunk_failures, [&](int) {
+                        return SampleWorker{
+                            sampled, measured, n_clbits,
+                            std::vector<int>(static_cast<std::size_t>(nq), 0),
+                            std::vector<int>(static_cast<std::size_t>(key_width), 0), {}};
+                    });
+                    if (std::optional<detail::ShotFailure> failed = chunk_failures.take()) {
+                        // Sampling belongs to no trajectory: the record keeps
+                        // the shots drawn before the failure and names no shot.
+                        result.counts = chunk_counts.take(std::move(failed->partial));
+                        std::rethrow_exception(failed->error);
                     }
+                    result.counts = chunk_counts.take();
                 }
             }
         }
@@ -2313,8 +2684,8 @@ MPSSimulator::Result MPSSimulator::run(
                 // failed the run; the run's own failure is what the caller
                 // must see.
             }
-            if (trajectory_slot) {
-                state = std::move(*trajectory_slot);
+            if (adopted_state) {
+                state = std::move(*adopted_state);
             } else if (prefix_running && start_slot) {
                 state = std::move(*start_slot);
             } else {

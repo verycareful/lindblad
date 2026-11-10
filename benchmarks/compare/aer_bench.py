@@ -353,6 +353,7 @@ def capture_context():
         "cpu_model": cpu_model,
         "cpu_count": os.cpu_count(),
         "omp_num_threads": os.environ.get("OMP_NUM_THREADS", "(unset)"),
+        "omp_wait_policy": os.environ.get("OMP_WAIT_POLICY", "(unset)"),
         "shots": SHOTS,
         "seed": SEED,
         "warmup": WARMUP,

@@ -10,6 +10,7 @@
 #pragma once
 
 #include "lindblad/observation.hpp"
+#include "lindblad/shot_rng.hpp"
 #include "lindblad/types.hpp"
 #include "lindblad/validation.hpp"
 #include "lindblad/detail/fidelity_ledger.hpp"
@@ -405,6 +406,10 @@ public:
     // non-finite, is refused with std::runtime_error before the draw, so `rng`
     // is left as it was.
     int measure_qubit(int qubit, std::mt19937_64& rng);
+    // The same measurement drawing from a shot stream (ShotRng); this is the
+    // overload a run's shots use, so a shot's outcome depends on its stream
+    // alone.
+    int measure_qubit(int qubit, ShotRng& rng);
 
     // Sequential measurement: sample a full bitstring respecting correlations,
     // and collapse the chain onto it. The centre moves to qubit 0, then each
@@ -414,6 +419,8 @@ public:
     // fidelity figures become empty. A chain with no norm is refused, as by
     // measure_qubit, before the first draw.
     std::string measure_sequential(std::mt19937_64& rng);
+    // The same sampling drawing from a shot stream.
+    std::string measure_sequential(ShotRng& rng);
 
     // Convert to exact statevector (expensive, for small N only)
     Statevector to_statevector() const;
@@ -447,6 +454,13 @@ private:
     friend struct detail::MPSDispatch;
     // The failed-run state file writes and rebuilds the chain's storage.
     friend struct detail::StateFileAccess;
+
+    // measure_qubit and measure_sequential for either engine. Defined, and
+    // instantiated for both, in the source file only.
+    template <class Engine>
+    int measure_qubit_with(int qubit, Engine& rng);
+    template <class Engine>
+    std::string measure_sequential_with(Engine& rng);
 
     std::vector<MPSTensor> tensors_;
     // The open span; see the class comment. {0, -1} when there are no sites.
@@ -567,6 +581,40 @@ public:
     // cap is the budget every two-site update, dense fallback and observer
     // copy is checked against before it allocates.
     uint64_t max_memory_mb = 0;
+
+    // How many threads a run's shots run on: 0, the default, is automatic;
+    // 1 is serial; k >= 2 is at most k, never more than the run has chunks of
+    // shots. It covers the two loops a run walks shot by shot:
+    //   - Trajectories (mid-circuit measurement, feedforward, reset): every
+    //     shot evolves a chain of its own. How large a chain grows is not known
+    //     before the shots run, but it is bounded: no bond is wider than
+    //     max_bond_dim nor than the two halves of the register can carry. A
+    //     shot thread is sized for the widest chain that allows plus its
+    //     largest transient (one two-site update, or the dense fallback when
+    //     the shot's gates take it), and shot_memory decides how those bounds
+    //     meet max_memory_mb. A run that fits on one thread is never refused
+    //     because of the team.
+    //   - Sequential sampling of a terminal circuit: the final chain is built
+    //     once and read by every thread, which holds only three vectors of the
+    //     bond dimension.
+    // Automatic sizes the team from the work (shots times the arithmetic of a
+    // shot), as a gate kernel's threads are sized, and applies no cache test:
+    // an MPS shot is compute-bound and there are no threaded kernels to trade
+    // a shot team against. A run with an observer, or one called from inside a
+    // parallel region, runs its trajectories on one thread; sampling a
+    // terminal circuit fires no observer and is not held to one. Seeded
+    // counts, the returned chain's tensors and profile tallies (but not
+    // svd_time_ns, a clock reading) and a failed run's record are the same
+    // whatever the team. Negative values are refused.
+    int max_parallel_shots = 0;
+    // How the shot threads share the memory cap; see ShotMemory in types.hpp.
+    ShotMemory shot_memory = ShotMemory::Shrink;
+    // How a run sampled shot by shot keeps its counts, and the Auto mode's
+    // cutoff (0 = SHOT_COUNTING_DISTINCT_FRACTION, else in (0, 1]; other
+    // values are refused); see ShotCounting in types.hpp. Counts are the same
+    // in every mode.
+    ShotCounting shot_counting = ShotCounting::Auto;
+    double shot_counting_distinct_fraction = 0.0;
 
     struct Result {
         MPSState final_state;

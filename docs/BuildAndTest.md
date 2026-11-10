@@ -213,11 +213,23 @@ Components:
 - `tools/bench_report.py` — merges both JSON outputs into `docs/Benchmarks.md`
   and enforces the parity gate
 
+Both halves run with `OMP_WAIT_POLICY=passive`. After a parallel region the
+OpenMP runtime keeps its idle threads spinning for a while (libomp for 200 ms
+by default), and under back-to-back repetitions that spin slows the next
+single-threaded stretch of the same engine (a bond-split sweep, a
+transpilation). A row would then be charged for its own threading and the other
+engine's rows would not, whichever runtime each uses. The variable is the
+standard one, honoured by libomp and libgomp alike, and `aer_bench.py` records
+it beside the other settings.
+
 Full sequence (Linux/WSL, from the repo root, build directory `build`):
 
 ```bash
 # 0. one-time: Python side dependencies
 pip install -r benchmarks/compare/requirements.txt
+
+# idle threads sleep between a row's repetitions; set for every command below
+export OMP_WAIT_POLICY=passive
 
 # 1. Lindblad timings (one JSON per domain binary)
 for b in sv dm mps clifford transpiler estimator; do
@@ -245,7 +257,8 @@ Protocol constants (shots, seed, repetitions) and the twin-built DM noise model
 must stay identical between `benchmarks/compare_common.hpp`,
 `bench_compare_dm.cpp`, and `aer_bench.py`; each file cross-references the
 others. Both engines run out of the box: Aer keeps gate fusion and its own
-threading, Lindblad keeps its compiled flags.
+threading, Lindblad keeps its compiled flags; the wait policy above is the one
+setting both share.
 
 ## Python Binding Build
 

@@ -125,7 +125,8 @@ ShotTeam shot_team(const ShotTeamRequest& req, const ShotChunks& chunks) {
     if (k >= 2) {
         wanted = static_cast<std::size_t>(k);
     } else {
-        if (!states_fit_cache(req.per_thread_bytes, req.min_cached_states)) return serial();
+        if (req.cache_rule && !states_fit_cache(req.per_thread_bytes, req.min_cached_states))
+            return serial();
         const std::uint64_t work = saturating_mul(
             static_cast<std::uint64_t>(req.work_per_shot),
             static_cast<std::uint64_t>(chunks.shots));

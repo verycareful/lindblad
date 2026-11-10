@@ -358,7 +358,9 @@ def build_report(lb, aer, parity_lines, parity_status, env_lines):
     doc.append("  then 5 repetitions; the median is reported. Sampling workloads use 256 shots,")
     doc.append("  seed 42.")
     doc.append("- Out-of-box configuration on both sides: Aer keeps gate fusion and its own")
-    doc.append("  threading; Lindblad keeps its compiled optimization flags. Settings are")
+    doc.append("  threading; Lindblad keeps its compiled optimization flags. Both run with")
+    doc.append("  OMP_WAIT_POLICY=passive, so idle OpenMP threads do not spin between a row's")
+    doc.append("  repetitions and slow its next single-threaded stretch. Settings are")
     doc.append("  recorded under Environment.")
     doc.append("- speedup = aer_ms / lindblad_ms: values above 1.00x mean Lindblad is faster.")
     doc.append("- Every published table is gated on the result-parity checks below; a speed")
@@ -438,6 +440,7 @@ def main():
             aer_context.get("python", "?"), aer_context.get("qiskit", "?"),
             aer_context.get("qiskit_aer", "?")))
         env_lines.append("OMP_NUM_THREADS: %s" % aer_context.get("omp_num_threads", "(unset)"))
+        env_lines.append("OMP_WAIT_POLICY: %s" % aer_context.get("omp_wait_policy", "(unset)"))
     if args.note:
         env_lines.append("Note: " + args.note)
 

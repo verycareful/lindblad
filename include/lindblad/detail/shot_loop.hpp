@@ -97,6 +97,13 @@ struct ShotTeamRequest {
     std::uint64_t cap_bytes = 0;         // the run's resolved memory cap
     std::uint64_t held_bytes = 0;        // what the run holds with one working state
     std::uint64_t per_thread_bytes = 0;  // one more thread's working state and scratch
+    // Whether the automatic rule applies its cache test (min_cached_states
+    // per-thread states must fit one last-level-cache instance). The test
+    // weighs a shot team against running every gate across threads, or against
+    // a shot that streams its state from memory; false for a backend whose
+    // shots are compute-bound and have no threaded kernels to trade against
+    // (MPS).
+    bool cache_rule = true;
     std::size_t work_per_shot = 0;       // one shot's work, in one-qubit-gate amplitudes
     std::size_t min_cached_states = 0;   // the automatic rule's margin: 0 SHOT_TEAM_MIN_CACHED_STATES
     bool serial_only = false;            // the backend needs one thread for this run
@@ -115,7 +122,8 @@ struct ShotTeam {
 //     inside a parallel region is refused, since it cannot be honoured.
 //   - The team wanted is max_parallel_shots when it is >= 2. Automatic runs on
 //     one thread unless min_cached_states (0 = SHOT_TEAM_MIN_CACHED_STATES)
-//     per-thread states fit one last-level-cache instance (types.hpp), and is
+//     per-thread states fit one last-level-cache instance (types.hpp;
+//     skipped when cache_rule is false), and is
 //     then
 //     min(available threads, shots * work_per_shot / parallel_grain()), the
 //     statevector kernels' rule applied to the whole run's work.

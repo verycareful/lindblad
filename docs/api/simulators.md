@@ -143,13 +143,15 @@ observed run repeats the prefix in every shot, so each anchor fires once per
 shot with that shot's index. On the MPS backend the profile figures count what
 was performed: the shared start's splits once, each trajectory's own per shot.
 
-**Shots across threads.** The statevector, density-matrix and Clifford
+**Shots across threads.** The statevector, density-matrix, Clifford and MPS
 simulators run the shots of a run sampled shot by shot across a team of
 threads. On the density-matrix backend that covers both of its shot loops: the
 trajectories of a circuit with mid-circuit measurement or feedforward, and the
 sampling of terminal measurements from the final matrix's diagonal. On the
 Clifford backend it covers its three: the trajectories, `Slab` sampling and
-`PerShot` sampling. The shots are cut into at most
+`PerShot` sampling. On the MPS backend it covers its two: the trajectories and
+the sequential sampling of terminal measurements from the final chain. The
+shots are cut into at most
 `SHOT_CHUNK_TARGET` (512, in `lindblad/types.hpp`) chunks of consecutive shots,
 a cut that depends on the shot count alone. Each chunk draws from its own
 `ShotRng` (xoshiro256**, in `lindblad/shot_rng.hpp`), started from the run's
@@ -164,7 +166,21 @@ counts within one release of the library, not across releases.
 The team comes from `Options::max_parallel_shots` (0, automatic, by default),
 `Options::shot_team_min_cached_states` and `Options::shot_memory`, each extra
 thread holding a state of its own (a thread sampling terminal measurements
-holds only its counts); while it runs, each thread runs its gates alone. A run called from inside a parallel region
+holds only its counts); while it runs, each thread runs its gates alone. The
+MPS simulator has no `shot_team_min_cached_states`: that margin weighs a shot
+team against running every gate across threads, or against shots that stream
+their state from memory, and an MPS shot is compute-bound with no threaded
+kernels to trade it against, so its automatic team follows the work alone.
+
+After a shot team ends, the OpenMP runtime keeps its idle threads spinning for a
+while (libomp for 200 ms by default). A single-threaded stretch that follows
+within that time, such as the next MPS run's evolution in a loop of short runs,
+runs slower for it: on a 24-thread machine two short MPS terminal-sampling rows
+took about 20% longer back to back, and the same rows ran faster than before
+the team existed once the threads slept. `OMP_WAIT_POLICY=passive` (the standard
+variable; libomp's `KMP_BLOCKTIME=0` is the same here) makes idle threads sleep
+instead, at the price of a wake-up on each new region. It changes timing only,
+never results. A run called from inside a parallel region
 runs its shots on one thread, and so does a run with an observer attached
 whose shots are trajectories. Sampling terminal measurements fires no
 observer, since the observers fire once on the single gate pass before it, so
@@ -1807,6 +1823,43 @@ simulators' `run(circuit, shots, seed)`.
   sampling pass and observer conversion is checked against the cap before it
   allocates, and going over raises `RuntimeFailure` naming the shot and
   instruction
+- **max_parallel_shots** (`int`, default `0`, automatic): how many threads a
+  run's shots run on (see [Execution Semantics](#execution-semantics-frozen-in-r112)).
+  `1` is serial and `k >= 2` is at most `k` threads, never more than the run has
+  chunks of shots. It covers the trajectories of a circuit with mid-circuit
+  measurement, feedforward or a RESET, where every shot evolves a chain of its
+  own, and the sequential sampling of terminal measurements, where every thread
+  reads the one final chain. Automatic grows the team with the run's work, a
+  shot's arithmetic times the shots, and starts as soon as a few shots of tens
+  of microseconds each are enough to pay for the threads. Measured on a
+  24-thread machine, a team of 2 already won at 2 shots of 170 microseconds, and
+  trajectory runs of 32 or more shots were 5 to 16 times faster on 24 threads
+  than on one. An observer attached to the run, or a
+  call from inside a parallel region, keeps the trajectories on one thread;
+  sampling terminal measurements fires no observer and is not held to one.
+  Seeded counts, the returned chain's tensors, its profile tallies and a failed
+  run's record are the same whatever the team. A negative value is refused with
+  `InvalidArgument`
+- **shot_memory** (`ShotMemory`, default `Shrink`): how the shot threads meet
+  `max_memory_mb`. A chain grows during a shot, so a trajectory thread is sized
+  for the widest chain its bond cap allows: the bond left of site $i$ is at most
+  $\min(\chi, 2^i, 2^{n-i})$, plus the larger of one two-site update at the
+  widest bonds and, when the shot's gates take the dense fallback, that
+  fallback's peak. That bound is what `Shrink` (the default), `SerialIfShort`,
+  `Exact` and `FixedShare` measure against the cap, as for the statevector
+  simulator, so no run that fits on one thread is refused because of the team.
+  The bound is generous for a chain that stays narrow: under a tight cap the team
+  can be smaller than the run could have held. A sampling thread holds three
+  vectors of the bond dimension and its register. A team that cannot be had is
+  refused with `InvalidArgument`; a `FixedShare` or `Exact` refusal that depends
+  on the start chain's size comes after the stretch before the first MEASURE,
+  RESET or conditioned instruction has run, since an MPS chain has no size
+  before it
+- **shot_counting**, **shot_counting_distinct_fraction**: how a run sampled
+  shot by shot keeps its counts, with the modes and the cutoff of the
+  statevector simulator (see [Options](#options)). The counts are the same in
+  every mode. A fraction that is not 0 and not in (0, 1] is refused with
+  `InvalidArgument` before the first gate
 
 ## Simulator Selection Guide
 

@@ -60,8 +60,10 @@ public:
         // ShotMemory in types.hpp. 0 is automatic; negative is refused.
         int max_parallel_shots = 0;
         ShotMemory shot_memory = ShotMemory::Shrink;
-        // On whichever backend the run reaches; see StatevectorSimulator::
-        // Options::shot_team_min_cached_states. 0 is automatic.
+        // On the statevector, density-matrix and Clifford backends; see
+        // StatevectorSimulator::Options::shot_team_min_cached_states. 0 is
+        // automatic. The MPS backend does not consult it: its shots are
+        // compute-bound and it has no threaded kernels to trade a team against.
         std::size_t shot_team_min_cached_states = 0;
         // How the run's counts are kept, on whichever backend the run reaches;
         // see ShotCounting in types.hpp and StatevectorSimulator::Options::
