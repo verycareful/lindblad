@@ -18,7 +18,9 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <set>
+#include <utility>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -32,6 +34,10 @@
 #include <unistd.h>
 #else
 #include <unistd.h>
+#endif
+
+#if defined(__linux__)
+#include <sched.h>
 #endif
 
 #ifdef _OPENMP
@@ -162,10 +168,22 @@ std::size_t detect_llc_instances() {
 }
 
 // =============================================================================
-// Available memory - one platform branch per OS, 0 on any failure
+// Topology detection - L3 domains, physical cores, SMT width. One platform
+// branch per OS; an empty or 0 result on any failure or incoherent reading.
 // =============================================================================
 
+// The physical cores of the machine and how wide each is.
+struct CoreShape {
+    std::size_t cores = 0;
+    std::size_t smt = 0;
+};
+
 #if !defined(_WIN32) && !defined(__APPLE__)
+
+// Processor numbers beyond this are not a reading of any machine; a list
+// that names one is malformed, and the bound keeps a corrupt range such as
+// "0-4294967295" from allocating.
+constexpr unsigned long long kMaxCpuNumber = 1ULL << 16;
 
 // A whole word as a count, in no locale, or false.
 bool parse_count(const std::string& word, unsigned long long& out) {
@@ -174,6 +192,252 @@ bool parse_count(const std::string& word, unsigned long long& out) {
     const auto [ptr, ec] = std::from_chars(first, last, out);
     return ec == std::errc() && ptr == last;
 }
+
+// The first line of a sysfs file, or false when it cannot be read.
+bool read_first_line(const std::string& path, std::string& line) {
+    std::ifstream in(path);
+    return static_cast<bool>(std::getline(in, line));
+}
+
+// A Linux CPU list ("0-5,12-17", "0,12", "7") as sorted processor numbers.
+// False for anything that is not exactly that: an empty list, an empty item,
+// a reversed range, a number past kMaxCpuNumber, a processor named twice.
+bool parse_cpu_list(const std::string& text, std::vector<std::size_t>& out) {
+    out.clear();
+    std::string trimmed = text;
+    while (!trimmed.empty() && (trimmed.back() == '\n' || trimmed.back() == '\r' ||
+                                trimmed.back() == ' '))
+        trimmed.pop_back();
+    if (trimmed.empty()) return false;
+    std::size_t pos = 0;
+    while (pos <= trimmed.size()) {
+        const std::size_t comma = std::min(trimmed.find(',', pos), trimmed.size());
+        const std::string item = trimmed.substr(pos, comma - pos);
+        const std::size_t dash = item.find('-');
+        unsigned long long lo = 0;
+        unsigned long long hi = 0;
+        if (dash == std::string::npos) {
+            if (!parse_count(item, lo)) return false;
+            hi = lo;
+        } else if (!parse_count(item.substr(0, dash), lo) ||
+                   !parse_count(item.substr(dash + 1), hi)) {
+            return false;
+        }
+        if (lo > hi || hi >= kMaxCpuNumber) return false;
+        for (unsigned long long c = lo; c <= hi; ++c) out.push_back(static_cast<std::size_t>(c));
+        pos = comma + 1;
+    }
+    std::sort(out.begin(), out.end());
+    return std::adjacent_find(out.begin(), out.end()) == out.end();
+}
+
+// The sysfs directory of every online logical processor, by processor number.
+// An offline processor keeps its cpuN directory but has no topology or cache
+// entries, and says so in its `online` file (cpu0 has none: it is always up).
+std::vector<std::pair<std::size_t, std::string>> online_cpu_dirs() {
+    namespace fs = std::filesystem;
+    std::vector<std::pair<std::size_t, std::string>> cpus;
+    std::error_code ec;
+    for (fs::directory_iterator it("/sys/devices/system/cpu", ec), end; !ec && it != end;
+         it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        unsigned long long id = 0;
+        if (name.size() < 4 || name.compare(0, 3, "cpu") != 0 ||
+            !parse_count(name.substr(3), id))
+            continue;
+        std::string online;
+        if (read_first_line(it->path().string() + "/online", online) && online == "0") continue;
+        cpus.emplace_back(static_cast<std::size_t>(id), it->path().string());
+    }
+    std::sort(cpus.begin(), cpus.end());
+    return cpus;
+}
+
+// The groups of processors that `list_of(dir)` names for each online
+// processor, as sorted lists ordered by lowest processor. Empty unless every
+// processor names a list that parses and contains itself and the lists
+// partition exactly the online processors: a partial or overlapping answer
+// is not a topology.
+template <typename ListOf>
+std::vector<std::vector<std::size_t>> linux_processor_groups(ListOf list_of) {
+    const auto cpus = online_cpu_dirs();
+    if (cpus.empty()) return {};
+    std::set<std::vector<std::size_t>> groups;
+    for (const auto& [id, dir] : cpus) {
+        std::string text;
+        std::vector<std::size_t> members;
+        if (!list_of(dir, text) || !parse_cpu_list(text, members)) return {};
+        if (!std::binary_search(members.begin(), members.end(), id)) return {};
+        groups.insert(std::move(members));
+    }
+    std::set<std::size_t> seen;
+    for (const auto& group : groups) {
+        for (const std::size_t c : group) {
+            if (!seen.insert(c).second) return {};
+        }
+    }
+    if (seen.size() != cpus.size()) return {};
+    for (const auto& [id, dir] : cpus) {
+        if (!seen.count(id)) return {};
+    }
+    return {groups.begin(), groups.end()};
+}
+
+// Width shared by every group, or 0 when they differ.
+std::size_t uniform_width(const std::vector<std::vector<std::size_t>>& groups) {
+    if (groups.empty()) return 0;
+    for (const auto& g : groups) {
+        if (g.size() != groups.front().size()) return 0;
+    }
+    return groups.front().size();
+}
+
+#endif
+
+std::vector<std::vector<std::size_t>> detect_llc_domains() {
+#if defined(_WIN32)
+    // One RelationCache record per cache instance; its mask names the
+    // processors of its processor group, numbered group * 64 + bit.
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationCache, nullptr, &len);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || len == 0) return {};
+    std::vector<char> buf(len);
+    if (!GetLogicalProcessorInformationEx(
+            RelationCache, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data()),
+            &len))
+        return {};
+    constexpr std::size_t bits = sizeof(KAFFINITY) * 8;
+    std::set<std::vector<std::size_t>> groups;
+    for (std::size_t off = 0; off < len;) {
+        const auto* rec = reinterpret_cast<const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data() + off);
+        if (rec->Size == 0) return {};
+        off += rec->Size;
+        if (rec->Relationship != RelationCache || rec->Cache.Level != 3) continue;
+        std::vector<std::size_t> members;
+        for (std::size_t b = 0; b < bits; ++b) {
+            if ((rec->Cache.GroupMask.Mask >> b) & 1u)
+                members.push_back(static_cast<std::size_t>(rec->Cache.GroupMask.Group) * bits + b);
+        }
+        if (members.empty()) return {};
+        groups.insert(std::move(members));
+    }
+    std::set<std::size_t> seen;
+    for (const auto& g : groups) {
+        for (const std::size_t c : g) {
+            if (!seen.insert(c).second) return {};
+        }
+    }
+    return {groups.begin(), groups.end()};
+#elif defined(__APPLE__)
+    // No cache topology is published: one domain of every logical processor
+    // where an L3 is reported at all (llc_bytes() is 0 on Apple Silicon, so
+    // the answer is empty there).
+    int logical = 0;
+    std::size_t sz = sizeof(logical);
+    if (detect_llc_bytes() == 0 || sysctlbyname("hw.logicalcpu", &logical, &sz, nullptr, 0) != 0 ||
+        logical <= 0)
+        return {};
+    std::vector<std::size_t> all(static_cast<std::size_t>(logical));
+    for (std::size_t i = 0; i < all.size(); ++i) all[i] = i;
+    return {all};
+#else
+    // Linux: the processors that share each online processor's L3 are the
+    // list its level-3 cache index names.
+    return linux_processor_groups([](const std::string& dir, std::string& text) {
+        for (int idx = 0; idx < 8; ++idx) {
+            const std::string base = dir + "/cache/index" + std::to_string(idx);
+            std::string level;
+            if (!read_first_line(base + "/level", level) || level != "3") continue;
+            return read_first_line(base + "/shared_cpu_list", text);
+        }
+        return false;
+    });
+#endif
+}
+
+CoreShape detect_core_shape() {
+#if defined(_WIN32)
+    // One RelationProcessorCore record per physical core; its mask names the
+    // core's logical processors.
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || len == 0) return {};
+    std::vector<char> buf(len);
+    if (!GetLogicalProcessorInformationEx(
+            RelationProcessorCore,
+            reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data()), &len))
+        return {};
+    std::size_t cores = 0;
+    std::size_t width = 0;
+    bool uniform = true;
+    for (std::size_t off = 0; off < len;) {
+        const auto* rec = reinterpret_cast<const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buf.data() + off);
+        if (rec->Size == 0) return {};
+        off += rec->Size;
+        if (rec->Relationship != RelationProcessorCore) continue;
+        std::size_t here = 0;
+        for (WORD g = 0; g < rec->Processor.GroupCount; ++g) {
+            KAFFINITY m = rec->Processor.GroupMask[g].Mask;
+            for (; m != 0; m &= m - 1) ++here;
+        }
+        if (here == 0) return {};
+        if (cores > 0 && here != width) uniform = false;
+        width = here;
+        ++cores;
+    }
+    if (cores == 0) return {};
+    return {cores, uniform ? width : 0};
+#elif defined(__APPLE__)
+    int physical = 0;
+    int logical = 0;
+    std::size_t sz = sizeof(physical);
+    if (sysctlbyname("hw.physicalcpu", &physical, &sz, nullptr, 0) != 0 || physical <= 0) return {};
+    sz = sizeof(logical);
+    if (sysctlbyname("hw.logicalcpu", &logical, &sz, nullptr, 0) != 0 || logical < physical) {
+        return {static_cast<std::size_t>(physical), 0};
+    }
+    // Every core has the same width only if the logical count divides evenly.
+    const bool even = logical % physical == 0;
+    return {static_cast<std::size_t>(physical), even ? static_cast<std::size_t>(logical / physical) : 0};
+#else
+    // Linux: the processors of one core list each other as siblings.
+    // core_cpus_list is the current name, thread_siblings_list the older one.
+    const auto cores = linux_processor_groups([](const std::string& dir, std::string& text) {
+        return read_first_line(dir + "/topology/core_cpus_list", text) ||
+               read_first_line(dir + "/topology/thread_siblings_list", text);
+    });
+    return {cores.size(), uniform_width(cores)};
+#endif
+}
+
+#if defined(__linux__)
+// How many of `domain`'s processors the calling thread may run on, or the
+// whole domain where the affinity mask cannot be read.
+std::size_t allowed_in(const std::vector<std::size_t>& domain) {
+    // The kernel rejects a mask smaller than its own processor count, which
+    // can exceed the highest online number, so start generous and grow.
+    for (std::size_t slots = 1024; slots <= kMaxCpuNumber; slots *= 2) {
+        cpu_set_t* raw = CPU_ALLOC(slots);
+        if (raw == nullptr) break;
+        const std::unique_ptr<cpu_set_t, void (*)(cpu_set_t*)> set(raw, [](cpu_set_t* p) { CPU_FREE(p); });
+        const std::size_t bytes = CPU_ALLOC_SIZE(slots);
+        CPU_ZERO_S(bytes, set.get());
+        if (::sched_getaffinity(0, bytes, set.get()) != 0) continue;
+        std::size_t n = 0;
+        for (const std::size_t c : domain) {
+            if (c < slots && CPU_ISSET_S(c, bytes, set.get())) ++n;
+        }
+        return n;
+    }
+    return domain.size();
+}
+#endif
+
+// =============================================================================
+// Available memory - one platform branch per OS, 0 on any failure
+// =============================================================================
+
+#if !defined(_WIN32) && !defined(__APPLE__)
 
 // The first word of a cgroup interface file as a count. False for a missing
 // file, for "max" (no limit set at that level) and for anything else that is
@@ -349,6 +613,34 @@ std::size_t llc_bytes() {
 std::size_t llc_instances() {
     static const std::size_t cached = detect_llc_instances();  // magic static: thread-safe
     return cached;
+}
+
+const std::vector<std::vector<std::size_t>>& llc_domains() {
+    static const std::vector<std::vector<std::size_t>> cached = detect_llc_domains();  // magic static: thread-safe
+    return cached;
+}
+
+namespace {
+const CoreShape& core_shape() {
+    static const CoreShape cached = detect_core_shape();  // magic static: thread-safe
+    return cached;
+}
+}  // namespace
+
+std::size_t physical_cores() { return core_shape().cores; }
+
+std::size_t smt_width() { return core_shape().smt; }
+
+std::size_t threads_per_llc() {
+    std::size_t largest = 0;
+    for (const auto& domain : llc_domains()) {
+#if defined(__linux__)
+        largest = std::max(largest, allowed_in(domain));
+#else
+        largest = std::max(largest, domain.size());
+#endif
+    }
+    return largest;
 }
 
 std::size_t available_memory_bytes() { return detect_available_memory_bytes(); }

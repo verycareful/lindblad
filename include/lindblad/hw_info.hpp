@@ -10,6 +10,7 @@
 #pragma once
 
 #include <cstddef>
+#include <vector>
 
 namespace lindblad {
 namespace hw {
@@ -45,6 +46,57 @@ std::size_t llc_bytes();
 //
 // Detected once, cached thread-safely; subsequent calls are a load.
 std::size_t llc_instances();
+
+// The logical processors of each last-level (L3) cache instance: one entry
+// per instance, each a sorted list of processor numbers, the entries ordered
+// by their lowest processor. On a Zen 4 part with two chiplets of six cores
+// and SMT this is {0-5, 12-17} and {6-11, 18-23}. Empty if unknown.
+//
+// Processor numbers are the operating system's own: Linux's cpuN numbers (the
+// numbers sched_getaffinity and OMP_PLACES use), Windows' group * 64 + bit,
+// and on macOS, which reports no cache topology, 0 .. N-1 in one domain when
+// an L3 is reported at all.
+//
+// Only a coherent reading counts. Every online processor must name its own L3
+// and appear in it, and the instances must partition the processors the
+// operating system lists; anything else (a processor without an L3 entry, two
+// lists that overlap, a list that does not parse) makes the whole answer
+// empty rather than a partial one.
+//
+// Counted over every logical processor the operating system lists, so a
+// process confined to part of the machine sees the machine's figure; see
+// threads_per_llc() for the confined one. Detected once, cached thread-safely;
+// subsequent calls are a load.
+const std::vector<std::vector<std::size_t>>& llc_domains();
+
+// How many physical cores the machine has, or 0 if unknown: logical
+// processors that share a core counted once. Counted over every logical
+// processor the operating system lists, like llc_instances(). Linux reads
+// the cores' sibling lists (core_cpus_list, else thread_siblings_list),
+// Windows its RelationProcessorCore records, macOS hw.physicalcpu.
+//
+// Detected once, cached thread-safely; subsequent calls are a load.
+std::size_t physical_cores();
+
+// How many logical processors share each physical core (SMT width: 1 without
+// SMT, 2 with it), or 0 if unknown. 0 also when the cores are not all the same
+// width (a hybrid part with SMT on only some cores), since no single figure
+// is true of that machine. Wherever it is non-zero, physical_cores() *
+// smt_width() is the number of logical processors the operating system lists.
+//
+// Detected once, cached thread-safely; subsequent calls are a load.
+std::size_t smt_width();
+
+// How many logical processors one L3 instance offers the calling thread, or 0
+// if llc_domains() is unknown: the largest number of processors the calling
+// thread may run on that sit under one L3. On Linux the thread's affinity
+// mask (taskset, a cpuset, a batch job's binding) is honoured, so a process
+// pinned to six of the twelve processors of one chiplet reads 6, not 12;
+// where the mask cannot be read, or on Windows and macOS, no restriction is
+// assumed and the figure is the largest instance's size. Logical processors,
+// not cores: divide by smt_width() for cores when the process may use both
+// siblings. Read afresh on every call, since the affinity can change.
+std::size_t threads_per_llc();
 
 // Memory the operating system reports it could hand out now without
 // swapping, in bytes, or 0 if unknown: Linux's MemAvailable (/proc/meminfo),

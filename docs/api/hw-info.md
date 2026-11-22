@@ -5,8 +5,11 @@ tunes itself: the last-level cache size, which the statevector simulator asks
 to decide whether to fuse gates; the memory the operating system reports
 available, which sets the memory cap a run answers to when `max_memory_mb` is 0
 and decides whether a per-shot run keeps its prefix snapshot; the threads a
-parallel region may use, which sizes every statevector pass's team; and the
-memory page size, which a statevector's amplitude arrays are aligned to.
+parallel region may use, which sizes every statevector pass's team; the
+processor topology (which logical processors share an L3, how many physical
+cores there are, how many processors share a core), which says how many
+threads one cache instance can feed; and the memory page size, which a
+statevector's amplitude arrays are aligned to.
 
 The whole module is built on one rule: **nothing here guesses silently.** Every
 query has an explicit "unknown" return, and the caller picks its own documented
@@ -72,6 +75,92 @@ The count covers every logical processor the operating system lists, so a
 process confined to part of the machine sees the machine's figure.
 
 Detected once and cached thread-safely, like `llc_bytes`.
+
+### `llc_domains`
+
+```cpp
+const std::vector<std::vector<std::size_t>>& llc_domains();
+```
+
+The logical processors of each last-level (L3) cache instance: one entry per
+instance, each a sorted list of processor numbers, ordered by the lowest
+processor in each. On a Zen 4 part with two chiplets of six cores and SMT this
+is `{0-5, 12-17}` and `{6-11, 18-23}`. Empty when unknown.
+
+Processor numbers are the operating system's own: Linux's `cpuN` numbers (the
+ones `sched_getaffinity` and `OMP_PLACES` use), Windows' `group * 64 + bit`,
+and on macOS, which publishes no cache topology, `0` to `N-1` in a single
+domain where an L3 is reported at all.
+
+Only a coherent reading counts. Every online processor must name its own L3 and
+appear in it, and the instances must partition the processors the operating
+system lists. A processor without an L3 entry, two lists that overlap, or a
+list that does not parse makes the whole answer empty rather than a partial
+one.
+
+- **Linux**: the `shared_cpu_list` of each online processor's level-3 cache
+  index under `/sys/devices/system/cpu`. An offline processor is skipped.
+- **Windows**: the level-3 `RelationCache` records of
+  `GetLogicalProcessorInformationEx`.
+- **macOS**: one domain of `hw.logicalcpu` processors where `hw.l3cachesize`
+  is reported, else empty.
+
+The domains cover every logical processor the operating system lists, so a
+process confined to part of the machine still sees the machine's domains; use
+`threads_per_llc` for the confined figure. Detected once and cached
+thread-safely, like `llc_bytes`.
+
+### `physical_cores`
+
+```cpp
+std::size_t physical_cores();
+```
+
+How many physical cores the machine has: logical processors that share a core
+counted once. Returns `0` when unknown. On the part above this is `12` for `24`
+logical processors.
+
+- **Linux**: the distinct sibling lists (`topology/core_cpus_list`, else
+  `topology/thread_siblings_list`) of the online processors, under the same
+  coherence rule as `llc_domains`.
+- **Windows**: the number of `RelationProcessorCore` records.
+- **macOS**: `hw.physicalcpu`.
+
+Counted over every logical processor the operating system lists. Detected once
+and cached thread-safely.
+
+### `smt_width`
+
+```cpp
+std::size_t smt_width();
+```
+
+How many logical processors share each physical core: `1` without SMT, `2` with
+it. Returns `0` when unknown, and also when the cores are not all the same width
+(a hybrid part with SMT on only some of them), since no single figure is true of
+that machine. Wherever it is non-zero, `physical_cores() * smt_width()` is the
+number of logical processors the operating system lists. Detected once and
+cached thread-safely.
+
+### `threads_per_llc`
+
+```cpp
+std::size_t threads_per_llc();
+```
+
+How many logical processors one L3 instance offers the calling thread: the
+largest number of processors the calling thread may run on that sit under one
+L3. Returns `0` when `llc_domains` is unknown.
+
+On Linux the thread's affinity mask is honoured, whether it comes from
+`taskset`, a cpuset or a batch job's binding. A process pinned to six of the
+twelve processors of one chiplet reads `6`, not `12`. Where the mask cannot be
+read, and on Windows and macOS, no restriction is assumed and the figure is the
+size of the largest instance.
+
+These are logical processors, not cores. When the process may use both
+siblings of every core, divide by `smt_width` for the cores. Read afresh on
+every call, since the affinity can change.
 
 ### `available_memory_bytes`
 
@@ -148,19 +237,22 @@ alignment.
 Three platform paths, each asking the operating system rather than the CPU:
 
 - **Windows**: enumerates `RelationCache` records from
-  `GetLogicalProcessorInformation` and takes the first L3 entry.
-- **macOS**: `sysctlbyname("hw.l3cachesize")`.
+  `GetLogicalProcessorInformation` and takes the first L3 entry. The topology
+  queries use `GetLogicalProcessorInformationEx`.
+- **macOS**: `sysctlbyname("hw.l3cachesize")`. The topology queries use
+  `hw.logicalcpu` and `hw.physicalcpu`.
 - **Linux, including WSL**: `sysconf(_SC_LEVEL3_CACHE_SIZE)`, which glibc
-  answers from sysfs for cpu 0.
+  answers from sysfs for cpu 0. The topology queries read the per-processor
+  `cache` and `topology` directories of sysfs.
 
-Returning `0` is a normal outcome, not an error. Containers frequently expose no
+Returning `0` (or an empty `llc_domains`) is a normal outcome, not an error. Containers frequently expose no
 cache topology, and unusual platforms may report nothing. A caller must handle
 it, which is why the return is documented rather than hidden behind a default.
 
 ## Exceptions
 
 None. No function here throws or reports failure through an error code. Failure
-is the `0` return.
+is the `0` return, or the empty list from `llc_domains`.
 
 ## Example
 
