@@ -65,7 +65,7 @@ void apply_ccx(Statevector& sv, int c1, int c2, int tgt) {
     // A run's base indices have every gate bit clear, so the run's c1=1, c2=1,
     // tgt=0 amplitudes are one contiguous stretch starting at the run's base
     // with those bits set, and their tgt=1 partners the stretch tb above.
-    detail::for_each_run(sv.dim, qs.data(), 3, [=](size_t run, auto len) {
+    detail::for_each_run(detail::gate_work(sv.dim), qs.data(), 3, [=](size_t run, auto len) {
         double* __restrict__ real_ptr = rp;
         double* __restrict__ imag_ptr = ip;
         const size_t first = run | c1b | c2b;
@@ -93,7 +93,7 @@ void apply_ccz(Statevector& sv, int c1, int c2, int tgt) {
     double* const rp = sv.real_parts;
     double* const ip = sv.imag_parts;
 
-    detail::for_each_run(sv.dim, qs.data(), 3, [=](size_t run, auto len) {
+    detail::for_each_run(detail::diagonal_work(sv.dim), qs.data(), 3, [=](size_t run, auto len) {
         double* __restrict__ real_ptr = rp;
         double* __restrict__ imag_ptr = ip;
         const size_t first = run | c1b | c2b | tb;  // all three = 1
@@ -121,7 +121,7 @@ void apply_cswap(Statevector& sv, int ctrl, int q1, int q2) {
     double* const rp = sv.real_parts;
     double* const ip = sv.imag_parts;
 
-    detail::for_each_run(sv.dim, qs.data(), 3, [=](size_t run, auto len) {
+    detail::for_each_run(detail::gate_work(sv.dim), qs.data(), 3, [=](size_t run, auto len) {
         double* __restrict__ real_ptr = rp;
         double* __restrict__ imag_ptr = ip;
         const size_t first = run | ctrlb | q1b;  // ctrl=1, q1=1, q2=0
@@ -168,7 +168,7 @@ void apply_rccx(Statevector& sv, int c1, int c2, int tgt) {
     double* const rp = sv.real_parts;
     double* const ip = sv.imag_parts;
 
-    detail::for_each_run(sv.dim, qs.data(), 3, [=](size_t run, auto len) {
+    detail::for_each_run(detail::gate_work(sv.dim), qs.data(), 3, [=](size_t run, auto len) {
         double* __restrict__ real_ptr = rp;
         double* __restrict__ imag_ptr = ip;
         const size_t i101 = run | c1b | tb;   // c1=1, c2=0, t=1
@@ -259,10 +259,15 @@ void apply_unitary(
         block_size > std::numeric_limits<size_t>::max() / sv.dim
             ? std::numeric_limits<size_t>::max()
             : sv.dim * (block_size / 2);
+    // A block's work per amplitude is a one-qubit gate's times block_size / 2,
+    // that is 2^(k-1).
     const int group_team = static_cast<int>(std::min<size_t>(
-        static_cast<size_t>(detail::sv_team(pass_work)), n_groups));
+        static_cast<size_t>(detail::sv_team(detail::weighted_gate_work(sv.dim, k - 1, pass_work))),
+        n_groups));
     const int row_team = static_cast<int>(std::min<size_t>(
-        static_cast<size_t>(detail::sv_team(block_size * (block_size / 2))), block_size));
+        static_cast<size_t>(detail::sv_team(detail::weighted_gate_work(
+            block_size, k - 1, block_size * (block_size / 2)))),
+        block_size));
     const bool par_rows = row_team > group_team;
 
     if (par_rows) {
@@ -362,7 +367,7 @@ void apply_mcx(Statevector& sv, const std::vector<int>& controls,
 
     // Iterate indices with target bit 0; each visited pair (i, i|tbit) is
     // disjoint, so the parallel swaps do not race.
-    const int team = detail::sv_team(dim);
+    const int team = detail::sv_team(detail::gate_work(dim));
     #pragma omp parallel for num_threads(team) if(team > 1) schedule(static)
     for (long long ii = 0; ii < static_cast<long long>(dim); ++ii) {
         const size_t i = static_cast<size_t>(ii);
@@ -389,7 +394,7 @@ void apply_mcp(Statevector& sv, const std::vector<int>& qubits,
     double* __restrict__ rp = sv.real_parts;
     double* __restrict__ ip = sv.imag_parts;
 
-    const int team = detail::sv_team(dim);
+    const int team = detail::sv_team(detail::diagonal_work(dim));
     #pragma omp parallel for num_threads(team) if(team > 1) schedule(static)
     for (long long ii = 0; ii < static_cast<long long>(dim); ++ii) {
         const size_t i = static_cast<size_t>(ii);
@@ -455,7 +460,7 @@ void apply_permutation(Statevector& sv, const std::vector<int>& qubits,
         sv.dim > std::numeric_limits<size_t>::max() / 2 ? std::numeric_limits<size_t>::max()
                                                          : 2 * sv.dim;
     const int team = static_cast<int>(
-        std::min<size_t>(static_cast<size_t>(detail::sv_team(perm_work)), n_bg));
+        std::min<size_t>(static_cast<size_t>(detail::sv_team(detail::weighted_gate_work(sv.dim, 1, perm_work))), n_bg));
     #pragma omp parallel num_threads(team) if(team > 1)
     {
         thread_local std::vector<double> tr, ti;

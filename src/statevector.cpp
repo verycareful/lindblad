@@ -133,7 +133,7 @@ void Statevector::initialize() {
     // nodes on multi-socket hardware; free on UMA.
     double* re = real_parts;
     double* im = imag_parts;
-    detail::for_each_share(dim, detail::streaming_work(dim), [re, im](size_t b, size_t e) {
+    detail::for_each_share(dim, detail::flat_work(dim), [re, im](size_t b, size_t e) {
         for (size_t i = b; i < e; ++i) {
             re[i] = 0.0;
             im[i] = 0.0;
@@ -148,7 +148,7 @@ void Statevector::initialize_basis(size_t k) {
     }
     double* re = real_parts;
     double* im = imag_parts;
-    detail::for_each_share(dim, detail::streaming_work(dim), [re, im](size_t b, size_t e) {
+    detail::for_each_share(dim, detail::flat_work(dim), [re, im](size_t b, size_t e) {
         for (size_t i = b; i < e; ++i) {
             re[i] = 0.0;
             im[i] = 0.0;
@@ -259,7 +259,7 @@ double Statevector::norm_sq() const {
     const double* re = real_parts;
     const double* im = imag_parts;
     return detail::reduce_shares(
-        dim, detail::streaming_work(dim), 0.0,
+        dim, detail::flat_work(dim), 0.0,
         [re, im](size_t b, size_t e) {
             double sum = 0.0;
             #pragma omp simd reduction(+:sum)
@@ -286,7 +286,7 @@ void Statevector::normalize() {
     const double inv_n = 1.0 / n;
     double* re = real_parts;
     double* im = imag_parts;
-    detail::for_each_share(dim, detail::streaming_work(dim), [re, im, inv_n](size_t b, size_t e) {
+    detail::for_each_share(dim, detail::flat_work(dim), [re, im, inv_n](size_t b, size_t e) {
         for (size_t i = b; i < e; ++i) {
             re[i] *= inv_n;
             im[i] *= inv_n;
@@ -338,7 +338,7 @@ Complex128 Statevector::inner_product(const Statevector& other) const {
     const double* br = other.real_parts;
     const double* bi = other.imag_parts;
     const Sum s = detail::reduce_shares(
-        dim, detail::streaming_work(dim), Sum{0.0, 0.0},
+        dim, detail::flat_work(dim), Sum{0.0, 0.0},
         [ar, ai, br, bi](size_t b, size_t e) {
             double re = 0.0;
             double im = 0.0;
@@ -472,7 +472,7 @@ StateSampler::StateSampler(const double* re, const double* im, std::size_t dim,
     // then the running sum on this thread.
     double* prefix = prefix_.get();
     const std::size_t block = block_;
-    for_each_share(nb_, streaming_work(dim), [re, im, prefix, block](std::size_t b, std::size_t e) {
+    for_each_share(nb_, flat_work(dim), [re, im, prefix, block](std::size_t b, std::size_t e) {
         for (std::size_t k = b; k < e; ++k) {
             const std::size_t base = k * block;
             double sum = 0.0;
@@ -545,7 +545,7 @@ void StateSampler::draw_all(const double* u, std::size_t* out, std::size_t n) co
         block_ > std::numeric_limits<std::size_t>::max() / std::max<std::size_t>(n, 1)
             ? std::numeric_limits<std::size_t>::max()
             : n * block_;
-    for_each_share(n, streaming_work(work), [this, u, out](std::size_t b, std::size_t e) {
+    for_each_share(n, flat_work(work), [this, u, out](std::size_t b, std::size_t e) {
         for (std::size_t i = b; i < e; ++i) out[i] = draw(u[i]);
     });
 }
@@ -559,7 +559,7 @@ bool state_is_finite_and_nonzero(const Statevector& sv) noexcept {
         std::size_t non_finite;
     };
     const Scan s = reduce_shares(
-        dim, streaming_work(dim), Scan{0.0, 0},
+        dim, flat_work(dim), Scan{0.0, 0},
         [re, im](std::size_t b, std::size_t e) {
             Scan part{0.0, 0};
             for (std::size_t i = b; i < e; ++i) {

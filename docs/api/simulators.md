@@ -258,7 +258,7 @@ See [Statevector API](statevector.md) for full details. State stored as:
 ```cpp
 struct Options {
     int max_parallel_threads = 0;  // 0 = auto (all cores)
-    std::size_t min_amplitudes_per_thread = 0;  // 0 = default (2048)
+    std::size_t min_amplitudes_per_thread = 0;  // 0 = automatic
     uint64_t max_memory_mb = 0;    // MiB; 0 = automatic
     QubitLimit qubit_limit = QubitLimit::Enforce;  // 30 qubits; Lift: 59
     PrefixReuse prefix_reuse = PrefixReuse::Hardware;
@@ -288,21 +288,37 @@ struct Options {
   simulators side by side, keep theirs. `apply_instruction`, a one-gate
   primitive, runs under the caller's setting. A negative value is refused
   with `std::invalid_argument` before anything runs
-- **min_amplitudes_per_thread**: how many amplitudes of the state each thread
-  must get before a gate kernel, or any other pass over the state, runs in
-  parallel. A one-qubit gate on an n-qubit state uses min(threads available,
-  2^n / this value) threads, and runs serially when that is one, so small
-  registers do not pay to start threads they cannot use and mid-sized ones
-  start only as many as pay. Other passes count their amplitudes by their
-  work relative to that gate: a fill, a sum, a collapse or the sampler's block
-  sums at half, a permutation at twice, a dense k-qubit unitary at 2^(k-1)
-  times; `Statevector::probabilities()` always runs on one thread. 0, the default,
-  means `DEFAULT_MIN_AMPLITUDES_PER_THREAD` (2048, in `lindblad/types.hpp`),
-  measured as the point where the cheapest gate kernel starts to gain from
-  threads. A larger value keeps more registers serial; 1 threads every gate
-  of two or more amplitudes. It holds for the length of `run()`,
-  `simulate_circuit()` and `eval_expectation()`; the gate functions called
-  directly use the default. The thread count it divides is the one
+- **min_amplitudes_per_thread**: how many threads each gate kernel and each
+  other pass over the state starts. 0, the default, is automatic: the first
+  time a kind of pass meets a state of a given size, the pass itself is timed
+  on a scratch state of that size at each team size the machine's topology
+  suggests (1, 2, 4, the cores and threads of one L3 instance, every physical
+  core, every thread), with the gate targets changing from pass to pass as a
+  circuit's do, and the fastest team is kept for the rest of the process. The
+  kinds are a one-qubit or other group gate, a diagonal gate, a dense block of
+  k qubits, and the flat passes (a fill, a sum, a collapse, the sampler's block
+  sums), the last taking the gate's team at half its work. Timing sees what a
+  model cannot: how far amplitudes move between cores at that state size, on
+  the placement this process got, under the wait policy it runs with. A state
+  larger than twice the L3 caches together is timed on a window of that size
+  and every larger state shares its answer. The scratch state is charged to
+  the run's memory cap beside the run's own buffers; where it does not fit, the
+  pass takes the grain rule and is timed on a later call that has the room. The
+  first pass of each new kind and size therefore costs a few milliseconds up to
+  a few hundred for the largest windows, once per process; Result::execution
+  says what every pass chose. A value k >= 1 selects the grain rule instead: a
+  one-qubit gate on an n-qubit state uses min(threads available, 2^n / k)
+  threads and runs serially when that is one, and other passes count their
+  amplitudes by their work relative to that gate (a fill, a sum, a collapse or
+  the sampler's block sums at half, a permutation at twice, a dense k-qubit
+  unitary at 2^(k-1) times); 1 threads every gate of two or more amplitudes.
+  Where the automatic team has no figure for a pass (no kernel to time at that
+  size, a figure missing from costs given in `threading_costs`), that pass takes
+  the grain rule with `DEFAULT_MIN_AMPLITUDES_PER_THREAD` (2048, in
+  `lindblad/types.hpp`). `Statevector::probabilities()` always runs on one
+  thread. The setting holds for the length of `run()`, `simulate_circuit()` and
+  `eval_expectation()`; the gate functions called directly use the grain rule
+  with the default. The thread count both rules start from is the one
   `max_parallel_threads` allows
 - **max_memory_mb**: the most memory a run may use, in MiB (2^20 bytes). 0,
   the default, is automatic: the memory the machine reports available, else
@@ -393,7 +409,7 @@ struct Options {
 - **fusion_max_qubit**: Maximum width of a fused block in qubits, valid range 2 to 6. Follows the Qiskit Aer option name; Aer's default width (5) is also the default here.
 - **fusion_costs**: What the fusion pre-pass weighs when it chooses blocks (see [Gate Fusion](#gate-fusion-r117)): the cost of a pass of a dense block on $k$ qubits (`dense[k - 1]`), of a diagonal block of any width (`diagonal`), and of one CZ, CP or CCZ whose qubits are at 3 or above (`controlled_phase`), each in units of one single-qubit gate's pass over the state. Left unset (every entry zero, the default), they are measured on this machine the first time a run fuses. Set, nothing is measured: the values are used as given, so they can come from an earlier measurement or from your own knowledge of the machine, and they fix the fusion plan, so a seeded run gives the same bits on every run. A set value must have every entry the run uses (`dense[0]` to `dense[fusion_max_qubit - 1]`, `diagonal`, `controlled_phase`) finite and positive, else `run()` throws `lindblad::InvalidArgument`.
 - **fusion_calibration**: How unset `fusion_costs` are measured: `Hybrid` (the default), `OneThread` or `RunThreads`. `Hybrid` and `OneThread` take under half a second, once per process; `RunThreads` takes a few seconds the first time. See [Gate Fusion](#gate-fusion-r117) for what each measures and how they differ.
-- **threading_costs**: what a parallel region and a pass over a state cost on this machine, at a handful of team sizes (`ThreadingCosts`, see [Threading Costs](#threading-costs)). Default constructed, none are given. Set, `run()` checks the whole set at its start (the team sizes ascending from 1, one finite positive entry per team size in every vector, `memory_bound` and `cold_region_seconds` either whole or empty) and throws `lindblad::InvalidArgument` naming what is wrong. A run measures nothing itself, and no decision of a run reads the costs, so a set value changes nothing a run does. `measured_threading_costs` returns a set measured on this machine.
+- **threading_costs**: what a parallel region and a pass over a state cost on this machine, at a handful of team sizes (`ThreadingCosts`, see [Threading Costs](#threading-costs)). Default constructed, none are given and the automatic team times the passes itself (see `min_amplitudes_per_thread`). Set, `run()`, `simulate_circuit()` and `eval_expectation()` check the whole set at their start (the team sizes ascending from 1, one finite positive entry per team size in every vector, `shared`, `memory_bound` and `cold_region_seconds` either whole or empty) and throw `lindblad::InvalidArgument` naming what is wrong; the automatic team is then decided from this set alone, the team that minimises a region's cost plus the pass's time at that size, and nothing is timed. With `min_amplitudes_per_thread` above 0 no decision reads the costs. `measured_threading_costs` returns a set measured on this machine.
 - **record_phase_times**: whether `run()` reports where its wall-clock time
   went, in `Result::phase_times` (see [Phase Times](#phase-times)). `false`,
   the default, reads no clock for it
@@ -481,9 +497,10 @@ Left at `false`, a run reads no clock for this and `phase_times` is empty.
 | `in_cache.streaming` | seconds per amplitude of a one-qubit pass over a state each of whose threads' share sits in its core's cache (about 128 KiB of amplitudes per thread) |
 | `in_cache.diagonal` | the same for a controlled phase, which touches a quarter of the cache lines |
 | `in_cache.dense[k - 1]` | the same for a dense block of k qubits, k = 1 to 6 |
+| `shared.streaming`, `shared.diagonal`, `shared.dense[k - 1]` | the same passes with the targets changing from pass to pass, as a circuit's gates change them: each thread's share is re-mapped, so amplitudes move between cores, and between L3 instances once a team spans two |
 | `memory_bound.streaming`, `memory_bound.diagonal` | the same two passes over a state larger than every L3 instance together |
 
-A dense block's memory-bound pass is not rated separately: it is the longer of its in-cache pass and the memory-bound streaming pass, so `memory_bound.dense` stays empty. `memory_bound` is empty as a whole when it could not be measured, because no L3 size was detected or the operating system did not report room for the scratch state; there is then no memory-bound figure rather than a guessed one.
+Every pass figure has the region that started its team taken out (no more than half of the time measured), so a pass over A amplitudes at a team size costs the region's seconds plus A times the figure. A dense block's memory-bound pass is not rated separately: it is the longer of its dense pass and the memory-bound streaming pass, so `memory_bound.dense` stays empty. `shared` is empty when it was not measured, and a reader then falls back on `in_cache`. `memory_bound` is empty as a whole when it could not be measured, because no L3 size was detected, the operating system did not report room for the scratch state, or the memory cap of the run that asked left no room for it (the scratch state is twice the L3 caches' total size); there is then no memory-bound figure rather than a guessed one, and `memory_bound_note` says which. A later call with more room measures it.
 
 ```cpp
 #include "lindblad/simulators/statevector_sim.hpp"
@@ -495,19 +512,21 @@ StatevectorSimulator::Options opts;
 opts.threading_costs = costs;   // fixes the costs of every later run
 ```
 
-`static ThreadingCosts StatevectorSimulator::measured_threading_costs(bool measure_cold_regions = false)` returns the costs of the calling thread's current thread limit and processors, measuring them now unless this process already did. The first call takes about a quarter of a second on a part with 12 cores and 24 threads (the region costs about 15 ms, the streaming and diagonal passes about 30 ms, the dense blocks about 80 ms, and the memory-bound passes about 60 ms, which includes allocating and touching a scratch state of twice the L3 caches' total size); fewer threads take less. A second call returns at once. The figures are the fastest of several alternating stretches, since interference only ever slows a stretch down.
+`static ThreadingCosts StatevectorSimulator::measured_threading_costs(bool measure_cold_regions = false, std::uint64_t max_memory_mb = 0)` returns the costs of the calling thread's current thread limit and processors, measuring them now unless this process already did. `max_memory_mb` is the cap the memory-bound scratch state must fit under, as in `Options::max_memory_mb`. The first call takes a few tenths of a second on a part with 12 cores and 24 threads (the region costs about 15 ms, the streaming and diagonal passes about 30 ms, the changing-target passes about 30 ms, the dense blocks about 150 ms, and the memory-bound passes about 60 ms, which includes allocating and touching the scratch state); fewer threads take less. A run does not measure them: they are for pinning, and for reading what the machine charges. A second call returns at once. The figures are the fastest of several alternating stretches, since interference only ever slows a stretch down.
 
 `block_time_ms` is the wait policy's block time: how long an idle thread spins before it sleeps. LLVM's libomp reports it (200 ms by default, 0 under `OMP_WAIT_POLICY=passive`, the largest `int` when the threads never sleep); GNU's libgomp does not, and it is then unset. `region_seconds` is a region that follows another within that time. `cold_region_seconds` is a region after the team has slept, the median of seven samples, not the fastest, since a thread's wake-up varies from wake to wake and a run meets the typical cost. Every sample waits out the block time, so they are measured only when `measure_cold_regions` is `true`, which takes `team sizes x 7 x block time` (about 9 seconds at libomp's default), or when that wait is under a tenth of a second, as under a passive wait policy. They stay empty when the block time is unknown or infinite, since a measurement would have nothing to wait for. Under a passive wait policy a "warm" region is a cold one, and `block_time_ms` of 0 says so.
 
-What a region costs depends on where the operating system places the threads. Without OpenMP binding a team of every thread can cost over ten times as much as with `OMP_PLACES=threads OMP_PROC_BIND=close`, and one process can read either, so a measurement taken at the largest team size varies from process to process.
+What a region costs depends on where the operating system places the threads. Without OpenMP binding a team of every thread can cost over ten times as much as with `OMP_PLACES=threads OMP_PROC_BIND=close`, and one process can read either, so a measurement taken at the largest team size varies from process to process. A team of every hardware thread shares a CPU with some other task in a third to a half of the repetitions on a lightly loaded desktop, and each shared CPU adds about 12 microseconds to the region, in steps; the figure is the fastest of several stretches taken together, so it does not show the steps. A team that spans two L3 instances also pays when a circuit's gate targets change (the `shared` figures), which depends on where its threads landed in the same way.
 
 ### Execution Report
 
 `Result::execution` is an `ExecutionReport` (declared in `lindblad/types.hpp`), filled on every run from values the run already holds, so asking costs nothing. It is the account of what the run was given and what it decided.
 
 - **threads_available**: the most threads a parallel region of the run could start: OpenMP's limit for the calling thread when the run began, which `OMP_NUM_THREADS` and `Options::max_parallel_threads` both set.
-- **parallel_grain**: the amplitudes each thread must get before a gate kernel of the run goes parallel (`Options::min_amplitudes_per_thread`, or its default).
-- **threading_costs**: set when a decision of the run was made from threading costs, with the costs it used; empty when none was.
+- **parallel_grain**: the amplitudes each thread must get before a gate kernel of the run goes parallel under the grain rule (`Options::min_amplitudes_per_thread`, or its default; the grain a pass without a figure falls back on when the team is automatic).
+- **threading_costs**: set when a decision of the run was made from threading costs, which is when `Options::threading_costs` was set, with the costs it used; empty when none was.
+- **team_rule**: `TeamRule::Auto` when `min_amplitudes_per_thread` was 0, `TeamRule::Grain` when it was set.
+- **kernel_teams**: one `KernelTeamUse` per pass class the run met (`Gate`, `Diagonal`, `Dense1` to `Dense6`, in that order): `decisions` (how many times a pass asked for a team), `min_team` and `max_team` (the smallest and largest team chosen), `histogram` (how many decisions got each team size, indexed by team size), and `grain_fallbacks` (how many of the decisions had no figure and took the grain rule; 0 under the grain rule). A pass that runs serially is a decision of one thread. A run called from a shot loop's own thread starts no team and records nothing.
 
 ### Workflow
 
@@ -585,11 +604,12 @@ Semantics are untouched by construction: `MEASURE` / `RESET` / `BARRIER`, classi
 - **Time**: $O(2^n k)$ where $k$ = number of instructions; $O(2^{2k})$ for $k$-qubit gates
 - **Space**: $O(2^n)$ for statevector
 - **Parallelization**: each gate and each pass over the state runs on a team of
-  OpenMP threads sized by its work: at least `min_amplitudes_per_thread`
-  amplitudes per thread, counting a pass that does less per amplitude than a
-  one-qubit gate (a fill, a sum, a collapse) at half its size, and never more
-  threads than `max_parallel_threads` allows. A pass with one thread's worth
-  runs serially
+  OpenMP threads: under the default (`min_amplitudes_per_thread` of 0) the team
+  that costs least by the measured [threading costs](#threading-costs), under a
+  set value the grain rule (at least that many amplitudes per thread, counting
+  a pass that does less per amplitude than a one-qubit gate at half its size),
+  and never more threads than `max_parallel_threads` allows. A pass whose team
+  is one thread runs serially
 - **Measurement**: $O(2^n + \text{shots} \cdot (\log(2^n / b) + b))$ to sample,
   where $b \leq 1024$ is the sampler's block width (block sums, then a binary
   search and a walk through one block per shot)

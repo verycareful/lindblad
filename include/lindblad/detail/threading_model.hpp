@@ -26,9 +26,16 @@
 //   Dense         the dense k-qubit blocks, k = 1 to 6, timed the same way:
 //                 about a hundred milliseconds, since a block's arithmetic
 //                 grows with 2^k.
+//   Shared        the streaming and diagonal passes with the target changing
+//                 from pass to pass, as a circuit's gates change it: about
+//                 ten milliseconds, since it times what InCache times with
+//                 the targets cycling. It prices amplitudes moving between
+//                 cores, and between L3 instances once a team spans two.
 //   MemoryBound   the passes over a scratch state larger than every L3
 //                 instance together: it allocates and touches that state, so
-//                 it costs as much as writing it once on top of the timing.
+//                 it costs as much as writing it once on top of the timing,
+//                 and it needs that much memory to spare (see the room
+//                 argument of measure_threading_costs).
 //   ColdRegions   a region after the team has slept: each sample waits out the
 //                 block time (plus a margin), so it costs team sizes x samples
 //                 x block time. Quick under a passive wait policy, seconds
@@ -42,6 +49,8 @@
 
 #include "lindblad/types.hpp"
 
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -53,8 +62,9 @@ enum class ThreadingParts : unsigned {
     InCache = 2,
     Dense = 4,
     MemoryBound = 8,
-    All = 15,         // every part but Cold
     ColdRegions = 16,
+    Shared = 32,
+    All = 47,         // every part but Cold
 };
 
 constexpr ThreadingParts operator|(ThreadingParts a, ThreadingParts b) {
@@ -68,12 +78,25 @@ constexpr ThreadingParts operator|(ThreadingParts a, ThreadingParts b) {
 // one domain of every thread available, and the sizes are 1, 2, 4 and that.
 std::vector<int> threading_team_sizes();
 
+// The bytes MemoryBound's scratch state takes, or 0 when it cannot be measured
+// on this machine (no L3 size detected).
+std::uint64_t threading_memory_scratch_bytes();
+
 // The costs of `parts` for the calling thread's reach, measured now unless
 // this process already measured them (a second call asks for nothing it holds).
 // Parts not asked for, and not measured before, are empty. Measuring holds a
 // lock, so a second thread asking waits and then reads the first one's result
 // instead of timing beside it.
-ThreadingCosts measure_threading_costs(ThreadingParts parts);
+//
+// `scratch_room_bytes` is the memory the caller can spare for MemoryBound's
+// scratch state, on top of what it holds already (a run passes what is left of
+// its memory cap after its own buffers). When the scratch state does not fit in
+// it, MemoryBound is left empty and ThreadingCosts::memory_bound_note says so;
+// a later call with more room measures it then. Under no cap, leave it at its
+// default.
+inline constexpr std::uint64_t kNoScratchLimit = std::numeric_limits<std::uint64_t>::max();
+ThreadingCosts measure_threading_costs(ThreadingParts parts,
+                                       std::uint64_t scratch_room_bytes = kNoScratchLimit);
 
 // Whether measuring ColdRegions takes little time for the calling thread's
 // block time: a known, finite block time for which every team size's samples

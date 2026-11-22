@@ -133,7 +133,7 @@ inline void by_runs(double* re, double* im, std::size_t dim, const int* q, const
     std::copy(q, q + M, sorted);
     std::sort(sorted, sorted + M);
 
-    for_each_run(dim, sorted, M, [=](std::size_t base, auto len) {
+    for_each_run(gate_work(dim), sorted, M, [=](std::size_t base, auto len) {
         double* __restrict__ rp = re;
         double* __restrict__ ip = im;
         const Offsets<M> o = off;
@@ -205,13 +205,13 @@ inline void for_each_block_run(std::size_t begin, std::size_t end, const BlockGa
 // memcpy, which may alias any memory, so an invariant reached through a
 // reference would be reloaded after every store.
 template <int M, unsigned Touched, class G>
-inline void by_blocks(double* re, double* im, std::size_t dim, const int* q, const G& g) {
+inline void by_blocks(double* re, double* im, std::size_t dim, const int* q, const G& g, SvClass cls) {
     constexpr std::size_t N = std::size_t{1} << M;
     const Offsets<M> off(q);
     const BlockGates<M> gates(q);
     const std::size_t groups = (dim >> kLaneBits) >> M;
 
-    for_each_share(groups, dim, [=, &g](std::size_t begin, std::size_t end) {
+    for_each_share(groups, class_work(cls, dim), [=, &g](std::size_t begin, std::size_t end) {
         const G gl = g;
         const Offsets<M> o = off;
         double* __restrict__ rp = re;
@@ -252,7 +252,7 @@ inline void by_blocks_diagonal(double* re, double* im, std::size_t dim, const in
     const BlockGates<M> gates(q);
     const std::size_t groups = (dim >> kLaneBits) >> M;
 
-    for_each_share(groups, dim, [=, &d](std::size_t begin, std::size_t end) {
+    for_each_share(groups, diagonal_work(dim), [=, &d](std::size_t begin, std::size_t end) {
         const D dl = d;
         const Offsets<M> o = off;
         double* __restrict__ rp = re;
@@ -293,9 +293,9 @@ inline void by_blocks_diagonal(double* re, double* im, std::size_t dim, const in
 
 // One qubit on lane bit S: a tile is two consecutive blocks.
 template <std::size_t S, class G>
-inline void one_qubit_lanes(double* re, double* im, std::size_t dim, const G& g) {
+inline void one_qubit_lanes(double* re, double* im, std::size_t dim, const G& g, SvClass cls) {
     constexpr std::size_t tile = 2 * kLanes;
-    for_each_share(dim / tile, dim, [=, &g](std::size_t begin, std::size_t end) {
+    for_each_share(dim / tile, class_work(cls, dim), [=, &g](std::size_t begin, std::size_t end) {
         const G gl = g;
         double* __restrict__ rp = re;
         double* __restrict__ ip = im;
@@ -326,7 +326,7 @@ inline void one_qubit_lanes(double* re, double* im, std::size_t dim, const G& g)
 // groups of the tile. The blocks of one setting of the high bit are left
 // unread and unwritten when g touches none of their members.
 template <std::size_t S, bool Swapped, unsigned Touched, class G>
-inline void low_high_lanes(double* re, double* im, std::size_t dim, int high, const G& g) {
+inline void low_high_lanes(double* re, double* im, std::size_t dim, int high, const G& g, SvClass cls) {
     constexpr std::size_t x00 = member<Swapped>(0);  // x{low bit}{high bit}
     constexpr std::size_t x10 = member<Swapped>(1);
     constexpr std::size_t x01 = member<Swapped>(2);
@@ -338,7 +338,7 @@ inline void low_high_lanes(double* re, double* im, std::size_t dim, int high, co
     const std::size_t hb = std::size_t{1} << high;
     constexpr std::size_t tile = 4 * kLanes;
 
-    for_each_share(dim / tile, dim, [=, &g](std::size_t begin, std::size_t end) {
+    for_each_share(dim / tile, class_work(cls, dim), [=, &g](std::size_t begin, std::size_t end) {
         const G gl = g;
         double* __restrict__ rp = re;
         double* __restrict__ ip = im;
@@ -418,10 +418,10 @@ inline void join_low_low(const Lane8* m, double* p) {
 // Two qubits both below kLaneBits, on lane bits Sa < Sb: every block holds two
 // whole groups, and a tile is four consecutive blocks.
 template <std::size_t Sa, std::size_t Sb, bool Swapped, class G>
-inline void low_low_lanes(double* re, double* im, std::size_t dim, const G& g) {
+inline void low_low_lanes(double* re, double* im, std::size_t dim, const G& g, SvClass cls) {
     static_assert(Sa < Sb, "Sa is the lower qubit's lane bit");
     constexpr std::size_t tile = 4 * kLanes;
-    for_each_share(dim / tile, dim, [=, &g](std::size_t begin, std::size_t end) {
+    for_each_share(dim / tile, class_work(cls, dim), [=, &g](std::size_t begin, std::size_t end) {
         const G gl = g;
         double* __restrict__ rp = re;
         double* __restrict__ ip = im;
@@ -438,14 +438,14 @@ inline void low_low_lanes(double* re, double* im, std::size_t dim, const G& g) {
 }
 
 template <unsigned Touched, class G>
-inline void two_qubit_lanes(double* re, double* im, std::size_t dim, const int* q, const G& g) {
+inline void two_qubit_lanes(double* re, double* im, std::size_t dim, const int* q, const G& g, SvClass cls) {
     const int lo = std::min(q[0], q[1]);
     const int hi = std::max(q[0], q[1]);
     const bool swapped = q[0] > q[1];
     if (hi >= kLaneBits) {
         auto run = [&]<std::size_t S>(std::integral_constant<std::size_t, S>) {
-            if (swapped) low_high_lanes<S, true, Touched>(re, im, dim, hi, g);
-            else         low_high_lanes<S, false, Touched>(re, im, dim, hi, g);
+            if (swapped) low_high_lanes<S, true, Touched>(re, im, dim, hi, g, cls);
+            else         low_high_lanes<S, false, Touched>(re, im, dim, hi, g, cls);
         };
         if (lo == 0)      run(std::integral_constant<std::size_t, 1>{});
         else if (lo == 1) run(std::integral_constant<std::size_t, 2>{});
@@ -454,8 +454,8 @@ inline void two_qubit_lanes(double* re, double* im, std::size_t dim, const int* 
     }
     auto run = [&]<std::size_t Sa, std::size_t Sb>(std::integral_constant<std::size_t, Sa>,
                                                    std::integral_constant<std::size_t, Sb>) {
-        if (swapped) low_low_lanes<Sa, Sb, true>(re, im, dim, g);
-        else         low_low_lanes<Sa, Sb, false>(re, im, dim, g);
+        if (swapped) low_low_lanes<Sa, Sb, true>(re, im, dim, g, cls);
+        else         low_low_lanes<Sa, Sb, false>(re, im, dim, g, cls);
     };
     using c1 = std::integral_constant<std::size_t, 1>;
     using c2 = std::integral_constant<std::size_t, 2>;
@@ -473,7 +473,7 @@ namespace sv_groups_impl {
 // the group function every other path runs.
 template <int M, unsigned Touched, bool Diagonal, class Blocks, class Whole>
 inline void dispatch(double* re, double* im, std::size_t dim, const int (&q)[M],
-                     const Blocks& blocks, const Whole& whole) {
+                     const Blocks& blocks, const Whole& whole, SvClass cls) {
     static_assert(M == 1 || M == 2, "one- and two-qubit gates");
     static_assert(Touched != 0 && Touched < (1u << (1u << M)), "Touched names members");
     if (dim < (kLanes << M)) {
@@ -482,15 +482,15 @@ inline void dispatch(double* re, double* im, std::size_t dim, const int (&q)[M],
     }
     if (std::min(q[0], q[M - 1]) >= kLaneBits) {
         if constexpr (Diagonal) by_blocks_diagonal<M, Touched>(re, im, dim, q, blocks);
-        else                    by_blocks<M, Touched>(re, im, dim, q, blocks);
+        else                    by_blocks<M, Touched>(re, im, dim, q, blocks, cls);
         return;
     }
     if constexpr (M == 1) {
-        if (q[0] == 0)      one_qubit_lanes<1>(re, im, dim, whole);
-        else if (q[0] == 1) one_qubit_lanes<2>(re, im, dim, whole);
-        else                one_qubit_lanes<4>(re, im, dim, whole);
+        if (q[0] == 0)      one_qubit_lanes<1>(re, im, dim, whole, cls);
+        else if (q[0] == 1) one_qubit_lanes<2>(re, im, dim, whole, cls);
+        else                one_qubit_lanes<4>(re, im, dim, whole, cls);
     } else {
-        two_qubit_lanes<Touched>(re, im, dim, q, whole);
+        two_qubit_lanes<Touched>(re, im, dim, q, whole, cls);
     }
 }
 
@@ -499,10 +499,13 @@ inline void dispatch(double* re, double* im, std::size_t dim, const int (&q)[M],
 // re, im = the amplitude arrays, dim of each
 // q      = the gate's M qubits in the kernel's member order, all distinct
 // g      = the group function; Touched = the members it reads or writes
+// cls    = which measured pass the sweep resembles, for the team it gets
+//          (sv_runs.hpp): Gate for a gate's own formula, Dense1 or Dense2 for
+//          a dense one- or two-qubit matrix
 template <int M, unsigned Touched, class G>
 inline void for_each_group(double* re, double* im, std::size_t dim, const int (&q)[M],
-                           const G& g) {
-    sv_groups_impl::dispatch<M, Touched, false>(re, im, dim, q, g, g);
+                           const G& g, SvClass cls = SvClass::Gate) {
+    sv_groups_impl::dispatch<M, Touched, false>(re, im, dim, q, g, g, cls);
 }
 
 // A diagonal gate: each member is scaled on its own, so the kernel states the
@@ -520,7 +523,7 @@ inline void for_each_diagonal(double* re, double* im, std::size_t dim, const int
                 d(x, r[decltype(x)::value], i[decltype(x)::value]);
         });
     };
-    sv_groups_impl::dispatch<M, Touched, true>(re, im, dim, q, d, whole);
+    sv_groups_impl::dispatch<M, Touched, true>(re, im, dim, q, d, whole, SvClass::Diagonal);
 }
 
 }  // namespace detail

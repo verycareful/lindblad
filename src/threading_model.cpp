@@ -85,6 +85,18 @@ constexpr std::size_t kBytesPerAmplitude = 16;
 
 constexpr const char* kContext = "threading model";
 
+// What is left of a timed pass once the region that started its team is taken
+// out: the pass's own time, which the model adds to the region's cost itself.
+// A team of one starts no region. The region is measured on its own and a
+// collision with another task can make it longer than the same region was
+// inside the pass, so no more than half of a pass's time is taken out: a pass
+// is never rated at less than kMarginalFloor of what it was timed at.
+constexpr double kMarginalFloor = 0.5;
+double marginal_seconds(double pass_seconds, double region_seconds, int team) {
+    if (team <= 1) return pass_seconds;
+    return std::max(pass_seconds - region_seconds, kMarginalFloor * pass_seconds);
+}
+
 // =============================================================================
 // Team sizes
 // =============================================================================
@@ -229,7 +241,7 @@ struct InCacheScratch {
     }
 };
 
-void measure_light(const std::vector<int>& sizes, ThreadingCosts::Passes& out) {
+void measure_light(const std::vector<int>& sizes, const std::vector<double>& region, ThreadingCosts::Passes& out) {
     InCacheScratch scratch(sizes.back());
     out.streaming.clear();
     out.diagonal.clear();
@@ -243,15 +255,51 @@ void measure_light(const std::vector<int>& sizes, ThreadingCosts::Passes& out) {
         auto diagonal = [&] { k.cphase(); };
         const auto t = fastest(kRounds, kInCacheStretchSeconds, streaming, diagonal);
         const double n = static_cast<double>(k.dim());
-        out.streaming.push_back(t[0] / n);
-        out.diagonal.push_back(t[1] / n);
+        const std::size_t i = out.streaming.size();
+        out.streaming.push_back(marginal_seconds(t[0], region[i], team) / n);
+        out.diagonal.push_back(marginal_seconds(t[1], region[i], team) / n);
     }
 }
 
-void measure_dense(const std::vector<int>& sizes, ThreadingCosts::Passes& out) {
+// The same streaming and diagonal passes as measure_light, with the target
+// changing from pass to pass: a one-qubit pass on each qubit in turn, a
+// controlled phase on each pair of qubits in turn. A circuit's gates do this;
+// it is what moves a thread's amplitudes to another thread, and through
+// another L3 once the team spans two.
+void measure_shared(const std::vector<int>& sizes, const std::vector<double>& region, ThreadingCosts::Passes& out) {
+    InCacheScratch scratch(sizes.back());
+    out.streaming.clear();
+    out.diagonal.clear();
+    for (const int team : sizes) {
+        ScopedThreadCap cap(team, kContext);
+        ScopedParallelGrain grain(1);
+        const CalibrationKernels k = scratch.kernels(team);
+        unsigned h_calls = 0, cp_calls = 0;
+        auto streaming = [&] { k.h_at(static_cast<int>(h_calls++ % static_cast<unsigned>(k.m))); };
+        auto diagonal = [&] {
+            const unsigned c = cp_calls++;
+            const int lo = static_cast<int>(c % static_cast<unsigned>(k.m - 1));
+            const int span = k.m - 1 - lo;
+            k.cphase_at(lo, lo + 1 + static_cast<int>((c / static_cast<unsigned>(k.m - 1)) % static_cast<unsigned>(span)));
+        };
+        const auto t = fastest(kRounds, kInCacheStretchSeconds, streaming, diagonal);
+        const double n = static_cast<double>(k.dim());
+        const std::size_t i = out.streaming.size();
+        out.streaming.push_back(marginal_seconds(t[0], region[i], team) / n);
+        out.diagonal.push_back(marginal_seconds(t[1], region[i], team) / n);
+    }
+}
+
+// The dense k-qubit blocks, k = 1 to 6, each timed twice: on one fixed set of
+// targets (in_cache.dense, the arithmetic and the traffic of a block whose
+// shares stay with their threads) and on a set that changes from block to
+// block (shared.dense, what a circuit's blocks do).
+void measure_dense(const std::vector<int>& sizes, const std::vector<double>& region,
+                   ThreadingCosts::Passes& in_cache, ThreadingCosts::Passes& shared) {
     InCacheScratch scratch(sizes.back());
     const DenseMatrices dft;
-    for (auto& row : out.dense) row.clear();
+    for (auto& row : in_cache.dense) row.clear();
+    for (auto& row : shared.dense) row.clear();
     for (const int team : sizes) {
         ScopedThreadCap cap(team, kContext);
         ScopedParallelGrain grain(1);
@@ -261,15 +309,32 @@ void measure_dense(const std::vector<int>& sizes, ThreadingCosts::Passes& out) {
         auto dense = [&](int kk) {
             return [&, kk] { apply_dense(k.re, k.im, k.dim(), targets[kk], dft.m[kk]); };
         };
+        // The pool of targets shifted by the call count, so no two consecutive
+        // blocks share a target set.
+        std::array<unsigned, 6> calls{};
+        auto moving = [&](int kk) {
+            return [&, kk] {
+                std::vector<int> t = targets[kk];
+                const int shift = static_cast<int>(calls[kk]++ % static_cast<unsigned>(k.m));
+                for (int& q : t) q = (q + shift) % k.m;
+                apply_dense(k.re, k.im, k.dim(), t, dft.m[kk]);
+            };
+        };
         auto d1 = dense(0), d2 = dense(1), d3 = dense(2), d4 = dense(3), d5 = dense(4), d6 = dense(5);
-        const auto t = fastest(kRounds, kInCacheStretchSeconds, d1, d2, d3, d4, d5, d6);
+        auto m1 = moving(0), m2 = moving(1), m3 = moving(2), m4 = moving(3), m5 = moving(4), m6 = moving(5);
+        const auto t = fastest(kRounds, kInCacheStretchSeconds, d1, d2, d3, d4, d5, d6, m1, m2, m3, m4, m5, m6);
         const double n = static_cast<double>(k.dim());
-        for (int i = 0; i < 6; ++i) out.dense[i].push_back(t[i] / n);
+        const std::size_t j = in_cache.dense[0].size();
+        for (int i = 0; i < 6; ++i) {
+            in_cache.dense[i].push_back(marginal_seconds(t[i], region[j], team) / n);
+            shared.dense[i].push_back(marginal_seconds(t[6 + i], region[j], team) / n);
+        }
     }
 }
 
-// The scratch state's qubits for the memory-bound part, or 0 when it cannot be
-// measured: no L3 size detected, or no sure room for the state.
+// The scratch state's qubits for the memory-bound part, or 0 when no L3 size
+// is detected: the state is kMemoryScratchOverLlc times every L3 instance
+// together.
 int memory_scratch_qubits() {
     const std::size_t llc = hw::llc_bytes();
     const std::size_t instances = hw::llc_instances();
@@ -277,17 +342,36 @@ int memory_scratch_qubits() {
     const std::size_t want = kMemoryScratchOverLlc * llc * instances;
     int m = 1;
     while ((kBytesPerAmplitude << m) < want) ++m;
-    const std::size_t bytes = kBytesPerAmplitude << m;
-    const std::size_t room = hw::recent_available_memory_bytes();
-    if (room == 0 || room / kMemoryHeadroom < bytes) return 0;
     return m;
+}
+
+// Why the memory-bound part was not measured, or empty when it can be: the L3
+// is not detected, the caller's room is too small, or the operating system
+// cannot sure-spare the state. `cap_limited` is true when the caller's room is
+// the reason, the one reason a later call with more room can lift.
+std::string memory_bound_obstacle(std::uint64_t room_bytes, bool& cap_limited) {
+    cap_limited = false;
+    const int m = memory_scratch_qubits();
+    if (m == 0) return "no L3 size detected";
+    const std::uint64_t bytes = static_cast<std::uint64_t>(kBytesPerAmplitude) << m;
+    if (room_bytes < bytes) {
+        cap_limited = true;
+        return "the memory cap leaves " + std::to_string(room_bytes >> 20) + " MiB, the scratch state needs " +
+               std::to_string(bytes >> 20) + " MiB";
+    }
+    const std::size_t room = hw::recent_available_memory_bytes();
+    if (room == 0 || room / kMemoryHeadroom < bytes)
+        return "the operating system does not report " + std::to_string((bytes * kMemoryHeadroom) >> 20) +
+               " MiB available";
+    return {};
 }
 
 // Streaming and diagonal passes over one window of a state larger than the
 // caches. Only these two are rated: a dense block's memory-bound pass is the
 // longer of its in-cache pass and the streaming one. Returns false, with `out`
 // empty, when the scratch state could not be had.
-bool measure_memory_bound(const std::vector<int>& sizes, ThreadingCosts::Passes& out) {
+bool measure_memory_bound(const std::vector<int>& sizes, const std::vector<double>& region,
+                          ThreadingCosts::Passes& out) {
     out = {};
     const int m = memory_scratch_qubits();
     if (m == 0) return false;
@@ -311,8 +395,9 @@ bool measure_memory_bound(const std::vector<int>& sizes, ThreadingCosts::Passes&
             auto streaming = [&] { at().h(); };
             auto diagonal = [&] { at().cphase(); };
             const auto t = fastest(kMemoryRounds, kMemoryStretchSeconds, streaming, diagonal);
-            out.streaming.push_back(t[0] / static_cast<double>(window));
-            out.diagonal.push_back(t[1] / static_cast<double>(window));
+            const std::size_t i = out.streaming.size();
+            out.streaming.push_back(marginal_seconds(t[0], region[i], team) / static_cast<double>(window));
+            out.diagonal.push_back(marginal_seconds(t[1], region[i], team) / static_cast<double>(window));
         }
         return true;
     } catch (const std::bad_alloc&) {
@@ -329,6 +414,9 @@ struct Entry {
     ThreadingCosts costs;
     unsigned have = 0;       // ThreadingParts measured
     unsigned attempted = 0;  // ThreadingParts tried, including those that came back empty
+    // The most room a MemoryBound attempt was refused for lack of, in bytes; a
+    // call with more room tries again. Zero when no attempt was refused so.
+    std::uint64_t memory_refused_room = 0;
 };
 
 // (threads available, processors the team may use, block time in ms or -1)
@@ -369,14 +457,28 @@ std::string bad_entries(const char* name, const std::vector<double>& v, std::siz
 
 std::vector<int> threading_team_sizes() { return sample_sizes(); }
 
-ThreadingCosts measure_threading_costs(ThreadingParts parts) {
+std::uint64_t threading_memory_scratch_bytes() {
+    const int m = memory_scratch_qubits();
+    return m == 0 ? 0 : static_cast<std::uint64_t>(kBytesPerAmplitude) << m;
+}
+
+ThreadingCosts measure_threading_costs(ThreadingParts parts, std::uint64_t scratch_room_bytes) {
     std::lock_guard<std::mutex> lock(cache_mutex());
+    // Every pass below runs on the grain rule, the caller's team model set
+    // aside: a model asked for the costs it is being given would wait on
+    // itself, and the scratch states are filled before any part's own scope.
+    ScopedParallelGrain grain_rule(1);
     Entry& entry = cache()[current_key()];
     const std::vector<int> sizes = sample_sizes();
     if (entry.costs.team_sizes != sizes) {
         entry = Entry{};
         entry.costs.team_sizes = sizes;
     }
+    // The passes are rated with their team's region taken out, so the regions
+    // are measured before any of them.
+    if (wants(parts, ThreadingParts::InCache | ThreadingParts::Shared | ThreadingParts::Dense |
+                         ThreadingParts::MemoryBound))
+        parts = parts | ThreadingParts::Region;
     auto todo = [&](ThreadingParts one) {
         return wants(parts, one) && !(entry.attempted & static_cast<unsigned>(one));
     };
@@ -391,16 +493,35 @@ ThreadingCosts measure_threading_costs(ThreadingParts parts) {
         entry.attempted |= static_cast<unsigned>(ThreadingParts::ColdRegions);
     }
     if (todo(ThreadingParts::InCache)) {
-        measure_light(sizes, entry.costs.in_cache);
+        measure_light(sizes, entry.costs.region_seconds, entry.costs.in_cache);
         entry.attempted |= static_cast<unsigned>(ThreadingParts::InCache);
     }
+    if (todo(ThreadingParts::Shared)) {
+        measure_shared(sizes, entry.costs.region_seconds, entry.costs.shared);
+        entry.attempted |= static_cast<unsigned>(ThreadingParts::Shared);
+    }
     if (todo(ThreadingParts::Dense)) {
-        measure_dense(sizes, entry.costs.in_cache);
+        measure_dense(sizes, entry.costs.region_seconds, entry.costs.in_cache, entry.costs.shared);
         entry.attempted |= static_cast<unsigned>(ThreadingParts::Dense);
     }
-    if (todo(ThreadingParts::MemoryBound)) {
-        measure_memory_bound(sizes, entry.costs.memory_bound);
-        entry.attempted |= static_cast<unsigned>(ThreadingParts::MemoryBound);
+    // MemoryBound is tried again when an earlier attempt was refused for lack
+    // of room and this call has more of it.
+    const unsigned memory_bit = static_cast<unsigned>(ThreadingParts::MemoryBound);
+    const bool memory_retry = (entry.attempted & memory_bit) == 0 ||
+                              (entry.memory_refused_room != 0 && scratch_room_bytes > entry.memory_refused_room);
+    if (wants(parts, ThreadingParts::MemoryBound) && memory_retry) {
+        bool cap_limited = false;
+        const std::string obstacle = memory_bound_obstacle(scratch_room_bytes, cap_limited);
+        entry.costs.memory_bound = {};
+        entry.costs.memory_bound_note = obstacle;
+        if (obstacle.empty() && !measure_memory_bound(sizes, entry.costs.region_seconds, entry.costs.memory_bound))
+            entry.costs.memory_bound_note = "the scratch state could not be allocated";
+        if (cap_limited) {
+            entry.memory_refused_room = scratch_room_bytes;
+        } else {
+            entry.memory_refused_room = 0;
+            entry.attempted |= memory_bit;
+        }
     }
     return entry.costs;
 }
@@ -424,6 +545,14 @@ std::string threading_costs_problem(const ThreadingCosts& c) {
     bad += bad_entries("in_cache.diagonal", c.in_cache.diagonal, n);
     for (std::size_t k = 0; k < c.in_cache.dense.size(); ++k)
         bad += bad_entries(("in_cache.dense[" + std::to_string(k) + "]").c_str(), c.in_cache.dense[k], n);
+    const bool shared_empty = c.shared.streaming.empty() && c.shared.diagonal.empty();
+    if (!shared_empty) {
+        bad += bad_entries("shared.streaming", c.shared.streaming, n);
+        bad += bad_entries("shared.diagonal", c.shared.diagonal, n);
+    }
+    for (std::size_t k = 0; k < c.shared.dense.size(); ++k)
+        if (!c.shared.dense[k].empty())
+            bad += bad_entries(("shared.dense[" + std::to_string(k) + "]").c_str(), c.shared.dense[k], n);
     const bool memory_empty = c.memory_bound.streaming.empty() && c.memory_bound.diagonal.empty();
     if (!memory_empty) {
         bad += bad_entries("memory_bound.streaming", c.memory_bound.streaming, n);

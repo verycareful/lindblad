@@ -20,6 +20,7 @@
 #include "lindblad/detail/sv_runs.hpp"
 #include "lindblad/detail/sv_sampler.hpp"
 #include "lindblad/detail/sv_timing.hpp"
+#include "lindblad/detail/team_model.hpp"
 #include "lindblad/detail/threading_model.hpp"
 #include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
@@ -184,7 +185,7 @@ void StatevectorSimulator::apply_instruction(Statevector& sv,
 // rather than triplicating the same O(dim) loops at each call site. Both
 // passes iterate the two qubit-value halves as strided blocks with branch-free
 // inner loops, split across a team by the statevector thread rule for a
-// streaming pass (detail::streaming_work). The two sums are folded over fixed
+// streaming pass (detail::flat_work). The two sums are folded over fixed
 // segments in segment order (detail::reduce_shares): the outcome is drawn
 // against prob0 / total, so a sum whose last bits changed with the team could
 // change a seeded outcome between a run on one thread and one on many.
@@ -206,7 +207,7 @@ static int sv_collapse_qubit(Statevector& sv, int qubit, Rng& rng, const char* c
         double prob1;
     };
     const Halves h = detail::reduce_shares(
-        n_blocks, detail::streaming_work(dim), Halves{0.0, 0.0},
+        n_blocks, detail::flat_work(dim), Halves{0.0, 0.0},
         [rp, ip, step](size_t b, size_t e) {
             Halves part{0.0, 0.0};
             for (size_t bi = b; bi < e; ++bi) {
@@ -241,7 +242,7 @@ static int sv_collapse_qubit(Statevector& sv, int qubit, Rng& rng, const char* c
     const size_t keep_off = (outcome == 0) ? 0 : step;   // half that survives
     const size_t zero_off = step - keep_off;             // half that vanishes
 
-    detail::for_each_share(n_blocks, detail::streaming_work(dim), [=](size_t b, size_t e) {
+    detail::for_each_share(n_blocks, detail::flat_work(dim), [=](size_t b, size_t e) {
         for (size_t bi = b; bi < e; ++bi) {
             const size_t base = bi * 2 * step;
             double* __restrict__ kr = rp + base + keep_off;
@@ -404,6 +405,27 @@ static void sv_simulate(StatevectorSimulator& sim, Statevector& sv,
     sv_run_trajectory(sim, sv, circuit, clreg, n_clbits, sv_sim_rng, 0, ctx);
 }
 
+namespace {
+
+// Raises when Options::threading_costs is set but not coherent.
+void sv_check_threading_costs(const StatevectorSimulator::Options& options, const char* context) {
+    if (options.threading_costs.unset()) return;
+    const std::string problem = detail::threading_costs_problem(options.threading_costs);
+    if (!problem.empty())
+        detail::raise<InvalidArgument>(context,
+            "Options::threading_costs is set but is not coherent:" + problem +
+                " (leave it default-constructed to have the costs measured)");
+}
+
+// The memory the threading model's scratch state may use beside the `held`
+// bytes a call already needs: what the call's memory cap leaves.
+std::uint64_t sv_scratch_room(std::uint64_t max_memory_mb, std::uint64_t held) {
+    const std::uint64_t cap = detail::resolve_memory_cap_bytes(max_memory_mb);
+    return cap > held ? cap - held : 0;
+}
+
+}  // namespace
+
 void StatevectorSimulator::simulate_circuit(
     Statevector& sv,
     const QuantumCircuit& circuit_in
@@ -411,6 +433,10 @@ void StatevectorSimulator::simulate_circuit(
     const detail::ScopedThreadCap threads(options.max_parallel_threads,
                                           "StatevectorSimulator::simulate_circuit");
     const detail::ScopedParallelGrain grain(options.min_amplitudes_per_thread);
+    sv_check_threading_costs(options, "StatevectorSimulator::simulate_circuit");
+    const detail::ScopedTeamModel team_model(
+        options.min_amplitudes_per_thread == 0, options.threading_costs,
+        sv_scratch_room(options.max_memory_mb, detail::complex_bytes(sv.dim)));
     sv_simulate(*this, sv, circuit_in, "StatevectorSimulator::simulate_circuit");
 }
 
@@ -429,6 +455,7 @@ double StatevectorSimulator::eval_expectation(
         detail::raise<InvalidArgument>("StatevectorSimulator::eval_expectation",
                                        "circuit must have at least 1 qubit");
     }
+    sv_check_threading_costs(options, "StatevectorSimulator::eval_expectation");
     check_qubit_limit(circuit.n_qubits, options.qubit_limit,
                       "StatevectorSimulator::eval_expectation");
 
@@ -460,6 +487,9 @@ double StatevectorSimulator::eval_expectation(
         sv_work->initialize();
     }
 
+    const detail::ScopedTeamModel team_model(
+        options.min_amplitudes_per_thread == 0, options.threading_costs,
+        sv_scratch_room(options.max_memory_mb, detail::complex_bytes(sv_work->dim)));
     sv_simulate(*this, *sv_work, circuit, "StatevectorSimulator::eval_expectation");
     return observable.expectation_value(*sv_work);
 }
@@ -634,7 +664,7 @@ using CalibrationKernels = detail::CalibrationKernels;
 // costs (the team's start, the plan) to matter pays them as the run's does.
 void sv_dense_compute(int m, int first_k, int last_k, double stretch, double* per_amp) {
     for (int k = first_k; k <= last_k; ++k) {
-        const int team = detail::sv_team((std::size_t{1} << m) << (k <= 2 ? 0 : k - 1));
+        const int team = detail::sv_team_grain((std::size_t{1} << m) << (k <= 2 ? 0 : k - 1));
         detail::ScopedThreadCap cap(team, "StatevectorSimulator::run");
         const int q = std::min(
             m, kFusionComputeQubits +
@@ -725,6 +755,9 @@ std::map<FusionCostKey, CachedFusionCosts>& sv_fusion_cost_cache() {
 FusionCosts sv_fusion_costs(int n, int max_k, FusionCalibration calibration, double* re,
                             double* im, bool* used_buffer = nullptr) {
     if (used_buffer != nullptr) *used_buffer = false;
+    // The fusion costs are defined on the grain rule's teams, whatever the run's
+    // own teams are: the model is set aside while they are timed.
+    const detail::ScopedGrainRule grain_rule;
     const int m = sv_fusion_calibration_qubits(n);
     const std::size_t threads =
         calibration == FusionCalibration::OneThread ? 1 : hw::available_threads();
@@ -972,7 +1005,7 @@ static void sv_copy_amplitudes(Statevector& to, const Statevector& from) {
     double* ti = to.imag_parts;
     const double* fr = from.real_parts;
     const double* fi = from.imag_parts;
-    detail::for_each_share(to.dim, detail::streaming_work(to.dim),
+    detail::for_each_share(to.dim, detail::flat_work(to.dim),
                            [=](std::size_t b, std::size_t e) {
                                std::memcpy(tr + b, fr + b, (e - b) * sizeof(double));
                                std::memcpy(ti + b, fi + b, (e - b) * sizeof(double));
@@ -985,7 +1018,7 @@ static std::size_t sv_shot_work(std::size_t dim, std::size_t instructions) {
     const std::uint64_t passes = static_cast<std::uint64_t>(instructions);
     return static_cast<std::size_t>(detail::saturating_add(
         detail::saturating_mul(static_cast<std::uint64_t>(dim), passes),
-        detail::streaming_work(dim)));
+        detail::flat_work(dim).grain_work));
 }
 
 static void record_options(detail::FailureCollector& failure,
@@ -1044,11 +1077,13 @@ StatevectorSimulator::FusionCosts StatevectorSimulator::measured_fusion_costs(
     return sv_fusion_costs(n_qubits, detail::kDenseMaxQubits, calibration, nullptr, nullptr);
 }
 
-ThreadingCosts StatevectorSimulator::measured_threading_costs(bool measure_cold_regions) {
+ThreadingCosts StatevectorSimulator::measured_threading_costs(bool measure_cold_regions,
+                                                              std::uint64_t max_memory_mb) {
     using detail::ThreadingParts;
     const bool cold = measure_cold_regions || detail::threading_cold_regions_quick();
     return detail::measure_threading_costs(cold ? ThreadingParts::All | ThreadingParts::ColdRegions
-                                                : ThreadingParts::All);
+                                                : ThreadingParts::All,
+                                           detail::resolve_memory_cap_bytes(max_memory_mb));
 }
 
 StatevectorSimulator::Result StatevectorSimulator::run(
@@ -1067,6 +1102,9 @@ StatevectorSimulator::Result StatevectorSimulator::run(
     detail::FailureCollector failure("StatevectorSimulator::run", "statevector",
                                      circuit_in, shots, plan);
     std::optional<detail::ObservationRunner> runner;
+    // Declared before the try block so it outlives the run's scopes and the
+    // report can read it; it ends with the call.
+    std::optional<detail::ScopedTeamModel> team_model;
     // Reused across calls on this thread, which spares variational hot paths
     // (VQE, QAOA) calling run() thousands of times an aligned alloc and free
     // each.
@@ -1135,13 +1173,12 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                                     options.shot_counting_distinct_fraction);
         if (!options.fusion_costs.unset())
             sv_check_fusion_costs(options.fusion_costs, options.fusion_max_qubit);
-        if (!options.threading_costs.unset()) {
-            const std::string problem = detail::threading_costs_problem(options.threading_costs);
-            if (!problem.empty())
-                detail::raise<InvalidArgument>("StatevectorSimulator::run",
-                    "Options::threading_costs is set but is not coherent:" + problem +
-                        " (leave it default-constructed to have the costs measured)");
-        }
+        sv_check_threading_costs(options, "StatevectorSimulator::run");
+        // The team model of the run (Options::min_amplitudes_per_thread = 0),
+        // its scratch state for the memory-bound figures answering to what the
+        // cap leaves beside the run's own buffers.
+        team_model.emplace(options.min_amplitudes_per_thread == 0, options.threading_costs,
+                           sv_scratch_room(options.max_memory_mb, footprint));
 
         // Gate fusion (R.1.17): at bandwidth-bound sizes, execute a fused
         // equivalent of the circuit (see sv_fuse_circuit above). The
@@ -1600,6 +1637,7 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         result.phase_times = clock.result();
         result.execution.threads_available = hw::available_threads();
         result.execution.parallel_grain = detail::parallel_grain();
+        if (team_model) team_model->fill_report(result.execution);
 
     } catch (...) {
         // The failure path: whatever the run had computed goes into the

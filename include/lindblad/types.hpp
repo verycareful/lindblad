@@ -20,6 +20,7 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <new>
 #include <vector>
 
@@ -801,7 +802,22 @@ struct PhaseTimes {
 //                    infinite, where a measurement has nothing to wait for.
 //   in_cache         seconds per amplitude of one pass over a state each of
 //                    whose threads' share sits in its core's cache (about
-//                    128 KiB of amplitudes per thread).
+//                    128 KiB of amplitudes per thread), with the region that
+//                    started the team taken out (every pass figure below is
+//                    the same): a pass over A amplitudes costs
+//                    region_seconds + A * (the figure), not the figure alone.
+//   shared           the in-cache passes with the target CHANGING from one
+//                    pass to the next, the way a circuit's gates do: each
+//                    thread's share is re-mapped between passes, so amplitudes
+//                    move between cores, and across L3 instances once a team
+//                    spans two. The same seconds per amplitude as in_cache;
+//                    the streaming and diagonal classes, and the dense blocks
+//                    (entry k - 1, the blocks' targets changing from block to
+//                    block, measured with the dense part). A
+//                    team inside one L3 instance pays little over in_cache,
+//                    a team spanning two pays several times as much
+//                    (measured: 5x for 12 unpinned threads on 2^18
+//                    amplitudes).
 //   memory_bound     the same over a state larger than every L3 instance
 //                    together, so no pass finds its amplitudes in cache.
 //
@@ -813,8 +829,11 @@ struct PhaseTimes {
 // as the fusion costs rate it, so `memory_bound.dense` stays empty.
 //
 // `memory_bound` is entirely empty when it could not be measured (no L3 size
-// detected, or too little memory available for the scratch state); a reader
-// then has no memory-bound figure rather than a guessed one.
+// detected, or too little memory available for the scratch state, or the
+// memory cap of the run that asked left no room for it); a reader then has no
+// memory-bound figure rather than a guessed one, and `memory_bound_note` says
+// which. `shared` is empty when not measured, and a reader then falls back on
+// in_cache.
 struct ThreadingCosts {
     struct Passes {
         std::vector<double> streaming;
@@ -827,7 +846,11 @@ struct ThreadingCosts {
     std::optional<int> block_time_ms;
     std::vector<double> cold_region_seconds;
     Passes in_cache;
+    Passes shared;
     Passes memory_bound;
+    // Why memory_bound is empty: empty text when it is measured or was not
+    // asked for yet.
+    std::string memory_bound_note;
 
     // True for a default-constructed value: nothing set, nothing measured.
     bool unset() const noexcept { return team_sizes.empty(); }
@@ -848,11 +871,37 @@ struct ThreadingCosts {
 //                       kernel of the run goes parallel
 //                       (min_amplitudes_per_thread, or its default).
 //   threading_costs     set when a decision of the run was made from threading
-//                       costs, with the costs it used; empty when none was.
+//                       costs, with the costs it used (parts measured while the
+//                       run went on included); empty when none was.
+//   team_rule           how the run sized the team of each gate kernel and pass
+//                       over the state: Auto when min_amplitudes_per_thread was
+//                       0 (the team that costs least by the threading costs),
+//                       Grain when it was set (each thread gets at least that
+//                       many amplitudes).
+//   kernel_teams        one entry per pass class the run met, in the order
+//                       Gate, Diagonal, Dense1 to Dense6: how many parallel
+//                       decisions it took, the smallest and the largest team
+//                       chosen, how many of each size (index = team size), and
+//                       how many fell back on the grain rule because the costs
+//                       held no figure for that pass (grain_fallbacks, Auto
+//                       only).
+struct KernelTeamUse {
+    std::string pass_class;
+    std::uint64_t decisions = 0;
+    int min_team = 0;
+    int max_team = 0;
+    std::vector<std::uint64_t> histogram;
+    std::uint64_t grain_fallbacks = 0;
+};
+
+enum class TeamRule { Grain, Auto };
+
 struct ExecutionReport {
     std::size_t threads_available = 0;
     std::size_t parallel_grain = 0;
     std::optional<ThreadingCosts> threading_costs;
+    TeamRule team_rule = TeamRule::Grain;
+    std::vector<KernelTeamUse> kernel_teams;
 };
 
 // Mathematical constants (PI, INV_SQRT2, ...) live in constants.hpp, included

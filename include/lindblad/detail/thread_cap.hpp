@@ -76,21 +76,57 @@ private:
 // simulator uses the default.
 inline thread_local std::size_t t_parallel_grain = DEFAULT_MIN_AMPLITUDES_PER_THREAD;
 
+// The automatic team model of the calling thread (team_model.hpp), or null: a
+// pass then takes the grain rule. A simulator whose min_amplitudes_per_thread
+// is 0 installs one for the length of a call; no other thread sees it.
+class TeamModel;
+inline thread_local TeamModel* t_team_model = nullptr;
+
 inline std::size_t parallel_grain() noexcept { return t_parallel_grain; }
 
+// =============================================================================
+// ScopedGrainRule - the grain rule for the length of a scope
+// =============================================================================
+// Sets the calling thread's team model aside and leaves the grain as it is. A
+// measurement whose figures are defined on the grain rule (the fusion costs)
+// holds this while it times its kernels, so what it measures does not follow
+// the automatic team.
+class ScopedGrainRule {
+public:
+    ScopedGrainRule() : previous_model_(t_team_model) { t_team_model = nullptr; }
+    ~ScopedGrainRule() { t_team_model = previous_model_; }
+
+    ScopedGrainRule(const ScopedGrainRule&) = delete;
+    ScopedGrainRule& operator=(const ScopedGrainRule&) = delete;
+
+private:
+    TeamModel* previous_model_;
+};
+
+// A non-zero grain also puts the grain rule in force: the model is set aside
+// for the scope's length. A measurement that forces its own teams (a grain of
+// one amplitude) therefore never reads the model it is feeding.
 class ScopedParallelGrain {
 public:
-    explicit ScopedParallelGrain(std::size_t grain) : previous_(t_parallel_grain) {
-        if (grain > 0) t_parallel_grain = grain;
+    explicit ScopedParallelGrain(std::size_t grain)
+        : previous_(t_parallel_grain), previous_model_(t_team_model) {
+        if (grain > 0) {
+            t_parallel_grain = grain;
+            t_team_model = nullptr;
+        }
     }
 
-    ~ScopedParallelGrain() { t_parallel_grain = previous_; }
+    ~ScopedParallelGrain() {
+        t_parallel_grain = previous_;
+        t_team_model = previous_model_;
+    }
 
     ScopedParallelGrain(const ScopedParallelGrain&) = delete;
     ScopedParallelGrain& operator=(const ScopedParallelGrain&) = delete;
 
 private:
-    std::size_t previous_;  // the calling thread's value on entry
+    std::size_t previous_;          // the calling thread's value on entry
+    TeamModel* previous_model_;     // the calling thread's model on entry
 };
 
 }  // namespace detail

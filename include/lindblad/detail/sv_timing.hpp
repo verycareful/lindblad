@@ -89,15 +89,32 @@ struct CalibrationKernels {
         const double v = 1.0 / std::sqrt(static_cast<double>(dim()));
         double* r = re;
         double* i = im;
-        detail::for_each_share(dim(), detail::streaming_work(dim()), [=](std::size_t b, std::size_t e) {
+        detail::for_each_share(dim(), detail::flat_work(dim()), [=](std::size_t b, std::size_t e) {
             for (std::size_t k = b; k < e; ++k) {
                 r[k] = v;
                 i[k] = 0.0;
             }
         });
     }
-    void h() const {
-        const int q[1] = {m / 2};
+    // A flat pass: every amplitude read and scaled once. The factor is read
+    // through a volatile so that no compiler folds the pass away.
+    void scale() const {
+        static volatile double factor = 1.0000001;
+        const double c = factor;
+        double* r = re;
+        double* i = im;
+        detail::for_each_share(dim(), detail::flat_work(dim()), [=](std::size_t b, std::size_t e) {
+            for (std::size_t k = b; k < e; ++k) {
+                r[k] *= c;
+                i[k] *= c;
+            }
+        });
+    }
+    void h() const { h_at(m / 2); }
+    // H on qubit q: the one-qubit streaming pass with its target chosen by the
+    // caller, so a measurement can change it from pass to pass.
+    void h_at(int q0) const {
+        const int q[1] = {q0};
         detail::for_each_group<1, 0b11>(re, im, dim(), q, [](auto* r, auto* i) {
             const auto r0 = r[0], i0 = i[0], r1 = r[1], i1 = i[1];
             r[0] = INV_SQRT2 * (r0 + r1);
@@ -113,8 +130,10 @@ struct CalibrationKernels {
         do h();
         while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < seconds);
     }
-    void cphase() const {
-        const int q[2] = {detail::kLaneBits, m - 2};
+    void cphase() const { cphase_at(detail::kLaneBits, m - 2); }
+    // A controlled phase on qubits lo < hi, chosen by the caller.
+    void cphase_at(int lo, int hi) const {
+        const int q[2] = {lo, hi};
         const double c = std::cos(0.3), s = std::sin(0.3);
         detail::for_each_diagonal<2, 0b1000>(re, im, dim(), q, [=](auto, auto& r, auto& i) {
             const auto r0 = r, i0 = i;

@@ -19,6 +19,7 @@
 #include "lindblad/validation.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -468,8 +469,13 @@ double expectation_of_groups(const double* rp, const double* ip, std::size_t dim
             return group_share(rp, ip, g, b, e);
         };
         const auto add = [](double acc, double part) { return acc + part; };
+        // One pass per term, each a one-qubit gate's work per amplitude.
+        const int term_weight = std::max(static_cast<int>(std::bit_width(g.z.size())) - 1, 0);
         result += parallel ? detail::reduce_shares(
-                                 dim, detail::saturating_mul(dim, g.z.size()), 0.0, share, add)
+                                 dim,
+                                 detail::weighted_gate_work(dim, term_weight,
+                                                            detail::saturating_mul(dim, g.z.size())),
+                                 0.0, share, add)
                            : detail::fold_segments(dim, 0.0, share, add);
     }
     return result;

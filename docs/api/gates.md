@@ -394,7 +394,7 @@ Three-qubit gates (CCX, CCZ, CSWAP, RCCX) sweep runs only: straight-line code fo
 
 ### OpenMP Parallelization
 
-- **Team size**: every pass sizes its team by its work: `min(available threads, work / min_amplitudes_per_thread)`, where the work counts amplitudes at one-qubit-gate cost and `min_amplitudes_per_thread` defaults to `DEFAULT_MIN_AMPLITUDES_PER_THREAD` (2048, in `lindblad/types.hpp`). A team of one runs serially. See `min_amplitudes_per_thread` in the [Simulators](simulators.md) page.
+- **Team size**: every pass asks for a team by the work it does. Under a simulator's default (`min_amplitudes_per_thread` of 0) the team is the fastest one measured for that kind of pass (a one-qubit or other group gate, a diagonal gate, a dense block of k qubits) on a state of that size, with the gate targets changing from pass to pass; the measurement is made the first time a kind and size is met and kept for the process. Under a set value the team is `min(available threads, work / min_amplitudes_per_thread)`, where the work counts amplitudes at one-qubit-gate cost; a gate function called outside a simulator uses that rule with `DEFAULT_MIN_AMPLITUDES_PER_THREAD` (2048, in `lindblad/types.hpp`). A team of one runs serially. See `min_amplitudes_per_thread` in the [Simulators](simulators.md) page.
 - **Even split**: the groups (or tiles) are divided among the team by count, in contiguous shares that start on a cache line, so a gate on the highest qubit keeps every thread busy and no two threads write one line.
 - **Determinism**: each amplitude is written by exactly one thread with the same formula, so a gate computes the same bits on one thread or many.
 

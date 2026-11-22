@@ -28,10 +28,10 @@
 // dim / 2^(q_{m-1}+1) blocks, which is 1 for a gate on the top qubit: one
 // thread working and the rest idle.
 //
-// The team is sv_team(dim) threads: min(hw::available_threads(),
-// dim / parallel_grain()) (parallel_grain in thread_cap.hpp,
-// DEFAULT_MIN_AMPLITUDES_PER_THREAD unless a simulator's option sets it), and a
-// team of one runs serially.
+// The team is sv_team(work) threads (the model's choice, or min(
+// hw::available_threads(), dim / parallel_grain()) under the grain rule:
+// parallel_grain in thread_cap.hpp, DEFAULT_MIN_AMPLITUDES_PER_THREAD unless a
+// simulator's option sets it), and a team of one runs serially.
 //
 // Two shapes, by how many runs there are:
 //
@@ -56,6 +56,7 @@
 // written by exactly one call, so the division of work never changes a result:
 // a kernel computes the same bits on one thread or on many.
 
+#include "lindblad/detail/team_model.hpp"
 #include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/hw_info.hpp"
 
@@ -104,24 +105,56 @@ inline std::size_t next_clear(std::size_t b, std::size_t mask) noexcept {
     return ((b | mask) + 1) & ~mask;
 }
 
-// The threads for a statevector pass worth `work` amplitudes: each thread gets
-// at least parallel_grain() of them, the team never exceeds the threads a
-// region may use, and a pass with only one thread's worth runs serially. Work
-// is counted in one-qubit-gate amplitudes: a pass doing more per amplitude than
-// a one-qubit gate passes more than its amplitude count and reaches a team
-// sooner, one doing less (streaming_work) passes fewer and reaches it later.
-inline int sv_team(std::size_t work) {
+// The grain rule: the threads for a pass worth `work` amplitudes, each thread
+// getting at least parallel_grain() of them, never more than the threads a
+// region may use, and one (serial) for a pass with only one thread's worth.
+// Work is counted in one-qubit-gate amplitudes: a pass doing more per amplitude
+// than a one-qubit gate passes more than its amplitude count and reaches a
+// team sooner, one doing less (a flat pass) passes fewer and reaches it later.
+inline int sv_team_grain(std::size_t work) {
     const std::size_t team = std::min(hw::available_threads(), work / parallel_grain());
     return static_cast<int>(std::max<std::size_t>(team, 1));
 }
 
-// The work of a streaming pass over `amplitudes` amplitudes (a fill, a scale,
-// a sum, a collapse), in one-qubit-gate amplitudes: half. Such a pass touches
-// each amplitude once with one or two operations, where a gate reads and
-// writes it through a 2x2 multiply, so its threads pay later: measured at
-// 2^12 amplitudes, a team of two loses to one thread on every streaming pass
-// and wins on a one-qubit gate.
-inline std::size_t streaming_work(std::size_t amplitudes) noexcept { return amplitudes / 2; }
+// The threads for a statevector pass. With a TeamModel in force (a simulator
+// whose min_amplitudes_per_thread is 0) the model's team for the pass; with
+// none, or where the model has no figure for the pass, the grain rule.
+inline int sv_team(const SvWork& work) {
+    TeamModel* model = t_team_model;
+    if (!model) return sv_team_grain(work.grain_work);
+    const int modelled = model->team(work);
+    const int team = modelled > 0
+                         ? static_cast<int>(std::min<std::size_t>(static_cast<std::size_t>(modelled),
+                                                                  hw::available_threads()))
+                         : sv_team_grain(work.grain_work);
+    model->note(work.cls, team, modelled <= 0);
+    return std::max(team, 1);
+}
+
+// The passes the statevector code asks the team rule about, by what they do
+// per amplitude. gate_work, diagonal_work and dense_work are a gate kernel's
+// pass over the whole state; flat_work a pass with no gate structure, which
+// reads and writes each amplitude once with one or two operations (a fill, a
+// scale, a sum, a collapse): half a gate's work, as measured at 2^12
+// amplitudes, where a team of two loses to one thread on every such pass and
+// wins on a one-qubit gate.
+inline SvWork class_work(SvClass cls, std::size_t dim) noexcept { return {dim, dim, cls, 0}; }
+inline SvWork gate_work(std::size_t dim) noexcept { return class_work(SvClass::Gate, dim); }
+inline SvWork diagonal_work(std::size_t dim) noexcept { return class_work(SvClass::Diagonal, dim); }
+inline SvWork dense_work(std::size_t dim, int k, std::size_t grain_work) noexcept {
+    return {grain_work, dim, dense_class(k), 0};
+}
+// `amplitudes` is the work counted in amplitudes (and where they live);
+// the grain rule sees half of it.
+inline SvWork flat_work(std::size_t amplitudes) noexcept {
+    return {amplitudes / 2, amplitudes, SvClass::Gate, -1};
+}
+// A Gate-class pass doing 2^weight_log2 times a one-qubit gate's work per
+// amplitude, whose grain-rule work is `grain_work` (a permutation's two to
+// three times, a unitary beyond six qubits).
+inline SvWork weighted_gate_work(std::size_t dim, int weight_log2, std::size_t grain_work) noexcept {
+    return {grain_work, dim, SvClass::Gate, weight_log2};
+}
 
 namespace sv_runs_impl {
 
@@ -169,7 +202,7 @@ inline std::size_t share_unit(std::size_t count) noexcept {
 // reduction clause would leave the order to the runtime (libomp combines small
 // teams atomically, in arrival order). T must be default-constructible.
 template <class Body>
-inline void for_each_share(std::size_t count, std::size_t work, Body&& body) {
+inline void for_each_share(std::size_t count, const SvWork& work, Body&& body) {
     if (count == 0) return;
     const std::size_t unit = sv_runs_impl::share_unit(count);
     const std::size_t n_units = count / unit;
@@ -205,6 +238,31 @@ inline std::size_t reduce_segments(std::size_t n_units) noexcept {
     return std::clamp<std::size_t>(n_units / kSegmentMinUnits, 1, kReduceSegments);
 }
 
+namespace sv_runs_impl {
+
+// One segment's partial. The ONE compiled copy of the segment body, called by
+// every path that reduces (a team's threads, the calling thread alone): the
+// build allows floating-point contraction and reassociation, and two inlined
+// copies of one body are optimised separately, so a sum computed by each could
+// differ in its last bit, and with it a seeded outcome drawn against it. A
+// call per segment (at most kReduceSegments a pass) costs nothing against the
+// segment's own sweep.
+template <class T, class Body>
+[[gnu::noinline]] T segment_partial(Body& body, std::size_t begin, std::size_t end) {
+    return body(begin, end);
+}
+
+// One step of the fold. Likewise the one compiled copy, and never inlined, so
+// that no loop of the fold is a loop the compiler may vectorise: a fold over the
+// partials array reassociated into interleaved sums would add them in another
+// order than the serial fold, which cannot be (a call sits in each of its steps).
+template <class T, class Combine>
+[[gnu::noinline]] T combine_partial(Combine& combine, const T& acc, const T& part) {
+    return combine(acc, part);
+}
+
+}  // namespace sv_runs_impl
+
 // reduce_shares on the calling thread alone: the same segments folded in the
 // same order, so it returns the same bits as reduce_shares on any team. For a
 // caller that is itself one of a team's threads.
@@ -217,13 +275,13 @@ inline T fold_segments(std::size_t count, T init, Body&& body, Combine&& combine
     T acc = init;
     for (std::size_t s = 0; s < n_seg; ++s) {
         const sv_runs_impl::Share g = sv_runs_impl::share_of(n_units, unit, n_seg, s);
-        acc = combine(acc, body(g.begin, g.end));
+        acc = sv_runs_impl::combine_partial<T>(combine, acc, sv_runs_impl::segment_partial<T>(body, g.begin, g.end));
     }
     return acc;
 }
 
 template <class T, class Body, class Combine>
-inline T reduce_shares(std::size_t count, std::size_t work, T init, Body&& body,
+inline T reduce_shares(std::size_t count, const SvWork& work, T init, Body&& body,
                        Combine&& combine) {
     if (count == 0) return init;
     const std::size_t unit = sv_runs_impl::share_unit(count);
@@ -251,11 +309,11 @@ inline T reduce_shares(std::size_t count, std::size_t work, T init, Body&& body,
         const sv_runs_impl::Share mine = sv_runs_impl::share_of(n_seg, 1, threads, t);
         for (std::size_t s = mine.begin; s < mine.end; ++s) {
             const sv_runs_impl::Share g = segment(s);
-            partial[s] = body(g.begin, g.end);
+            partial[s] = sv_runs_impl::segment_partial<T>(body, g.begin, g.end);
         }
     }
     T acc = init;
-    for (std::size_t s = 0; s < n_seg; ++s) acc = combine(acc, partial[s]);
+    for (std::size_t s = 0; s < n_seg; ++s) acc = sv_runs_impl::combine_partial<T>(combine, acc, partial[s]);
     return acc;
 }
 
@@ -289,14 +347,15 @@ inline void sweep_share(std::size_t begin, std::size_t end, const int* sorted_q,
 // sorted_q = the gate's qubits in ascending order, m of them
 // body     = callable as body(std::size_t base, Len len) for every Len above
 template <class Body>
-inline void for_each_run(std::size_t dim, const int* sorted_q, int m, Body&& body) {
+inline void for_each_run(const SvWork& work, const int* sorted_q, int m, Body&& body) {
+    const std::size_t dim = work.amplitudes;
     const std::size_t n_groups = dim >> m;
     const std::size_t run_cap = std::size_t{1} << sorted_q[0];
     const std::size_t n_runs = n_groups / run_cap;
     std::size_t tmask = 0;
     for (int j = 0; j < m; ++j) tmask |= std::size_t{1} << sorted_q[j];
 
-    const int team_size = sv_team(dim);
+    const int team_size = sv_team(work);
 
     #pragma omp parallel num_threads(team_size) if(team_size > 1)
     {

@@ -248,7 +248,7 @@ inline void dense_tiles(double* re, double* im, std::size_t dim, const DensePlan
                                  ? std::numeric_limits<std::size_t>::max()
                                  : dim * (p.n / 2);
 
-    for_each_share(tiles, work, [=, &p](std::size_t begin, std::size_t end) {
+    for_each_share(tiles, dense_work(dim, p.k, work), [=, &p](std::size_t begin, std::size_t end) {
         // The plan's fields as this thread's own locals: a Lane8 store is a
         // memcpy, after which anything read through a reference is reloaded.
         const std::size_t n = p.n;
@@ -352,7 +352,7 @@ inline void dense_diagonal_near(double* re, double* im, std::size_t dim, const D
     const std::size_t block_groups = (dim >> kLaneBits) >> (p.k - p.t);
     const std::size_t far_patterns = lines / NL;
 
-    for_each_share(block_groups, dim, [=, &p](std::size_t begin, std::size_t end) {
+    for_each_share(block_groups, diagonal_work(dim), [=, &p](std::size_t begin, std::size_t end) {
         const std::size_t mask = p.mask;
         const std::size_t run = p.m_high > 0 ? std::size_t{1} << p.high[0] : end - begin;
         const std::size_t first = insert_zeros(begin, p.high, p.m_high);
@@ -447,7 +447,7 @@ inline void small_dense(double* re, double* im, std::size_t dim, const std::vect
             r[row] = ar;
             i[row] = ai;
         }
-    });
+    }, dense_class(K));
 }
 
 }  // namespace sv_dense_impl

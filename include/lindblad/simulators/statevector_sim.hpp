@@ -76,13 +76,19 @@ public:
         // primitive, runs under the caller's setting. Negative values are
         // refused.
         int max_parallel_threads = 0;
-        // How many amplitudes of the state each thread must get before a
-        // gate kernel runs in parallel; a gate then uses
-        // min(threads available, 2^n / this) threads, and runs serially when
-        // that is one. 0, the default, is DEFAULT_MIN_AMPLITUDES_PER_THREAD
-        // (types.hpp). Larger values keep small registers serial; 1 threads
-        // every gate of 2 or more amplitudes. Applies for the length of
-        // run(), simulate_circuit() and eval_expectation().
+        // How many threads each gate kernel and each pass over the state
+        // starts. 0, the default, is automatic: the first time a kind of pass
+        // (a gate, a diagonal gate, a dense block, a flat pass) meets a state
+        // of a given size, the pass is timed on a scratch state of that size
+        // at each team size the machine's topology suggests, with the gate
+        // targets changing from pass to pass as a circuit's do, and the
+        // fastest team is kept for the process. The scratch state is charged
+        // to max_memory_mb beside the run's own buffers; a pass that cannot
+        // be timed takes the grain rule. Result::execution reports what it
+        // chose. A value k >= 1 selects the grain rule instead: a gate uses
+        // min(threads available, 2^n / k) threads, and runs serially when that
+        // is one; 1 threads every gate of 2 or more amplitudes. Applies for
+        // the length of run(), simulate_circuit() and eval_expectation().
         std::size_t min_amplitudes_per_thread = 0;
         // The most memory a run may use, in MiB (2^20 bytes). 0, the default,
         // is automatic: the memory this machine reports available, or
@@ -157,11 +163,13 @@ public:
 
         // What a parallel region and a pass over a state cost on this
         // machine, at a handful of team sizes (ThreadingCosts in types.hpp).
-        // Default constructed: none given. Set, every entry is checked at the
-        // start of each run (finite and positive, one per team size) and a set
-        // that is not coherent is refused. measured_threading_costs gives a
-        // set measured here. No decision of a run reads the costs, so a set
-        // value changes nothing a run does.
+        // Default constructed: none given, and the automatic team times the
+        // passes itself. Set, every entry is checked at the start of each
+        // call (finite and positive, one per team size) and a set that is not
+        // coherent is refused; the automatic team is then decided from these
+        // costs alone, and nothing is timed. A pass for which they hold no
+        // figure takes the grain rule. measured_threading_costs gives a set
+        // measured here.
         ThreadingCosts threading_costs;
 
         // Whether run() reports where its time went, in Result::phase_times
@@ -216,7 +224,13 @@ public:
     // passive wait policy); they stay empty when the block time is unknown or
     // infinite. A run never measures: copy the result into
     // Options::threading_costs to give it to later runs.
-    static ThreadingCosts measured_threading_costs(bool measure_cold_regions = false);
+    // max_memory_mb is the cap the memory-bound scratch state must fit under,
+    // as Options::max_memory_mb (0 = what the machine reports available,
+    // NO_MEMORY_CAP = none); the part is left empty, with the reason in
+    // ThreadingCosts::memory_bound_note, when it does not fit, and a later call
+    // with more room measures it.
+    static ThreadingCosts measured_threading_costs(bool measure_cold_regions = false,
+                                                   std::uint64_t max_memory_mb = 0);
 
     // plan = the harness: where the run starts and what is watched while it
     // runs. Default constructed it starts at |0...0> and watches nothing, which
