@@ -11,14 +11,17 @@
 
 #include "lindblad/constants.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <new>
+#include <vector>
 
 #if defined(_MSC_VER)
 #  include <intrin.h>
@@ -761,6 +764,95 @@ struct PhaseTimes {
     double total() const noexcept {
         return setup + fusion + evolution + sampling + final_copy;
     }
+};
+
+// =============================================================================
+// ThreadingCosts - what a parallel region and a pass over a state cost here
+// =============================================================================
+// The numbers a decision about how many threads a piece of work deserves is
+// made from, measured on the machine the process runs on (or set by the
+// caller). Everything is sampled at a handful of team sizes, `team_sizes`,
+// ascending and starting at 1: 1, 2 and 4, one L3 instance's cores and
+// threads, every physical core, and every thread the process may use (sizes
+// above the threads available are left out). Each vector below has one entry
+// per team size; a team size between two samples is read by interpolation.
+//
+//   region_seconds   one parallel region of that team, from the thread that
+//                    starts it to its join, when it follows another within the
+//                    wait policy's block time (the team is awake). The
+//                    fastest of several alternating stretches, since
+//                    interference only ever slows a stretch down.
+//   block_time_ms    the wait policy's block time: how long an idle thread of
+//                    the team spins before it sleeps, in milliseconds, as the
+//                    OpenMP runtime reports it (OMP_WAIT_POLICY and
+//                    KMP_BLOCKTIME set it). The largest int means the threads
+//                    never sleep; 0 means they sleep at once, so every region
+//                    is a cold one and region_seconds is that cost. Unset when
+//                    the runtime does not report it (only LLVM's libomp does).
+//   cold_region_seconds
+//                    one parallel region of that team when the team has
+//                    slept (the previous region ended more than the block time
+//                    ago): the median of several, not the fastest, since a
+//                    thread's wake-up varies from wake to wake and the typical
+//                    cost is the one a run meets. Empty when not measured:
+//                    it takes the block time per sample, so it is measured
+//                    when asked for or when the block time is short; and it
+//                    is empty for good when the block time is unknown or
+//                    infinite, where a measurement has nothing to wait for.
+//   in_cache         seconds per amplitude of one pass over a state each of
+//                    whose threads' share sits in its core's cache (about
+//                    128 KiB of amplitudes per thread).
+//   memory_bound     the same over a state larger than every L3 instance
+//                    together, so no pass finds its amplitudes in cache.
+//
+// A pass class: `streaming` is a one-qubit gate (every amplitude read and
+// written once), `diagonal` a controlled phase (a quarter of the cache lines,
+// two multiplies each), `dense` a dense k-qubit block (entry k - 1, k = 1 to
+// 6). Only the arithmetic of a dense block is rated here: its memory-bound
+// pass is the longer of its in-cache pass and the memory-bound streaming pass,
+// as the fusion costs rate it, so `memory_bound.dense` stays empty.
+//
+// `memory_bound` is entirely empty when it could not be measured (no L3 size
+// detected, or too little memory available for the scratch state); a reader
+// then has no memory-bound figure rather than a guessed one.
+struct ThreadingCosts {
+    struct Passes {
+        std::vector<double> streaming;
+        std::vector<double> diagonal;
+        std::array<std::vector<double>, 6> dense;
+    };
+
+    std::vector<int> team_sizes;
+    std::vector<double> region_seconds;
+    std::optional<int> block_time_ms;
+    std::vector<double> cold_region_seconds;
+    Passes in_cache;
+    Passes memory_bound;
+
+    // True for a default-constructed value: nothing set, nothing measured.
+    bool unset() const noexcept { return team_sizes.empty(); }
+};
+
+// =============================================================================
+// ExecutionReport - what a run was given
+// =============================================================================
+// Filled on every run of a backend that reports it (StatevectorSimulator::
+// Result::execution), from values the run already holds, so asking costs
+// nothing.
+//
+//   threads_available   the most threads a parallel region of the run could
+//                       start: OpenMP's limit for the calling thread when the
+//                       run began (OMP_NUM_THREADS and max_parallel_threads
+//                       included).
+//   parallel_grain      the amplitudes each thread must get before a gate
+//                       kernel of the run goes parallel
+//                       (min_amplitudes_per_thread, or its default).
+//   threading_costs     set when a decision of the run was made from threading
+//                       costs, with the costs it used; empty when none was.
+struct ExecutionReport {
+    std::size_t threads_available = 0;
+    std::size_t parallel_grain = 0;
+    std::optional<ThreadingCosts> threading_costs;
 };
 
 // Mathematical constants (PI, INV_SQRT2, ...) live in constants.hpp, included

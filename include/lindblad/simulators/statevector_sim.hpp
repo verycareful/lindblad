@@ -155,6 +155,15 @@ public:
         // How unset fusion_costs are measured.
         FusionCalibration fusion_calibration = FusionCalibration::Hybrid;
 
+        // What a parallel region and a pass over a state cost on this
+        // machine, at a handful of team sizes (ThreadingCosts in types.hpp).
+        // Default constructed: none given. Set, every entry is checked at the
+        // start of each run (finite and positive, one per team size) and a set
+        // that is not coherent is refused. measured_threading_costs gives a
+        // set measured here. No decision of a run reads the costs, so a set
+        // value changes nothing a run does.
+        ThreadingCosts threading_costs;
+
         // Whether run() reports where its time went, in Result::phase_times
         // (PhaseTimes in types.hpp). Off reads no clock for it; on reads a few
         // per run, plus two per shot in a run sampled shot by shot.
@@ -168,6 +177,10 @@ public:
         double simulation_time_seconds = 0.0;
         // Set only when Options::record_phase_times asked for it.
         std::optional<PhaseTimes> phase_times;
+
+        // What the run was given and what it decided (ExecutionReport in
+        // types.hpp). Filled on every run.
+        ExecutionReport execution;
 
         // Whatever the run's labelled observers collected. Empty unless the
         // RunPlan attached observers carrying labels.
@@ -189,6 +202,21 @@ public:
     // Options::fusion_costs to fix the fusion plan of later runs.
     static FusionCosts measured_fusion_costs(
         int n_qubits, FusionCalibration calibration = FusionCalibration::Hybrid);
+
+    // The threading costs of the calling thread's current thread limit and
+    // processors, measured now unless this process already measured them
+    // (one measurement per thread limit, processors and block time). Takes
+    // about a quarter of a second the first time: the memory-bound part
+    // allocates and touches a scratch state larger than the L3 caches
+    // together, and is left empty where that does not fit or the cache size is
+    // unknown. The cold regions (a region after the team has slept) are
+    // measured when asked for with measure_cold_regions, which waits the wait
+    // policy's block time for every sample (seconds under libomp's default of
+    // 200 ms), or when the block time is short enough that this is quick (a
+    // passive wait policy); they stay empty when the block time is unknown or
+    // infinite. A run never measures: copy the result into
+    // Options::threading_costs to give it to later runs.
+    static ThreadingCosts measured_threading_costs(bool measure_cold_regions = false);
 
     // plan = the harness: where the run starts and what is watched while it
     // runs. Default constructed it starts at |0...0> and watches nothing, which

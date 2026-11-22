@@ -19,6 +19,8 @@
 #include "lindblad/detail/sv_groups.hpp"
 #include "lindblad/detail/sv_runs.hpp"
 #include "lindblad/detail/sv_sampler.hpp"
+#include "lindblad/detail/sv_timing.hpp"
+#include "lindblad/detail/threading_model.hpp"
 #include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/detail/trivial_resets.hpp"
 #include "lindblad/detail/validate.hpp"
@@ -602,44 +604,10 @@ int sv_fusion_calibration_qubits(int n) {
     return std::max(kFusionCalibrationMinQubits, std::min(n, m));
 }
 
-// Calls of f that last at least `seconds`, at least one. The first call warms
-// the caches; when it alone lasts that long, it is the answer.
-template <class F>
-long sv_calls_to_fill(F& f, double seconds) {
-    using Clock = std::chrono::steady_clock;
-    const auto w0 = Clock::now();
-    f();
-    if (std::chrono::duration<double>(Clock::now() - w0).count() >= seconds) return 1;
-    long calls = 1;
-    for (;;) {
-        const auto t0 = Clock::now();
-        for (long c = 0; c < calls; ++c) f();
-        if (std::chrono::duration<double>(Clock::now() - t0).count() >= seconds) return calls;
-        calls *= 2;
-    }
-}
-
-template <class F>
-double sv_seconds_per_call(F& f, long calls) {
-    using Clock = std::chrono::steady_clock;
-    const auto t0 = Clock::now();
-    for (long c = 0; c < calls; ++c) f();
-    return std::chrono::duration<double>(Clock::now() - t0).count() / static_cast<double>(calls);
-}
-
-// The fastest per-call time of each kernel over kFusionTimingRounds rounds,
-// each round timing every kernel once in turn, each stretch at least
-// `seconds` long.
+// The fastest per-call time of each kernel over kFusionTimingRounds rounds.
 template <class... F>
 std::array<double, sizeof...(F)> sv_fastest(double seconds, F&... f) {
-    const std::array<long, sizeof...(F)> calls{sv_calls_to_fill(f, seconds)...};
-    std::array<double, sizeof...(F)> best;
-    best.fill(std::numeric_limits<double>::infinity());
-    for (int round = 0; round < kFusionTimingRounds; ++round) {
-        std::size_t i = 0;
-        ((best[i] = std::min(best[i], sv_seconds_per_call(f, calls[i])), ++i), ...);
-    }
-    return best;
+    return detail::fastest(kFusionTimingRounds, seconds, f...);
 }
 
 double sv_round_cost(double c) {
@@ -654,78 +622,7 @@ double sv_round_cost(double c) {
 // pays (a QFT then runs about a quarter slower than unfused).
 double sv_block_cost(double c) { return std::max(1.0, sv_round_cost(c)); }
 
-// The kernels a measurement times, on re, im, 2^m amplitudes.
-struct CalibrationKernels {
-    double* re;
-    double* im;
-    int m;
-    std::size_t dim() const { return std::size_t{1} << m; }
-
-    // Every amplitude the same finite value, so no pass meets a denormal; every
-    // pass below is unitary, so the values stay that size.
-    void fill() const {
-        const double v = 1.0 / std::sqrt(static_cast<double>(dim()));
-        double* r = re;
-        double* i = im;
-        detail::for_each_share(dim(), detail::streaming_work(dim()), [=](std::size_t b, std::size_t e) {
-            for (std::size_t k = b; k < e; ++k) {
-                r[k] = v;
-                i[k] = 0.0;
-            }
-        });
-    }
-    void h() const {
-        const int q[1] = {m / 2};
-        detail::for_each_group<1, 0b11>(re, im, dim(), q, [](auto* r, auto* i) {
-            const auto r0 = r[0], i0 = i[0], r1 = r[1], i1 = i[1];
-            r[0] = INV_SQRT2 * (r0 + r1);
-            i[0] = INV_SQRT2 * (i0 + i1);
-            r[1] = INV_SQRT2 * (r0 - r1);
-            i[1] = INV_SQRT2 * (i0 - i1);
-        });
-    }
-    void settle() const {
-        const auto t0 = std::chrono::steady_clock::now();
-        do h();
-        while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() <
-               kFusionSettleSeconds);
-    }
-    void cphase() const {
-        const int q[2] = {detail::kLaneBits, m - 2};
-        const double c = std::cos(0.3), s = std::sin(0.3);
-        detail::for_each_diagonal<2, 0b1000>(re, im, dim(), q, [=](auto, auto& r, auto& i) {
-            const auto r0 = r, i0 = i;
-            r = r0 * c - i0 * s;
-            i = r0 * s + i0 * c;
-        });
-    }
-    // Targets alternate low and high qubits, the mix a fused block has.
-    std::vector<int> targets(int k) const {
-        const int pool[detail::kDenseMaxQubits] = {0, m - 1, 2, m / 2, 1, m - 3};
-        return std::vector<int>(pool, pool + k);
-    }
-    // The dense matrix is the discrete Fourier transform: unitary, with no
-    // zero entry, so no path takes a shortcut.
-    static std::vector<Complex128> dft(int k) {
-        const std::size_t n = std::size_t{1} << k;
-        const double norm = 1.0 / std::sqrt(static_cast<double>(n));
-        std::vector<Complex128> f(n * n);
-        for (std::size_t r = 0; r < n; ++r)
-            for (std::size_t c = 0; c < n; ++c) {
-                const double a = 2.0 * PI * static_cast<double>((r * c) % n) / static_cast<double>(n);
-                f[r * n + c] = Complex128(norm * std::cos(a), norm * std::sin(a));
-            }
-        return f;
-    }
-    static std::vector<Complex128> phases(int k) {
-        const std::size_t n = std::size_t{1} << k;
-        std::vector<Complex128> d(n * n, Complex128(0.0, 0.0));
-        for (std::size_t s = 0; s < n; ++s)
-            d[s * n + s] = Complex128(std::cos(0.1 * static_cast<double>(s)),
-                                      std::sin(0.1 * static_cast<double>(s)));
-        return d;
-    }
-};
+using CalibrationKernels = detail::CalibrationKernels;
 
 // Each dense block's arithmetic per amplitude, blocks from k = first_k to
 // last_k, into per_amp[k - 1], timed on the team the block's pass over 2^m
@@ -776,7 +673,7 @@ FusionCosts sv_measure_fusion_costs(double* re, double* im, int m, int first_k, 
     double dense_compute[detail::kDenseMaxQubits] = {};
     if (!direct) sv_dense_compute(m, first_k, last_k, stretch, dense_compute);
     run.fill();
-    run.settle();
+    run.settle(kFusionSettleSeconds);
     const auto t = first_k == 1 ? sv_fastest(stretch, h, cphase, diagonal)
                                 : std::array<double, 3>{sv_fastest(stretch, h)[0], 0.0, 0.0};
     const double h_pass = t[0];
@@ -1127,6 +1024,15 @@ static void record_options(detail::FailureCollector& failure,
                        o.fusion_calibration == FusionCalibration::Hybrid      ? "Hybrid"
                        : o.fusion_calibration == FusionCalibration::OneThread ? "OneThread"
                                                                                : "RunThreads");
+    failure.add_option("threading_costs",
+                       o.threading_costs.unset()
+                           ? "unset"
+                           : "set for team sizes " + [&] {
+                                 std::string sizes;
+                                 for (const int t : o.threading_costs.team_sizes)
+                                     sizes += (sizes.empty() ? "" : ",") + std::to_string(t);
+                                 return sizes;
+                             }());
     failure.add_option("record_phase_times", option_value(o.record_phase_times));
 }
 
@@ -1136,6 +1042,13 @@ StatevectorSimulator::FusionCosts StatevectorSimulator::measured_fusion_costs(
         detail::raise<InvalidArgument>("StatevectorSimulator::measured_fusion_costs",
             "n_qubits must be at least 1, got " + std::to_string(n_qubits));
     return sv_fusion_costs(n_qubits, detail::kDenseMaxQubits, calibration, nullptr, nullptr);
+}
+
+ThreadingCosts StatevectorSimulator::measured_threading_costs(bool measure_cold_regions) {
+    using detail::ThreadingParts;
+    const bool cold = measure_cold_regions || detail::threading_cold_regions_quick();
+    return detail::measure_threading_costs(cold ? ThreadingParts::All | ThreadingParts::ColdRegions
+                                                : ThreadingParts::All);
 }
 
 StatevectorSimulator::Result StatevectorSimulator::run(
@@ -1222,6 +1135,13 @@ StatevectorSimulator::Result StatevectorSimulator::run(
                                     options.shot_counting_distinct_fraction);
         if (!options.fusion_costs.unset())
             sv_check_fusion_costs(options.fusion_costs, options.fusion_max_qubit);
+        if (!options.threading_costs.unset()) {
+            const std::string problem = detail::threading_costs_problem(options.threading_costs);
+            if (!problem.empty())
+                detail::raise<InvalidArgument>("StatevectorSimulator::run",
+                    "Options::threading_costs is set but is not coherent:" + problem +
+                        " (leave it default-constructed to have the costs measured)");
+        }
 
         // Gate fusion (R.1.17): at bandwidth-bound sizes, execute a fused
         // equivalent of the circuit (see sv_fuse_circuit above). The
@@ -1678,6 +1598,8 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         sv_work.reset();
         clock.charge(&PhaseTimes::final_copy);
         result.phase_times = clock.result();
+        result.execution.threads_available = hw::available_threads();
+        result.execution.parallel_grain = detail::parallel_grain();
 
     } catch (...) {
         // The failure path: whatever the run had computed goes into the

@@ -275,6 +275,7 @@ struct Options {
     int fusion_max_qubit = 5;      // max fused-block width, 2..6
     FusionCosts fusion_costs;      // unset = measured on this machine
     FusionCalibration fusion_calibration = FusionCalibration::Hybrid;
+    ThreadingCosts threading_costs;   // unset = measured on this machine
     bool record_phase_times = false;  // fill Result::phase_times
 };
 ```
@@ -392,6 +393,7 @@ struct Options {
 - **fusion_max_qubit**: Maximum width of a fused block in qubits, valid range 2 to 6. Follows the Qiskit Aer option name; Aer's default width (5) is also the default here.
 - **fusion_costs**: What the fusion pre-pass weighs when it chooses blocks (see [Gate Fusion](#gate-fusion-r117)): the cost of a pass of a dense block on $k$ qubits (`dense[k - 1]`), of a diagonal block of any width (`diagonal`), and of one CZ, CP or CCZ whose qubits are at 3 or above (`controlled_phase`), each in units of one single-qubit gate's pass over the state. Left unset (every entry zero, the default), they are measured on this machine the first time a run fuses. Set, nothing is measured: the values are used as given, so they can come from an earlier measurement or from your own knowledge of the machine, and they fix the fusion plan, so a seeded run gives the same bits on every run. A set value must have every entry the run uses (`dense[0]` to `dense[fusion_max_qubit - 1]`, `diagonal`, `controlled_phase`) finite and positive, else `run()` throws `lindblad::InvalidArgument`.
 - **fusion_calibration**: How unset `fusion_costs` are measured: `Hybrid` (the default), `OneThread` or `RunThreads`. `Hybrid` and `OneThread` take under half a second, once per process; `RunThreads` takes a few seconds the first time. See [Gate Fusion](#gate-fusion-r117) for what each measures and how they differ.
+- **threading_costs**: what a parallel region and a pass over a state cost on this machine, at a handful of team sizes (`ThreadingCosts`, see [Threading Costs](#threading-costs)). Default constructed, none are given. Set, `run()` checks the whole set at its start (the team sizes ascending from 1, one finite positive entry per team size in every vector, `memory_bound` and `cold_region_seconds` either whole or empty) and throws `lindblad::InvalidArgument` naming what is wrong. A run measures nothing itself, and no decision of a run reads the costs, so a set value changes nothing a run does. `measured_threading_costs` returns a set measured on this machine.
 - **record_phase_times**: whether `run()` reports where its wall-clock time
   went, in `Result::phase_times` (see [Phase Times](#phase-times)). `false`,
   the default, reads no clock for it
@@ -405,6 +407,7 @@ struct Result {
     std::vector<double> expectation_values;           // Empty; use Estimator for expectations
     double simulation_time_seconds = 0.0;
     std::optional<PhaseTimes> phase_times;           // only when asked for
+    ExecutionReport execution;                       // every run
     ObservationBundle observations;
 };
 ```
@@ -419,6 +422,8 @@ struct Result {
   finished state and handing it over as `final_state`
 - **phase_times**: where the run's time went, set only when
   `Options::record_phase_times` is `true` (see [Phase Times](#phase-times))
+- **execution**: what the run was given and what it decided (see
+  [Execution Report](#execution-report)); filled on every run
 
 A run that fails throws rather than returning a `Result` (see [Failures](failures.md)), so a returned result is always an answer.
 
@@ -463,6 +468,46 @@ const PhaseTimes& t = *result.phase_times;
 ```
 
 Left at `false`, a run reads no clock for this and `phase_times` is empty.
+
+### Threading Costs
+
+`ThreadingCosts` (declared in `lindblad/types.hpp`) holds what the machine charges for parallelism, measured on this machine or set by the caller. Every vector holds one entry per team size in `team_sizes`, which is ascending and starts at 1: the sizes 1, 2 and 4, the cores and the threads of one L3 instance, every physical core, and every thread the process may use, each only if it is at most the threads available. Where the topology cannot be detected, the machine counts as one domain of every thread available.
+
+| Field | Meaning |
+|---|---|
+| `region_seconds` | one parallel region of that team, from the thread that starts it to its join, when it follows another within the wait policy's block time |
+| `block_time_ms` | the wait policy's block time in milliseconds, unset when the runtime does not report it |
+| `cold_region_seconds` | the same region after the team has slept; empty unless measured |
+| `in_cache.streaming` | seconds per amplitude of a one-qubit pass over a state each of whose threads' share sits in its core's cache (about 128 KiB of amplitudes per thread) |
+| `in_cache.diagonal` | the same for a controlled phase, which touches a quarter of the cache lines |
+| `in_cache.dense[k - 1]` | the same for a dense block of k qubits, k = 1 to 6 |
+| `memory_bound.streaming`, `memory_bound.diagonal` | the same two passes over a state larger than every L3 instance together |
+
+A dense block's memory-bound pass is not rated separately: it is the longer of its in-cache pass and the memory-bound streaming pass, so `memory_bound.dense` stays empty. `memory_bound` is empty as a whole when it could not be measured, because no L3 size was detected or the operating system did not report room for the scratch state; there is then no memory-bound figure rather than a guessed one.
+
+```cpp
+#include "lindblad/simulators/statevector_sim.hpp"
+using namespace lindblad;
+
+ThreadingCosts costs = StatevectorSimulator::measured_threading_costs();
+
+StatevectorSimulator::Options opts;
+opts.threading_costs = costs;   // fixes the costs of every later run
+```
+
+`static ThreadingCosts StatevectorSimulator::measured_threading_costs(bool measure_cold_regions = false)` returns the costs of the calling thread's current thread limit and processors, measuring them now unless this process already did. The first call takes about a quarter of a second on a part with 12 cores and 24 threads (the region costs about 15 ms, the streaming and diagonal passes about 30 ms, the dense blocks about 80 ms, and the memory-bound passes about 60 ms, which includes allocating and touching a scratch state of twice the L3 caches' total size); fewer threads take less. A second call returns at once. The figures are the fastest of several alternating stretches, since interference only ever slows a stretch down.
+
+`block_time_ms` is the wait policy's block time: how long an idle thread spins before it sleeps. LLVM's libomp reports it (200 ms by default, 0 under `OMP_WAIT_POLICY=passive`, the largest `int` when the threads never sleep); GNU's libgomp does not, and it is then unset. `region_seconds` is a region that follows another within that time. `cold_region_seconds` is a region after the team has slept, the median of seven samples, not the fastest, since a thread's wake-up varies from wake to wake and a run meets the typical cost. Every sample waits out the block time, so they are measured only when `measure_cold_regions` is `true`, which takes `team sizes x 7 x block time` (about 9 seconds at libomp's default), or when that wait is under a tenth of a second, as under a passive wait policy. They stay empty when the block time is unknown or infinite, since a measurement would have nothing to wait for. Under a passive wait policy a "warm" region is a cold one, and `block_time_ms` of 0 says so.
+
+What a region costs depends on where the operating system places the threads. Without OpenMP binding a team of every thread can cost over ten times as much as with `OMP_PLACES=threads OMP_PROC_BIND=close`, and one process can read either, so a measurement taken at the largest team size varies from process to process.
+
+### Execution Report
+
+`Result::execution` is an `ExecutionReport` (declared in `lindblad/types.hpp`), filled on every run from values the run already holds, so asking costs nothing. It is the account of what the run was given and what it decided.
+
+- **threads_available**: the most threads a parallel region of the run could start: OpenMP's limit for the calling thread when the run began, which `OMP_NUM_THREADS` and `Options::max_parallel_threads` both set.
+- **parallel_grain**: the amplitudes each thread must get before a gate kernel of the run goes parallel (`Options::min_amplitudes_per_thread`, or its default).
+- **threading_costs**: set when a decision of the run was made from threading costs, with the costs it used; empty when none was.
 
 ### Workflow
 

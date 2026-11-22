@@ -152,11 +152,15 @@ How many logical processors one L3 instance offers the calling thread: the
 largest number of processors the calling thread may run on that sit under one
 L3. Returns `0` when `llc_domains` is unknown.
 
-On Linux the thread's affinity mask is honoured, whether it comes from
-`taskset`, a cpuset or a batch job's binding. A process pinned to six of the
-twelve processors of one chiplet reads `6`, not `12`. Where the mask cannot be
-read, and on Windows and macOS, no restriction is assumed and the figure is the
-size of the largest instance.
+On Linux the team's reach is narrowed two ways. Under OpenMP binding
+(`OMP_PROC_BIND` or `OMP_PLACES`) it is the runtime's place list, since the
+runtime binds the calling thread itself to one place and that thread's own
+affinity mask then says nothing about the team. Without binding it is the
+calling thread's affinity mask, whether it comes from `taskset`, a cpuset or a
+batch job's binding. A process pinned to six of the twelve processors of one
+chiplet reads `6`, not `12`. Where neither can be read, and on Windows and
+macOS, no restriction is assumed and the figure is the size of the largest
+instance.
 
 These are logical processors, not cores. When the process may use both
 siblings of every core, divide by `smt_width` for the cores. Read afresh on

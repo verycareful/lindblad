@@ -8,6 +8,7 @@
 // Commercial License Agreement with the Author.
 
 #include "lindblad/hw_info.hpp"
+#include "lindblad/detail/hw_reach.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -411,25 +412,46 @@ CoreShape detect_core_shape() {
 }
 
 #if defined(__linux__)
-// How many of `domain`'s processors the calling thread may run on, or the
-// whole domain where the affinity mask cannot be read.
-std::size_t allowed_in(const std::vector<std::size_t>& domain) {
+// The processors an OpenMP team started by the calling thread may be placed
+// on, by processor number, or false when nothing narrows them but the
+// operating system's own scheduling. Under OMP_PROC_BIND the runtime binds
+// the primary thread to one place, so the calling thread's own affinity mask
+// is a single processor and says nothing about the team; the place list is
+// what the team spreads over. Without binding, the team runs wherever the
+// calling thread's affinity mask (taskset, a cpuset, a batch job's binding)
+// lets it, and the mask is read instead.
+bool allowed_cpus(std::vector<bool>& allowed) {
+    allowed.clear();
+#ifdef _OPENMP
+    if (omp_get_proc_bind() != omp_proc_bind_false) {
+        const int places = omp_get_num_places();
+        for (int p = 0; p < places; ++p) {
+            std::vector<int> ids(static_cast<std::size_t>(std::max(0, omp_get_place_num_procs(p))));
+            if (ids.empty()) continue;
+            omp_get_place_proc_ids(p, ids.data());
+            for (const int id : ids) {
+                if (id < 0) continue;
+                if (static_cast<std::size_t>(id) >= allowed.size()) allowed.resize(id + 1, false);
+                allowed[static_cast<std::size_t>(id)] = true;
+            }
+        }
+        if (!allowed.empty()) return true;
+    }
+#endif
     // The kernel rejects a mask smaller than its own processor count, which
     // can exceed the highest online number, so start generous and grow.
     for (std::size_t slots = 1024; slots <= kMaxCpuNumber; slots *= 2) {
         cpu_set_t* raw = CPU_ALLOC(slots);
-        if (raw == nullptr) break;
+        if (raw == nullptr) return false;
         const std::unique_ptr<cpu_set_t, void (*)(cpu_set_t*)> set(raw, [](cpu_set_t* p) { CPU_FREE(p); });
         const std::size_t bytes = CPU_ALLOC_SIZE(slots);
         CPU_ZERO_S(bytes, set.get());
         if (::sched_getaffinity(0, bytes, set.get()) != 0) continue;
-        std::size_t n = 0;
-        for (const std::size_t c : domain) {
-            if (c < slots && CPU_ISSET_S(c, bytes, set.get())) ++n;
-        }
-        return n;
+        allowed.assign(slots, false);
+        for (std::size_t c = 0; c < slots; ++c) allowed[c] = CPU_ISSET_S(c, bytes, set.get());
+        return true;
     }
-    return domain.size();
+    return false;
 }
 #endif
 
@@ -615,6 +637,21 @@ std::size_t llc_instances() {
     return cached;
 }
 
+}  // namespace hw
+
+namespace detail {
+bool team_processors(std::vector<bool>& allowed) {
+#if defined(__linux__)
+    return hw::allowed_cpus(allowed);
+#else
+    allowed.clear();
+    return false;
+#endif
+}
+}  // namespace detail
+
+namespace hw {
+
 const std::vector<std::vector<std::size_t>>& llc_domains() {
     static const std::vector<std::vector<std::size_t>> cached = detect_llc_domains();  // magic static: thread-safe
     return cached;
@@ -632,13 +669,21 @@ std::size_t physical_cores() { return core_shape().cores; }
 std::size_t smt_width() { return core_shape().smt; }
 
 std::size_t threads_per_llc() {
-    std::size_t largest = 0;
-    for (const auto& domain : llc_domains()) {
+    const auto& domains = llc_domains();
 #if defined(__linux__)
-        largest = std::max(largest, allowed_in(domain));
-#else
-        largest = std::max(largest, domain.size());
+    std::vector<bool> allowed;
+    const bool restricted = allowed_cpus(allowed);
 #endif
+    std::size_t largest = 0;
+    for (const auto& domain : domains) {
+        std::size_t n = domain.size();
+#if defined(__linux__)
+        if (restricted) {
+            n = 0;
+            for (const std::size_t c : domain) n += c < allowed.size() && allowed[c] ? 1 : 0;
+        }
+#endif
+        largest = std::max(largest, n);
     }
     return largest;
 }

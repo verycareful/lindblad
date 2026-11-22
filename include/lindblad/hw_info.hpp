@@ -87,15 +87,19 @@ std::size_t physical_cores();
 // Detected once, cached thread-safely; subsequent calls are a load.
 std::size_t smt_width();
 
-// How many logical processors one L3 instance offers the calling thread, or 0
-// if llc_domains() is unknown: the largest number of processors the calling
-// thread may run on that sit under one L3. On Linux the thread's affinity
-// mask (taskset, a cpuset, a batch job's binding) is honoured, so a process
-// pinned to six of the twelve processors of one chiplet reads 6, not 12;
-// where the mask cannot be read, or on Windows and macOS, no restriction is
-// assumed and the figure is the largest instance's size. Logical processors,
-// not cores: divide by smt_width() for cores when the process may use both
-// siblings. Read afresh on every call, since the affinity can change.
+// How many logical processors one L3 instance offers the calling thread's
+// OpenMP team, or 0 if llc_domains() is unknown: the largest number of
+// processors the team may be placed on that sit under one L3. On Linux the
+// team's reach is narrowed two ways. Under OpenMP binding (OMP_PROC_BIND or
+// OMP_PLACES) it is the runtime's place list, since the runtime binds the
+// calling thread itself to one place and its own affinity mask then says
+// nothing about the team. Without binding it is the calling thread's affinity
+// mask (taskset, a cpuset, a batch job's binding). A process pinned to six of
+// the twelve processors of one chiplet reads 6, not 12. Where neither can be
+// read, and on Windows and macOS, no restriction is assumed and the figure is
+// the size of the largest instance. Logical processors, not cores: divide by
+// smt_width() for cores when the team may use both siblings. Read afresh on
+// every call, since the affinity and the places can change.
 std::size_t threads_per_llc();
 
 // Memory the operating system reports it could hand out now without
