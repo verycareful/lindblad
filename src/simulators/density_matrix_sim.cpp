@@ -21,8 +21,13 @@
 #include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/preflight.hpp"
 #include "lindblad/detail/chunk_observers.hpp"
+#include "lindblad/detail/dm_kernels.hpp"
+#include "lindblad/detail/dm_team.hpp"
 #include "lindblad/detail/shot_loop.hpp"
+#include "lindblad/detail/sv_runs.hpp"
 #include "lindblad/detail/thread_cap.hpp"
+#include "lindblad/detail/threading_model.hpp"
+#include "lindblad/hw_info.hpp"
 #include "lindblad/detail/validate.hpp"
 #include "lindblad/detail/validate_physical.hpp"
 #include "lindblad/noise.hpp"
@@ -31,6 +36,7 @@
 
 #include <optional>
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -147,11 +153,14 @@ bool DensityMatrix::is_valid(double atol) const {
 // ~48 full-rho sweeps and two dim² scratch allocations per call.
 // =============================================================================
 
-namespace {
+// The kernels are in detail:: so that the team model (dm_team.cpp) can time
+// the code a run executes. Each asks dm_team for its threads (dm_team.hpp).
+namespace detail {
 
-// OMP-gate threshold: total complex elements touched by a pass. Below this the
-// parallel/simd machinery costs more than it saves (small-register DM tests).
-constexpr size_t DM_PAR_THRESHOLD = 1u << 16;
+// The register's width from its dimension (a power of two), and a gate's or
+// channel's qubit count from its sub-block dimension.
+inline int dm_qubits(size_t dim) { return static_cast<int>(std::bit_width(dim)) - 1; }
+inline int dm_gate_qubits(size_t sub_dim) { return static_cast<int>(std::bit_width(sub_dim)) - 1; }
 
 // Build the sub-block offset table (MSB-first internal addressing: sub-index
 // bit qi maps to physical qubit qubits[k-1-qi]) and the background-index table
@@ -201,7 +210,9 @@ void dm_superop_apply_inplace(Complex128* __restrict data,
                               size_t sub_dim, size_t dim) {
     const int n_bg = static_cast<int>(bg.size());
     const size_t sd2 = sub_dim * sub_dim;
-    #pragma omp parallel if(bg.size() * bg.size() * sd2 >= DM_PAR_THRESHOLD)
+    const int team = dm_team({bg.size() * bg.size() * sd2, dm_qubits(dim),
+                              dm_superop_class(dm_gate_qubits(sub_dim)), bg.size() * bg.size()});
+    #pragma omp parallel num_threads(team) if(team > 1)
     {
         thread_local std::vector<Complex128> vin, vout;
         if (vin.size() < sd2) { vin.resize(sd2); vout.resize(sd2); }
@@ -247,7 +258,9 @@ void dm_ket_apply_inplace(Complex128* __restrict data,
                           const std::vector<size_t>& bg,
                           size_t sub_dim, size_t dim) {
     const int n_bg = static_cast<int>(bg.size());
-    #pragma omp parallel if(bg.size() * dim >= DM_PAR_THRESHOLD)
+    const int team = dm_team({bg.size() * dim, dm_qubits(dim), dm_ket_class(dm_gate_qubits(sub_dim)),
+                              bg.size()});
+    #pragma omp parallel num_threads(team) if(team > 1)
     {
         thread_local std::vector<Complex128> snap;
         if (snap.size() < sub_dim * dim) snap.resize(sub_dim * dim);
@@ -283,7 +296,8 @@ void dm_bra_apply_inplace(Complex128* __restrict data,
                           const std::vector<size_t>& bg,
                           size_t sub_dim, size_t dim) {
     const int ndim = static_cast<int>(dim);
-    #pragma omp parallel if(dim * bg.size() >= DM_PAR_THRESHOLD)
+    const int team = dm_team({dim * bg.size(), dm_qubits(dim), dm_bra_class(dm_gate_qubits(sub_dim)), dim});
+    #pragma omp parallel num_threads(team) if(team > 1)
     {
         thread_local std::vector<Complex128> tmp;
         if (tmp.size() < sub_dim) tmp.resize(sub_dim);
@@ -305,7 +319,43 @@ void dm_bra_apply_inplace(Complex128* __restrict data,
     }
 }
 
-}  // namespace
+// The trace of ρ against one Pauli string: for every row r the entry at column
+// r ⊕ flip_mask, with the sign of the parity of r & sign_mask. The rows are cut
+// into the fixed segments of reduce_shares_team, each summed in row order and
+// the partials folded in segment order, so the bits are those of one thread
+// whatever the team (an OpenMP reduction clause leaves the order to the
+// runtime). A row reads one entry from a row of its own, so the pass touches a
+// cache line per row: its grain work is 16 elements a row.
+DmPauliTrace dm_pauli_term_trace(const Complex128* data, size_t dim, size_t flip_mask,
+                                 size_t sign_mask) {
+    constexpr size_t kElementsPerRowRead = 16;
+    const int team = dm_team({dim * kElementsPerRowRead, dm_qubits(dim), DmClass::Trace, dim});
+    const auto segment = [=](size_t begin, size_t end) {
+        DmPauliTrace part;
+        for (size_t row = begin; row < end; ++row) {
+            const Complex128& rho_rc = data[row * dim + (row ^ flip_mask)];
+            if (LINDBLAD_POPCOUNT64(row & sign_mask) & 1) {
+                part.re -= rho_rc.real;
+                part.im -= rho_rc.imag;
+            } else {
+                part.re += rho_rc.real;
+                part.im += rho_rc.imag;
+            }
+        }
+        return part;
+    };
+    const auto combine = [](const DmPauliTrace& acc, const DmPauliTrace& part) {
+        return DmPauliTrace{acc.re + part.re, acc.im + part.im};
+    };
+    return reduce_shares_team(dim, team, DmPauliTrace{}, segment, combine);
+}
+
+}  // namespace detail
+
+using detail::dm_bra_apply_inplace;
+using detail::dm_build_tables;
+using detail::dm_ket_apply_inplace;
+using detail::dm_superop_apply_inplace;
 
 // =============================================================================
 // apply_gate — localized tensor operation: rho -> U * rho * U†
@@ -507,7 +557,8 @@ void DensityMatrix::apply_permutation(const std::vector<int>& full_perm) {
     }
     // new_rho[full_perm[a], full_perm[b]] = rho[a, b].
     std::vector<Complex128> out(dim * dim, Complex128(0.0, 0.0));
-    #pragma omp parallel for schedule(static) if(dim * dim >= DM_PAR_THRESHOLD)
+    const int team = detail::dm_team({dim * dim, n_qubits, detail::DmClass::Permute, dim});
+    #pragma omp parallel for schedule(static) num_threads(team) if(team > 1)
     for (long long a = 0; a < static_cast<long long>(dim); ++a) {
         const size_t fa = static_cast<size_t>(full_perm[static_cast<size_t>(a)]);
         const Complex128* __restrict src = data.data() + static_cast<size_t>(a) * dim;
@@ -523,7 +574,8 @@ void DensityMatrix::apply_mcp_phase(size_t mask, double lambda) {
     // new_rho[a,b] = phase(a) * conj(phase(b)) * rho[a,b]. Only entries where
     // exactly one of a,b satisfies the mask acquire a net +-lambda phase.
     const double c = std::cos(lambda), s = std::sin(lambda);
-    #pragma omp parallel for schedule(static) if(dim * dim >= DM_PAR_THRESHOLD)
+    const int team = detail::dm_team({dim * dim, n_qubits, detail::DmClass::Phase, dim});
+    #pragma omp parallel for schedule(static) num_threads(team) if(team > 1)
     for (long long al = 0; al < static_cast<long long>(dim); ++al) {
         const size_t a = static_cast<size_t>(al);
         const bool pa = (a & mask) == mask;
@@ -591,8 +643,9 @@ double DensityMatrix::expectation_value_sparse(const SparsePauliOp& hamiltonian)
     // i^{#Y} · (-1)^{popcount(row & sign_mask)} where sign_mask covers Z and Y
     // positions. The i^{#Y} factor is a per-term constant
     // folded into the coefficient (same trick as SparsePauliOp to_matrix), the
-    // per-row sign is one popcount parity, and the row loop is an OpenMP
-    // reduction — replacing the per-row z_bits/y_bits vector walks.
+    // per-row sign is one popcount parity, and the row loop is a reduction in
+    // fixed segments (dm_pauli_term_trace) — replacing the per-row
+    // z_bits/y_bits vector walks.
     double result = 0.0;
     for (const auto& term : hamiltonian.terms) {
         // Project convention (docs/Architecture.md "Conventions"): Pauli
@@ -623,17 +676,8 @@ double DensityMatrix::expectation_value_sparse(const SparsePauliOp& hamiltonian)
         const double c_re = term.coeff.real * ty_r - term.coeff.imag * ty_i;
         const double c_im = term.coeff.real * ty_i + term.coeff.imag * ty_r;
 
-        double tr_re = 0.0, tr_im = 0.0;
-        #pragma omp parallel for reduction(+:tr_re,tr_im) schedule(static) if(dim >= (1u << 12))
-        for (long long r = 0; r < static_cast<long long>(dim); ++r) {
-            const size_t row = static_cast<size_t>(r);
-            const Complex128& rho_rc = data[row * dim + (row ^ flip_mask)];
-            if (LINDBLAD_POPCOUNT64(row & sign_mask) & 1) {
-                tr_re -= rho_rc.real; tr_im -= rho_rc.imag;
-            } else {
-                tr_re += rho_rc.real; tr_im += rho_rc.imag;
-            }
-        }
+        const detail::DmPauliTrace tr = detail::dm_pauli_term_trace(data.data(), dim, flip_mask, sign_mask);
+        const double tr_re = tr.re, tr_im = tr.im;
 
         result += c_re * tr_re - c_im * tr_im;
     }
@@ -940,6 +984,17 @@ static std::size_t dm_shot_work(std::size_t entries, std::size_t instructions) {
 static void record_options(detail::FailureCollector& failure,
                            const DensityMatrixSimulator::Options& o) {
     using detail::option_value;
+    failure.add_option("max_parallel_threads", option_value(o.max_parallel_threads));
+    failure.add_option("min_amplitudes_per_thread", option_value(o.min_amplitudes_per_thread));
+    failure.add_option("threading_costs",
+                       o.threading_costs.unset()
+                           ? "unset"
+                           : "set for team sizes " + [&] {
+                                 std::string sizes;
+                                 for (const int t : o.threading_costs.team_sizes)
+                                     sizes += (sizes.empty() ? "" : ",") + std::to_string(t);
+                                 return sizes;
+                             }());
     failure.add_option("max_memory_mb", option_value(o.max_memory_mb));
     failure.add_option("prefix_reuse", option_value(o.prefix_reuse));
     failure.add_option("max_parallel_shots", option_value(o.max_parallel_shots));
@@ -969,6 +1024,9 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
     failure.set_noise_model(noise_model);
     std::optional<detail::ObservationRunner> runner;
     std::optional<DensityMatrix> dm_slot;
+    // Declared before the try block so it outlives the run's scopes and the
+    // report can read it; it ends with the call.
+    std::optional<detail::ScopedDmTeam> dm_team_scope;
     std::optional<QuantumCircuit> repaired_storage;
     // The failing shot's matrix when a shot loop failed; it held that matrix on
     // whichever thread ran the shot.
@@ -988,6 +1046,23 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             detail::complex_bytes(detail::pow2_saturating(2 * circuit_in.n_qubits));
         const std::uint64_t cap_bytes = detail::require_memory_budget(
             one_matrix, options.max_memory_mb, "DensityMatrixSimulator::run");
+        // Every parallel region of the run takes Options::max_parallel_threads,
+        // and every pass over the matrix the team rule of Options::
+        // min_amplitudes_per_thread; the caller's own settings are back on
+        // return. A set threading_costs is judged before the first gate.
+        const detail::ScopedThreadCap threads(options.max_parallel_threads,
+                                              "DensityMatrixSimulator::run");
+        if (!options.threading_costs.unset()) {
+            const std::string problem = detail::threading_costs_problem(options.threading_costs);
+            if (!problem.empty())
+                detail::raise<InvalidArgument>("DensityMatrixSimulator::run",
+                    "Options::threading_costs is set but is not coherent:" + problem +
+                        " (leave it default-constructed to have the costs measured)");
+        }
+        // The scratch matrix a team measurement times a pass on answers to what
+        // the cap leaves beside the run's own matrix.
+        dm_team_scope.emplace(options.min_amplitudes_per_thread, options.threading_costs,
+                              cap_bytes > one_matrix ? cap_bytes - one_matrix : 0);
         auto t_start = std::chrono::high_resolution_clock::now();
 
         // Everything the instructions decide on their own, operand indices
@@ -1587,6 +1662,9 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
         auto t_end = std::chrono::high_resolution_clock::now();
         result.simulation_time_seconds =
             std::chrono::duration<double>(t_end - t_start).count();
+        result.execution.threads_available = hw::available_threads();
+        result.execution.parallel_grain = options.min_amplitudes_per_thread;
+        if (dm_team_scope) dm_team_scope->fill_report(result.execution, options.min_amplitudes_per_thread);
 
     } catch (...) {
         // The failure path, as in the statevector backend: what the run had

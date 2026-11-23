@@ -56,6 +56,7 @@ BackendResult LocalBackend::run(
         case SimType::STATEVECTOR: {
             StatevectorSimulator sim;
             sim.options.max_memory_mb = config.max_memory_mb;
+            sim.options.min_amplitudes_per_thread = config.min_amplitudes_per_thread;
             sim.options.qubit_limit = config.qubit_limit;
             sim.options.max_parallel_shots = config.max_parallel_shots;
             sim.options.shot_memory = config.shot_memory;
@@ -70,6 +71,7 @@ BackendResult LocalBackend::run(
         case SimType::DENSITY_MATRIX: {
             DensityMatrixSimulator sim;
             sim.options.max_memory_mb = config.max_memory_mb;
+            sim.options.min_amplitudes_per_thread = config.min_amplitudes_per_thread;
             sim.options.max_parallel_shots = config.max_parallel_shots;
             sim.options.shot_memory = config.shot_memory;
             sim.options.shot_team_min_cached_states = config.shot_team_min_cached_states;

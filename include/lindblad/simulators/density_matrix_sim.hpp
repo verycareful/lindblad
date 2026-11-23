@@ -137,6 +137,36 @@ public:
 class DensityMatrixSimulator {
 public:
     struct Options {
+        // The most threads any parallel region of a run may use: the kernels
+        // that multiply ρ by a gate or apply a channel, the permutation and
+        // phase passes, and the reductions. 0, the default, leaves OpenMP's own
+        // limit (OMP_NUM_THREADS, else every core) in force; k >= 1 caps it at
+        // k for the length of the call, and the caller's setting is back on
+        // return. Negative values are refused before the first gate.
+        int max_parallel_threads = 0;
+        // How a pass over ρ chooses its threads. 0, the default, is automatic:
+        // every pass over a register takes the team in which a sweep of
+        // passes ran fastest on this machine, timed once per process on a
+        // scratch matrix of the register's width (at most as wide as the L3
+        // caches hold) and kept; what each pass got is read from
+        // Result::execution. A value above 0 is a grain: a pass
+        // takes min(threads, elements of ρ it touches / grain) threads, so 1
+        // puts every pass on every thread and a large value runs serially.
+        // Seeded counts, the final state and every expectation value are
+        // identical whichever rule or team runs. A DensityMatrix used with no
+        // simulator around it keeps one fixed rule: every thread for a pass
+        // touching at least 2^16 elements, one otherwise.
+        std::size_t min_amplitudes_per_thread = 0;
+        // The threading costs the automatic team decides from, in place of
+        // measuring: set it from StatevectorSimulator::measured_threading_costs
+        // (or by hand) to fix the decisions. A density-matrix pass is read as
+        // the statevector pass of the same arithmetic per element (a ket or bra
+        // multiply on k qubits as a dense block of k qubits, a channel on k
+        // qubits as one of 2k, a phase as a diagonal), so a pinned decision
+        // approximates the timed one. A set value that is not coherent is
+        // refused before the first gate (see ThreadingCosts); it is not read
+        // when min_amplitudes_per_thread is above 0.
+        ThreadingCosts threading_costs;
         // The most memory a run may use, in MiB (2^20 bytes). 0, the default,
         // is automatic: the memory this machine reports available, or
         // FALLBACK_MEMORY_CAP_MB when it gives no coherent reading.
@@ -194,6 +224,13 @@ public:
         // Whatever the run's labelled observers collected. Empty unless the
         // RunPlan attached observers carrying labels.
         ObservationBundle observations;
+
+        // What the run was given: the threads it could start, the team rule
+        // and, under the automatic one, the team each kind of pass took (the
+        // classes Ket1 to Ket3, Bra1 to Bra3, Superop1 to Superop3, Permute,
+        // Phase and Trace). parallel_grain is the option's value, 0 under the
+        // automatic rule. Filled on every run.
+        ExecutionReport execution;
     };
 
     // plan = the harness: where the run starts and what is watched while it

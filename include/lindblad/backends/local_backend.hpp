@@ -51,6 +51,12 @@ public:
         // The most OpenMP threads the run may use on whichever backend it
         // reaches; 0 leaves OpenMP's own choice. Restored on return.
         int max_parallel_threads = 0;
+        // How a pass over the state chooses its threads, on the statevector and
+        // density-matrix backends (the others have no threaded passes of this
+        // kind); see StatevectorSimulator::Options::min_amplitudes_per_thread
+        // and DensityMatrixSimulator::Options::min_amplitudes_per_thread. 0 is
+        // automatic.
+        std::size_t min_amplitudes_per_thread = 0;
         // The memory cap, passed to whichever backend the run reaches; see
         // StatevectorSimulator::Options::max_memory_mb. 0 is automatic.
         uint64_t max_memory_mb = 0;

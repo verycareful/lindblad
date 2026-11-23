@@ -57,6 +57,11 @@ Fields and defaults:
   whichever backend it reaches; 0 leaves OpenMP's own choice
   (`OMP_NUM_THREADS`, else every core). The caller's setting is back when the
   run returns. A negative value is refused with `std::invalid_argument`
+- `min_amplitudes_per_thread = 0`: how many threads each pass over the state
+  starts, on the statevector and density-matrix backends (0 is automatic; see
+  `StatevectorSimulator::Options::min_amplitudes_per_thread` and
+  `DensityMatrixSimulator::Options::min_amplitudes_per_thread`). The other
+  backends have no passes of this kind
 - `max_memory_mb = 0`: the most memory a run may use, in MiB (2^20 bytes); 0
   is automatic, the memory the machine reports available (see
   [The memory cap](failures.md#the-memory-cap)). Passed to whichever backend

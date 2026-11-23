@@ -756,6 +756,9 @@ row/column relabel or diagonal phase (no dense matrix).
 
 ```cpp
 struct Options {
+    int max_parallel_threads = 0;                      // 0 = auto (all cores)
+    std::size_t min_amplitudes_per_thread = 0;         // 0 = automatic
+    ThreadingCosts threading_costs;                    // unset = measured on this machine
     uint64_t max_memory_mb = 0;                        // MiB; 0 = automatic
     PrefixReuse prefix_reuse = PrefixReuse::Hardware;
     int max_parallel_shots = 0;                        // shot threads; 0 = automatic, 1 = serial
@@ -766,6 +769,19 @@ struct Options {
 };
 ```
 
+- **max_parallel_threads**: the most OpenMP threads any parallel region of
+  `run()` may use, as for the statevector simulator: 0 leaves OpenMP's own
+  choice in force (`OMP_NUM_THREADS`, else every core), the cap holds for the
+  length of the call and the caller's setting is back when it returns. A
+  negative value is refused with `std::invalid_argument` before the first gate
+- **min_amplitudes_per_thread**: how many threads each pass over the matrix
+  starts; see [Threading](#threading). 0, the default, is automatic; a value
+  above 0 is the grain rule
+- **threading_costs**: costs the automatic team decides from instead of
+  measuring, as for the statevector simulator (`ThreadingCosts`, see
+  [Threading Costs](#threading-costs)). A set value that is not coherent is
+  refused with `lindblad::InvalidArgument` before the first gate, and it is not
+  read when `min_amplitudes_per_thread` is above 0
 - **max_memory_mb**: the most memory a run may use, in MiB (2^20 bytes). 0,
   the default, is automatic: the memory the machine reports available, else
   4096 MiB; `NO_MEMORY_CAP` means no cap (see
@@ -804,6 +820,20 @@ struct Options {
 - **shot_counting**, **shot_counting_distinct_fraction**: how the counts of
   trajectories and of terminal sampling are kept, with the modes and the
   cutoff of the statevector simulator. The counts are the same in every mode
+
+### Threading
+
+A run starts a parallel region for each pass over the matrix: the ket and bra multiplications of a gate (`Ket1` to `Ket3`, `Bra1` to `Bra3`, by the gate's qubits, wider gates rated as 3), a channel applied as one superoperator pass (`Superop1` to `Superop3`), a full-register permutation (`Permute`), a multi-controlled phase (`Phase`), and the trace against a Pauli string that `expectation_value_sparse` takes (`Trace`). How many threads each starts depends on `Options::min_amplitudes_per_thread`:
+
+- **0, automatic** (the default). The first time a register of a given width is met, a sweep of the passes a noisy circuit runs (the ket and bra multiplies of a one-qubit gate and of a two-qubit gate and the superoperator pass of a channel on each, with the targets changing from call to call as a circuit's do) is timed on a scratch matrix of that width at each team size the machine's topology suggests (1, 2, 4, the cores and threads of one L3 instance, every physical core, every thread), and the team with the fastest sweep is kept for the rest of the process. Every pass of that width takes it. One team serves all passes because a circuit's passes follow one another on the same matrix: a pass that finds it partitioned differently from the pass before reads rows another core holds, and a matrix that fits the cores' private caches at the full team runs several times slower once its passes alternate between team sizes, which a team chosen for each pass from that pass alone cannot see. Timing stops after two team sizes in a row that are slower than the fastest so far, so a register too small to pay for a region is settled after the sizes 1, 2 and 4. A register whose matrix is larger than the L3 caches hold together shares the team of the widest one that fits. The scratch matrix is charged to the run's memory cap beside the run's own matrix; where it does not fit, the pass takes the fixed rule and the width is timed on a later call that has the room. The first run at a new width costs about 15 to 30 ms for registers up to 8 qubits and about 300 ms at 10 qubits, once per process. A team is never larger than the pass's loop, and never larger than `max_parallel_threads` allows. The team a width gets can differ from process to process on a machine whose threads are not bound to cores, since where the operating system places a team changes what each size costs.
+- **A value k above 0, the grain rule.** A pass takes min(threads available, elements of the matrix it touches / k) threads and runs serially when that is one; a ket or bra multiply touches the rows or columns of its background groups, a channel pass its sub-blocks, a permutation or a phase every entry, and a trace 16 entries per row. 1 threads every pass.
+- **The fixed rule** is what a `DensityMatrix` used with no simulator around it takes, and what a pass without a figure falls back on: every thread for a pass touching at least 2^16 entries, one for a smaller one.
+
+With `threading_costs` set nothing is timed, and the team is decided for each pass class. Each pass is read as the statevector pass of the same arithmetic per element, and the statevector's model of region and pass costs picks the team: a ket or bra multiply on k qubits is a dense block of k qubits, a channel on k qubits one of 2k qubits, a phase a diagonal, a permutation a one-qubit pass of twice the work, and the trace a one-qubit pass of four times the work over one entry per row. This is an approximation: the one place a decision rests on a figure not timed on the pass's own kernel.
+
+Results do not depend on the team. A pass writes each entry from one thread, and the trace is a sum in fixed segments (a number of segments that depends on the register's width alone, partials folded in segment order), so a run's final matrix, counts and expectation values have the same bits on one thread and on every thread, under every rule. `expectation_value_sparse` is that sum; a reduction clause would have left its order to the OpenMP runtime.
+
+`Result::execution` is an `ExecutionReport`, as for the statevector simulator, filled on every run: `threads_available`, `team_rule` (`Auto` or `Grain`), `parallel_grain` (the option's value, 0 under the automatic rule), and under the automatic rule one `KernelTeamUse` per pass class the run met, in the order above, with its decisions, the smallest and largest team chosen, the histogram of teams and `grain_fallbacks`, the decisions that took the fixed rule because the cell had no figure. A pass that runs serially is a decision of one thread. While a trajectory run's shots go across threads, each thread's passes run on that thread alone and record nothing.
 
 ### DensityMatrixSimulator Workflow
 
@@ -853,7 +883,7 @@ Both checks cost O(dim^2), the same as the trace.
 `n_qubits` wide and written with `I`, `X`, `Y` and `Z`, and a Hermitian
 operator.
 
-Extracts diagonal terms of Pauli strings using bit masks; computes traces without full matrix multiplication:
+Extracts diagonal terms of Pauli strings using bit masks; computes traces without full matrix multiplication, summing the rows in fixed segments so that the value has the same bits whatever team computes it:
 
 $$\langle P \rangle = 2^{-n} \text{Tr}(P_0 \rho) \quad \text{where} \quad P_0 \text{ is diagonal Pauli}$$
 

@@ -69,8 +69,21 @@
 #include <mutex>
 #include <vector>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace lindblad {
 namespace detail {
+
+// True when the calling thread is inside an active parallel region.
+inline bool inside_parallel_region() noexcept {
+#ifdef _OPENMP
+    return omp_in_parallel() != 0;
+#else
+    return false;
+#endif
+}
 
 enum class SvClass : int {
     Gate = 0,
@@ -129,6 +142,12 @@ public:
         std::atomic<std::int16_t>& cell = cells_[index(work)];
         int value = cell.load(std::memory_order_relaxed);
         if (value == kCellUnknown || value == kCellRetry) {
+            // A cell is timed on a team the process chooses, which a region
+            // that is itself one thread of a team cannot start (nested regions
+            // run on one thread): every candidate would take the same time and
+            // the noise would be kept for the process. Nothing is measured or
+            // stored there; the grain rule decides.
+            if (inside_parallel_region()) return 0;
             value = compute(work, room_bytes);
             cell.store(static_cast<std::int16_t>(value), std::memory_order_relaxed);
         }

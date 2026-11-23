@@ -280,9 +280,14 @@ inline T fold_segments(std::size_t count, T init, Body&& body, Combine&& combine
     return acc;
 }
 
+// reduce_shares with the team named by the caller instead of asked of the
+// statevector's team rule: a pass over another kind of state (the density
+// matrix's) sizes its own team and still folds the same fixed segments, so its
+// sum has the bits of the serial fold on any team. A team above the number of
+// segments is cut to it.
 template <class T, class Body, class Combine>
-inline T reduce_shares(std::size_t count, const SvWork& work, T init, Body&& body,
-                       Combine&& combine) {
+inline T reduce_shares_team(std::size_t count, int requested_team, T init, Body&& body,
+                            Combine&& combine) {
     if (count == 0) return init;
     const std::size_t unit = sv_runs_impl::share_unit(count);
     const std::size_t n_units = count / unit;
@@ -291,7 +296,7 @@ inline T reduce_shares(std::size_t count, const SvWork& work, T init, Body&& bod
         return sv_runs_impl::share_of(n_units, unit, n_seg, s);
     };
     const int team = static_cast<int>(
-        std::min<std::size_t>(static_cast<std::size_t>(sv_team(work)), n_seg));
+        std::min<std::size_t>(static_cast<std::size_t>(std::max(requested_team, 1)), n_seg));
     // The partials are allocated without throwing, so a pass that cannot get
     // them runs serially and reduce_shares adds no exception of its own (the
     // finite check that calls it is noexcept).
@@ -315,6 +320,13 @@ inline T reduce_shares(std::size_t count, const SvWork& work, T init, Body&& bod
     T acc = init;
     for (std::size_t s = 0; s < n_seg; ++s) acc = sv_runs_impl::combine_partial<T>(combine, acc, partial[s]);
     return acc;
+}
+
+template <class T, class Body, class Combine>
+inline T reduce_shares(std::size_t count, const SvWork& work, T init, Body&& body,
+                       Combine&& combine) {
+    if (count == 0) return init;
+    return reduce_shares_team(count, sv_team(work), init, body, combine);
 }
 
 namespace sv_runs_impl {
