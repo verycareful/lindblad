@@ -67,17 +67,6 @@ int widest_window_qubits(double llc_total_bytes) {
     return m;
 }
 
-// The qubits k targets of a dense block take on m qubits, spread across the
-// register and moved by `shift`, so that consecutive blocks differ.
-std::vector<int> moving_targets(int k, int m, unsigned shift) {
-    std::vector<int> t(static_cast<std::size_t>(k));
-    const int stride = std::max(1, m / k);
-    for (int j = 0; j < k; ++j)
-        t[static_cast<std::size_t>(j)] =
-            static_cast<int>((shift + static_cast<unsigned>(j * stride)) % static_cast<unsigned>(m));
-    return t;
-}
-
 }  // namespace
 
 const char* sv_class_name(SvClass cls) noexcept {

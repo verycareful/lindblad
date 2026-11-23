@@ -76,6 +76,19 @@ std::array<double, sizeof...(F)> fastest(int rounds, double seconds, F&... f) {
     return best;
 }
 
+// The qubits k targets of a dense block take on m qubits, spread across the
+// register and moved by `shift`, so that consecutive blocks differ: a circuit
+// changes its targets from gate to gate, which moves amplitudes between the
+// cores of a team, and a pass timed on one target repeated does not pay that.
+inline std::vector<int> moving_targets(int k, int m, unsigned shift) {
+    std::vector<int> t(static_cast<std::size_t>(k));
+    const int stride = std::max(1, m / k);
+    for (int j = 0; j < k; ++j)
+        t[static_cast<std::size_t>(j)] =
+            static_cast<int>((shift + static_cast<unsigned>(j * stride)) % static_cast<unsigned>(m));
+    return t;
+}
+
 // The kernels a measurement times, on re, im, 2^m amplitudes.
 struct CalibrationKernels {
     double* re;

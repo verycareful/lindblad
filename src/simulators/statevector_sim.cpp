@@ -499,38 +499,44 @@ double StatevectorSimulator::eval_expectation(
 // =============================================================================
 
 // =============================================================================
-// Gate fusion (R.1.17) — fuse runs of small gates into dense k-qubit blocks
-//
+// Gate fusion - fuse runs of small gates into dense k-qubit blocks
+// =============================================================================
 // At large n every gate application is a full sweep of 2^n amplitudes and
 // the simulation is memory-bound: k gates on overlapping supports cost k
-// sweeps but could cost one. This pre-pass greedily merges consecutive
-// FUSABLE gates while the union of their supports stays within
-// Options::fusion_max_qubit, composes each block into a dense 2^k x 2^k unitary
-// (by applying the member gates to basis columns through the simulator's own
-// dispatch, so every gate type composes exactly), and emits it as an
-// ordinary UNITARY instruction handled by the existing gates::apply_unitary
-// stride kernel. Blocks with a single member emit the original instruction.
+// sweeps but could cost one. This pre-pass merges consecutive FUSABLE gates
+// while the union of their supports stays within Options::fusion_max_qubit,
+// composes each block into a dense 2^k x 2^k unitary (by applying the member
+// gates to basis columns through the simulator's own dispatch, so every gate
+// type composes exactly), and emits it as an ordinary UNITARY instruction
+// handled by the existing gates::apply_unitary kernel. Blocks with a single
+// member emit the original instruction.
 //
 // Semantics are untouched by construction: MEASURE / RESET / BARRIER,
 // classically-conditioned instructions, unresolved parameterised gates, and
 // the structured ops (MCX / MCP / PERMUTATION, which already have fast
-// native paths) are never fused — they flush the current block and pass
+// native paths) are never fused; they flush the current block and pass
 // through verbatim. The result is a plain QuantumCircuit, so all execution
 // paths (including per-shot trajectories, which then reuse the fused plan
 // across every shot) consume it unchanged.
 //
-// Fusion engages when the statevector stops fitting in one last-level
-// cache instance (16·2^n bytes vs hw::llc_bytes(), per-instance by design;
-// 32 MiB assumed when detection fails). Cache-resident states are
-// compute-bound -- the specialised per-gate kernels win there and a dense
-// 32x32 block would ADD arithmetic -- while DRAM-resident states are
-// bandwidth-bound and the sweep count is all that matters. Measured on a
-// 32 MiB-L3 part: fusing a 32 MiB state ran 3.3x SLOWER, fusing a 64 MiB
-// state ran 2.7x faster, and cache-resident sizes regressed up to 15x when
-// fused -- so the boundary is "strictly larger than one LLC instance".
-// Options::fusion_enable / fusion_threshold / fusion_max_qubit (Aer-parity
-// names) override the automatics; below the engagement point execution is
-// bit-identical to the unfused path by construction.
+// Which blocks are worth forming is decided by cost, at every size. A block
+// replaces its members with one pass over the state, which pays when the
+// members' passes cost more than the block's (below), and the block has to be
+// composed first, which costs time once per plan. So a window of gates is
+// fused only when its saving over every run of the plan exceeds the time to
+// compose it: the plan is shared by every shot of a per-shot run, so a circuit
+// run for many shots fuses far more readily than one run once, and a circuit
+// too small for any block to repay its composition stays unfused (and is then
+// bit-identical to the unfused path). Before the costs are measured, a bound
+// on what any stretch could save is checked against what composing its
+// members costs at least; when no stretch can pay, nothing is measured.
+//
+// Options::fusion_enable and fusion_max_qubit (Aer-parity names) limit what
+// may fuse. Options::fusion_threshold, when set, names the fewest qubits at
+// which fusion engages, and the plan is then the cheapest by pass costs alone
+// (composition not weighed), as the caller asked for fusion at that size.
+// Options::fusion_costs set fixes the pass costs and with them the plan: no
+// time is read, so the plan depends on the circuit and the shot count only.
 // =============================================================================
 
 namespace {
@@ -538,28 +544,12 @@ namespace {
 constexpr int SV_FUSION_MAX_QUBIT_LIMIT = 6;  // block scratch is 2^k x 2^k; 6 -> 64x64
 constexpr std::size_t SV_BYTES_PER_AMP = 16;  // SoA double re + im per amplitude
 
-// Bounds for the auto engagement point. The fallback applies when the OS
+// Bounds for the calibration state's size. The fallback applies when the OS
 // reports no L3 (containers, exotic platforms); the clamp guards the
-// formula against garbage detection values, and both err toward engaging
-// LATER (a missed fusion win costs far less than a mid-range regression).
+// formula against garbage detection values.
 constexpr std::size_t SV_FUSION_LLC_FALLBACK = std::size_t(32) << 20;  // 32 MiB
 constexpr std::size_t SV_FUSION_LLC_MIN = std::size_t(1) << 20;        // 1 MiB
 constexpr std::size_t SV_FUSION_LLC_MAX = std::size_t(1) << 30;        // 1 GiB
-
-// Smallest n whose statevector exceeds one LLC instance -- the point where
-// simulation turns bandwidth-bound and fusion starts paying (see the block
-// comment above). Detected once, cached thread-safely.
-int sv_fusion_auto_threshold() {
-    static const int cached = [] {
-        std::size_t llc = hw::llc_bytes();
-        if (llc == 0) llc = SV_FUSION_LLC_FALLBACK;
-        llc = std::clamp(llc, SV_FUSION_LLC_MIN, SV_FUSION_LLC_MAX);
-        int n = 1;
-        while ((SV_BYTES_PER_AMP << n) <= llc) ++n;  // first n: 16·2^n > llc
-        return n;
-    }();
-    return cached;
-}
 
 bool sv_gate_is_fusable(const Instruction& inst, int max_qubit) {
     using GT = Instruction::GateType;
@@ -654,6 +644,19 @@ double sv_block_cost(double c) { return std::max(1.0, sv_round_cost(c)); }
 
 using CalibrationKernels = detail::CalibrationKernels;
 
+// The team a pass of the run's gets, for a measurement that times its arithmetic
+// on that many threads: the team model's choice when one is in force (looked up
+// without noting it in the execution report), else the grain rule's.
+int sv_calibration_team(const detail::SvWork& work) {
+    if (detail::TeamModel* model = detail::t_team_model) {
+        const int modelled = model->team(work);
+        if (modelled > 0)
+            return static_cast<int>(std::min<std::size_t>(static_cast<std::size_t>(modelled),
+                                                          hw::available_threads()));
+    }
+    return detail::sv_team_grain(work.grain_work);
+}
+
 // Each dense block's arithmetic per amplitude, blocks from k = first_k to
 // last_k, into per_amp[k - 1], timed on the team the block's pass over 2^m
 // amplitudes would get (sized by its work: dim for the one- and two-qubit
@@ -664,7 +667,8 @@ using CalibrationKernels = detail::CalibrationKernels;
 // costs (the team's start, the plan) to matter pays them as the run's does.
 void sv_dense_compute(int m, int first_k, int last_k, double stretch, double* per_amp) {
     for (int k = first_k; k <= last_k; ++k) {
-        const int team = detail::sv_team_grain((std::size_t{1} << m) << (k <= 2 ? 0 : k - 1));
+        const std::size_t dim = std::size_t{1} << m;
+        const int team = sv_calibration_team(detail::dense_work(dim, k, dim << (k <= 2 ? 0 : k - 1)));
         detail::ScopedThreadCap cap(team, "StatevectorSimulator::run");
         const int q = std::min(
             m, kFusionComputeQubits +
@@ -682,17 +686,35 @@ void sv_dense_compute(int m, int first_k, int last_k, double stretch, double* pe
 // Measures the costs, the passes on re, im, 2^m amplitudes of scratch (their
 // contents are overwritten): dense blocks from k = first_k to last_k, and the
 // diagonal block and controlled phase when first_k is 1. Entries outside are
-// left as in `costs`.
+// left as in `costs`. *h_seconds is the time of one H pass over the 2^m
+// amplitudes, the unit the costs are in.
 FusionCosts sv_measure_fusion_costs(double* re, double* im, int m, int first_k, int last_k,
-                                    FusionCalibration calibration, FusionCosts costs) {
+                                    FusionCalibration calibration, FusionCosts costs,
+                                    double* h_seconds) {
     const bool direct = calibration == FusionCalibration::RunThreads;
     const double stretch = direct ? kFusionThoroughSeconds : kFusionTimingSeconds;
     const CalibrationKernels run{re, im, m};
-    auto h = [&] { run.h(); };
-    auto cphase = [&] { run.cphase(); };
-    const std::vector<int> td = run.targets(last_k);
+    // Every pass changes its targets from call to call, as a circuit's gates do:
+    // amplitudes then move between the cores of a team, which a repeated target
+    // would not show and which weighs differently on a gate than on a block.
+    unsigned h_calls = 0, cphase_calls = 0, diagonal_calls = 0;
+    auto h = [&] { run.h_at(static_cast<int>(h_calls++ % static_cast<unsigned>(m))); };
+    // A controlled phase on two qubits at kLaneBits or above (the case
+    // costs.controlled_phase stands for): the lower qubit and the gap move.
+    const int lo_count = m - 1 - detail::kLaneBits;
+    auto cphase = [&] {
+        const unsigned c = cphase_calls++;
+        const int lo = detail::kLaneBits + static_cast<int>(c % static_cast<unsigned>(lo_count));
+        const int hi = lo + 1 +
+                       static_cast<int>((c / static_cast<unsigned>(lo_count)) %
+                                        static_cast<unsigned>(m - 1 - lo));
+        run.cphase_at(lo, hi);
+    };
     const std::vector<Complex128> d = CalibrationKernels::phases(last_k);
-    auto diagonal = [&] { detail::apply_dense(run.re, run.im, run.dim(), td, d); };
+    auto diagonal = [&] {
+        detail::apply_dense(run.re, run.im, run.dim(),
+                            detail::moving_targets(last_k, m, diagonal_calls++ % static_cast<unsigned>(m)), d);
+    };
 
     // OneThread times everything on one thread, the others on the run's.
     // Hybrid and OneThread time the arithmetic first, then the passes over the
@@ -707,6 +729,7 @@ FusionCosts sv_measure_fusion_costs(double* re, double* im, int m, int first_k, 
     const auto t = first_k == 1 ? sv_fastest(stretch, h, cphase, diagonal)
                                 : std::array<double, 3>{sv_fastest(stretch, h)[0], 0.0, 0.0};
     const double h_pass = t[0];
+    *h_seconds = h_pass;
     if (first_k == 1) {
         costs.controlled_phase = sv_round_cost(t[1] / h_pass);
         costs.diagonal = sv_block_cost(t[2] / h_pass);
@@ -714,9 +737,12 @@ FusionCosts sv_measure_fusion_costs(double* re, double* im, int m, int first_k, 
 
     for (int k = first_k; k <= last_k; ++k) {
         if (direct) {
-            const std::vector<int> tk = run.targets(k);
             const std::vector<Complex128> f = CalibrationKernels::dft(k);
-            auto dense = [&] { detail::apply_dense(run.re, run.im, run.dim(), tk, f); };
+            unsigned dense_calls = 0;
+            auto dense = [&] {
+                detail::apply_dense(run.re, run.im, run.dim(),
+                                    detail::moving_targets(k, m, dense_calls++ % static_cast<unsigned>(m)), f);
+            };
             const auto pair = sv_fastest(stretch, h, dense);
             costs.dense[k - 1] = sv_block_cost(pair[1] / pair[0]);
         } else {
@@ -733,17 +759,44 @@ std::mutex& sv_fusion_cost_mutex() {
     return m;
 }
 
-// A cache entry: the costs, and the widest dense block measured so far (an
-// entry is extended, never remeasured, when a run allows wider blocks).
+// A cache entry: the costs, the widest dense block measured so far (an
+// entry is extended, never remeasured, when a run allows wider blocks), the
+// time of one H pass over the calibration state in seconds (the unit the costs
+// are in; 0 until measured), and a quick reading of it that decides whether
+// the costs are worth measuring at all (0 until read).
 struct CachedFusionCosts {
     FusionCosts costs;
     int widest = 0;
+    double h_seconds = 0.0;
+    double h_quick_seconds = 0.0;
 };
-using FusionCostKey = std::tuple<int, std::size_t, std::size_t, int>;
+using FusionCostKey = std::tuple<int, std::size_t, std::size_t, int, int>;
 std::map<FusionCostKey, CachedFusionCosts>& sv_fusion_cost_cache() {
     static std::map<FusionCostKey, CachedFusionCosts> cache;
     return cache;
 }
+
+// What a calibration gives: the costs, and how long one H pass over a state of
+// the run's size takes, which turns them into seconds.
+struct FusionMeasure {
+    FusionCosts costs;
+    double h_seconds = 0.0;  // one H pass over 2^n amplitudes, n the run's qubits
+};
+
+// The cache entry's key and the size of its calibration state for a run of n
+// qubits under the calling thread's limits.
+FusionCostKey sv_fusion_key(int n, FusionCalibration calibration, int* m) {
+    *m = sv_fusion_calibration_qubits(n);
+    const std::size_t threads =
+        calibration == FusionCalibration::OneThread ? 1 : hw::available_threads();
+    return {static_cast<int>(calibration), threads, detail::parallel_grain(), *m,
+            detail::t_team_model != nullptr ? 1 : 0};
+}
+
+// One H pass over a state of n qubits, from an H pass over 2^m amplitudes: the
+// passes are bandwidth-bound where the state is large and the time is
+// proportional to the amplitudes.
+double sv_scale_h_seconds(double h_seconds, int m, int n) { return std::ldexp(h_seconds, n - m); }
 
 // The costs for a state of n qubits under the calling thread's limits, dense
 // blocks up to max_k qubits: the cached measurement, else measured now (only
@@ -752,30 +805,64 @@ std::map<FusionCostKey, CachedFusionCosts>& sv_fusion_cost_cache() {
 // is made). *used_buffer says whether re and im were overwritten. Holding the
 // lock while measuring keeps a second caller from timing beside it and lets
 // that caller reuse the result.
-FusionCosts sv_fusion_costs(int n, int max_k, FusionCalibration calibration, double* re,
-                            double* im, bool* used_buffer = nullptr) {
+FusionMeasure sv_fusion_costs(int n, int max_k, FusionCalibration calibration, double* re,
+                              double* im, bool* used_buffer = nullptr) {
     if (used_buffer != nullptr) *used_buffer = false;
-    // The fusion costs are defined on the grain rule's teams, whatever the run's
-    // own teams are: the model is set aside while they are timed.
-    const detail::ScopedGrainRule grain_rule;
-    const int m = sv_fusion_calibration_qubits(n);
-    const std::size_t threads =
-        calibration == FusionCalibration::OneThread ? 1 : hw::available_threads();
-    const FusionCostKey key{static_cast<int>(calibration), threads, detail::parallel_grain(), m};
+    // The passes are timed on the teams the run's own passes get (the team
+    // model's when one is in force, else the grain rule's), so a block is
+    // priced against the H pass it replaces on the threads that will run both.
+    int m = 0;
+    const FusionCostKey key = sv_fusion_key(n, calibration, &m);
     std::lock_guard<std::mutex> lock(sv_fusion_cost_mutex());
     CachedFusionCosts& entry = sv_fusion_cost_cache()[key];
-    if (entry.widest >= max_k) return entry.costs;
-    const int first_k = entry.widest + 1;
-    if (re != nullptr && m <= n) {
-        entry.costs = sv_measure_fusion_costs(re, im, m, first_k, max_k, calibration, entry.costs);
-        if (used_buffer != nullptr) *used_buffer = true;
-    } else {
-        Statevector scratch(m);
-        entry.costs = sv_measure_fusion_costs(scratch.real_parts, scratch.imag_parts, m, first_k,
-                                              max_k, calibration, entry.costs);
+    if (entry.widest < max_k) {
+        const int first_k = entry.widest + 1;
+        if (re != nullptr && m <= n) {
+            entry.costs = sv_measure_fusion_costs(re, im, m, first_k, max_k, calibration,
+                                                  entry.costs, &entry.h_seconds);
+            if (used_buffer != nullptr) *used_buffer = true;
+        } else {
+            Statevector scratch(m);
+            entry.costs = sv_measure_fusion_costs(scratch.real_parts, scratch.imag_parts, m, first_k,
+                                                  max_k, calibration, entry.costs,
+                                                  &entry.h_seconds);
+        }
+        entry.widest = max_k;
     }
-    entry.widest = max_k;
-    return entry.costs;
+    return {entry.costs, sv_scale_h_seconds(entry.h_seconds, m, n)};
+}
+
+// How long one H pass over a state of n qubits takes, roughly: the cached
+// measurement when there is one, else a short reading (two stretches of 0.2 ms
+// at the same state size and on the same teams as the calibration). It only
+// decides whether measuring the costs can pay, so it errs on no side but speed.
+// *used_buffer says whether re and im were overwritten.
+constexpr double kFusionQuickSeconds = 200e-6;
+constexpr int kFusionQuickRounds = 2;
+double sv_fusion_h_estimate(int n, FusionCalibration calibration, double* re, double* im,
+                            bool* used_buffer) {
+    *used_buffer = false;
+    int m = 0;
+    const FusionCostKey key = sv_fusion_key(n, calibration, &m);
+    std::lock_guard<std::mutex> lock(sv_fusion_cost_mutex());
+    CachedFusionCosts& entry = sv_fusion_cost_cache()[key];
+    if (entry.h_seconds > 0.0) return sv_scale_h_seconds(entry.h_seconds, m, n);
+    if (entry.h_quick_seconds <= 0.0) {
+        auto read = [&](double* r, double* i) {
+            const CalibrationKernels kernels{r, i, m};
+            kernels.fill();
+            auto h = [&] { kernels.h(); };
+            return detail::fastest(kFusionQuickRounds, kFusionQuickSeconds, h)[0];
+        };
+        if (re != nullptr && m <= n) {
+            entry.h_quick_seconds = read(re, im);
+            *used_buffer = true;
+        } else {
+            Statevector scratch(m);
+            entry.h_quick_seconds = read(scratch.real_parts, scratch.imag_parts);
+        }
+    }
+    return sv_scale_h_seconds(entry.h_quick_seconds, m, n);
 }
 
 // Refuses a set Options::fusion_costs with a missing or meaningless entry.
@@ -894,10 +981,112 @@ Instruction sv_compose_block(StatevectorSimulator& sim, const Instruction* membe
     return fused;
 }
 
-// Appends the cheapest plan for the fusable stretch `gates` to `out`.
-void sv_fuse_stretch(StatevectorSimulator& sim, const std::vector<Instruction>& gates,
-                     int max_qubit, const FusionCosts& costs, QuantumCircuit& out) {
-    const std::size_t len = gates.size();
+// =============================================================================
+// Composing a block - what it costs, and what the plan weighs it against
+// =============================================================================
+// A block's matrix is built by applying each member to every column of the
+// block, so composing costs time, once per plan. FusionPricing says how much,
+// in H passes of the run's state, so that a window's cost can include it: the
+// member gates times the measured seconds per member at the window's width,
+// over the seconds of one H pass and the number of times the plan runs.
+struct FusionPricing {
+    double h_seconds = 0.0;                     // one H pass over the run's state
+    std::array<double, SV_FUSION_MAX_QUBIT_LIMIT + 1> compose_seconds{};  // per member, by width
+};
+
+// Seconds to compose one member into a block of `width` qubits (1 to 6), the
+// fastest of a few stretches over a fixed mix of members (one- and two-qubit
+// gates and a two-qubit matrix), measured the first time a width is asked and
+// kept for the process. The block's own passes run on 2^width amplitudes, so
+// they are timed on the grain rule's teams, the model set aside.
+constexpr std::size_t kFusionComposeMembers = 8;
+constexpr double kFusionComposeStretchSeconds = 200e-6;
+constexpr int kFusionComposeRounds = 3;
+
+Instruction sv_member(Instruction::GateType type, std::vector<int> qubits,
+                      std::vector<double> params = {}) {
+    Instruction inst;
+    inst.type = type;
+    inst.qubits = std::move(qubits);
+    inst.params = std::move(params);
+    return inst;
+}
+
+std::vector<Instruction> sv_compose_reference(int width) {
+    using GT = Instruction::GateType;
+    std::vector<Instruction> members;
+    for (std::size_t g = 0; g < kFusionComposeMembers; ++g) {
+        const int a = static_cast<int>(g % static_cast<std::size_t>(width));
+        const int b = static_cast<int>((g + 1) % static_cast<std::size_t>(width));
+        if (width == 1) {
+            members.push_back(g % 2 == 0 ? sv_member(GT::H, {a}) : sv_member(GT::RZ, {a}, {0.3}));
+            continue;
+        }
+        switch (g % 4) {
+            case 0: members.push_back(sv_member(GT::H, {a})); break;
+            case 1: members.push_back(sv_member(GT::CX, {a, b})); break;
+            case 2: {
+                Instruction u = sv_member(GT::UNITARY, {a, b});
+                u.matrix = detail::CalibrationKernels::dft(2);
+                u.validation = {Validation::Ignore, 0.0};
+                members.push_back(std::move(u));
+                break;
+            }
+            default: members.push_back(sv_member(GT::RZ, {a}, {0.3})); break;
+        }
+    }
+    return members;
+}
+
+double sv_compose_seconds(StatevectorSimulator& sim, int width);
+
+double sv_compose_seconds_measured(StatevectorSimulator& sim, int width) {
+    const detail::ScopedGrainRule grain_rule;
+    const std::vector<Instruction> members = sv_compose_reference(width);
+    auto compose = [&] {
+        const Instruction block = sv_compose_block(sim, members.data(), members.size());
+        if (block.qubits.size() != static_cast<std::size_t>(width))
+            detail::raise_internal("StatevectorSimulator::run",
+                                   "the reference block for fusion pricing has " +
+                                       std::to_string(block.qubits.size()) +
+                                       " qubits, expected " + std::to_string(width));
+    };
+    return detail::fastest(kFusionComposeRounds, kFusionComposeStretchSeconds, compose)[0] /
+           static_cast<double>(members.size());
+}
+
+double sv_compose_seconds(StatevectorSimulator& sim, int width) {
+    static std::mutex mutex;
+    static std::array<double, SV_FUSION_MAX_QUBIT_LIMIT + 1> seconds{};
+    std::lock_guard<std::mutex> lock(mutex);
+    double& slot = seconds[static_cast<std::size_t>(width)];
+    if (slot <= 0.0) slot = sv_compose_seconds_measured(sim, width);
+    return slot;
+}
+
+// The seconds per member at each width up to max_qubit (width 1 included).
+FusionPricing sv_fusion_pricing(StatevectorSimulator& sim, double h_seconds, int max_qubit) {
+    FusionPricing pricing;
+    pricing.h_seconds = h_seconds;
+    for (int w = 1; w <= max_qubit; ++w)
+        pricing.compose_seconds[static_cast<std::size_t>(w)] = sv_compose_seconds(sim, w);
+    return pricing;
+}
+
+// How many times the plan runs, for the stretches before the first MEASURE,
+// RESET or conditioned instruction (`prefix`, which a per-shot run with prefix
+// reuse runs once) and for the rest (`after`, once per shot on a per-shot run).
+struct FusionRuns {
+    double prefix = 1.0;
+    double after = 1.0;
+};
+
+// The cheapest plan for the fusable stretch gates[0, len): the blocks as
+// [first, last + 1) pairs in order. With `pricing`, composing a block is part of
+// its cost, spread over `runs`.
+using FusionBlocks = std::vector<std::pair<std::size_t, std::size_t>>;
+FusionBlocks sv_plan_stretch(const Instruction* gates, std::size_t len, int max_qubit,
+                             const FusionCosts& costs, const FusionPricing* pricing, double runs) {
     std::vector<char> diagonal(len);
     std::vector<double> own(len);
     for (std::size_t i = 0; i < len; ++i) {
@@ -924,41 +1113,131 @@ void sv_fuse_stretch(StatevectorSimulator& sim, const std::vector<Instruction>& 
             }
             if (!fits) break;
             all_diagonal = all_diagonal && diagonal[j] != 0;
-            const double cost = j == i ? own[i]
-                                : all_diagonal ? costs.diagonal
-                                               : costs.dense[width - 1];
+            double cost = j == i ? own[i]
+                          : all_diagonal ? costs.diagonal
+                                         : costs.dense[width - 1];
+            if (pricing != nullptr && j != i)
+                cost += static_cast<double>(i - j + 1) *
+                        pricing->compose_seconds[static_cast<std::size_t>(width)] /
+                        (pricing->h_seconds * runs);
             if (best[j] + cost < best[i + 1]) {
                 best[i + 1] = best[j] + cost;
                 from[i + 1] = j;
             }
         }
     }
-    std::vector<std::pair<std::size_t, std::size_t>> blocks;  // [first, last + 1)
+    FusionBlocks blocks;
     for (std::size_t e = len; e > 0; e = from[e]) blocks.emplace_back(from[e], e);
     std::reverse(blocks.begin(), blocks.end());
-    for (const auto& [b, e] : blocks) {
-        if (e - b == 1) out.instructions.push_back(gates[b]);
-        else out.instructions.push_back(sv_compose_block(sim, gates.data() + b, e - b));
-    }
+    return blocks;
 }
 
-QuantumCircuit sv_fuse_circuit(StatevectorSimulator& sim,
-                               const QuantumCircuit& circuit,
-                               int max_qubit, const FusionCosts& costs) {
-    QuantumCircuit out(circuit.n_qubits, circuit.n_clbits);
-    out.name = circuit.name;
-    std::vector<Instruction> stretch;
+// Whether an instruction decides the rest of a per-shot run: what a shot does
+// from here on can differ from shot to shot.
+bool sv_instruction_branches(const Instruction& inst) {
+    using GT = Instruction::GateType;
+    return inst.type == GT::MEASURE || inst.type == GT::RESET || inst.has_condition;
+}
+
+// Whether any stretch of fusable gates holds two or more, the least a block
+// needs.
+bool sv_fusion_has_pair(const QuantumCircuit& circuit, int max_qubit) {
+    std::size_t members = 0;
     for (const auto& inst : circuit.instructions) {
         if (sv_gate_is_fusable(inst, max_qubit)) {
-            stretch.push_back(inst);
+            if (++members >= 2) return true;
+        } else {
+            members = 0;
+        }
+    }
+    return false;
+}
+
+// The circuit with its stretches of fusable gates planned (see above), or
+// nothing when no stretch gains a block: the circuit then runs as written and
+// is not copied.
+std::optional<QuantumCircuit> sv_fuse_circuit(StatevectorSimulator& sim,
+                                              const QuantumCircuit& circuit, int max_qubit,
+                                              const FusionCosts& costs,
+                                              const FusionPricing* pricing,
+                                              const FusionRuns& runs) {
+    struct Stretch {
+        std::size_t begin, end;  // instruction indices [begin, end)
+        FusionBlocks blocks;
+    };
+    std::vector<Stretch> stretches;
+    bool any_block = false;
+    bool branched = false;
+    const std::vector<Instruction>& all = circuit.instructions;
+    for (std::size_t i = 0; i < all.size();) {
+        if (!sv_gate_is_fusable(all[i], max_qubit)) {
+            if (sv_instruction_branches(all[i])) branched = true;
+            ++i;
             continue;
         }
-        sv_fuse_stretch(sim, stretch, max_qubit, costs, out);
-        stretch.clear();
-        out.instructions.push_back(inst);
+        std::size_t end = i;
+        while (end < all.size() && sv_gate_is_fusable(all[end], max_qubit)) ++end;
+        Stretch st{i, end, {}};
+        st.blocks = sv_plan_stretch(all.data() + i, end - i, max_qubit, costs, pricing,
+                                    branched ? runs.after : runs.prefix);
+        for (const auto& [b, e] : st.blocks) any_block = any_block || e - b > 1;
+        stretches.push_back(std::move(st));
+        i = end;
     }
-    sv_fuse_stretch(sim, stretch, max_qubit, costs, out);
+    if (!any_block) return std::nullopt;
+
+    QuantumCircuit out(circuit.n_qubits, circuit.n_clbits);
+    out.name = circuit.name;
+    // Composing a block applies member gates to columns of 2^k amplitudes, far
+    // below any team's grain: the model is set aside so that those passes ask
+    // it nothing.
+    const detail::ScopedGrainRule grain_rule;
+    std::size_t next = 0;
+    for (const Stretch& st : stretches) {
+        for (; next < st.begin; ++next) out.instructions.push_back(all[next]);
+        for (const auto& [b, e] : st.blocks) {
+            if (e - b == 1) out.instructions.push_back(all[st.begin + b]);
+            else out.instructions.push_back(sv_compose_block(sim, all.data() + st.begin + b, e - b));
+        }
+        next = st.end;
+    }
+    for (; next < all.size(); ++next) out.instructions.push_back(all[next]);
     return out;
+}
+
+// Whether fusing could pay for any stretch of the circuit, from the least that
+// composing costs and the most a block can save: every non-matrix gate costs at
+// most one H pass and a block at least one, so fusing m members saves at most
+// m - 1 passes, against m members composed at the cheapest width. A stretch
+// holding a matrix gate has no such bound (its pass costs what its width does)
+// and is taken to be able to pay. `margin` widens the bound, for the reading
+// of the H pass behind it is a quick one.
+constexpr double kFusionPruneMargin = 2.0;
+bool sv_fusion_may_pay(StatevectorSimulator& sim, const QuantumCircuit& circuit, int max_qubit,
+                       double h_seconds, const FusionRuns& runs) {
+    const double cheapest = sv_compose_seconds(sim, 1);
+    std::size_t members = 0;
+    bool matrix = false;
+    bool branched = false;
+    auto stretch_can_pay = [&] {
+        const bool pays = members >= 2 &&
+            (matrix || static_cast<double>(members - 1) * h_seconds * kFusionPruneMargin *
+                               (branched ? runs.after : runs.prefix) >
+                           static_cast<double>(members) * cheapest);
+        members = 0;
+        matrix = false;
+        return pays;
+    };
+    for (const auto& inst : circuit.instructions) {
+        if (sv_gate_is_fusable(inst, max_qubit)) {
+            ++members;
+            matrix = matrix || inst.type == Instruction::GateType::UNITARY;
+            continue;
+        }
+        if (stretch_can_pay()) return true;
+        if (sv_instruction_branches(inst)) branched = true;
+    }
+    return stretch_can_pay();
 }
 
 // =============================================================================
@@ -1074,7 +1353,7 @@ StatevectorSimulator::FusionCosts StatevectorSimulator::measured_fusion_costs(
     if (n_qubits < 1)
         detail::raise<InvalidArgument>("StatevectorSimulator::measured_fusion_costs",
             "n_qubits must be at least 1, got " + std::to_string(n_qubits));
-    return sv_fusion_costs(n_qubits, detail::kDenseMaxQubits, calibration, nullptr, nullptr);
+    return sv_fusion_costs(n_qubits, detail::kDenseMaxQubits, calibration, nullptr, nullptr).costs;
 }
 
 ThreadingCosts StatevectorSimulator::measured_threading_costs(bool measure_cold_regions,
@@ -1180,20 +1459,61 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         team_model.emplace(options.min_amplitudes_per_thread == 0, options.threading_costs,
                            sv_scratch_room(options.max_memory_mb, footprint));
 
-        // Gate fusion (R.1.17): at bandwidth-bound sizes, execute a fused
-        // equivalent of the circuit (see sv_fuse_circuit above). The
-        // engagement point is Options::fusion_threshold when set, else the
-        // hardware-derived auto value (statevector > one LLC instance).
-        // An observed run suppresses fusion by default, so that anchors keep
-        // naming the instructions the caller wrote. Options::Fusion::Keep opts
-        // back in and accepts that anchors then bind to the fused circuit.
+        // Execution strategy (docs/api/simulators.md, Execution semantics),
+        // which the fusion plan below is priced against: a per-shot run runs
+        // the plan once per shot.
+        //   1. Terminal-only measurements (no feedforward, nothing acting on
+        //      a qubit after it was measured): ONE forward pass, then sample
+        //      outcomes from the final state with the qubit -> clbit map.
+        //      O(gates + shots) instead of O(shots * gates).
+        //   2. Mid-circuit measurement, feedforward, or a RESET that can
+        //      change the state, with shots > 0: per-shot trajectories (each
+        //      collapse drawn independently).
+        //   3. Otherwise (shots == 0, or no measurements): a single seeded
+        //      trajectory; conditions honoured, MEASURE outcomes recorded.
+        bool has_measure = false;
+        bool has_condition = false;
+        int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
+        for (const auto& inst : circuit.instructions) {
+            if (inst.type == Instruction::GateType::MEASURE) has_measure = true;
+            if (inst.has_condition) has_condition = true;
+        }
+        // A RESET collapses its qubit, and one pass would collapse it once for
+        // every shot. One on a qubit known to be |0> changes nothing and leaves
+        // the one-pass path open (detail::trivial_resets).
+        const bool has_reset = detail::has_nontrivial_reset(circuit, plan.initial);
+        const bool terminal_only = has_measure && !has_condition && !has_reset &&
+                                   sv_measures_are_terminal(circuit);
+        // Whether the circuit's shape makes a run walk it shot by shot. With
+        // shots == 0 that walk is taken once, and it is shot 0: a failure in
+        // it names shot 0, as it does on every backend, while a single pass
+        // that serves every shot names none.
+        const bool walked_per_shot = (has_measure && !terminal_only) || has_reset;
+        const bool per_shot = shots > 0 && walked_per_shot;
+
+        // Gate fusion (see sv_fuse_circuit above). An observed run suppresses
+        // it by default, so that anchors keep naming the instructions the
+        // caller wrote; Options::Fusion::Keep opts back in and accepts that
+        // anchors then bind to the fused circuit.
         const bool observed = !plan.observations.empty();
-        const int fusion_min = options.fusion_threshold > 0 ? options.fusion_threshold
-                                                            : sv_fusion_auto_threshold();
-        const bool fuse = options.fusion_enable &&
-                          (!observed ||
-                           plan.options.fusion == RunPlan::Options::Fusion::Keep) &&
-                          circuit.n_qubits >= fusion_min;
+        bool fuse = options.fusion_enable &&
+                    (!observed || plan.options.fusion == RunPlan::Options::Fusion::Keep) &&
+                    circuit.n_qubits >= options.fusion_threshold;
+        // A caller who names the engagement point (fusion_threshold > 0) gets
+        // the plan that is cheapest by pass costs alone at and above it. Under
+        // the automatic rule (0) every size is a candidate and composing a
+        // block is part of its cost, spread over the runs of the plan.
+        const bool engagement_named = options.fusion_threshold > 0;
+        // A per-shot run with prefix reuse runs the stretch before its first
+        // MEASURE, RESET or conditioned instruction once; everything after it
+        // runs once per shot.
+        FusionRuns fusion_runs;
+        if (per_shot) {
+            fusion_runs.after = static_cast<double>(shots);
+            const bool prefix_once = shots > 1 && options.prefix_reuse != PrefixReuse::Off &&
+                                     !observed;
+            fusion_runs.prefix = prefix_once ? 1.0 : fusion_runs.after;
+        }
 
         auto t_start = std::chrono::high_resolution_clock::now();
 
@@ -1205,14 +1525,35 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         // Unset fusion costs are measured, when this process has not measured
         // them yet, on the working state before it is written: no memory
         // beyond the state the budget already counts. A buffer measured on is
-        // no longer |0...0>, so it is cleared below whatever the plan.
+        // no longer |0...0>, so it is cleared below whatever the plan. Under
+        // the automatic rule a short reading of the H pass comes first: when
+        // no stretch could repay composing its blocks, nothing more is
+        // measured and the circuit runs as written.
         FusionCosts fusion_costs = options.fusion_costs;
+        std::optional<FusionPricing> pricing;
+        if (fuse && !engagement_named) {
+            fuse = sv_fusion_has_pair(circuit, options.fusion_max_qubit);
+        }
         if (fuse && fusion_costs.unset()) {
             bool used = false;
-            fusion_costs = sv_fusion_costs(circuit.n_qubits, options.fusion_max_qubit,
-                                           options.fusion_calibration, sv_work->real_parts,
-                                           sv_work->imag_parts, &used);
-            if (used) fresh = false;
+            if (!engagement_named) {
+                const double h_estimate = sv_fusion_h_estimate(
+                    circuit.n_qubits, options.fusion_calibration, sv_work->real_parts,
+                    sv_work->imag_parts, &used);
+                if (used) fresh = false;
+                fuse = sv_fusion_may_pay(*this, circuit, options.fusion_max_qubit, h_estimate,
+                                         fusion_runs);
+            }
+            if (fuse) {
+                used = false;
+                const FusionMeasure measure = sv_fusion_costs(
+                    circuit.n_qubits, options.fusion_max_qubit, options.fusion_calibration,
+                    sv_work->real_parts, sv_work->imag_parts, &used);
+                if (used) fresh = false;
+                fusion_costs = measure.costs;
+                if (!engagement_named)
+                    pricing = sv_fusion_pricing(*this, measure.h_seconds, options.fusion_max_qubit);
+            }
         }
         // Writes |0...0> for the default plan, so a reused buffer is cleared on
         // the same call that seeds a supplied initial state. A buffer just
@@ -1250,9 +1591,13 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         const QuantumCircuit* exec = &circuit;
         clock.charge(&PhaseTimes::setup);
         if (fuse) {
-            fused_storage =
-                sv_fuse_circuit(*this, circuit, options.fusion_max_qubit, fusion_costs);
-            exec = &fused_storage;
+            std::optional<QuantumCircuit> fused = sv_fuse_circuit(
+                *this, circuit, options.fusion_max_qubit, fusion_costs,
+                pricing ? &*pricing : nullptr, fusion_runs);
+            if (fused) {
+                fused_storage = std::move(*fused);
+                exec = &fused_storage;
+            }
             clock.charge(&PhaseTimes::fusion);
         }
 
@@ -1269,35 +1614,6 @@ StatevectorSimulator::Result StatevectorSimulator::run(
         detail::RunBudget budget(cap_bytes, footprint, "StatevectorSimulator::run");
         runner->set_budget(&budget);
 
-        // Execution strategy (docs/api/simulators.md, Execution semantics):
-        //   1. Terminal-only measurements (no feedforward, nothing acting on
-        //      a qubit after it was measured): ONE forward pass, then sample
-        //      outcomes from the final state with the qubit -> clbit map.
-        //      O(gates + shots) instead of O(shots * gates).
-        //   2. Mid-circuit measurement, feedforward, or a RESET that can
-        //      change the state, with shots > 0: per-shot trajectories (each
-        //      collapse drawn independently).
-        //   3. Otherwise (shots == 0, or no measurements): a single seeded
-        //      trajectory; conditions honoured, MEASURE outcomes recorded.
-        bool has_measure = false;
-        bool has_condition = false;
-        int n_clbits = circuit.n_clbits > 0 ? circuit.n_clbits : circuit.n_qubits;
-        for (const auto& inst : circuit.instructions) {
-            if (inst.type == Instruction::GateType::MEASURE) has_measure = true;
-            if (inst.has_condition) has_condition = true;
-        }
-        // A RESET collapses its qubit, and one pass would collapse it once for
-        // every shot. One on a qubit known to be |0> changes nothing and leaves
-        // the one-pass path open (detail::trivial_resets).
-        const bool has_reset = detail::has_nontrivial_reset(circuit, plan.initial);
-        const bool terminal_only = has_measure && !has_condition && !has_reset &&
-                                   sv_measures_are_terminal(circuit);
-        // Whether the circuit's shape makes a run walk it shot by shot. With
-        // shots == 0 that walk is taken once, and it is shot 0: a failure in
-        // it names shot 0, as it does on every backend, while a single pass
-        // that serves every shot names none.
-        const bool walked_per_shot = (has_measure && !terminal_only) || has_reset;
-        const bool per_shot = shots > 0 && walked_per_shot;
         // Whether a path below has already summed |amp|^2 over the final state
         // and accepted the sum through require_norm_to_sample, which refuses a
         // sum that is not finite or not above epsilon. An accepted sum makes

@@ -141,14 +141,14 @@ public:
         bool zero_threshold = true;
         double threshold = 1e-10;
 
-        // Gate fusion (R.1.17). Option names follow Qiskit Aer for API
-        // parity; the default engagement point is hardware-derived rather
-        // than Aer's flat qubit count (see docs/api/simulators.md).
+        // Gate fusion. Option names follow Qiskit Aer for API parity; the
+        // default engagement rule is cost-based rather than Aer's flat qubit
+        // count (see docs/api/simulators.md).
         bool fusion_enable = true;  // master switch for the fusion pre-pass
-        int fusion_threshold = 0;   // min qubits to engage fusion; 0 = auto:
-                                    // first n whose statevector (16·2^n B)
-                                    // exceeds one L3 instance (hw::llc_bytes;
-                                    // 32 MiB assumed when undetectable)
+        int fusion_threshold = 0;   // min qubits to engage fusion; 0 = auto: every
+                                    // size is a candidate, and a block forms only
+                                    // where the passes it saves, over every run of
+                                    // the plan, cost more than composing it
         int fusion_max_qubit = 5;   // max fused-block width, 2..6 (Aer default 5)
         // Unset (the default): measured on this machine the first time a run
         // fuses, once per process for each thread count and state size. The

@@ -167,7 +167,7 @@ Common issues include:
 - `optimal_params` are stored in layer order, not grouped by Hamiltonian term.
 - `initial_thetas` changes the state preparation before the QAOA layers start.
 - `best_bitstring` is selected from sampled outcomes, so it reflects the final measurement stage, not only the continuous optimizer's objective value.
-- The statevector kernels and the expectation-value sum give the same bits on any thread count, so `seed` reproduces a run's energies, and the minimiser's path through them, whatever `OMP_NUM_THREADS` is. From the width where gate fusion engages (a state larger than one last-level-cache instance), the fused plan follows this machine's measured speed, so two processes can differ in the last bits there (see [Gate Fusion](../api/simulators.md#gate-fusion-r117)).
+- The statevector kernels and the expectation-value sum give the same bits on any thread count, so `seed` reproduces a run's energies, and the minimiser's path through them, whatever `OMP_NUM_THREADS` is. Where gate fusion engages (chosen by cost at every size), the fused plan follows this machine's measured speed, so two processes can differ in the last bits there (see [Gate Fusion](../api/simulators.md#gate-fusion-r117)).
 
 ## Testing Notes
 
