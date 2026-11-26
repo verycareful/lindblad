@@ -172,6 +172,20 @@ team against running every gate across threads, or against shots that stream
 their state from memory, and an MPS shot is compute-bound with no threaded
 kernels to trade it against, so its automatic team follows the work alone.
 
+An automatic team (`max_parallel_shots = 0`) is the one that takes the least
+time on the machine, from what the machine measures: the cost of starting a team
+of each size, the gain of a team of each size (for shots that evolve a state each, what independent
+threads gain; for terminal sampling, what a streaming pass gains, which stops
+growing where memory does), the whole chunks a
+team cannot divide evenly, and the cost of merging the chunks' counts in order,
+which a run on one thread does not pay. The first automatic run of a process
+takes a few milliseconds to measure them. A run too small to fill two threads'
+grains stays on one thread without measuring anything; a run whose caller set
+`min_amplitudes_per_thread` takes the grain rule alone; and where the machine's
+costs hold no figure, the grain rule decides. `Options::threading_costs`, when
+set, replaces the measurement for the statevector and density-matrix simulators
+(the merge is then priced as free).
+
 After a shot team ends, the OpenMP runtime keeps its idle threads spinning for a
 while (libomp for 200 ms by default). A single-threaded stretch that follows
 within that time, such as the next MPS run's evolution in a loop of short runs,
@@ -361,9 +375,10 @@ struct Options {
   more qubit), a larger one to narrower ones. A named team
   (`max_parallel_shots >= 2`) does not consult it, and a value so large that no
   state fits keeps every automatic run serial. An automatic team is also cut to
-  the states that fit the machine's caches together, 75 percent of
-  `hw::llc_bytes()` times `hw::llc_instances()`: past that the threads stream
-  their states from memory and run slower than fewer. The cut assumes the
+  the states that fit the machine's caches together: in each last-level-cache
+  instance, 75 percent of `hw::llc_bytes()` in states, and no more than the
+  instance has processors for, summed over the instances. Past that the threads
+  stream their states from memory and run slower than fewer. The cut assumes the
   operating system spreads the threads over the caches; threads pinned into
   one cache instance keep all their states in it. A named team is never cut. The counts do not depend on it
 - **shot_memory**: how the shot threads' states meet `max_memory_mb`, each

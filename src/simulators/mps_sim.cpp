@@ -2314,6 +2314,7 @@ MPSSimulator::Result MPSSimulator::run(
             const std::uint64_t thread_bytes =
                 mps_thread_bound_bytes(circuit.n_qubits, max_bond_dim, dense);
             detail::ShotTeamRequest trajectories = request;
+            trajectories.key_bits = has_measure ? n_clbits : circuit.n_qubits;
             trajectories.held_bytes = detail::saturating_add(
                 detail::saturating_add(start_bytes, placeholder_bytes), thread_bytes);
             trajectories.per_thread_bytes = thread_bytes;
@@ -2593,6 +2594,8 @@ MPSSimulator::Result MPSSimulator::run(
                     // A sampling thread holds three vectors of the bond
                     // dimension and its register.
                     detail::ShotTeamRequest sampling = request;
+                    sampling.key_bits = key_width;
+                    sampling.sampling = true;
                     sampling.held_bytes = chain_bytes(result.final_state.tensors());
                     sampling.per_thread_bytes = detail::saturating_add(
                         detail::complex_bytes(detail::saturating_mul(

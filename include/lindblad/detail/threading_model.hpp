@@ -104,6 +104,11 @@ ThreadingCosts measure_threading_costs(ThreadingParts parts,
 // qualifies; libomp's default block time of 200 ms does not.
 bool threading_cold_regions_quick();
 
+// A figure sampled at `sizes` (ascending, from 1), read at team size t by
+// linear interpolation; outside the samples it takes the nearest one. `values`
+// has one entry per size.
+double threading_interpolate(const std::vector<int>& sizes, const std::vector<double>& values, int t);
+
 // Why `costs` is not a usable set of ThreadingCosts, or an empty string when it
 // is: the team sizes ascending from 1, every vector one entry per team size,
 // every entry finite and positive, `memory_bound` either whole or empty.

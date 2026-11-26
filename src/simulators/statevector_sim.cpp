@@ -1667,6 +1667,9 @@ StatevectorSimulator::Result StatevectorSimulator::run(
             const detail::ShotChunks chunks = detail::chunk_shots(shots);
             detail::ShotTeamRequest request;
             request.entry_point = ctx;
+            request.modelled = options.min_amplitudes_per_thread == 0;
+            request.costs = &options.threading_costs;
+            request.key_bits = has_measure ? n_clbits : circuit.n_qubits;
             request.max_parallel_shots = options.max_parallel_shots;
             request.memory = options.shot_memory;
             request.min_cached_states = options.shot_team_min_cached_states;

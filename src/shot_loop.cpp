@@ -11,12 +11,14 @@
 
 #include "lindblad/detail/memory_budget.hpp"
 #include "lindblad/detail/report.hpp"
+#include "lindblad/detail/shot_model.hpp"
 #include "lindblad/detail/thread_cap.hpp"
 #include "lindblad/hw_info.hpp"
 
 #include <algorithm>
 #include <limits>
 #include <string>
+#include <vector>
 
 namespace lindblad {
 namespace detail {
@@ -60,19 +62,28 @@ bool states_fit_cache(std::uint64_t per_thread_bytes, std::size_t min_states) {
     return static_cast<std::uint64_t>(llc) / per_thread_bytes >= min_states;
 }
 
-// The most per-thread states an automatic team keeps resident: the share
-// (SHOT_TEAM_CACHE_SHARE_PERCENT) of the cache all the instances hold together,
-// in states of per_thread_bytes. The size and the count each fall back to one
-// instance of kLlcFallbackBytes when the machine does not report them.
+// The most per-thread states an automatic team keeps resident: in each L3
+// instance, the share (SHOT_TEAM_CACHE_SHARE_PERCENT) of its cache in states of
+// per_thread_bytes, and no more than the instance has processors to run them
+// on; summed over the instances. A state does not straddle two caches, so each
+// instance rounds on its own. The cache size falls back to kLlcFallbackBytes,
+// and a machine that reports no instances to one of them.
 std::uint64_t resident_states(std::uint64_t per_thread_bytes) {
     if (per_thread_bytes == 0) return std::numeric_limits<std::uint64_t>::max();
     std::size_t llc = hw::llc_bytes();
     if (llc == 0) llc = kLlcFallbackBytes;
-    std::size_t instances = hw::llc_instances();
-    if (instances == 0) instances = 1;
-    const std::uint64_t total = saturating_mul(static_cast<std::uint64_t>(llc),
-                                               static_cast<std::uint64_t>(instances));
-    return saturating_mul(total / per_thread_bytes, SHOT_TEAM_CACHE_SHARE_PERCENT) / 100;
+    const std::uint64_t per_instance = saturating_mul(
+        static_cast<std::uint64_t>(llc) / per_thread_bytes, SHOT_TEAM_CACHE_SHARE_PERCENT) / 100;
+    const std::vector<std::vector<std::size_t>>& domains = hw::llc_domains();
+    if (domains.empty()) {
+        std::size_t instances = hw::llc_instances();
+        if (instances == 0) instances = 1;
+        return saturating_mul(per_instance, static_cast<std::uint64_t>(instances));
+    }
+    std::uint64_t total = 0;
+    for (const std::vector<std::size_t>& domain : domains)
+        total = saturating_add(total, std::min<std::uint64_t>(per_instance, domain.size()));
+    return total;
 }
 
 bool in_parallel_region() noexcept {
@@ -145,9 +156,27 @@ ShotTeam shot_team(const ShotTeamRequest& req, const ShotChunks& chunks) {
         const std::uint64_t work = saturating_mul(
             static_cast<std::uint64_t>(req.work_per_shot),
             static_cast<std::uint64_t>(chunks.shots));
-        wanted = std::min<std::uint64_t>(hw::available_threads(), work / parallel_grain());
-        if (req.cache_rule)
-            wanted = std::min<std::uint64_t>(wanted, resident_states(req.per_thread_bytes));
+        const std::size_t threads = hw::available_threads();
+        const std::uint64_t by_grain = std::min<std::uint64_t>(threads, work / parallel_grain());
+        const std::uint64_t resident =
+            req.cache_rule ? resident_states(req.per_thread_bytes)
+                           : std::numeric_limits<std::uint64_t>::max();
+        wanted = std::min(by_grain, resident);
+        // A run under two grains of work stays serial without asking the
+        // machine anything; above that the model decides, and where the costs
+        // hold no figure the grain rule's team stands.
+        if (req.modelled && by_grain >= 2) {
+            ShotModelInput in;
+            in.work_per_shot = req.work_per_shot;
+            in.chunks = chunks;
+            in.key_bits = req.key_bits;
+            in.sampling = req.sampling;
+            in.max_team = static_cast<int>(std::min<std::uint64_t>(
+                std::min<std::uint64_t>(threads, resident),
+                static_cast<std::uint64_t>(chunks.count)));
+            const int team = modelled_shot_team(in, req.costs);
+            if (team > 0) wanted = static_cast<std::size_t>(team);
+        }
         wanted = std::max<std::size_t>(wanted, 1);
     }
     wanted = std::min(wanted, static_cast<std::size_t>(chunks.count));

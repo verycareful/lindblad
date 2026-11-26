@@ -528,6 +528,16 @@ ThreadingCosts measure_threading_costs(ThreadingParts parts, std::uint64_t scrat
 
 bool threading_cold_regions_quick() { return cold_is_quick(sample_sizes(), read_block_time_ms()); }
 
+double threading_interpolate(const std::vector<int>& sizes, const std::vector<double>& values, int t) {
+    if (t <= sizes.front()) return values.front();
+    if (t >= sizes.back()) return values.back();
+    std::size_t hi = 1;
+    while (sizes[hi] < t) ++hi;
+    const double lo_t = sizes[hi - 1], hi_t = sizes[hi];
+    const double f = (static_cast<double>(t) - lo_t) / (hi_t - lo_t);
+    return values[hi - 1] + f * (values[hi] - values[hi - 1]);
+}
+
 std::string threading_costs_problem(const ThreadingCosts& c) {
     const std::size_t n = c.team_sizes.size();
     if (n == 0) return "team_sizes is empty";

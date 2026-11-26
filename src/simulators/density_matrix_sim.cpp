@@ -1324,6 +1324,9 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
             const detail::ShotChunks chunks = detail::chunk_shots(shots);
             detail::ShotTeamRequest request;
             request.entry_point = ctx;
+            request.modelled = options.min_amplitudes_per_thread == 0;
+            request.costs = &options.threading_costs;
+            request.key_bits = n_clbits;
             request.max_parallel_shots = options.max_parallel_shots;
             request.memory = options.shot_memory;
             request.min_cached_states = options.shot_team_min_cached_states;
@@ -1612,6 +1615,10 @@ DensityMatrixSimulator::Result DensityMatrixSimulator::run(
                 const detail::ShotChunks chunks = detail::chunk_shots(shots);
                 detail::ShotTeamRequest request;
                 request.entry_point = "DensityMatrixSimulator::run";
+                request.modelled = options.min_amplitudes_per_thread == 0;
+                request.costs = &options.threading_costs;
+                request.key_bits = meas.empty() ? circuit.n_qubits : n_clbits;
+                request.sampling = true;
                 request.max_parallel_shots = options.max_parallel_shots;
                 request.memory = options.shot_memory;
                 request.min_cached_states = options.shot_team_min_cached_states;

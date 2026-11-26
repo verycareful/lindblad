@@ -107,6 +107,18 @@ struct ShotTeamRequest {
     std::size_t work_per_shot = 0;       // one shot's work, in one-qubit-gate amplitudes
     std::size_t min_cached_states = 0;   // the automatic rule's margin: 0 SHOT_TEAM_MIN_CACHED_STATES
     bool serial_only = false;            // the backend needs one thread for this run
+    // The automatic rule sizes the team from what the machine measures
+    // (shot_model.hpp); false keeps the grain rule alone, for a run whose
+    // caller set min_amplitudes_per_thread.
+    bool modelled = true;
+    // Costs the caller set (Options::threading_costs): the model reads them
+    // and measures nothing. Null measures this machine's.
+    const ThreadingCosts* costs = nullptr;
+    int key_bits = 0;                    // the counts' key width in clbits; 0 = not known
+    // The run draws its shots from a distribution it holds (terminal sampling),
+    // not by evolving a state per shot: its threads stream shared tables, and
+    // the model reads a team's gain from the streaming pass (shot_model.hpp).
+    bool sampling = false;
 };
 
 struct ShotTeam {
@@ -123,10 +135,13 @@ struct ShotTeam {
 //   - The team wanted is max_parallel_shots when it is >= 2. Automatic runs on
 //     one thread unless min_cached_states (0 = SHOT_TEAM_MIN_CACHED_STATES)
 //     per-thread states fit one last-level-cache instance (types.hpp;
-//     skipped when cache_rule is false), and is
-//     then
-//     min(available threads, shots * work_per_shot / parallel_grain()), the
-//     statevector kernels' rule applied to the whole run's work.
+//     skipped when cache_rule is false), or the whole run's work is under two
+//     grains (shots * work_per_shot / parallel_grain(), the statevector
+//     kernels' rule applied to the run), and is then the team of least
+//     modelled time (shot_model.hpp), at most the available threads and the
+//     states the caches hold resident. With modelled false, or where the
+//     costs hold no figure, it is min(available threads, that grain count,
+//     states resident).
 //   - Never more threads than chunks.
 //   - The memory policy then sizes it against room = cap - held (see
 //     ShotMemory in types.hpp).

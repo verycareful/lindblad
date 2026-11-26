@@ -44,18 +44,6 @@ constexpr double kStretchSeconds = 200e-6;
 
 constexpr const char* kContext = "team model";
 
-// Linear interpolation of a figure sampled at `sizes`, read at team size t;
-// outside the samples it takes the nearest one.
-double interpolate(const std::vector<int>& sizes, const std::vector<double>& values, int t) {
-    if (t <= sizes.front()) return values.front();
-    if (t >= sizes.back()) return values.back();
-    std::size_t hi = 1;
-    while (sizes[hi] < t) ++hi;
-    const double lo_t = sizes[hi - 1], hi_t = sizes[hi];
-    const double f = (static_cast<double>(t) - lo_t) / (hi_t - lo_t);
-    return values[hi - 1] + f * (values[hi] - values[hi - 1]);
-}
-
 bool whole(const std::vector<double>& v, std::size_t n) { return v.size() == n; }
 
 // The qubits a window may have at most, from the L3 caches together.
@@ -244,11 +232,11 @@ int TeamTable::compute_from_costs(const SvWork& work) {
             const std::vector<double>& arith =
                 whole(moving, n) ? moving : costs_.in_cache.dense[static_cast<std::size_t>(k)];
             if (!whole(arith, n) || !whole(light, n)) return std::nullopt;
-            return std::max(interpolate(costs_.team_sizes, arith, t), interpolate(costs_.team_sizes, light, t));
+            return std::max(threading_interpolate(costs_.team_sizes, arith, t), threading_interpolate(costs_.team_sizes, light, t));
         }
         const std::vector<double>& v = diagonal ? diag : light;
         if (!whole(v, n)) return std::nullopt;
-        return interpolate(costs_.team_sizes, v, t);
+        return threading_interpolate(costs_.team_sizes, v, t);
     };
 
     int best_team = 1;
@@ -263,7 +251,7 @@ int TeamTable::compute_from_costs(const SvWork& work) {
             // A region that follows a pass longer than the block time finds the
             // team asleep.
             const bool cold = cold_known && pass > block_seconds;
-            region = interpolate(costs_.team_sizes, cold ? costs_.cold_region_seconds : costs_.region_seconds, t);
+            region = threading_interpolate(costs_.team_sizes, cold ? costs_.cold_region_seconds : costs_.region_seconds, t);
         }
         const double cost = region + pass;
         if (cost < best_cost) {

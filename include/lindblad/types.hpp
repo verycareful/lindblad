@@ -629,8 +629,10 @@ inline constexpr int SHOT_CHUNK_TARGET = 512;
 // =============================================================================
 // With max_parallel_shots = 0, a run's shots run across threads only when at
 // least SHOT_TEAM_MIN_CACHED_STATES of its per-thread working states fit in one
-// last-level-cache instance (hw::llc_bytes); the team is then sized by the
-// run's work, as a gate kernel's is. Below that, each shot thread streams its
+// last-level-cache instance (hw::llc_bytes); the team is then the one that
+// costs the least on the machine (shot_model.hpp: the cost of starting a team,
+// the time per amplitude at its size, the chunks it cannot divide evenly and
+// the in-order merge). Below that, each shot thread streams its
 // own state from memory with its gates on one thread, and the run is faster
 // with its shots on one thread and every gate threaded. A run moves the margin
 // with Options::shot_team_min_cached_states (0 keeps this value).
@@ -646,8 +648,9 @@ inline constexpr int SHOT_CHUNK_TARGET = 512;
 inline constexpr std::size_t SHOT_TEAM_MIN_CACHED_STATES = 8;
 
 // An automatic team also holds no more per-thread states than this share of
-// the machine's last-level cache holds in total (hw::llc_bytes times
-// hw::llc_instances), as a percentage. Threads spread over every cache
+// the machine's last-level cache holds, instance by instance (hw::llc_bytes
+// each, hw::llc_domains), as a percentage, and no instance holds more states
+// than it has processors. Threads spread over every cache
 // instance keep their states resident only while the states fit the caches
 // together; past that each thread streams its own state from memory and the
 // team runs slower than fewer threads. Applies to the automatic rule only: a
